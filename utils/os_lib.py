@@ -174,7 +174,7 @@ class PdfOS:
         mk_dir(image_dir)
 
         for i, img in enumerate(imgs):
-            imwrite(f'{image_dir}/{i}.png', img)
+            PngOS.imwrite(f'{image_dir}/{i}.png', img)
 
     @staticmethod
     def save_pdf_to_pdf(source_path, page=None, save_path=None):

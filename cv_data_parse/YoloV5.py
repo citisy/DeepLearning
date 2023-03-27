@@ -96,7 +96,7 @@ class Loader(DataLoader):
                 yield dict(
                     _id=Path(line).name,
                     image=image,
-                    bboxes=bboxes,
+                    bboxes=bboxes,   # (-1, 4)
                     classes=classes,
                 )
 
@@ -179,7 +179,7 @@ class Saver(DataSaver):
             if image_type == DataRegister.PATH:
                 shutil.copy(image, image_path)
             elif image_type == DataRegister.IMAGE:
-                cv2.imwrite(image, image_path)
+                cv2.imwrite(image_path, image)
             else:
                 raise ValueError(f'Unknown input {image_type = }')
 

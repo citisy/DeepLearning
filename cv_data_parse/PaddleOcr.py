@@ -62,8 +62,8 @@ class Loader(DataLoader):
                 labels = json.loads(labels)
                 segmentation, transcription = [], []
                 for label in labels:
-                    segmentation.append(label['points'])
-                    transcription.append(label['transcription'])
+                    segmentation.append(label['points'])            # (-1, 4, 2)
+                    transcription.append(label['transcription'])    # (-1, #str)
 
                 segmentation = np.array(segmentation)
 
@@ -131,12 +131,12 @@ class Saver(DataSaver):
             if image_type == DataRegister.PATH:
                 shutil.copy(image, image_path)
             elif image_type == DataRegister.IMAGE:
-                cv2.imwrite(image, image_path)
+                cv2.imwrite(image_path, image)
             else:
                 raise ValueError(f'Unknown input {image_type = }')
 
             labels = [{'transcription': t, 'points': s} for s, t in zip(segmentation, transcription)]
 
-            f.write(f'{image_path}\t{json.dumps(labels)}\n')
+            f.write(f'{image_path}\t{json.dumps(labels, ensure_ascii=False)}\n')
 
         f.close()
