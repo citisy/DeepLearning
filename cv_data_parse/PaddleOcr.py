@@ -4,9 +4,9 @@ import cv2
 import shutil
 import numpy as np
 from utils import os_lib
-from cv_data_parse.base import DataRegister, DataLoader, DataSaver
-from pathlib import Path
+from cv_data_parse.base import DataRegister, DataLoader, DataSaver, DataGenerator
 from tqdm import tqdm
+from pathlib import Path
 
 
 class Loader(DataLoader):
@@ -62,8 +62,8 @@ class Loader(DataLoader):
                 labels = json.loads(labels)
                 segmentation, transcription = [], []
                 for label in labels:
-                    segmentation.append(label['points'])            # (-1, 4, 2)
-                    transcription.append(label['transcription'])    # (-1, #str)
+                    segmentation.append(label['points'])  # (-1, 4, 2)
+                    transcription.append(label['transcription'])  # (-1, #str)
 
                 segmentation = np.array(segmentation)
 
@@ -87,6 +87,7 @@ class Saver(DataSaver):
                   ├── train.txt  # per image file path per line
                   ├── test.txt   # would like to be empty or same to val.txt
                   └── val.txt
+
     Usage:
         .. code-block:: python
 
@@ -140,3 +141,71 @@ class Saver(DataSaver):
             f.write(f'{image_path}\t{json.dumps(labels, ensure_ascii=False)}\n')
 
         f.close()
+
+
+class Generator(DataGenerator):
+    image_suffix = 'png'
+    label_suffix = 'txt'
+
+    def gen_sets(
+            self, label_files=(), save_dir='', set_task='',
+            id_distinguish='', id_sort=False,
+            set_names=('train', 'test'), split_ratio=(0.8, 1)
+    ):
+        """generate new set for training or testing
+
+        Args:
+            label_files(None or tuple): special paths of label file or travel file in Generator.label_dir
+            save_dir: special dir or use {Generator.data_dir}/labels/{task}
+            set_task:
+            id_distinguish:
+                the image file name where having same id must not be split to different sets.
+                e.g. id_distinguish = '_', the fmt of image file name would like '{id}_{sub_id}.png'
+            id_sort: if id_distinguish is set, True for sorting by sub_ids and sub_ids must be int type
+            set_names: save txt name
+            split_ratio:
+                split ratio for each set, the shape must apply for set_names
+                if id_distinguish is set, the ration is num of ids not files
+
+        Data structure:
+            .
+            └── labels
+                └── [set_task]
+                      ├── train.txt  # per image file path per line
+                      ├── test.txt   # would like to be empty or same to val.txt
+                      └── val.txt
+
+        Usage:
+            .. code-block:: python
+
+                from cv_data_parse.PaddleOcr import Generator
+
+                # simple
+                gen = Generator(data_dir='data/ppocr_icdar2015', label_dir='data/ppocr_icdar2015/labels/0')
+                gen.gen_sets(set_task='1')
+
+                # special path
+                gen = Generator()
+                gen.gen_sets(
+                    label_files=('data/ocr0/labels/train.txt', 'data/ocr1/labels/train.txt'),
+                    save_dir='data/ocr2/labels/1'
+                )
+
+        """
+        save_dir = save_dir or f'{self.data_dir}/labels/{set_task}'
+        os_lib.mk_dir(save_dir)
+
+        if not label_files:
+            label_files = [i for i in Path(self.label_dir).glob(f'*.{self.label_suffix}')]
+
+        data = []
+        idx = []
+        for label_file in label_files:
+            with open(label_file, 'r', encoding='utf8') as f:
+                for line in f.read().strip().split('\n'):
+                    data.append(line)
+                    if id_distinguish:
+                        i, _ = line.split('\t', 1)
+                        idx.append(i)
+
+        self._gen_sets(data, idx, id_distinguish, id_sort, save_dir, set_names, split_ratio)

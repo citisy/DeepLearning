@@ -4,7 +4,6 @@ import shutil
 import numpy as np
 from pathlib import Path
 from tqdm import tqdm
-from collections import defaultdict
 from utils import os_lib, converter
 from cv_data_parse.base import DataRegister, DataLoader, DataSaver, DataGenerator
 
@@ -96,7 +95,7 @@ class Loader(DataLoader):
                 yield dict(
                     _id=Path(line).name,
                     image=image,
-                    bboxes=bboxes,   # (-1, 4)
+                    bboxes=bboxes,  # (-1, 4)
                     classes=classes,
                 )
 
@@ -235,16 +234,18 @@ class Saver(DataSaver):
 
 class Generator(DataGenerator):
     image_suffix = 'png'
+    label_suffix = 'txt'
 
-    def gen_sets(self, image_dirs=(), save_dir='', task='',
+    def gen_sets(self, label_dirs=(), image_dirs=(), save_dir='', set_task='',
                  id_distinguish='', id_sort=False,
                  set_names=('train', 'test'), split_ratio=(0.8, 1)):
         """
 
         Args:
-            image_dirs: special dir or use Generator.image_dir
+            label_dirs: special dir or if image_dirs is set, use image_dirs, else use Generator.label_dir
+            image_dirs: special dir or use Generator.image_dir, if label_dirs is set, ignore this param
             save_dir: special dir or use {Generator.data_dir}/image_sets/{task}
-            task:
+            set_task:
             id_distinguish:
                 the image file name where having same id must not be split to different sets.
                 e.g. id_distinguish = '_', the fmt of image file name would like '{id}_{sub_id}.png'
@@ -254,50 +255,60 @@ class Generator(DataGenerator):
                 split ratio for each set, the shape must apply for set_names
                 if id_distinguish is set, the ration is num of ids not files
 
+        Data structure:
+            .
+            └── image_sets
+                └── [set_task]
+                      ├── train.txt  # per image file path per line
+                      ├── test.txt   # would like to be empty or same to val.txt
+                      └── val.txt
+
+        Usage:
+            .. code-block:: python
+
+                from cv_data_parse.PaddleOcr import Generator
+
+                # single data dir
+                gen = Generator(
+                    data_dir='data/yolov5',
+                    label_dir='data/yolov5/labels/1',
+                )
+                gen.gen_sets(set_task='1')
+
+                # multi data dir
+                gen = Generator()
+                gen.gen_sets(
+                    label_files=('data/yolov5_0/labels', 'data/yolov5_1/labels'),
+                    save_dir='data/yolov5_0_1/image_sets'
+                )
         """
+        save_dir = save_dir or f'{self.data_dir}/image_sets/{set_task}'
+        os_lib.mk_dir(save_dir)
+
+        if not label_dirs and not image_dirs and self.label_dir:
+            label_dirs = [self.label_dir]
+
         image_dirs = image_dirs or [self.image_dir]
 
-        img_list = []
-        for image_dir in image_dirs:
-            img_list += [i for i in Path(image_dir).glob(f'*.{self.image_suffix}')]
+        data = []
+        idx = []
 
-        if id_distinguish:
-            tmp = defaultdict(list)
-            for img in img_list:
-                fn = img.stem
-                a, b = fn.split('_', 1)
-                tmp[a].append([img, b])
+        if label_dirs:
+            for label_dir in label_dirs:
+                data += list(Path(label_dir).glob(f'*.{self.label_suffix}'))
 
-            if id_sort:
-                for k, v in tmp:
-                    # convert str to int
-                    for vv in v:
-                        vv[1] = int(vv[1])
+                if id_distinguish:
+                    idx = [i.stem for i in data]
 
-                    tmp[k] = sorted(v, key=lambda x: x[1])
-
-            ids = list(tmp.keys())
-            np.random.shuffle(ids)
-
-            i = 0
-            for j, set_name in zip(split_ratio, set_names):
-                i, j = int(i * len(ids)), int(j * len(ids))
-                img_list = []
-                for k in ids[i:j]:
-                    img_list += [vv[0] for vv in tmp[k]]
-
-                with open(f'{save_dir}/{set_name}.txt', 'w', encoding='utf8') as f:
-                    for img in img_list[i:j]:
-                        f.write(os.path.abspath(img) + '\n')
+                data = [os.path.abspath(str(i).replace(self.label_suffix, self.image_suffix)) for i in data]
 
         else:
-            np.random.shuffle(img_list)
+            for image_dir in image_dirs:
+                data += list(Path(image_dir).glob(f'*.{self.image_suffix}'))
 
-            save_dir = save_dir or f'{self.data_dir}/image_sets/{task}'
+                if id_distinguish:
+                    idx = [i.stem for i in data]
 
-            i = 0
-            for j, set_name in zip(split_ratio, set_names):
-                i, j = int(i * len(img_list)), int(j * len(img_list))
-                with open(f'{save_dir}/{set_name}.txt', 'w', encoding='utf8') as f:
-                    for img in img_list[i:j]:
-                        f.write(os.path.abspath(img) + '\n')
+                data = [os.path.abspath(i) for i in data]
+
+        self._gen_sets(data, idx, id_distinguish, id_sort, save_dir, set_names, split_ratio)
