@@ -23,7 +23,7 @@ class Cifar10Loader(DataLoader):
             from cv_data_parse.Cifar import DataRegister, Cifar10Loader as Loader
 
             loader = Loader('data/cifar-10-batches-py')
-            data = loader(data_type=DataRegister.ALL, generator=True, image_type=DataRegister.IMAGE)
+            data = loader(set_type=DataRegister.ALL, generator=True, image_type=DataRegister.IMAGE)
             r = next(data[0])
 
             # visual
@@ -34,10 +34,20 @@ class Cifar10Loader(DataLoader):
     image_suffix = 'png'
     classes = ["airplane", "automobile", "bird", "cat", "deer", "dog", "frog", "horse", "ship", "truck"]
 
-    def _call(self, load_type, image_type, **kwargs):
+    def _call(self, set_type, image_type, **kwargs):
+        """See Also `cv_data_parse.base.DataLoader._call`
+
+        Returns:
+            a dict had keys of
+                _id: image file name
+                image: see also image_type
+                size: image shape
+                _class: index of `self.classes`
+        """
+
         assert image_type == DataRegister.IMAGE, f"Only support image_type = DataRegister.IMAGE"
 
-        if load_type == DataRegister.TRAIN:
+        if set_type == DataRegister.TRAIN:
             data_dict = dict()
             for i in range(1, 6):
                 with open(f'{self.data_dir}/data_batch_{i}', 'rb') as fo:
@@ -53,7 +63,7 @@ class Cifar10Loader(DataLoader):
                     else:
                         data_dict = pickle.load(fo, encoding='bytes')
 
-        elif load_type == DataRegister.TEST:
+        elif set_type == DataRegister.TEST:
             with open(f'{self.data_dir}/test_batch', 'rb') as fo:
                 data_dict = pickle.load(fo, encoding='bytes')
 

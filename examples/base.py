@@ -209,7 +209,7 @@ class Process:
         loader = Loader(f'data/ImageNet2012')
         convert_class = {7: 0, 40: 1}
 
-        data = loader(data_type=DataRegister.TRAIN, image_type=DataRegister.IMAGE, generator=False,
+        data = loader(set_type=DataRegister.TRAIN, image_type=DataRegister.IMAGE, generator=False,
                       wnid=[
                           'n02124075',  # Egyptian cat,
                           'n02110341'  # dalmatian, coach dog, carriage dog
@@ -226,7 +226,7 @@ class Process:
         from cv_data_parse.ImageNet import Loader
         loader = Loader(f'data/ImageNet2012')
         convert_class = {7: 0, 40: 1}
-        cache_data = loader(data_type=DataRegister.VAL, image_type=DataRegister.PATH, generator=False)[0]
+        cache_data = loader(set_type=DataRegister.VAL, image_type=DataRegister.PATH, generator=False)[0]
         data = []
 
         for tmp in cache_data:

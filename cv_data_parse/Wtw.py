@@ -24,7 +24,7 @@ class Loader(DataLoader):
             from cv_data_parse.Wtw import DataRegister, Loader
 
             loader = Loader('data/WTW')
-            data = loader(data_type=DataRegister.ALL, generator=True, image_type=DataRegister.IMAGE)
+            data = loader(set_type=DataRegister.ALL, generator=True, image_type=DataRegister.IMAGE)
             r = next(data[0])
 
             # visual
@@ -40,8 +40,18 @@ class Loader(DataLoader):
 
     """
 
-    def _call(self, load_type, image_type, **kwargs):
-        root_dir = f'{self.data_dir}/{load_type.value}'
+    def _call(self, set_type, image_type, **kwargs):
+        """See Also `cv_data_parse.base.DataLoader._call`
+
+        Returns:
+            a dict had keys of
+                _id: image file name
+                image: see also image_type
+                size: image shape
+                segmentation: a list with shape of (-1, 4)
+        """
+
+        root_dir = f'{self.data_dir}/{set_type.value}'
         for xml_file in Path(f'{root_dir}/xml').glob('*.xml'):
             tree = ET.parse(xml_file)
             root = tree.getroot()

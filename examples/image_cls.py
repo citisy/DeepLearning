@@ -44,14 +44,14 @@ class LeNet_mnist(Process):
 
         loader = Loader('data/mnist')
 
-        return loader(data_type=DataRegister.TRAIN, image_type=DataRegister.IMAGE, generator=False)[0]
+        return loader(set_type=DataRegister.TRAIN, image_type=DataRegister.IMAGE, generator=False)[0]
 
     def get_val_data(self):
         from cv_data_parse.Mnist import Loader
 
         loader = Loader('data/mnist')
 
-        return loader(data_type=DataRegister.TEST, image_type=DataRegister.IMAGE, generator=False)[0]
+        return loader(set_type=DataRegister.TEST, image_type=DataRegister.IMAGE, generator=False)[0]
 
     def data_augment(self, x):
         return x
@@ -93,14 +93,14 @@ class LeNet_cifar(Process):
 
         loader = Loader('data/cifar-10-batches-py')
 
-        return loader(data_type=DataRegister.TRAIN, image_type=DataRegister.IMAGE, generator=False)
+        return loader(set_type=DataRegister.TRAIN, image_type=DataRegister.IMAGE, generator=False)
 
     def get_val_data(self):
         from cv_data_parse.Cifar import Loader
 
         loader = Loader('data/cifar-10-batches-py')
 
-        return loader(data_type=DataRegister.TEST, image_type=DataRegister.IMAGE, generator=False)
+        return loader(set_type=DataRegister.TEST, image_type=DataRegister.IMAGE, generator=False)
 
 
 class AlexNet_ImageNet(Process):
@@ -432,14 +432,14 @@ class IGC_cifar(Process):
 
         loader = Loader('data/cifar-10-batches-py')
 
-        return loader(data_type=DataRegister.TRAIN, image_type=DataRegister.IMAGE, generator=False)[0]
+        return loader(set_type=DataRegister.TRAIN, image_type=DataRegister.IMAGE, generator=False)[0]
 
     def get_val_data(self):
         from cv_data_parse.Cifar import Loader
 
         loader = Loader('data/cifar-10-batches-py')
 
-        return loader(data_type=DataRegister.TEST, image_type=DataRegister.IMAGE, generator=False)[0]
+        return loader(set_type=DataRegister.TEST, image_type=DataRegister.IMAGE, generator=False)[0]
 
 
 class CondenseNet_ImageNet(Process):

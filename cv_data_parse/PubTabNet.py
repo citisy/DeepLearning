@@ -22,7 +22,7 @@ class Loader(DataLoader):
             from cv_data_parse.Icdar import DataRegister, Loader
 
             loader = Loader('data/pubtabnet')
-            data = loader(data_type=DataRegister.ALL, generator=True, image_type=DataRegister.IMAGE)
+            data = loader(set_type=DataRegister.ALL, generator=True, image_type=DataRegister.IMAGE)
             r = next(data[0])
 
             # visual
@@ -33,14 +33,24 @@ class Loader(DataLoader):
             image = ImageVisualize.box(image, segmentation)
 
     """
-    default_load_type = [DataRegister.TRAIN, DataRegister.TEST, DataRegister.VAL]
+    default_set_type = [DataRegister.TRAIN, DataRegister.TEST, DataRegister.VAL]
 
-    def _call(self, load_type, image_type, **kwargs):
-        with jsonlines.open(f'{self.data_dir}/PubTabNet_2.0.0.{load_type.value}.jsonl', 'r') as reader:
+    def _call(self, set_type, image_type, **kwargs):
+        """See Also `cv_data_parse.base.DataLoader._call`
+
+        Returns:
+            a dict had keys of
+                _id: image file name
+                image: see also image_type
+                segmentation: a list with shape of (-1, -1, 2)
+                transcription: List[str]
+        """
+
+        with jsonlines.open(f'{self.data_dir}/PubTabNet_2.0.0.{set_type.value}.jsonl', 'r') as reader:
             # {filename, split, imgid, html}
             for line in reader:
 
-                image_path = os.path.abspath(f'{self.data_dir}/{load_type.value}/{line["filename"]}')
+                image_path = os.path.abspath(f'{self.data_dir}/{set_type.value}/{line["filename"]}')
                 if image_type == DataRegister.PATH:
                     image = image_path
                 elif image_type == DataRegister.IMAGE:
@@ -49,13 +59,13 @@ class Loader(DataLoader):
                     raise ValueError(f'Unknown input {image_type = }')
 
                 segmentation = [cell['bbox'] for cell in line['html']['cells'] if 'bbox' in cell]
-                text = [cell['tokens'] for cell in line['html']['cells'] if 'bbox' in cell]
+                transcription = [cell['tokens'] for cell in line['html']['cells'] if 'bbox' in cell]
 
                 yield dict(
                     _id=line['filename'],
                     image=image,
                     segmentation=segmentation,
-                    text=text
+                    transcription=transcription
                 )
 
     def split_json(self):

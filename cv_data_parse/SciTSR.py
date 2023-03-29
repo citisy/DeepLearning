@@ -31,7 +31,7 @@ class Loader(DataLoader):
             from cv_data_parse.SciTSR import DataRegister, Loader
 
             loader = Loader('data/SciTSR')
-            data = loader(data_type=DataRegister.ALL, generator=True, image_type=DataRegister.IMAGE)
+            data = loader(set_type=DataRegister.ALL, generator=True, image_type=DataRegister.IMAGE)
             r = next(data[0])
 
             # visual
@@ -45,8 +45,18 @@ class Loader(DataLoader):
 
     image_suffix = 'png'
 
-    def _call(self, load_type, image_type, **kwargs):
-        root_dir = f'{self.data_dir}/{load_type.value}'
+    def _call(self, set_type, image_type, **kwargs):
+        """See Also `cv_data_parse.base.DataLoader._call`
+
+        Returns:
+            a dict had keys of
+                _id: image file name
+                image: see also image_type
+                segmentation: a list with shape of (-1, -1, 2)
+
+        """
+
+        root_dir = f'{self.data_dir}/{set_type.value}'
         for fp in Path(f'{root_dir}/chunk').glob('*.chunk'):
             with open(fp, 'r', encoding='utf8') as f:
                 js = json.load(f)

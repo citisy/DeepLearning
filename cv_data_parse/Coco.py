@@ -31,7 +31,7 @@ class Loader(DataLoader):
             from cv_data_parse.Coco import DataRegister, Loader
 
             loader = Loader('data/coco2017')
-            data = loader(data_type=DataRegister.ALL, generator=True, image_type=DataRegister.IMAGE)
+            data = loader(set_type=DataRegister.ALL, generator=True, image_type=DataRegister.IMAGE)
             r = next(data[0])
 
             # visual
@@ -44,11 +44,27 @@ class Loader(DataLoader):
             image = ImageVisualize.label_box(image, bboxes, classes, line_thickness=2)
 
     """
-    default_load_type = [DataRegister.TRAIN, DataRegister.VAL]
+    default_set_type = [DataRegister.TRAIN, DataRegister.VAL]
     classes = None
 
-    def _call(self, load_type, image_type, task='instances', **kwargs):
-        fn = f'{self.data_dir}/annotations/{task}_{load_type.value}2017.json'
+    def _call(self, set_type, image_type, task='instances', **kwargs):
+        """See Also `cv_data_parse.base.DataLoader._call`
+
+        Args:
+            set_type:
+            image_type:
+            task(str): task from annotations dir
+
+        Returns:
+            a dict had keys of
+                _id: image file name
+                image: see also image_type
+                size: image shape
+                bboxes: a np.ndarray with shape of (-1, 4), 4 means [top_left_x, top_left_y, w, h]
+                classes: a list
+        """
+
+        fn = f'{self.data_dir}/annotations/{task}_{set_type.value}2017.json'
 
         with open(fn, 'r', encoding='utf8') as f:
             js = json.load(f)
@@ -61,7 +77,7 @@ class Loader(DataLoader):
             annotations.setdefault(d['image_id'], []).append(d)
 
         for tmp in js['images']:
-            image_path = os.path.abspath(f'{self.data_dir}/{load_type.value}2017/{tmp["file_name"]}')
+            image_path = os.path.abspath(f'{self.data_dir}/{set_type.value}2017/{tmp["file_name"]}')
             if image_type == DataRegister.PATH:
                 image = image_path
             elif image_type == DataRegister.IMAGE:
@@ -78,7 +94,7 @@ class Loader(DataLoader):
             classes = []
             for label in labels:
                 # [x, y, w, h]
-                bboxes.append(converter.top_xywh2top_xyxy(label['bboxes']))
+                bboxes.append(converter.CoordinateConvert.top_xywh2top_xyxy(label['bboxes']))
                 classes.append(int(label['category_id']))
 
             bboxes = np.array(bboxes, dtype=int)

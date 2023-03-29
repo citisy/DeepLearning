@@ -26,7 +26,7 @@ class SigHan2013Loader(DataLoader):
 
     Usage:
         >>> loader = SigHan2013Loader('../data/sighan7csc_release1.0')
-        >>> data = loader(data_type=DataRegister.TRAIN, task='with_error')
+        >>> data = loader(set_type=DataRegister.TRAIN, task='with_error')
         >>> next(data[0])
     """
 
@@ -45,10 +45,10 @@ class SigHan2013Loader(DataLoader):
         '2': 'FinalTest_SubTask2'
     }
 
-    def _call(self, load_type, task=None, test_task=None, **kwargs):
-        if load_type == DataRegister.TRAIN:
+    def _call(self, set_type, task=None, test_task=None, **kwargs):
+        if set_type == DataRegister.TRAIN:
             return self.load_train(task)
-        elif load_type == DataRegister.TEST:
+        elif set_type == DataRegister.TEST:
             return self.load_test(test_task)
 
     def load_train(self, task):
@@ -185,7 +185,7 @@ class SigHan2014Loader(DataLoader):
 
     Usage:
         >>> loader = SigHan2014Loader('../data/clp14csc_release1.1')
-        >>> data = loader(data_type=DataRegister.TRAIN, task='B1')
+        >>> data = loader(set_type=DataRegister.TRAIN, task='B1')
         >>> next(data[0])
     """
 
@@ -201,13 +201,13 @@ class SigHan2014Loader(DataLoader):
 
     test_version = 'CLP14'
 
-    def _call(self, load_type, task=None, **kwargs):
+    def _call(self, set_type, task=None, **kwargs):
         """
         task: 'B1', 'C1' or None
         """
-        if load_type == DataRegister.TRAIN:
+        if set_type == DataRegister.TRAIN:
             return self.load_train(task)
-        elif load_type == DataRegister.TEST:
+        elif set_type == DataRegister.TEST:
             return self.load_test()
 
     def load_train(self, task=None, ):
@@ -307,7 +307,7 @@ class SigHan2015Loader(SigHan2014Loader):
 
     Usage:
         >>> loader = SigHan2015Loader('../data/sighan8csc_release1.0')
-        >>> data = loader(data_type=DataRegister.TRAIN, task='A2')
+        >>> data = loader(set_type=DataRegister.TRAIN, task='A2')
         >>> next(data[0])
     """
 
@@ -327,11 +327,11 @@ class Wang271kLoader(DataLoader):
         └── train.sgml  # 271329 items
     """
 
-    def __call__(self, data_type=DataRegister.MIX, generator=True, **kwargs):
-        assert data_type == DataRegister.MIX, f'data_type only support `Register.MIX`'
-        return super(Wang271kLoader, self).__call__(data_type, generator, **kwargs)
+    def __call__(self, set_type=DataRegister.MIX, generator=True, **kwargs):
+        assert set_type == DataRegister.MIX, f'set_type only support `Register.MIX`'
+        return super(Wang271kLoader, self).__call__(set_type, generator, **kwargs)
 
-    def _call(self, load_type, **kwargs):
+    def _call(self, set_type, **kwargs):
         fn = f'{self.data_dir}/train.sgml'
         with open(fn, 'r', encoding='utf-8', errors='ignore') as f:
             text = f.read()

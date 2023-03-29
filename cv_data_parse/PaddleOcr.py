@@ -8,6 +8,9 @@ from cv_data_parse.base import DataRegister, DataLoader, DataSaver, DataGenerato
 from tqdm import tqdm
 from pathlib import Path
 
+DET = 'det'
+REC = 'rec'
+
 
 class Loader(DataLoader):
     """https://github.com/PaddlePaddle/PaddleOCR
@@ -28,26 +31,58 @@ class Loader(DataLoader):
             from cv_data_parse.PaddleOcr import DataRegister, Loader
 
             loader = Loader('data/ppocr_icdar2015')
-            data = loader(data_type=DataRegister.ALL, generator=True, image_type=DataRegister.IMAGE)
+            data = loader(set_type=DataRegister.ALL, generator=True, image_type=DataRegister.IMAGE)
             r = next(data[0])
 
             # visual
             from utils.visualize import ImageVisualize
 
             image = r['image']
-            segmentation = r['segmentation']
-            transcription = r['transcription']
+            segmentations = r['segmentations']
+            transcriptions = r['transcriptions']
 
             vis_image = np.zeros_like(image) + 255
-            vis_image = ImageVisualize.box(vis_image, segmentation)
-            vis_image = ImageVisualize.text(vis_image, segmentation, transcription)
+            vis_image = ImageVisualize.box(vis_image, segmentations)
+            vis_image = ImageVisualize.text(vis_image, segmentations, transcriptions)
     """
 
-    default_load_type = [DataRegister.TRAIN, DataRegister.TEST]
+    default_set_type = [DataRegister.TRAIN, DataRegister.TEST]
     image_suffix = 'png'
 
-    def _call(self, load_type, image_type, set_task='', **kwargs):
-        with open(f'{self.data_dir}/labels/{set_task}/{load_type.value}.txt', 'r', encoding='utf8') as f:
+    def _call(self, set_type, image_type, set_task='', train_task=DET, **kwargs):
+        """See Also `cv_data_parse.base.DataLoader._call`
+
+        Args:
+            set_type:
+            image_type:
+            set_task(str): one of dir name in `labels` dir
+            train_task(str): 'det' or 'rec'
+
+        Returns:
+            see also `self.load_det` if train_task='det'
+            see also `self.load_rec` if train_task='rec'
+
+        """
+
+        if train_task == DET:
+            return self.load_det(set_type, image_type, set_task=set_task, **kwargs)
+        elif train_task == REC:
+            return self.load_rec(set_type, image_type, set_task=set_task, **kwargs)
+        else:
+            raise ValueError(f'dont support {train_task = }')
+
+    def load_det(self, set_type, image_type, set_task='', **kwargs):
+        """See Also `self._call`
+
+        Returns:
+            a dict had keys of
+                _id: image file name
+                image: see also image_type
+                segmentations: a np.ndarray with shape of (-1, 4, 2)
+                transcriptions: List[str]
+        """
+
+        with open(f'{self.data_dir}/labels/{set_task}/{set_type.value}.txt', 'r', encoding='utf8') as f:
             for line in f.read().strip().split('\n'):
                 image_path, labels = line.split('\t', 1)
 
@@ -60,19 +95,53 @@ class Loader(DataLoader):
                     raise ValueError(f'Unknown input {image_type = }')
 
                 labels = json.loads(labels)
-                segmentation, transcription = [], []
+                segmentations, transcriptions = [], []
                 for label in labels:
-                    segmentation.append(label['points'])  # (-1, 4, 2)
-                    transcription.append(label['transcription'])  # (-1, #str)
+                    segmentations.append(label['points'])  # (-1, 4, 2)
+                    transcriptions.append(label['transcription'])  # (-1, #str)
 
-                segmentation = np.array(segmentation)
+                segmentations = np.array(segmentations)
 
                 yield dict(
                     _id=Path(image_path).name,
                     image=image,
-                    segmentation=segmentation,
-                    transcription=transcription,
+                    segmentations=segmentations,
+                    transcriptions=transcriptions,
                 )
+
+    def load_rec(self, set_type, image_type, set_task='', **kwargs):
+        """See Also `self._call`
+
+        Returns:
+            a dict had keys of
+                _id: image file name
+                image: see also image_type
+                transcription: str
+        """
+
+        with open(f'{self.data_dir}/labels/{set_task}/{set_type.value}.txt', 'r', encoding='utf8') as f:
+            for line in f.read().strip().split('\n'):
+                image_paths, transcription = line.split('\t', 1)
+
+                if '[' in image_path:
+                    image_paths = eval(image_paths)
+                else:
+                    image_paths = [image_paths]
+
+                for image_path in image_paths:
+                    image_path = os.path.abspath(image_path)
+                    if image_type == DataRegister.PATH:
+                        image = image_path
+                    elif image_type == DataRegister.IMAGE:
+                        image = cv2.imread(image_path)
+                    else:
+                        raise ValueError(f'Unknown input {image_type = }')
+
+                    yield dict(
+                        _id=Path(image_path).name,
+                        image=image,
+                        transcription=transcription,
+                    )
 
 
 class Saver(DataSaver):
@@ -97,33 +166,65 @@ class Saver(DataSaver):
             from utils.register import DataRegister
 
             loader = Loader('data/ICDAR2015')
-            data = loader(data_type=DataRegister.TRAIN, image_type=DataRegister.FILE, generator=True)
+            data = loader(set_type=DataRegister.TRAIN, image_type=DataRegister.FILE, generator=True)
 
             # save as PaddleOcr type
             from cv_data_parse.PaddleOcr import Saver
 
             saver = Saver('data/ppocr_icdar2015')
-            saver(data, data_type=DataRegister.TRAIN, image_type=DataRegister.FILE)
+            saver(data, set_type=DataRegister.TRAIN, image_type=DataRegister.FILE)
     """
 
-    def __call__(self, data, data_type=DataRegister.ALL, image_type=DataRegister.PATH, **kwargs):
+    def mkdirs(self, set_types, **kwargs):
         task = kwargs.get('task', '')
         set_task = kwargs.get('set_task', '')
 
         os_lib.mk_dir(f'{self.data_dir}/images/{task}')
         os_lib.mk_dir(f'{self.data_dir}/labels/{set_task}')
 
-        super().__call__(data, data_type, image_type, **kwargs)
+    def _call(self, iter_data, set_type, image_type, train_task=DET, **kwargs):
+        if train_task == DET:
+            return self.save_det(iter_data, set_type, image_type, **kwargs)
+        elif train_task == REC:
+            return self.save_rec(iter_data, set_type, image_type, **kwargs)
+        else:
+            raise ValueError(f'dont support {train_task = }')
 
-    def _call(self, iter_data, load_type, image_type, **kwargs):
+    def save_det(self, iter_data, set_type, image_type, **kwargs):
         task = kwargs.get('task', '')
         set_task = kwargs.get('set_task', '')
 
-        f = open(f'{self.data_dir}/labels/{set_task}/{load_type.value}.txt', 'w', encoding='utf8')
+        f = open(f'{self.data_dir}/labels/{set_task}/{set_type.value}.txt', 'w', encoding='utf8')
 
         for dic in tqdm(iter_data):
             image = dic['image']
-            segmentation = np.array(dic['segmentation']).tolist()
+            segmentations = np.array(dic['segmentations']).tolist()
+            transcriptions = dic['transcriptions']
+            _id = dic['_id']
+
+            image_path = os.path.abspath(f'{self.data_dir}/images/{task}/{_id}')
+
+            if image_type == DataRegister.PATH:
+                shutil.copy(image, image_path)
+            elif image_type == DataRegister.IMAGE:
+                cv2.imwrite(image_path, image)
+            else:
+                raise ValueError(f'Unknown input {image_type = }')
+
+            labels = [{'transcription': t, 'points': s} for t, s in zip(transcriptions, segmentations)]
+
+            f.write(f'{image_path}\t{json.dumps(labels, ensure_ascii=False)}\n')
+
+        f.close()
+
+    def save_rec(self, iter_data, set_type, image_type, **kwargs):
+        task = kwargs.get('task', '')
+        set_task = kwargs.get('set_task', '')
+
+        f = open(f'{self.data_dir}/labels/{set_task}/{set_type.value}.txt', 'w', encoding='utf8')
+
+        for dic in tqdm(iter_data):
+            image = dic['image']
             transcription = dic['transcription']
             _id = dic['_id']
 
@@ -136,9 +237,7 @@ class Saver(DataSaver):
             else:
                 raise ValueError(f'Unknown input {image_type = }')
 
-            labels = [{'transcription': t, 'points': s} for s, t in zip(segmentation, transcription)]
-
-            f.write(f'{image_path}\t{json.dumps(labels, ensure_ascii=False)}\n')
+            f.write(f'{image_path}\t{transcription}\n')
 
         f.close()
 

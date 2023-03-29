@@ -24,25 +24,38 @@ class Loader(DataLoader):
             from cv_data_parse.pdf import DataRegister, Loader
 
             loader = Loader('data/pdf')
-            data = loader(data_type=DataRegister.ALL, generator=True, image_type=DataRegister.IMAGE)
+            data = loader(set_type=DataRegister.ALL, generator=True, image_type=DataRegister.IMAGE)
             r = next(data[0])
 
             # visual
             from utils.visualize import ImageVisualize
 
             image = r['image']
-            segmentation = r['segmentation']
-            transcription = r['transcription']
+            segmentations = r['segmentations']
+            transcriptions = r['transcriptions']
 
             vis_image = np.zeros_like(image) + 255
-            vis_image = ImageVisualize.box(vis_image, segmentation)
-            vis_image = ImageVisualize.text(vis_image, segmentation, transcription)
+            vis_image = ImageVisualize.box(vis_image, segmentations)
+            vis_image = ImageVisualize.text(vis_image, segmentations, transcriptions)
     """
-    default_load_type = [DataRegister.place_holder]
+    default_set_type = [DataRegister.place_holder]
     image_suffix = 'png'
     pdf_suffix = 'pdf'
 
     def _call(self, *args, task='', **kwargs):
+        """See Also `cv_data_parse.base.DataLoader._call`
+
+        Args:
+            task(str): one of dir name in `pdfs` dir
+
+        Returns:
+            a dict had keys of
+                _id: image file name
+                image: see also image_type
+                segmentations: a np.ndarray with shape of (-1, 4, 2)
+                segmentations_: List[np.ndarray] of chars
+                transcriptions: List[str]
+        """
         for fp in Path(f'{self.data_dir}/pdfs/{task}').glob(f'*.{self.pdf_suffix}'):
             images = os_lib.PdfOS.pdf2images2(str(fp))
             doc = fitz.open(str(fp))
@@ -61,9 +74,9 @@ class Loader(DataLoader):
             scale_ratio: float = 1.33333333,
             shrink: bool = True,
     ):
-        transcription = []
-        segmentation_ = []
-        segmentation = []
+        transcriptions = []
+        segmentations_ = []
+        segmentations = []
 
         if isinstance(source, fitz.fitz.Page):
             content = source.get_text('rawdict')  # content(dict): 'width', 'height', 'blocks'
@@ -102,23 +115,23 @@ class Loader(DataLoader):
                             char_box.append((x0, y0, x1, y1))
 
                 if text:
-                    transcription.append(text)
-                    segmentation_.append(char_box)
-                    segmentation.append(list(line['bbox']))
+                    transcriptions.append(text)
+                    segmentations_.append(char_box)
+                    segmentations.append(list(line['bbox']))
 
-        segmentation_ = [np.array(i) * scale_ratio for i in segmentation_]
-        segmentation = np.array(segmentation) * scale_ratio
-        segmentation = converter.CoordinateConvert.rect2box(segmentation)
-        segmentation = segmentation.astype(int)
-        transcription = [''.join(i) for i in transcription]
+        segmentations_ = [np.array(i) * scale_ratio for i in segmentations_]
+        segmentations = np.array(segmentations) * scale_ratio
+        segmentations = converter.CoordinateConvert.rect2box(segmentations)
+        segmentations = segmentations.astype(int)
+        transcriptions = [''.join(i) for i in transcriptions]
 
-        if segmentation.size == 0:
-            segmentation = np.zeros((0, 4))
+        if segmentations.size == 0:
+            segmentations = np.zeros((0, 4))
 
         return dict(
-            transcription=transcription,
-            segmentation=segmentation,
-            segmentation_=segmentation_
+            transcriptions=transcriptions,
+            segmentations=segmentations,
+            segmentations_=segmentations_
         )
 
     @staticmethod

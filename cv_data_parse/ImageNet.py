@@ -33,14 +33,14 @@ class ImageNet2012Loader(DataLoader):
             from cv_data_parse.ImageNet import DataRegister, ImageNet2012Loader as Loader
 
             loader = Loader('data/ImageNet2012')
-            data = loader(data_type=DataRegister.ALL, generator=True, image_type=DataRegister.IMAGE)
+            data = loader(set_type=DataRegister.ALL, generator=True, image_type=DataRegister.IMAGE)
             r = next(data[0])
 
             # visual
             image = r['image']
             _class = r['_class']
     """
-    default_load_type = [DataRegister.TRAIN, DataRegister.VAL]
+    default_set_type = [DataRegister.TRAIN, DataRegister.VAL]
     image_suffix = 'JPEG'
 
     def __init__(self, data_dir):
@@ -54,8 +54,22 @@ class ImageNet2012Loader(DataLoader):
             self.wnid.append(i[0][1][0])
             self.classes.append(i[0][2][0])
 
-    def _call(self, load_type, image_type, wnid=None, **kwargs):
-        if load_type == DataRegister.TRAIN:
+    def _call(self, set_type, image_type, wnid=None, **kwargs):
+        """See Also `cv_data_parse.base.DataLoader._call`
+
+        Args:
+            set_type:
+            image_type:
+            wnid(str):
+                special wnid from `meta.mat` would be loaded, only used for set_type=DataRegister.TRAIN
+
+        Returns:
+            a dict had keys of
+                _id: image file name
+                image: see also image_type
+                _class: index of `self.classes`
+        """
+        if set_type == DataRegister.TRAIN:
             return self.load_train(image_type, wnid)
         else:
             return self.load_val(image_type)

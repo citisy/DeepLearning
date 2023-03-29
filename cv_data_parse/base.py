@@ -21,7 +21,7 @@ class DataRegister(Enum):
 
 
 class DataLoader:
-    default_load_type = [DataRegister.TRAIN, DataRegister.TEST]
+    default_set_type = [DataRegister.TRAIN, DataRegister.TEST]
     default_data_type = DataRegister.ALL
     default_image_type = DataRegister.PATH
     image_suffix = 'jpg'
@@ -30,42 +30,66 @@ class DataLoader:
     def __init__(self, data_dir):
         self.data_dir = data_dir
 
-    def __call__(self, data_type=None, image_type=None, generator=True, **kwargs):
+    def __call__(self, set_type=None, image_type=None, generator=True, **kwargs):
         """
         Args:
-            data_type: Register.ALL, Register.TRAIN, Register.TEST or list of them
-            image_type: Register.FILE or Register.IMAGE
-            generator: would be returned that `True` for a generator or `False` for a list
+            set_type(list or DataRegister): a DataRegister type or a list of them
+                Mix -> [DataRegister.place_holder]
+                ALL -> DataLoader.default_set_type
+                other set_type -> [set_type]
+            image_type(DataRegister): `DataRegister.PATH` or `DataRegister.IMAGE`
+                PATH -> a str of image abs path
+                IMAGE -> a np.ndarray of image, read from cv2, as (h, w, c)
+            generator(bool):
+                return a generator if True else a list
+
+        Returns:
+            a list apply for set_type
+            e.g.
+                set_type=DataRegister.TRAIN, return a list of [DataRegister.TRAIN]
+                set_type=[DataRegister.TRAIN, DataRegister.TEST], return a list of them
         """
-        data_type = data_type or self.default_data_type
+        set_type = set_type or self.default_data_type
         image_type = image_type or self.default_image_type
 
-        if data_type == DataRegister.MIX:
-            load_types = [DataRegister.place_holder]
-        elif data_type == DataRegister.ALL:
-            load_types = self.default_load_type
-        elif isinstance(data_type, list):
-            load_types = [_ for _ in data_type]
-        elif isinstance(data_type, DataRegister):
-            load_types = [data_type]
+        if set_type == DataRegister.MIX:
+            set_types = [DataRegister.place_holder]
+        elif set_type == DataRegister.ALL:
+            set_types = self.default_set_type
+        elif isinstance(set_type, list):
+            set_types = set_type
+        elif isinstance(set_type, DataRegister):
+            set_types = [set_type]
         else:
-            raise ValueError(f'Unknown input {data_type = }')
+            raise ValueError(f'Unknown input {set_type = }')
 
         r = []
-        for load_type in load_types:
+        for set_type in set_types:
             tmp = []
             if generator:
-                r.append(self._call(load_type, image_type, **kwargs))
+                r.append(self._call(set_type, image_type, **kwargs))
 
             else:
-                for _ in tqdm(self._call(load_type, image_type, **kwargs)):
+                for _ in tqdm(self._call(set_type, image_type, **kwargs)):
                     tmp.append(_)
 
                 r.append(tmp)
 
         return r
 
-    def _call(self, load_type, image_type, **kwargs):
+    def _call(self, set_type, image_type, **kwargs):
+        """
+
+        Args:
+            set_type(DataRegister): a DataRegister type
+            image_type(DataRegister): `DataRegister.PATH` or `DataRegister.IMAGE`
+                PATH -> a str of image abs path
+                IMAGE -> a np.ndarray of image, read from cv2, as (h, w, c)
+
+        Returns:
+            yield a dict of loaded data
+
+        """
         raise NotImplementedError
 
     def load_cache(self, save_name):
@@ -78,26 +102,45 @@ class DataLoader:
 class DataSaver:
     def __init__(self, data_dir):
         self.data_dir = data_dir
-        self.default_load_type = [DataRegister.TRAIN, DataRegister.TEST]
+        self.default_set_type = [DataRegister.TRAIN, DataRegister.TEST]
 
         os_lib.mk_dir(self.data_dir)
 
-    def __call__(self, data, data_type=DataRegister.ALL, image_type=DataRegister.PATH, **kwargs):
-        if data_type == DataRegister.MIX:
-            load_types = [DataRegister.place_holder]
-        elif data_type == DataRegister.ALL:
-            load_types = self.default_load_type
-        elif isinstance(data_type, list):
-            load_types = [_ for _ in data_type]
-        elif isinstance(data_type, DataRegister):
-            load_types = [data_type]
+    def __call__(self, data, set_type=DataRegister.ALL, image_type=DataRegister.PATH, **kwargs):
+        """
+
+        Args:
+            data(list): a list apply for set_type
+                See Also return of `DataLoader.__call__`
+            set_type(list or DataRegister): a DataRegister type or a list of them
+                Mix -> [DataRegister.place_holder]
+                ALL -> DataLoader.default_set_type
+                other set_type -> [set_type]
+            image_type(DataRegister): `DataRegister.PATH` or `DataRegister.IMAGE`
+                PATH -> a str of image abs path
+                IMAGE -> a np.ndarray of image, read from cv2, as (h, w, c)
+
+        """
+        if set_type == DataRegister.MIX:
+            set_types = [DataRegister.place_holder]
+        elif set_type == DataRegister.ALL:
+            set_types = self.default_set_type
+        elif isinstance(set_type, list):
+            set_types = set_type
+        elif isinstance(set_type, DataRegister):
+            set_types = [set_type]
         else:
-            raise ValueError(f'Unknown input {data_type = }')
+            raise ValueError(f'Unknown input {set_type = }')
+
+        self.mkdirs(set_types, **kwargs)
 
         for i, iter_data in enumerate(data):
-            self._call(iter_data, load_types[i], image_type, **kwargs)
+            self._call(iter_data, set_types[i], image_type, **kwargs)
 
-    def _call(self, iter_data, load_type, image_type, **kwargs):
+    def mkdirs(self, set_types, **kwargs):
+        pass
+
+    def _call(self, iter_data, set_type, image_type, **kwargs):
         raise ValueError
 
     def save_cache(self, data, save_name):

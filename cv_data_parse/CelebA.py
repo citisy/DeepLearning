@@ -31,7 +31,7 @@ class CelebALoader(DataLoader):
             from cv_data_parse.CelebA import DataRegister, CelebALoader as Loader
 
             loader = Loader('data/CelebA')
-            data = loader(data_type=DataRegister.ALL, generator=True, image_type=DataRegister.IMAGE)
+            data = loader(set_type=DataRegister.ALL, generator=True, image_type=DataRegister.IMAGE)
             r = next(data[0])
 
             # visual
@@ -50,14 +50,24 @@ class CelebALoader(DataLoader):
     attr_classes = None
     landmarks_classes = None
 
-    def _call(self, load_type, image_type, img_task='original', **kwargs):
-        """
+    def _call(self, set_type, image_type, img_task='original', **kwargs):
+        """See Also `cv_data_parse.base.DataLoader._call`
 
         Args:
-            load_type: no useful, you can set to None
-            image_type: DataRegister.FILE or DataRegister.IMAGE
-            img_task: which image dir to load, see also `CelebALoader.img_task_dict`
+            set_type:
+            image_type:
+            img_task(str): which image dir to load
+                see also `CelebALoader.img_task_dict`
 
+        Returns:
+            a dict had keys of
+                _id: image file name
+                image: see also image_type
+                _type
+                bbox
+                attr
+                identity
+                landmarks
         """
         with open(f'{self.data_dir}/Eval/list_eval_partition.txt') as f:
             lines = f.read().strip().split('\n')

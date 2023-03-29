@@ -30,7 +30,7 @@ class Loader(DataLoader):
             from cv_data_parse.YoloV5 import DataRegister, Loader
 
             loader = Loader('data/Yolov5Data')
-            data = loader(data_type=DataRegister.ALL, generator=True, image_type=DataRegister.IMAGE)
+            data = loader(set_type=DataRegister.ALL, generator=True, image_type=DataRegister.IMAGE)
             r = next(data[0])
 
             # visual
@@ -46,11 +46,27 @@ class Loader(DataLoader):
 
     image_suffix = 'png'
 
-    def _call(self, load_type, image_type, task='', set_task='', **kwargs):
-        if load_type == DataRegister.place_holder:
+    def _call(self, set_type, image_type, task='', set_task='', **kwargs):
+        """See Also `cv_data_parse.base.DataLoader._call`
+
+        Args:
+            set_type:
+            image_type:
+            task(str): one of dir name in `images` dir
+            set_task(str): one of dir name in `image_sets` dir
+
+        Returns:
+            a dict had keys of
+                _id: image file name
+                image: see also image_type
+                bboxes: a np.ndarray with shape of (-1, 4), 4 means [top_left_x, top_left_y, w, h]
+                classes: a list
+        """
+
+        if set_type == DataRegister.place_holder:
             return self.load_total(image_type, task, **kwargs)
         else:
-            return self.load_set(load_type, image_type, set_task, **kwargs)
+            return self.load_set(set_type, image_type, set_task, **kwargs)
 
     def load_total(self, image_type, task, **kwargs):
         for img_fp in Path(f'{self.data_dir}/images/{task}').glob(f'*.{self.image_suffix}'):
@@ -75,8 +91,8 @@ class Loader(DataLoader):
                 classes=classes,
             )
 
-    def load_set(self, load_type, image_type, set_task, **kwargs):
-        with open(f'{self.data_dir}/image_sets/{set_task}/{load_type.value}.txt', 'r', encoding='utf8') as f:
+    def load_set(self, set_type, image_type, set_task, **kwargs):
+        with open(f'{self.data_dir}/image_sets/{set_task}/{set_type.value}.txt', 'r', encoding='utf8') as f:
             for line in f.read().split('\n'):
                 image_path = os.path.abspath(line)
                 if image_type == DataRegister.PATH:
@@ -138,16 +154,16 @@ class Saver(DataSaver):
             from cv_data_parse.Voc import Loader
             from utils.register import DataRegister
             loader = Loader('data/VOC2012')
-            data = loader(data_type=DataRegister.TRAIN)
+            data = loader(set_type=DataRegister.TRAIN)
 
             # save as yolov5 type
             from cv_data_parse.YoloV5 import Saver
             saver = Saver('data/Yolov5')
-            saver(data, data_type=DataRegister.TRAIN)
+            saver(data, set_type=DataRegister.TRAIN)
 
     """
 
-    def __call__(self, data, data_type=DataRegister.ALL, image_type=DataRegister.PATH, **kwargs):
+    def __call__(self, data, set_type=DataRegister.ALL, image_type=DataRegister.PATH, **kwargs):
         task = kwargs.get('task', '')
         set_task = kwargs.get('set_task', '')
 
@@ -155,16 +171,16 @@ class Saver(DataSaver):
         os_lib.mk_dir(f'{self.data_dir}/images/{task}')
         os_lib.mk_dir(f'{self.data_dir}/labels/{task}')
 
-        super().__call__(data, data_type, image_type, **kwargs)
+        super().__call__(data, set_type, image_type, **kwargs)
 
-    def _call(self, iter_data, load_type, image_type, **kwargs):
+    def _call(self, iter_data, set_type, image_type, **kwargs):
         task = kwargs.get('task', '')
         set_task = kwargs.get('set_task', '')
 
-        if load_type == DataRegister.place_holder:
+        if set_type == DataRegister.place_holder:
             f = os_lib.EmptyOs()
         else:
-            f = open(f'{self.data_dir}/image_sets/{set_task}/{load_type.value}.txt', 'w', encoding='utf8')
+            f = open(f'{self.data_dir}/image_sets/{set_task}/{set_type.value}.txt', 'w', encoding='utf8')
 
         for dic in tqdm(iter_data):
             image = dic['image']

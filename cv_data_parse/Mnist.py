@@ -21,7 +21,7 @@ class Loader(DataLoader):
             from cv_data_parse.Mnist import DataRegister, Loader
 
             loader = Loader('data/mnist')
-            data = loader(data_type=DataRegister.ALL, generator=True, image_type=DataRegister.IMAGE)
+            data = loader(set_type=DataRegister.ALL, generator=True, image_type=DataRegister.IMAGE)
             r = next(data[0])
 
             # visual
@@ -32,17 +32,31 @@ class Loader(DataLoader):
     default_image_type = DataRegister.IMAGE
     classes = list(range(10))
 
-    def _call(self, load_type, image_type, decompression=False, **kwargs):
+    def _call(self, set_type, image_type, decompression=False, **kwargs):
+        """See Also `cv_data_parse.base.DataLoader._call`
+
+        Args:
+            set_type:
+            image_type: only support DataRegister.IMAGE
+            decompression(bool): if true, the data file would like *.gz
+
+        Returns:
+            a dict had keys of
+                image: see also image_type
+                size: image shape
+                _class: int
+        """
+
         assert image_type == DataRegister.IMAGE, f"Only support image_type = DataRegister.IMAGE"
 
-        if load_type == DataRegister.TRAIN:
+        if set_type == DataRegister.TRAIN:
             image_fp = f'{self.data_dir}/train-images-idx3-ubyte'
             label_fp = f'{self.data_dir}/train-labels-idx1-ubyte'
-        elif load_type == DataRegister.TEST:
+        elif set_type == DataRegister.TEST:
             image_fp = f'{self.data_dir}/t10k-images-idx3-ubyte'
             label_fp = f'{self.data_dir}/t10k-labels-idx1-ubyte'
         else:
-            raise ValueError(f'Dont support {load_type = }')
+            raise ValueError(f'Dont support {set_type = }')
 
         if decompression:
             image_f = gzip.open(image_fp + '.gz', 'rb')

@@ -34,7 +34,7 @@ class Loader(DataLoader):
             from cv_data_parse.Voc import DataRegister, Loader
 
             loader = Loader('data/VOC2012')
-            data = loader(data_type=DataRegister.ALL, generator=True, image_type=DataRegister.IMAGE)
+            data = loader(set_type=DataRegister.ALL, generator=True, image_type=DataRegister.IMAGE)
             r = next(data[0])
 
             # visual
@@ -51,11 +51,28 @@ class Loader(DataLoader):
                "cow", "diningtable", "dog", "horse", "motorbike", "person", "pottedplant",
                "sheep", "sofa", "train", "tvmonitor"]
 
-    def _call(self, load_type, image_type, task=None, **kwargs):
+    def _call(self, set_type, image_type, task=None, **kwargs):
+        """See Also `cv_data_parse.base.DataLoader._call`
+
+        Args:
+            set_type:
+            image_type:
+            task(None or str): task from ImageSets dir
+                None, use Annotations
+
+        Returns:
+            a dict had keys of
+                _id: image file name
+                image: see also image_type
+                size: image shape
+                bboxes: a np.ndarray with shape of (-1, 4), 4 means [top_left_x, top_left_y, w, h]
+                classes: list
+                difficult: bool
+        """
         if task is None:
             return self.load_total(image_type, **kwargs)
         else:
-            return self.load_task(load_type, image_type, task, **kwargs)
+            return self.load_task(set_type, image_type, task, **kwargs)
 
     def load_total(self, image_type, **kwargs):
         for xml_file in Path(f'{self.data_dir}/Annotations').glob('*.xml'):
@@ -95,5 +112,5 @@ class Loader(DataLoader):
                 difficult=difficult
             )
 
-    def load_task(self, load_type, image_type, task=None, **kwargs):
+    def load_task(self, set_type, image_type, task=None, **kwargs):
         pass
