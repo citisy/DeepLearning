@@ -49,27 +49,22 @@ class Loader(DataLoader):
     default_set_type = [DataRegister.TRAIN, DataRegister.TEST]
     image_suffix = 'png'
 
-    def _call(self, set_type, image_type, set_task='', train_task=DET, **kwargs):
+    def _call(self, set_type, image_type, set_task='', load_method=None, **kwargs):
         """See Also `cv_data_parse.base.DataLoader._call`
 
         Args:
             set_type:
             image_type:
             set_task(str): one of dir name in `labels` dir
-            train_task(str): 'det' or 'rec'
+            load_method: default `self.load_det`
 
         Returns:
-            see also `self.load_det` if train_task='det'
-            see also `self.load_rec` if train_task='rec'
+            return of load_method
 
         """
+        load_method = load_method or self.load_det
 
-        if train_task == DET:
-            return self.load_det(set_type, image_type, set_task=set_task, **kwargs)
-        elif train_task == REC:
-            return self.load_rec(set_type, image_type, set_task=set_task, **kwargs)
-        else:
-            raise ValueError(f'dont support {train_task = }')
+        return load_method(set_type, image_type, set_task, **kwargs)
 
     def load_det(self, set_type, image_type, set_task='', **kwargs):
         """See Also `self._call`
@@ -182,18 +177,11 @@ class Saver(DataSaver):
         os_lib.mk_dir(f'{self.data_dir}/images/{task}')
         os_lib.mk_dir(f'{self.data_dir}/labels/{set_task}')
 
-    def _call(self, iter_data, set_type, image_type, train_task=DET, **kwargs):
-        if train_task == DET:
-            return self.save_det(iter_data, set_type, image_type, **kwargs)
-        elif train_task == REC:
-            return self.save_rec(iter_data, set_type, image_type, **kwargs)
-        else:
-            raise ValueError(f'dont support {train_task = }')
+    def _call(self, iter_data, set_type, image_type, save_method=None, **kwargs):
+        save_method = save_method or self.save_det
+        return save_method(iter_data, set_type, image_type, **kwargs)
 
-    def save_det(self, iter_data, set_type, image_type, **kwargs):
-        task = kwargs.get('task', '')
-        set_task = kwargs.get('set_task', '')
-
+    def save_det(self, iter_data, set_type, image_type, task='', set_task='', **kwargs):
         f = open(f'{self.data_dir}/labels/{set_task}/{set_type.value}.txt', 'w', encoding='utf8')
 
         for dic in tqdm(iter_data):
@@ -217,10 +205,7 @@ class Saver(DataSaver):
 
         f.close()
 
-    def save_rec(self, iter_data, set_type, image_type, **kwargs):
-        task = kwargs.get('task', '')
-        set_task = kwargs.get('set_task', '')
-
+    def save_rec(self, iter_data, set_type, image_type, task='', set_task='', **kwargs):
         f = open(f'{self.data_dir}/labels/{set_task}/{set_type.value}.txt', 'w', encoding='utf8')
 
         for dic in tqdm(iter_data):
@@ -238,6 +223,32 @@ class Saver(DataSaver):
                 raise ValueError(f'Unknown input {image_type = }')
 
             f.write(f'{image_path}\t{transcription}\n')
+
+        f.close()
+
+    def save_rec_from_det(self, iter_data, set_type, *args, task='', set_task='', **kwargs):
+        os_lib.mk_dir(f'{self.data_dir}/labels/{set_task}')
+        f = open(f'{self.data_dir}/labels/{set_task}/{set_type.value}.txt', 'w', encoding='utf8')
+
+        for dic in tqdm(iter_data):
+            image = dic['image']
+            transcriptions = dic['transcriptions']
+            segmentations = dic['segmentations']
+            _id = dic['_id']
+
+            for i, (segmentation, transcription) in enumerate(zip(segmentations, transcriptions)):
+                x1 = np.min(segmentation[:, 0], axis=0)
+                x2 = np.max(segmentation[:, 0], axis=0)
+                y1 = np.min(segmentation[:, 1], axis=0)
+                y2 = np.max(segmentation[:, 1], axis=0)
+
+                img = image[y1: y2, x1:x2]
+
+                p = Path(_id)
+                img_fp = f'{self.data_dir}/images/{task}/{p.stem}_{i}{p.suffix}'
+                cv2.imwrite(img_fp, img)
+
+                f.write(f'{img_fp}\t{transcription}\n')
 
         f.close()
 

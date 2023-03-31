@@ -2,6 +2,7 @@ import os
 import json
 import cv2
 import shutil
+import re
 import numpy as np
 from utils import os_lib, converter
 from cv_data_parse.base import DataRegister, DataLoader, DataSaver
@@ -46,7 +47,9 @@ class Loader(DataLoader):
         """See Also `cv_data_parse.base.DataLoader._call`
 
         Args:
+            image_type: only support `DataRegister.IMAGE`
             task(str): one of dir name in `pdfs` dir
+            **kwargs: see also `self.load_per_page`
 
         Returns:
             a dict had keys of
@@ -65,14 +68,14 @@ class Loader(DataLoader):
                     _id=f'{fp.stem}_{i}.png',
                     image=image,
                 )
-                data_dic.update(self.load_per_page(page))
+                data_dic.update(self.load_per_page(page, **kwargs))
 
                 yield data_dic
 
     def load_per_page(
             self, source: fitz.fitz.Page or dict,
-            scale_ratio: float = 1.33333333,
-            shrink: bool = True,
+            scale_ratio=1.33333333,
+            shrink=True, strip=False, filter_blank=False
     ):
         transcriptions = []
         segmentations_ = []
@@ -92,19 +95,12 @@ class Loader(DataLoader):
                 char_box = []
                 text = []
 
-                for span in line['spans']:  # span(dict): 'size', 'flags', 'font', 'color',
-                    # 'ascender', 'descender', 'chars', 'origin', 'bbox'
+                for span in line['spans']:  # span(dict): 'size', 'flags', 'font', 'color', 'ascender', 'descender', 'chars', 'origin', 'bbox'
                     ascender = span['ascender']
                     descender = span['descender']
                     size = span['size']
 
-                    start = False
                     for char in span['chars']:  # char(dict): 'origin', 'bbox', 'c'
-                        if char['c'] == ' ' and not start:
-                            continue
-
-                        start = True
-
                         text.append(char['c'])
                         if not shrink:
                             char_box.append(list(char['bbox']))
@@ -114,16 +110,34 @@ class Loader(DataLoader):
                             y0, y1 = self.shrink_bbox(ascender, descender, size, y0, y1, y_origin)
                             char_box.append((x0, y0, x1, y1))
 
+                char_box = np.array(char_box)
+                text = ''.join(text)
+
+                if strip or filter_blank:
+                    spans = []
+                    for r in re.finditer(r'\s+', text):
+                        spans.append(r.span())
+
+                    tmp = np.ones(len(char_box), dtype=bool)
+
+                    if spans and not filter_blank:
+                        spans = [spans[0], spans[-1]]
+
+                    for i, s in enumerate(spans):
+                        tmp[s[0]: s[1]] = False
+                        text = text[:s[0] - i] + text[s[1] - i:]
+
+                    char_box = char_box[tmp]
+
                 if text:
                     transcriptions.append(text)
                     segmentations_.append(char_box)
                     segmentations.append(list(line['bbox']))
 
-        segmentations_ = [np.array(i) * scale_ratio for i in segmentations_]
+        segmentations_ = [(i * scale_ratio).astype(int) for i in segmentations_]
         segmentations = np.array(segmentations) * scale_ratio
         segmentations = converter.CoordinateConvert.rect2box(segmentations)
         segmentations = segmentations.astype(int)
-        transcriptions = [''.join(i) for i in transcriptions]
 
         if segmentations.size == 0:
             segmentations = np.zeros((0, 4))
@@ -147,4 +161,3 @@ class Loader(DataLoader):
             new_y1 = y_origin - size * descender / (ascender - descender)
             new_y0 = new_y1 - size
             return new_y0, new_y1
-
