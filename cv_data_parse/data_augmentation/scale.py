@@ -12,26 +12,43 @@ interpolation_mode = [
 ]
 
 
-def proportion(image, dst, interpolation=0):
+class Proportion:
     """proportional scale the shortest edge to destination size
     See Also `torchvision.transforms.Resize`"""
-    h, w, c = image.shape
-    a = min(w, h)
-    p = dst / a
 
-    return cv2.resize(image, None, fx=p, fy=p, interpolation=interpolation_mode[interpolation])
+    def __init__(self, interpolation=0):
+        self.interpolation = interpolation_mode[interpolation]
+
+    def __call__(self, image, dst):
+        h, w, c = image.shape
+        a = min(w, h)
+        p = dst / a
+
+        return cv2.resize(image, None, fx=p, fy=p, interpolation=self.interpolation)
 
 
-def rectangle(image, dst, interpolation=0):
+class Rectangle:
     """scale to special dst * dst
     See Also `torchvision.transforms.Resize`"""
-    return cv2.resize(image, (dst, dst), interpolation=interpolation_mode[interpolation])
+
+    def __init__(self, interpolation=0):
+        self.interpolation = interpolation_mode[interpolation]
+
+    def __call__(self, image, dst):
+        return cv2.resize(image, (dst, dst), interpolation=self.interpolation)
 
 
-def jitter(image, dst, size_range=(256, 384)):
+class Jitter:
     """See Also `torchvision.transforms.RandomResizedCrop`"""
-    s = np.random.randint(*size_range)
-    image = proportion(image, s)
-    image = crop.random(image, dst, is_pad=True)
 
-    return image
+    def __init__(self, size_range=(256, 384)):
+        self.size_range = size_range
+        self.resize = Proportion()
+        self.crop = crop.Random(is_pad=True)
+
+    def __call__(self, image, dst):
+        s = np.random.randint(*self.size_range)
+        image = self.resize(image, s)
+        image = self.crop(image, dst)
+
+        return image

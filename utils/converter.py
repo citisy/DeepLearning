@@ -4,21 +4,6 @@ import numpy as np
 import torch
 
 
-class DataConvert:
-    @staticmethod
-    def image_to_base64(image):
-        retval, buffer = cv2.imencode('.png', image)
-        png_as_text = base64.b64encode(buffer)
-        return png_as_text.decode('utf-8')
-
-    @staticmethod
-    def base64_to_image(string):
-        png_original = base64.b64decode(string)
-        image_buffer = np.frombuffer(png_original, dtype=np.uint8)
-        image = cv2.imdecode(image_buffer, flags=1)
-        return image
-
-
 class CoordinateConvert:
     @staticmethod
     def _call(bbox, wh, blow_up, convert_func):
@@ -36,7 +21,7 @@ class CoordinateConvert:
         if not blow_up:
             wh = 1 / wh
 
-        convert_bbox = convert_func(bbox, convert_bbox, wh)
+        convert_bbox = convert_func(bbox, convert_bbox) * wh
 
         if flag:
             convert_bbox = convert_bbox[0]
@@ -55,9 +40,10 @@ class CoordinateConvert:
         Returns:
             xyxy(tuple): 左上右下顶点xy坐标
         """
-        def convert_func(bbox, convert_bbox, wh):
-            convert_bbox[:, 0:2] = (bbox[:, 0:2] - bbox[:, 2:4] / 2) * wh
-            convert_bbox[:, 2:4] = (bbox[:, 0:2] + bbox[:, 2:4] / 2) * wh
+
+        def convert_func(bbox, convert_bbox):
+            convert_bbox[:, 0:2] = bbox[:, 0:2] - bbox[:, 2:4] / 2
+            convert_bbox[:, 2:4] = bbox[:, 0:2] + bbox[:, 2:4] / 2
             return convert_bbox
 
         return cls._call(bbox, wh, blow_up, convert_func)
@@ -75,9 +61,9 @@ class CoordinateConvert:
             xyxy(tuple): 左上右下顶点xy坐标
         """
 
-        def convert_func(bbox, convert_bbox, wh):
-            convert_bbox[:, 0:2] = bbox[:, 0:2] * wh
-            convert_bbox[:, 2:4] = (bbox[:, 0:2] + bbox[:, 2:4]) * wh
+        def convert_func(bbox, convert_bbox):
+            convert_bbox[:, 0:2] = bbox[:, 0:2]
+            convert_bbox[:, 2:4] = bbox[:, 0:2] + bbox[:, 2:4]
             return convert_bbox
 
         return cls._call(bbox, wh, blow_up, convert_func)
@@ -94,9 +80,10 @@ class CoordinateConvert:
         Returns:
             xywh(tuple): xy -> 中心点坐标, wh -> 目标宽高
         """
-        def convert_func(bbox, convert_bbox, wh):
-            convert_bbox[:, 0:2] = (bbox[:, 0:2] + bbox[:, 2:4] / 2) * wh
-            convert_bbox[:, 2:4] = bbox[:, 2:4] * wh
+
+        def convert_func(bbox, convert_bbox):
+            convert_bbox[:, 0:2] = bbox[:, 0:2] + bbox[:, 2:4] / 2
+            convert_bbox[:, 2:4] = bbox[:, 2:4]
             return convert_bbox
 
         return cls._call(bbox, wh, blow_up, convert_func)
@@ -113,20 +100,41 @@ class CoordinateConvert:
         Returns:
             xywh(tuple): xy -> 左上顶点坐标, wh -> 目标宽高
         """
-        def convert_func(bbox, convert_bbox, wh):
-            convert_bbox[:, 2:4] = (bbox[:, 0:2] + bbox[:, 2:4]) / 2 * wh
-            convert_bbox[:, 0:2] = bbox[:, 0:2] * wh
+
+        def convert_func(bbox, convert_bbox):
+            convert_bbox[:, 2:4] = bbox[:, 2:4] - bbox[:, 0:2]
+            convert_bbox[:, 0:2] = bbox[:, 0:2]
+            return convert_bbox
+
+        return cls._call(bbox, wh, blow_up, convert_func)
+
+    @classmethod
+    def top_xyxy2mid_xywh(cls, bbox, wh=None, blow_up=True):
+        """顶点xyxy转换成中心点xywh
+
+        Args:
+            bbox(tuple): xyxy, left top and right down
+            wh(tuple): 原始图片宽高，如果传入，则根据blow_up进行转换
+            blow_up(bool): 是否放大
+
+        Returns:
+            xywh(tuple): xy -> 中心点点坐标, wh -> 目标宽高
+        """
+
+        def convert_func(bbox, convert_bbox):
+            convert_bbox[:, 0:2] = (bbox[:, 0:2] + bbox[:, 2:4]) / 2
+            convert_bbox[:, 2:4] = bbox[:, 2:4] - bbox[:, 0:2]
             return convert_bbox
 
         return cls._call(bbox, wh, blow_up, convert_func)
 
     @staticmethod
     def box2rect(boxes) -> np.ndarray:
-        """(-1, 4, 2) -> 4 * (xy) change to (-1, 4) -> xyxy"""
+        """bbox(-1, 4, 2) convert to rec(-1, 4)"""
         boxes = np.array(boxes)
 
         if boxes.size == 0:
-            return np.array([[]])
+            return np.zeros((0, 4))
 
         rects = np.zeros((len(boxes), 4))
         rects[:, :2] = boxes[:, 0]
@@ -135,7 +143,7 @@ class CoordinateConvert:
 
     @staticmethod
     def rect2box(rects) -> np.ndarray:
-        """(-1, 4) -> xyxy change to (-1, 4, 2) -> 4 * (xy)"""
+        """rec(-1, 4) convert to bbox(-1, 4, 2)"""
         rects = np.array(rects)
 
         if rects.size == 0:
@@ -149,37 +157,37 @@ class CoordinateConvert:
         return boxes
 
 
-class DataTypeConvert:
-    """convert a custom type(like np.ndarray) to a constant type(like int, float, str)"""
-
+class DataConvert:
     @classmethod
-    def parse_data(cls, obj):
+    def custom2constant(cls, obj):
+        """convert a custom type(like np.ndarray) to a constant type(like int, float, str)
+        apply for json output"""
         if isinstance(obj, dict):
-            obj = cls.parse_dict(obj)
+            obj = cls.dict2constant(obj)
         elif isinstance(obj, list):
-            obj = cls.parse_list(obj)
-        if isinstance(obj, np.ndarray) and obj.dtype == np.uint8:
-            obj = cls.parse_img(obj)
+            obj = cls.list2constant(obj)
+        elif isinstance(obj, np.ndarray) and obj.dtype == np.uint8:
+            obj = cls.img2constant(obj)
         elif isinstance(obj, np.ndarray) and obj.dtype != np.uint8:
-            obj = cls.parse_numpy_array(obj)
+            obj = cls.np2constant(obj)
 
         return obj
 
     @classmethod
-    def parse_dict(cls, obj: dict):
+    def dict2constant(cls, obj: dict):
         for k, v in obj.items():
-            obj[k] = cls.parse_data(v)
+            obj[k] = cls.custom2constant(v)
 
         return obj
 
     @classmethod
-    def parse_list(cls, obj: list):
+    def list2constant(cls, obj: list):
         for i, e in enumerate(obj):
-            obj[i] = cls.parse_data(e)
+            obj[i] = cls.custom2constant(e)
         return obj
 
     @staticmethod
-    def parse_numpy_array(obj: np.ndarray):
+    def np2constant(obj: np.ndarray):
         if obj.size == 1:
             if isinstance(obj, (np.float32, np.float64)):
                 obj = float(obj)
@@ -190,9 +198,29 @@ class DataTypeConvert:
 
         return obj
 
+    @classmethod
+    def img2constant(cls, obj: np.ndarray) -> str:
+        return cls.image_to_base64(obj)
+
+    @classmethod
+    def image_to_base64(cls, obj: np.ndarray) -> str:
+        retval, buffer = cv2.imencode('.png', obj)
+        return cls.bytes_to_base64(buffer)
+
+    @classmethod
+    def base64_to_image(cls, obj: str) -> np.ndarray:
+        png_original = cls.base64_to_bytes(obj)
+        image_buffer = np.frombuffer(png_original, dtype=np.uint8)
+        image = cv2.imdecode(image_buffer, flags=1)
+        return image
+
     @staticmethod
-    def parse_img(obj: np.ndarray):
-        return DataConvert.image_to_base64(obj)
+    def bytes_to_base64(obj: bytes) -> str:
+        return str(base64.b64encode(obj), 'utf-8')
+
+    @staticmethod
+    def base64_to_bytes(obj: str) -> bytes:
+        return base64.b64decode(obj)
 
 
 class ModelConvert:

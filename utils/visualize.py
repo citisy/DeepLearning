@@ -158,29 +158,139 @@ class ImageVisualize:
 
 
 class TextVisualize:
-    @staticmethod
+    # refer to https://en.wikipedia.org/wiki/ANSI_escape_code
+    types = {
+        # front color
+        'black': '30',
+        'red': '31',
+        'green': '32',
+        'yellow': '33',
+        'blue': '34',
+        'magenta': '35',
+        'cyan': '36',
+        'white': '37',
+
+        # background color
+        'bg_black': '30',
+        'bg_red': '31',
+        'bg_green': '32',
+        'bg_yellow': '33',
+        'bg_blue': '34',
+        'bg_magenta': '35',
+        'bg_cyan': '36',
+        'bg_white': '37',
+
+        # bright colors
+        'bright_black': '90',
+        'bright_red': '91',
+        'bright_green': '92',
+        'bright_yellow': '93',
+        'bright_blue': '94',
+        'bright_magenta': '95',
+        'bright_cyan': '96',
+        'bright_white': '97',
+
+        # misc
+        'end': '0',
+        'bold': '1',
+        'underline': '4',
+        'blink': '5',
+        'reverse': '6',
+        'invisible': '7',
+
+    }
+
+    @classmethod
+    def highlight_str(cls, text, types='blue', start='', end=''):
+        """hightlight a string
+
+        Args:
+            text(str):
+            types(str or tuple): one of keys of `TextVisualize.types'
+            start(str): if set, ignore types
+            end(str):
+
+        Examples:
+            >>> TextVisualize.highlight_str('hello', 'blue')
+            >>> TextVisualize.highlight_str('hello', ('blue', 'bold'))
+            >>> TextVisualize.highlight_str('hello', start='<p style="color:red;">', end='</p>')    # html type
+            >>> TextVisualize.highlight_str('hello', start='\033[34m(highlight str: ', end=')\033[0m')  # add special text
+
+        """
+        if not start:
+            types = [types] if isinstance(types, str) else types
+
+            # fmt -> \033[%sm
+            start = '\033['
+            for t in types:
+                start += cls.types[t] + ';'
+
+            start = start[:-1] + 'm'
+
+        end = end or '\033[' + cls.types['end'] + 'm'
+
+        return start + text + end
+
+    @classmethod
     def highlight_subtext(
-            text: str, span: list, wing_length: int = None,
-            start='\033[1;31;40m', end='\033[0m'):
+            cls,
+            text, span, wing_length=None,
+            types='blue', start='', end=''
+    ):
+        """highlight a string where giving by span of a text
+        See Also `TextVisualize.highlight_str`
+
+        Args:
+            text(str):
+            span(tuple):
+            wing_length(int): limit str output. No limit if None, else exceeding part collapse to '...'
+            types(str or tuple):
+            start(str):
+            end(str):
+
+        Examples:
+            >>> TextVisualize.highlight_subtext('hello', (2, 4))
+
+        """
         if wing_length:
             left = max(0, span[0] - wing_length)
             right = min(len(text), span[1] + wing_length)
             left_abbr = '...' if left != 0 else ''
             right_abbr = '...' if right != len(text) else ''
-            s = left_abbr + text[left:span[0]] + start + text[span[0]:span[1]] + end + text[span[1]:right] + right_abbr
+            s = (
+                    left_abbr
+                    + text[left:span[0]]
+                    + cls.highlight_str(text[span[0]:span[1]], types, start, end)
+                    + text[span[1]:right]
+                    + right_abbr
+            )
 
         else:
-            s = text[:span[0]] + start + text[span[0]:span[1]] + end + text[span[1]:]
+            s = text[:span[0]] + cls.highlight_str(text[span[0]:span[1]], types, start, end) + text[span[1]:]
 
         return s
 
-    @staticmethod
+    @classmethod
     def highlight_subtexts(
-            text: str,
-            spans: List[list],
-            start: str or List = '\033[1;31;40m',
-            end: str or List = '\033[0m'
+            cls,
+            text, spans,
+            types='blue', start='', end=''
+
     ):
+        """highlight multiple strings where giving by spans of a text
+        See Also `TextVisualize.highlight_str`
+
+        Args:
+            text(str):
+            spans(List[tuple]):
+            types(str or tuple):
+            start(str or list):
+            end(str or list):
+
+        Examples:
+            >>> TextVisualize.highlight_subtexts('hello world', [(2, 3), (6, 7)])
+
+        """
 
         arg = np.argsort(spans, axis=0)
 
@@ -188,12 +298,12 @@ class TextVisualize:
         tmp = 0
         for i in arg[:, 0]:
             span = spans[i]
-            assert tmp <= span[0]
+            assert tmp <= span[0], f'{span = } overlap, please check'
 
             _start = start[i] if isinstance(start, list) else start
             _end = end[i] if isinstance(end, list) else end
 
-            s += text[tmp:span[0]] + _start + text[span[0]:span[1]] + _end
+            s += text[tmp:span[0]] + cls.highlight_str(text[span[0]:span[1]], types, _start, _end)
             tmp = span[1]
 
         s += text[tmp:]

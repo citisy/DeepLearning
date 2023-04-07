@@ -178,7 +178,7 @@ class Saver(DataSaver):
         set_task = kwargs.get('set_task', '')
 
         if set_type == DataRegister.place_holder:
-            f = os_lib.EmptyOs()
+            f = os_lib.FakeOs()
         else:
             f = open(f'{self.data_dir}/image_sets/{set_task}/{set_type.value}.txt', 'w', encoding='utf8')
 
