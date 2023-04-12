@@ -46,13 +46,27 @@ class Rectangle:
         )
 
 
+class LetterBox:
+    """resize, crop, and pad"""
+
+    def __init__(self):
+        self.apply = Apply([
+            Proportion(),
+            crop.Center(is_pad=True, pad_type=2)
+        ])
+
+    def __call__(self, image, dst):
+        return self.apply(image, dst)
+
+
 class Jitter:
-    """See Also `torchvision.transforms.RandomResizedCrop`"""
+    """random resize, crop, and pad
+    See Also `torchvision.transforms.RandomResizedCrop`"""
 
     def __init__(self, size_range=(256, 384)):
         self.size_range = size_range
         self.resize = Proportion()
-        self.crop = crop.Random(is_pad=True)
+        self.crop = crop.Random(is_pad=True, pad_type=2)
 
     def __call__(self, image, dst):
         s = np.random.randint(*self.size_range)

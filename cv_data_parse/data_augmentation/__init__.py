@@ -2,13 +2,23 @@ import numpy as np
 
 
 class Apply:
-    def __init__(self, funcs=None):
+    def __init__(self, funcs=None, full_result=False, replace=True):
         self.funcs = funcs
+        self.full_result = full_result
+        self.replace = replace
 
     def __call__(self, image, *args, **kwargs):
         ret = dict(image=image)
         for func in self.funcs:
-            ret.update(func(ret['image'], *args, **kwargs))
+            r = func(ret['image'], *args, **kwargs)
+
+            if self.full_result:
+                if self.replace:
+                    ret['image'] = r['image']
+
+                ret.setdefault('full_result', []).append(r)
+            else:
+                ret.update(r)
 
         return ret
 
@@ -29,9 +39,10 @@ class RandomApply:
             ret = RandomApply([Corner(), Center()])(x, 224)
     """
 
-    def __init__(self, funcs=None, probs=None):
+    def __init__(self, funcs=None, probs=None, full_result=False):
         self.funcs = funcs
         self.probs = probs
+        self.full_result = full_result
 
     def __call__(self, image, *args, **kwargs):
         funcs = self.funcs
@@ -39,8 +50,16 @@ class RandomApply:
         ret = dict(image=image)
 
         for func, probs in zip(funcs, probs):
+            r = dict()
+
             if np.random.random() < probs:
-                ret.update(func(ret['image'], *args, **kwargs))
+                r = func(ret['image'], *args, **kwargs)
+
+            if self.full_result:
+                ret['image'] = r['image']
+                ret.setdefault('full_result', []).append(r)
+            else:
+                ret.update(r)
 
         return ret
 
@@ -62,9 +81,10 @@ class RandomChoice:
             ret = RandomChoice([RandomApply([Corner()]), RandomApply([Center()])])(x, 224)
     """
 
-    def __init__(self, funcs=None, probs=None):
+    def __init__(self, funcs=None, probs=None, full_result=False):
         self.funcs = funcs
         self.probs = probs
+        self.full_result = full_result
 
     def __call__(self, image, *args, **kwargs):
         funcs = self.funcs
@@ -77,6 +97,12 @@ class RandomChoice:
 
         for i in func_arg:
             func, probs = tmp[i]
-            ret.update(func(ret['image'], *args, **kwargs))
+            r = func(ret['image'], *args, **kwargs)
+
+            if self.full_result:
+                ret['image'] = r['image']
+                ret.setdefault('full_result', []).append(r)
+            else:
+                ret.update(r)
 
         return ret

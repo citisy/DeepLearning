@@ -1,6 +1,7 @@
 """change the shape of image by cutting the image directly"""
 import cv2
 import numpy as np
+from . import Apply, shift
 
 fill_mode = [
     cv2.BORDER_CONSTANT,
@@ -14,26 +15,27 @@ LEFT, RIGHT, TOP, DOWN = 0, 1, 0, 1
 
 
 class Pad:
-    def __init__(self, direction='w', pad_type=1, fill_type=0, fill=0):
-        """See Also `torchvision.transforms.Pad`
+    """See Also `torchvision.transforms.Pad`
 
-        Args:
-            direction: w or h
-            pad_type: {0, 1, 2, 3}
-                if direction is w, 0 give left, 1 give right, 2 give left and right averagely, 3 give left and right randomly
-                if direction is h, 0 give up, 1 give down, 2 give up and down averagely, 3 give up and down randomly
-            fill_type: {0, 1, 2, 3, 4}
-                0, pads with a constant value, this value is specified with fill
-                1, pads with the last value on the edge of the image
-                2, pads with reflection of image (without repeating the last value on the edge),
-                    e.g. pad 2 elements in the end: [1, 2, 3, 4] -> [1, 2, 3, 4, 3, 2]
-                3, pads with reflection of image (repeating the last value on the edge)
-                    e.g. pad 2 elements in the end: [1, 2, 3, 4] -> [1, 2, 3, 4, 4, 3]
-                4, pads with reflection of image (without rotating the last value on the edge)
-                    e.g. pad 2 elements in the end: [1, 2, 3, 4] -> [1, 2, 3, 4, 3, 4]
-            fill: fill value
+    Args:
+        direction: w or h
+        pad_type: {0, 1, 2, 3}
+            if direction is w, 0 give left, 1 give right, 2 give left and right averagely, 3 give left and right randomly
+            if direction is h, 0 give up, 1 give down, 2 give up and down averagely, 3 give up and down randomly
+        fill_type: {0, 1, 2, 3, 4}
+            0, pads with a constant value, this value is specified with fill
+            1, pads with the last value on the edge of the image
+            2, pads with reflection of image (without repeating the last value on the edge),
+                e.g. pad 2 elements in the end: [1, 2, 3, 4] -> [1, 2, 3, 4, 3, 2]
+            3, pads with reflection of image (repeating the last value on the edge)
+                e.g. pad 2 elements in the end: [1, 2, 3, 4] -> [1, 2, 3, 4, 4, 3]
+            4, pads with reflection of image (without rotating the last value on the edge)
+                e.g. pad 2 elements in the end: [1, 2, 3, 4] -> [1, 2, 3, 4, 3, 4]
+        fill (int or tuple): fill value
 
-        """
+    """
+
+    def __init__(self, direction='w', pad_type=1, fill_type=0, fill=114):
         self.direction = direction
         self.pad_type = pad_type
         self.fill_type = fill_type
@@ -48,6 +50,7 @@ class Pad:
 
         """
         h, w, c = image.shape
+        ret = dict(image=image)
 
         if self.direction == 'w':
             if self.pad_type == 0:
@@ -64,6 +67,10 @@ class Pad:
                 raise ValueError(f'dont support {self.pad_type = }')
 
             pad_top, pad_down = 0, 0
+            ret.update(
+                pad_left=pad_left,
+                pad_right=pad_right
+            )
 
         elif self.direction == 'h':
             if self.pad_type == 0:
@@ -80,23 +87,21 @@ class Pad:
                 raise ValueError(f'dont support {self.pad_type = }')
 
             pad_left, pad_right = 0, 0
+            ret.update(
+                pad_top=pad_top,
+                pad_down=pad_down
+            )
 
         else:
             raise ValueError(f'dont support {self.direction = }')
 
-        image = cv2.copyMakeBorder(
+        ret['image'] = cv2.copyMakeBorder(
             image, pad_top, pad_down, pad_left, pad_right,
             borderType=fill_mode[self.fill_type],
             value=self.fill
         )
 
-        return dict(
-            image=image,
-            pad_top=pad_top,
-            pad_down=pad_down,
-            pad_left=pad_left,
-            pad_right=pad_right
-        )
+        return ret
 
 
 class Crop:
@@ -121,15 +126,14 @@ class Crop:
             else:
                 raise ValueError(f'image width = {w} and height = {h} must be greater than {x2 = } and {y2 = } or set pad=True')
 
-        ret.update(image=image[y1:y2, x1: x2])
+        ret['image'] = image[y1:y2, x1: x2]
 
         return ret
 
 
 class Random:
     def __init__(self, is_pad=True, **pad_kwargs):
-        self.is_pad = is_pad
-        self.pad_kwargs = pad_kwargs
+        self.crop = Crop(is_pad=is_pad, **pad_kwargs)
 
     def __call__(self, image, dst):
         """(w, h) -> (dst, dst)
@@ -139,17 +143,15 @@ class Random:
         w_ = np.random.randint(w - dst) if w > dst else 0
         h_ = np.random.randint(h - dst) if h > dst else 0
 
-        return Crop(is_pad=self.is_pad, **self.pad_kwargs)(image, (w_, w_ + dst, h_, h_ + dst))
+        return self.crop(image, (w_, w_ + dst, h_, h_ + dst))
 
 
 class Corner:
     def __init__(self, pos=(LEFT, TOP), is_pad=True, **pad_kwargs):
         self.pos = pos
-        self.is_pad = is_pad
-        self.pad_kwargs = pad_kwargs
+        self.crop = Crop(is_pad=is_pad, **pad_kwargs)
 
     def __call__(self, image, dst):
-        """See Also `torchvision.transforms.FiveCrop` and `torchvision.transforms.TenCrop`"""
         h, w, c = image.shape
 
         if self.pos == (LEFT, TOP):
@@ -163,13 +165,51 @@ class Corner:
         else:
             raise ValueError(f'dont support {self.pos = }')
 
-        return Crop(is_pad=self.is_pad, **self.pad_kwargs)(image, (w_, w_ + dst, h_, h_ + dst))
+        return self.crop(image, (w_, w_ + dst, h_, h_ + dst))
+
+
+class FiveCrop:
+    """See Also `torchvision.transforms.FiveCrop`"""
+
+    def __init__(self, is_pad=True, **pad_kwargs):
+        funcs = []
+
+        for pos in ((LEFT, TOP), (LEFT, DOWN), (RIGHT, TOP), (RIGHT, DOWN)):
+            funcs.append(Corner(pos, is_pad, **pad_kwargs))
+
+        funcs.append(Center(is_pad, **pad_kwargs))
+        self.apply = Apply(funcs, full_result=True, replace=False)
+
+    def __call__(self, image, dst):
+        return self.apply(image, dst)
+
+
+class TenCrop:
+    """See Also `torchvision.transforms.TenCrop`"""
+
+    def __init__(self, is_pad=True, **pad_kwargs):
+        funcs = []
+
+        for pos in ((LEFT, TOP), (LEFT, DOWN), (RIGHT, TOP), (RIGHT, DOWN)):
+            funcs.append(Corner(pos, is_pad, **pad_kwargs))
+
+        funcs.append(Center(is_pad, **pad_kwargs))
+        self.apply = Apply(funcs, full_result=True, replace=False)
+        self.shift = shift.VFlip()
+
+    def __call__(self, image, dst):
+        ret = self.apply(image, dst)
+        image = self.shift(image)['image']
+
+        _ret = self.apply(image, dst)
+        ret['full_result'] += _ret['full_result']
+
+        return ret
 
 
 class Center:
     def __init__(self, is_pad=True, **pad_kwargs):
-        self.is_pad = is_pad
-        self.pad_kwargs = pad_kwargs
+        self.crop = Crop(is_pad=is_pad, **pad_kwargs)
 
     def __call__(self, image, dst):
         """See Also `torchvision.transforms.CenterCrop`"""
@@ -178,4 +218,4 @@ class Center:
         w_ = max(w - dst, 0) // 2
         h_ = max(h - dst, 0) // 2
 
-        return Crop(is_pad=self.is_pad, **self.pad_kwargs)(image, (w_, w_ + dst, h_, h_ + dst))
+        return self.crop(image, (w_, w_ + dst, h_, h_ + dst))
