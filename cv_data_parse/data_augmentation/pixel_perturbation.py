@@ -21,7 +21,9 @@ class GaussNoise:
         noisy_img = image + gauss
         noisy_img = np.clip(noisy_img, a_min=0, a_max=255)
 
-        return noisy_img
+        return dict(
+            image=noisy_img
+        )
 
 
 class SaltNoise:
@@ -45,7 +47,9 @@ class SaltNoise:
         coords = tuple(np.random.randint(0, i - 1, int(num_pepper)) for i in image.shape)
         noisy_img[coords] = 0
 
-        return noisy_img
+        return dict(
+            image=noisy_img
+        )
 
 
 class PoissonNoise:
@@ -55,7 +59,10 @@ class PoissonNoise:
         vals = len(np.unique(image))
         vals = 2 ** np.ceil(np.log2(vals))
         noisy_img = np.random.poisson(image * vals) / float(vals)
-        return noisy_img
+
+        return dict(
+            image=noisy_img
+        )
 
 
 class SpeckleNoise:
@@ -65,7 +72,10 @@ class SpeckleNoise:
         gauss = np.random.randn(*image.shape)
         noisy_img = image + image * gauss
         noisy_img = np.clip(noisy_img, a_min=0, a_max=255)
-        return noisy_img
+
+        return dict(
+            image=noisy_img
+        )
 
 
 class Normalize:
@@ -78,7 +88,12 @@ class Normalize:
         std = np.std(image, axis=(0, 1))
 
         image = (image - mean) / std
-        return image
+
+        return dict(
+            image=image,
+            mean=mean,
+            std=std
+        )
 
 
 class Pca:
@@ -122,7 +137,9 @@ class Pca:
         for i in range(image.shape[-1]):
             noisy_img[:, :, i] = noisy_img[:, :, i] @ (self.eigenvectors[i].T * self.eigen_values[i] * a).T
 
-        return noisy_img
+        return dict(
+            image=noisy_img
+        )
 
 
 class AdjustBrightness:
@@ -142,8 +159,11 @@ class AdjustBrightness:
     def __call__(self, image):
         factor = max(1 + self.offset, 0)
         table = np.array([i * factor for i in range(0, 256)]).clip(0, 255).astype('uint8')
+        image = cv2.LUT(image, table)
 
-        return cv2.LUT(image, table)
+        return dict(
+            image=image
+        )
 
 
 class AdjustContrast:
@@ -163,8 +183,11 @@ class AdjustContrast:
     def __call__(self, image):
         factor = max(1 + self.offset, 0)
         table = np.array([(i - 74) * factor + 74 for i in range(0, 256)]).clip(0, 255).astype('uint8')
+        image = cv2.LUT(image, table)
 
-        return cv2.LUT(image, table)
+        return dict(
+            image=image
+        )
 
 
 class AdjustSaturation:
@@ -184,12 +207,16 @@ class AdjustSaturation:
     def __call__(self, image):
         factor = 1 + self.offset
         dtype = image.dtype
-        img = image.astype(np.float32)
+        image = image.astype(np.float32)
         alpha = np.random.uniform(max(0, 1 - factor), 1 + factor)
-        gray_img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        gray_img = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
         gray_img = gray_img[..., np.newaxis]
-        img = img * alpha + gray_img * (1 - alpha)
-        return img.clip(0, 255).astype(dtype)
+        image = image * alpha + gray_img * (1 - alpha)
+        image = image.clip(0, 255).astype(dtype)
+
+        return dict(
+            image=image
+        )
 
 
 class AdjustHue:
@@ -233,7 +260,11 @@ class AdjustHue:
         with np.errstate(over="ignore"):
             h += np.uint8(alpha * 255)
         hsv_img = cv2.merge([h, s, v])
-        return cv2.cvtColor(hsv_img, cv2.COLOR_HSV2BGR_FULL).astype(dtype)
+        image = cv2.cvtColor(hsv_img, cv2.COLOR_HSV2BGR_FULL).astype(dtype)
+
+        return dict(
+            image=image
+        )
 
 
 class Jitter:
@@ -251,8 +282,7 @@ class Jitter:
             offsets=(0.5, 0.5, 0.5, 0.1),
             apply_func=(AdjustBrightness, AdjustContrast, AdjustSaturation, AdjustHue)
     ):
-        funcs = [func(offset) for offset, func in zip(offsets, apply_func)]
-        self.func = RandomChoice(funcs)
+        self.funcs = [func(offset) for offset, func in zip(offsets, apply_func)]
 
     def __call__(self, image):
-        return self.func(image)
+        return RandomChoice(self.funcs)(image)

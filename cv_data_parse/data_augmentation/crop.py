@@ -51,48 +51,52 @@ class Pad:
 
         if self.direction == 'w':
             if self.pad_type == 0:
-                l, r = dst - w, 0
+                pad_left, pad_right = dst - w, 0
             elif self.pad_type == 1:
-                l, r = 0, dst - w
+                pad_left, pad_right = 0, dst - w
             elif self.pad_type == 2:
-                l = (dst - w) // 2
-                r = dst - w - l
+                pad_left = (dst - w) // 2
+                pad_right = dst - w - pad_left
             elif self.pad_type == 3:
-                l = np.random.randint(dst - w)
-                r = dst - w - l
+                pad_left = np.random.randint(dst - w)
+                pad_right = dst - w - pad_left
             else:
                 raise ValueError(f'dont support {self.pad_type = }')
 
-            image = cv2.copyMakeBorder(
-                image, 0, 0, l, r,
-                borderType=fill_mode[self.fill_type],
-                value=self.fill
-            )
+            pad_top, pad_down = 0, 0
 
         elif self.direction == 'h':
             if self.pad_type == 0:
-                t, d = dst - h, 0
+                pad_top, pad_down = dst - h, 0
             elif self.pad_type == 1:
-                t, d = 0, dst - 0
+                pad_top, pad_down = 0, dst - 0
             elif self.pad_type == 2:
-                t = (dst - h) // 2
-                d = dst - h - t
+                pad_top = (dst - h) // 2
+                pad_down = dst - h - pad_top
             elif self.pad_type == 3:
-                t = np.random.randint(dst - h)
-                d = dst - h - t
+                pad_top = np.random.randint(dst - h)
+                pad_down = dst - h - pad_top
             else:
                 raise ValueError(f'dont support {self.pad_type = }')
 
-            image = cv2.copyMakeBorder(
-                image, t, d, 0, 0,
-                borderType=fill_mode[self.fill_type],
-                value=self.fill
-            )
+            pad_left, pad_right = 0, 0
 
         else:
             raise ValueError(f'dont support {self.direction = }')
 
-        return image
+        image = cv2.copyMakeBorder(
+            image, pad_top, pad_down, pad_left, pad_right,
+            borderType=fill_mode[self.fill_type],
+            value=self.fill
+        )
+
+        return dict(
+            image=image,
+            pad_top=pad_top,
+            pad_down=pad_down,
+            pad_left=pad_left,
+            pad_right=pad_right
+        )
 
 
 class Crop:
@@ -106,16 +110,20 @@ class Crop:
 
         assert x1 >= 0 and y1 >= 0, ValueError(f'{x1 = } and {y1 = } must not be smaller than 0')
 
+        ret = dict(image=image)
+
         if x2 > w or y2 > h:
             if self.is_pad:
                 if x2 > w:
-                    image = Pad(direction='w', **self.pad_kwargs)(image, x2)
+                    ret.update(Pad(direction='w', **self.pad_kwargs)(ret['image'], x2))
                 if y2 > h:
-                    image = Pad(direction='h', **self.pad_kwargs)(image, y2)
+                    ret.update(Pad(direction='h', **self.pad_kwargs)(ret['image'], y2))
             else:
                 raise ValueError(f'image width = {w} and height = {h} must be greater than {x2 = } and {y2 = } or set pad=True')
 
-        return image[y1:y2, x1: x2]
+        ret.update(image=image[y1:y2, x1: x2])
+
+        return ret
 
 
 class Random:

@@ -46,7 +46,7 @@ class TestDataset(Dataset):
         x, y = self.data[idx]['image'], self.data[idx]['_class']
 
         if self.augment_func:
-            x = self.augment_func(x)
+            x = self.augment_func(x)['image']
 
         # (w, h, c) -> (c, h, w)
         x = np.transpose(x, (2, 1, 0))
@@ -190,11 +190,11 @@ class Process:
         return result
 
     def data_augment(self, x):
-        x = crop.Random()(x, self.input_size)
+        x = crop.Random()(x, self.input_size)['image']
         x = RandomApply([
             shift.HFlip(),
             shift.VFlip(),
-        ])(x)
+        ])(x)['image']
         return x
 
     @staticmethod
@@ -238,8 +238,8 @@ class Process:
 
             tmp['_class'] = convert_class[tmp['_class']]
             x = cv2.imread(tmp['image'])
-            x = scale.Proportion()(x, 256)
-            x = crop.Center()(x, self.input_size)
+            x = scale.Proportion()(x, 256)['image']
+            x = crop.Center()(x, self.input_size)['image']
             tmp['image'] = x
 
             data.append(tmp)

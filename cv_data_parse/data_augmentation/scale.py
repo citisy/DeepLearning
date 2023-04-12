@@ -1,7 +1,7 @@
 """change the shape of image by resizing the image according to some algorithm"""
 import cv2
 import numpy as np
-from . import crop
+from . import crop, Apply
 
 interpolation_mode = [
     cv2.INTER_LINEAR,
@@ -23,8 +23,12 @@ class Proportion:
         h, w, c = image.shape
         a = min(w, h)
         p = dst / a
+        image = cv2.resize(image, None, fx=p, fy=p, interpolation=self.interpolation)
 
-        return cv2.resize(image, None, fx=p, fy=p, interpolation=self.interpolation)
+        return dict(
+            image=image,
+            p=p
+        )
 
 
 class Rectangle:
@@ -35,7 +39,11 @@ class Rectangle:
         self.interpolation = interpolation_mode[interpolation]
 
     def __call__(self, image, dst):
-        return cv2.resize(image, (dst, dst), interpolation=self.interpolation)
+        image = cv2.resize(image, (dst, dst), interpolation=self.interpolation)
+
+        return dict(
+            image=image
+        )
 
 
 class Jitter:
@@ -48,7 +56,8 @@ class Jitter:
 
     def __call__(self, image, dst):
         s = np.random.randint(*self.size_range)
-        image = self.resize(image, s)
-        image = self.crop(image, dst)
+        ret = dict(_dst=s)
+        ret.update(self.resize(image, s))
+        ret.update(self.crop(ret['image'], dst))
 
-        return image
+        return ret

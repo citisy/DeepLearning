@@ -5,11 +5,12 @@ class Apply:
     def __init__(self, funcs=None):
         self.funcs = funcs
 
-    def __call__(self, x, *args, **kwargs):
+    def __call__(self, image, *args, **kwargs):
+        ret = dict(image=image)
         for func in self.funcs:
-            x = func(x, *args, **kwargs)
+            ret.update(func(ret['image'], *args, **kwargs))
 
-        return x
+        return ret
 
 
 class RandomApply:
@@ -25,22 +26,23 @@ class RandomApply:
             from cv_data_parse.data_augmentation import RandomApply
 
             x = np.zeros((256, 256, 3), dtype=np.uint8)
-            x = RandomApply([Corner(), Center()])(x, 224)
+            ret = RandomApply([Corner(), Center()])(x, 224)
     """
 
     def __init__(self, funcs=None, probs=None):
         self.funcs = funcs
         self.probs = probs
 
-    def __call__(self, x, *args, **kwargs):
+    def __call__(self, image, *args, **kwargs):
         funcs = self.funcs
         probs = self.probs or [0.5] * len(funcs)
+        ret = dict(image=image)
 
         for func, probs in zip(funcs, probs):
             if np.random.random() < probs:
-                x = func(x, *args, **kwargs)
+                ret.update(func(ret['image'], *args, **kwargs))
 
-        return x
+        return ret
 
 
 class RandomChoice:
@@ -56,24 +58,25 @@ class RandomChoice:
             from cv_data_parse.data_augmentation import RandomChoice, RandomApply
 
             x = np.zeros((256, 256, 3), dtype=np.uint8)
-            x = RandomChoice([Corner(), Center()])(x, 224)
-            x = RandomChoice([RandomApply([Corner()]), RandomApply([Center()])])(x, 224)
+            ret = RandomChoice([Corner(), Center()])(x, 224)
+            ret = RandomChoice([RandomApply([Corner()]), RandomApply([Center()])])(x, 224)
     """
 
     def __init__(self, funcs=None, probs=None):
         self.funcs = funcs
         self.probs = probs
 
-    def __call__(self, x, *args, **kwargs):
+    def __call__(self, image, *args, **kwargs):
         funcs = self.funcs
         probs = self.probs or [0.5] * len(funcs)
 
         tmp = [(func, probs) for func, probs in zip(funcs, probs)]
 
-        idx = np.random.choice(range(len(tmp)), size=len(tmp), replace=False, p=probs)
+        func_arg = np.random.choice(range(len(tmp)), size=len(tmp), replace=False, p=probs)
+        ret = dict(image=image, func_arg=func_arg)
 
-        for i in idx:
+        for i in func_arg:
             func, probs = tmp[i]
-            x = func(x, *args, **kwargs)
+            ret.update(func(ret['image'], *args, **kwargs))
 
-        return x
+        return ret

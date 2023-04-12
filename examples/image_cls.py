@@ -129,7 +129,7 @@ class AlexNet_ImageNet(Process):
     def get_train_data(self):
         data = super().get_train_data()
         for tmp in data:
-            tmp['image'] = scale.Proportion()(tmp['image'], 256)
+            tmp['image'] = scale.Proportion()(tmp['image'], 256)['image']
 
         return data
 
@@ -158,8 +158,8 @@ class Vgg_ImageNet(Process):
         )
 
     def data_augment(self, x):
-        x = scale.Jitter((256, 384))(x, self.input_size)
-        x = RandomApply([shift.HFlip()])(x)
+        x = scale.Jitter((256, 384))(x, self.input_size)['image']
+        x = RandomApply([shift.HFlip()])(x)['image']
         return x
 
 
@@ -200,7 +200,7 @@ class Inception_ImageNet(Process):
     def get_train_data(self):
         data = super().get_train_data()
         for tmp in data:
-            tmp['image'] = scale.Proportion()(tmp['image'], 256)
+            tmp['image'] = scale.Proportion()(tmp['image'], 256)['image']
 
         return data
 
@@ -229,8 +229,8 @@ class ResNet_ImageNet(Process):
         )
 
     def data_augment(self, x):
-        x = scale.Jitter((256, 384))(x, self.input_size)
-        x = RandomApply([shift.HFlip()])(x)
+        x = scale.Jitter((256, 384))(x, self.input_size)['image']
+        x = RandomApply([shift.HFlip()])(x)['image']
         return x
 
 
@@ -260,7 +260,7 @@ class DenseNet_ImageNet(Process):
     def get_train_data(self):
         data = super().get_train_data()
         for tmp in data:
-            tmp['image'] = scale.Proportion()(tmp['image'], 256)
+            tmp['image'] = scale.Proportion()(tmp['image'], 256)['image']
 
         return data
 
@@ -292,7 +292,7 @@ class SENet_ImageNet(Process):
     def get_train_data(self):
         data = super().get_train_data()
         for tmp in data:
-            tmp['image'] = scale.Proportion()(tmp['image'], 256)
+            tmp['image'] = scale.Proportion()(tmp['image'], 256)['image']
 
         return data
 
@@ -323,7 +323,7 @@ class SqueezeNet_ImageNet(Process):
     def get_train_data(self):
         data = super().get_train_data()
         for tmp in data:
-            tmp['image'] = scale.Proportion()(tmp['image'], 256)
+            tmp['image'] = scale.Proportion()(tmp['image'], 256)['image']
 
         return data
 
@@ -354,7 +354,7 @@ class MobileNet_ImageNet(Process):
     def get_train_data(self):
         data = super().get_train_data()
         for tmp in data:
-            tmp['image'] = scale.Proportion()(tmp['image'], 256)
+            tmp['image'] = scale.Proportion()(tmp['image'], 256)['image']
 
         return data
 
@@ -389,7 +389,7 @@ class ShuffleNet_ImageNet(Process):
     def get_train_data(self):
         data = super().get_train_data()
         for tmp in data:
-            tmp['image'] = scale.Proportion()(tmp['image'], 256)
+            tmp['image'] = scale.Proportion()(tmp['image'], 256)['image']
 
         return data
 
@@ -468,7 +468,7 @@ class CondenseNet_ImageNet(Process):
     def get_train_data(self):
         data = super().get_train_data()
         for tmp in data:
-            tmp['image'] = scale.Proportion()(tmp['image'], 256)
+            tmp['image'] = scale.Proportion()(tmp['image'], 256)['image']
 
         return data
 

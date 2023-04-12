@@ -15,14 +15,22 @@ class HFlip:
     """See Also `torchvision.transforms.RandomHorizontalFlip`"""
 
     def __call__(self, image):
-        return cv2.flip(image, 1)
+        image = cv2.flip(image, 1)
+
+        return dict(
+            image=image
+        )
 
 
 class VFlip:
     """See Also `torchvision.transforms.RandomVerticalFlip`"""
 
     def __call__(self, image):
-        return cv2.flip(image, 0)
+        image = cv2.flip(image, 0)
+
+        return dict(
+            image=image
+        )
 
 
 class RandomHShift:
@@ -93,7 +101,11 @@ class RandomHShift:
         if classes is not None:
             classes = np.concatenate([classes[~shift_flag], classes[shift_flag]])
 
-        return img, new_bboxes.astype(bboxes.dtype), classes
+        return dict(
+            image=img,
+            bboxes=new_bboxes.astype(bboxes.dtype),
+            classes=classes
+        )
 
     @staticmethod
     def check_coor_overlap(a, b):
@@ -110,12 +122,12 @@ class RandomVShift(RandomHShift):
         image = image.T
         bboxes[:, (0, 1, 2, 3)] = bboxes[:, (1, 0, 3, 2)]
 
-        image, bboxes, classes = super().__call__(image, bboxes, classes)
+        ret = super().__call__(image, bboxes, classes)
 
-        image = image.T
-        bboxes[:, (0, 1, 2, 3)] = bboxes[:, (1, 0, 3, 2)]
+        ret['image'] = ret['image'].T
+        ret['bboxes'][:, (0, 1, 2, 3)] = ret['bboxes'][:, (1, 0, 3, 2)]
 
-        return image, bboxes, classes
+        return ret
 
 
 class Rotate:
@@ -191,9 +203,13 @@ class Rotate:
 
             w, h = int(nw), int(nh)
 
-        return cv2.warpAffine(
+        image = cv2.warpAffine(
             image,
             M, (w, h),
             flags=self.interpolation,
             borderValue=self.fill
+        )
+
+        return dict(
+            image=image
         )
