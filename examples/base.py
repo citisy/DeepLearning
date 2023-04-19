@@ -8,7 +8,7 @@ from cv_data_parse.base import DataRegister
 from pathlib import Path
 from metrics import classifier
 import cv2
-from cv_data_parse.data_augmentation import crop, scale, shift, pixel_perturbation, RandomApply
+from cv_data_parse.data_augmentation import crop, scale, geometry, pixel_perturbation, RandomApply
 
 MODEL = 1
 WEIGHT = 2
@@ -192,8 +192,8 @@ class Process:
     def data_augment(self, x):
         x = crop.Random()(x, self.input_size)['image']
         x = RandomApply([
-            shift.HFlip(),
-            shift.VFlip(),
+            geometry.HFlip(),
+            geometry.VFlip(),
         ])(x)['image']
         return x
 

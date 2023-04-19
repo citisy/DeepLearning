@@ -1,5 +1,6 @@
 """change the pixel of image"""
 import cv2
+import numbers
 import numpy as np
 from . import RandomChoice
 
@@ -18,11 +19,11 @@ class GaussNoise:
 
     def __call__(self, image):
         gauss = np.random.normal(self.mean, self.sigma, image.shape)
-        noisy_img = image + gauss
-        noisy_img = np.clip(noisy_img, a_min=0, a_max=255)
+        noisy_image = image + gauss
+        noisy_image = np.clip(noisy_image, a_min=0, a_max=255)
 
         return dict(
-            image=noisy_img
+            image=noisy_image
         )
 
 
@@ -39,16 +40,16 @@ class SaltNoise:
         self.amount = amount
 
     def __call__(self, image):
-        noisy_img = np.copy(image)
+        noisy_image = np.copy(image)
         num_salt = np.ceil(self.amount * image.size * self.s_vs_p)
         coords = tuple(np.random.randint(0, i - 1, int(num_salt)) for i in image.shape)
-        noisy_img[coords] = 255
+        noisy_image[coords] = 255
         num_pepper = np.ceil(self.amount * image.size * (1. - self.s_vs_p))
         coords = tuple(np.random.randint(0, i - 1, int(num_pepper)) for i in image.shape)
-        noisy_img[coords] = 0
+        noisy_image[coords] = 0
 
         return dict(
-            image=noisy_img
+            image=noisy_image
         )
 
 
@@ -58,10 +59,10 @@ class PoissonNoise:
     def __call__(self, image):
         vals = len(np.unique(image))
         vals = 2 ** np.ceil(np.log2(vals))
-        noisy_img = np.random.poisson(image * vals) / float(vals)
+        noisy_image = np.random.poisson(image * vals) / float(vals)
 
         return dict(
-            image=noisy_img
+            image=noisy_image
         )
 
 
@@ -70,11 +71,11 @@ class SpeckleNoise:
 
     def __call__(self, image):
         gauss = np.random.randn(*image.shape)
-        noisy_img = image + image * gauss
-        noisy_img = np.clip(noisy_img, a_min=0, a_max=255)
+        noisy_image = image + image * gauss
+        noisy_image = np.clip(noisy_image, a_min=0, a_max=255)
 
         return dict(
-            image=noisy_img
+            image=noisy_image
         )
 
 
@@ -108,14 +109,14 @@ class Pca:
 
         a = np.random.normal(0, 0.1)
 
-        noisy_img = np.array(image, dtype=float)
+        noisy_image = np.array(image, dtype=float)
 
         if self.eigenvectors is None:
             eigenvectors = []
             eigen_values = []
 
-            for i in range(noisy_img.shape[-1]):
-                x = noisy_img[:, :, i]
+            for i in range(noisy_image.shape[-1]):
+                x = noisy_image[:, :, i]
 
                 for j in range(x.shape[0]):
                     n = np.mean(x[j])
@@ -135,10 +136,10 @@ class Pca:
                 eigenvectors.append(eigen_vector)
 
         for i in range(image.shape[-1]):
-            noisy_img[:, :, i] = noisy_img[:, :, i] @ (self.eigenvectors[i].T * self.eigen_values[i] * a).T
+            noisy_image[:, :, i] = noisy_image[:, :, i] @ (self.eigenvectors[i].T * self.eigen_values[i] * a).T
 
         return dict(
-            image=noisy_img
+            image=noisy_image
         )
 
 
@@ -209,9 +210,9 @@ class AdjustSaturation:
         dtype = image.dtype
         image = image.astype(np.float32)
         alpha = np.random.uniform(max(0, 1 - factor), 1 + factor)
-        gray_img = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-        gray_img = gray_img[..., np.newaxis]
-        image = image * alpha + gray_img * (1 - alpha)
+        gray_image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        gray_image = gray_image[..., np.newaxis]
+        image = image * alpha + gray_image * (1 - alpha)
         image = image.clip(0, 255).astype(dtype)
 
         return dict(
@@ -250,17 +251,17 @@ class AdjustHue:
         factor = min(max(1 + self.offset, -0.5), 0.5)
 
         dtype = image.dtype
-        img = image.astype(np.uint8)
-        hsv_img = cv2.cvtColor(img, cv2.COLOR_BGR2HSV_FULL)
-        h, s, v = cv2.split(hsv_img)
+        image = image.astype(np.uint8)
+        hsv_image = cv2.cvtColor(image, cv2.COLOR_BGR2HSV_FULL)
+        h, s, v = cv2.split(hsv_image)
 
         alpha = np.random.uniform(factor, factor)
         h = h.astype(np.uint8)
         # uint8 addition take cares of rotation across boundaries
         with np.errstate(over="ignore"):
             h += np.uint8(alpha * 255)
-        hsv_img = cv2.merge([h, s, v])
-        image = cv2.cvtColor(hsv_img, cv2.COLOR_HSV2BGR_FULL).astype(dtype)
+        hsv_image = cv2.merge([h, s, v])
+        image = cv2.cvtColor(hsv_image, cv2.COLOR_HSV2BGR_FULL).astype(dtype)
 
         return dict(
             image=image
@@ -286,3 +287,58 @@ class Jitter:
 
     def __call__(self, image):
         return RandomChoice(self.funcs)(image)
+
+
+class GaussianBlur:
+    """see also `torchvision.transforms.GaussianBlur`"""
+
+    def __init__(self, ksize=None, sigma=(.5, .5)):
+        self.ksize = ksize
+        self.sigma = sigma
+
+    def __call__(self, image):
+        h, w, c = image.shape
+
+        ksize = self.ksize
+        if not ksize:
+            ksize = min(w, h) // 8
+            ksize = (ksize * 2) + 1
+
+        return dict(
+            image=cv2.GaussianBlur(image, ksize, sigmaX=self.sigma[0], sigmaY=self.sigma[1]),
+            ksize=ksize
+        )
+
+
+class MotionBlur:
+    def __init__(self, degree=12, angle=90):
+        self.degree = degree
+        self.angle = angle
+
+    def get_params(self):
+        return self.degree, self.angle
+
+    def __call__(self, image, degree=None, angle=None):
+        degree, angle = self.get_params()
+
+        M = cv2.getRotationMatrix2D((degree // 2, degree // 2), angle, 1)
+        motion_blur_kernel = np.zeros((degree, degree))
+        motion_blur_kernel[degree // 2, :] = 1
+        motion_blur_kernel = cv2.warpAffine(motion_blur_kernel, M, (degree, degree))
+        motion_blur_kernel = motion_blur_kernel / degree
+        image = cv2.filter2D(image, -1, motion_blur_kernel)
+        image = np.clip(image, 0, 255).astype(np.uint8)
+
+        return dict(
+            image=image,
+            degree=degree,
+            angle=angle
+        )
+
+
+class RandomMotionBlur(MotionBlur):
+    def get_params(self):
+        degree = int((np.random.beta(4, 4) - 0.5) * 2 * self.degree)
+        angle = int(np.random.uniform(-self.angle, self.angle))
+
+        return degree, angle

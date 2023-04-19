@@ -1,7 +1,7 @@
 """change the shape of image by cutting the image directly"""
 import cv2
 import numpy as np
-from . import Apply, shift
+from . import Apply, geometry
 
 fill_mode = [
     cv2.BORDER_CONSTANT,

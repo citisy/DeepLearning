@@ -68,6 +68,7 @@ class Iou:
     def vanilla(box1, box2, inter=None, union=None):
         """vanilla iou
         Area(box1 & box2) / Area(box1 | box2)
+        See Also `torchvision.ops.box_iou`
 
         Arguments:
             box1(np.array): shape=(N, 4), 4 means xyxy.
@@ -112,6 +113,7 @@ class Iou:
     def giou(cls, box1, box2):
         """https://arxiv.org/pdf/1902.09630.pdf
         iou - (c - Area(box1 & box2)) / c
+        See Also `torchvision.ops.generalized_box_iou`
         """
         outer = Area.outer_areas(box1, box2)
         inter = Area.intersection_areas(box1, box2)
@@ -124,6 +126,7 @@ class Iou:
     def diou(cls, box1, box2, iou=None):
         """https://arxiv.org/pdf/1911.08287.pdf
         iou - d ^ 2 / c ^ 2
+        See Also `torchvision.ops.distance_box_iou`
         """
         box1_center = (box1[:, 2:] - box1[:, :2]) / 2
         box2_center = (box2[:, 2:] - box2[:, :2]) / 2
@@ -139,6 +142,7 @@ class Iou:
     def ciou(cls, box1, box2, a=None, v=None):
         """https://arxiv.org/pdf/1911.08287.pdf
         diou - av
+        See Also `torchvision.ops.complete_box_iou`
         """
         iou = cls.vanilla(box1, box2)
         diou = cls.diou(box1, box2, iou=iou)

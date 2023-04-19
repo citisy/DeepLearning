@@ -21,6 +21,8 @@ class CoordinateConvert:
         if not blow_up:
             wh = 1 / wh
 
+        wh = np.r_[wh, wh]
+
         convert_bbox = convert_func(bbox, convert_bbox) * wh
 
         if flag:

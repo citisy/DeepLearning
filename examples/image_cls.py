@@ -4,7 +4,7 @@ from torch import nn, optim
 from torch.utils.data import Dataset, DataLoader
 from tqdm import tqdm
 from utils.layers import SimpleInModule
-from cv_data_parse.data_augmentation import crop, scale, shift, pixel_perturbation, RandomApply
+from cv_data_parse.data_augmentation import crop, scale, geometry, pixel_perturbation, RandomApply
 from cv_data_parse.base import DataRegister
 from .base import Process
 
@@ -159,7 +159,7 @@ class Vgg_ImageNet(Process):
 
     def data_augment(self, x):
         x = scale.Jitter((256, 384))(x, self.input_size)['image']
-        x = RandomApply([shift.HFlip()])(x)['image']
+        x = RandomApply([geometry.HFlip()])(x)['image']
         return x
 
 
@@ -230,7 +230,7 @@ class ResNet_ImageNet(Process):
 
     def data_augment(self, x):
         x = scale.Jitter((256, 384))(x, self.input_size)['image']
-        x = RandomApply([shift.HFlip()])(x)['image']
+        x = RandomApply([geometry.HFlip()])(x)['image']
         return x
 
 
