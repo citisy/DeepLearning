@@ -1,7 +1,3 @@
-import os
-import json
-import cv2
-import shutil
 import re
 import numpy as np
 from utils import os_lib, converter
@@ -42,6 +38,7 @@ class Loader(DataLoader):
     default_set_type = [DataRegister.place_holder]
     image_suffix = 'png'
     pdf_suffix = 'pdf'
+    loader = os_lib.Loader(verbose=False)
 
     def _call(self, *args, task='', **kwargs):
         """See Also `cv_data_parse.base.DataLoader._call`
@@ -60,21 +57,24 @@ class Loader(DataLoader):
                 transcriptions: List[str]
         """
         for fp in Path(f'{self.data_dir}/pdfs/{task}').glob(f'*.{self.pdf_suffix}'):
-            images = os_lib.PdfOS.pdf2images2(str(fp))
-            doc = fitz.open(str(fp))
+            return self.load_per_pdf(fp, **kwargs)
 
-            for i, (image, page) in enumerate(zip(images, doc)):
-                data_dic = dict(
-                    _id=f'{fp.stem}_{i}.png',
-                    image=image,
-                )
-                data_dic.update(self.load_per_page(page, **kwargs))
+    def load_per_pdf(self, fp, **kwargs):
+        images = self.loader.load_pdf_to_images2(str(fp))
+        doc = fitz.open(str(fp))
 
-                yield data_dic
+        for i, (image, page) in enumerate(zip(images, doc)):
+            data_dic = dict(
+                _id=f'{fp.stem}_{i}.png',
+                image=image,
+            )
+            data_dic.update(self.load_per_page(page, **kwargs))
+
+            yield data_dic
 
     def load_per_page(
             self, source: fitz.fitz.Page or dict,
-            scale_ratio=1.33333333,
+            scale_ratio=1.33,
             shrink=True, strip=False, filter_blank=False
     ):
         transcriptions = []
