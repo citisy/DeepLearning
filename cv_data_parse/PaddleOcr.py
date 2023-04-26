@@ -70,11 +70,33 @@ class Loader(DataLoader):
         """See Also `self._call`
 
         Returns:
-            a dict had keys of
+            yield a dict had keys of
                 _id: image file name
                 image: see also image_type
                 segmentations: a np.ndarray with shape of (-1, 4, 2)
                 transcriptions: List[str]
+
+        Usage:
+            .. code-block:: python
+
+                # get data
+                from cv_data_parse.PaddleOcr import DataRegister, Loader
+
+                loader = Loader('data/ppocr_icdar2015')
+                train_data = loader.load_det(set_type=DataRegister.TRAIN, image_type=DataRegister.IMAGE)
+                r = next(train_data)
+
+                # visual
+                from utils.visualize import ImageVisualize
+
+                image = r['image']
+                segmentations = r['segmentations']
+                transcriptions = r['transcriptions']
+
+                vis_image = np.zeros_like(image) + 255
+                vis_image = ImageVisualize.box(vis_image, segmentations)
+                vis_image = ImageVisualize.text(vis_image, segmentations, transcriptions)
+
         """
 
         with open(f'{self.data_dir}/labels/{set_task}/{set_type.value}.txt', 'r', encoding='utf8') as f:
@@ -108,10 +130,27 @@ class Loader(DataLoader):
         """See Also `self._call`
 
         Returns:
-            a dict had keys of
+            yield a dict had keys of
                 _id: image file name
                 image: see also image_type
                 transcription: str
+
+        Usage:
+            .. code-block:: python
+
+                # get data
+                from cv_data_parse.PaddleOcr import DataRegister, Loader
+
+                loader = Loader('data/ppocr_icdar2015')
+                train_data = loader.load_rec(set_type=DataRegister.TRAIN, image_type=DataRegister.IMAGE)
+                r = next(train_data)
+
+                # visual
+                from utils.visualize import ImageVisualize
+
+                image = r['image']
+                transcription = r['transcription']
+
         """
 
         with open(f'{self.data_dir}/labels/{set_task}/{set_type.value}.txt', 'r', encoding='utf8') as f:
