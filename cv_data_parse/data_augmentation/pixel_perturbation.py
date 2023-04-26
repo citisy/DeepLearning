@@ -17,7 +17,7 @@ class GaussNoise:
         self.mean = mean
         self.sigma = sigma
 
-    def __call__(self, image):
+    def __call__(self, image, **kwargs):
         gauss = np.random.normal(self.mean, self.sigma, image.shape)
         noisy_image = image + gauss
         noisy_image = np.clip(noisy_image, a_min=0, a_max=255)
@@ -39,7 +39,7 @@ class SaltNoise:
         self.s_vs_p = s_vs_p
         self.amount = amount
 
-    def __call__(self, image):
+    def __call__(self, image, **kwargs):
         noisy_image = np.copy(image)
         num_salt = np.ceil(self.amount * image.size * self.s_vs_p)
         coords = tuple(np.random.randint(0, i - 1, int(num_salt)) for i in image.shape)
@@ -56,7 +56,7 @@ class SaltNoise:
 class PoissonNoise:
     """添加泊松噪声"""
 
-    def __call__(self, image):
+    def __call__(self, image, **kwargs):
         vals = len(np.unique(image))
         vals = 2 ** np.ceil(np.log2(vals))
         noisy_image = np.random.poisson(image * vals) / float(vals)
@@ -69,7 +69,7 @@ class PoissonNoise:
 class SpeckleNoise:
     """添加斑点噪声"""
 
-    def __call__(self, image):
+    def __call__(self, image, **kwargs):
         gauss = np.random.randn(*image.shape)
         noisy_image = image + image * gauss
         noisy_image = np.clip(noisy_image, a_min=0, a_max=255)
@@ -84,17 +84,18 @@ class Normalize:
     See Also `torchvision.transforms.Normalize`
     """
 
-    def __call__(self, image):
+    def __call__(self, image, **kwargs):
         mean = np.mean(image, axis=(0, 1))
         std = np.std(image, axis=(0, 1))
 
         image = (image - mean) / std
 
-        return dict(
-            image=image,
-            mean=mean,
-            std=std
-        )
+        return {
+            'image': image,
+            'pixel.Normalize': dict(
+                mean=mean,
+                std=std
+            )}
 
 
 class Pca:
@@ -105,7 +106,7 @@ class Pca:
         self.eigenvectors = eigenvectors
         self.eigen_values = eigen_values
 
-    def __call__(self, image):
+    def __call__(self, image, **kwargs):
 
         a = np.random.normal(0, 0.1)
 
@@ -157,7 +158,7 @@ class AdjustBrightness:
     def __init__(self, offset=.5):
         self.offset = offset
 
-    def __call__(self, image):
+    def __call__(self, image, **kwargs):
         factor = max(1 + self.offset, 0)
         table = np.array([i * factor for i in range(0, 256)]).clip(0, 255).astype('uint8')
         image = cv2.LUT(image, table)
@@ -181,7 +182,7 @@ class AdjustContrast:
     def __init__(self, offset=.5):
         self.offset = offset
 
-    def __call__(self, image):
+    def __call__(self, image, **kwargs):
         factor = max(1 + self.offset, 0)
         table = np.array([(i - 74) * factor + 74 for i in range(0, 256)]).clip(0, 255).astype('uint8')
         image = cv2.LUT(image, table)
@@ -205,7 +206,7 @@ class AdjustSaturation:
     def __init__(self, offset=.5):
         self.offset = offset
 
-    def __call__(self, image):
+    def __call__(self, image, **kwargs):
         factor = 1 + self.offset
         dtype = image.dtype
         image = image.astype(np.float32)
@@ -247,7 +248,7 @@ class AdjustHue:
     def __init__(self, offset=.1):
         self.offset = offset
 
-    def __call__(self, image):
+    def __call__(self, image, **kwargs):
         factor = min(max(1 + self.offset, -0.5), 0.5)
 
         dtype = image.dtype
@@ -283,10 +284,11 @@ class Jitter:
             offsets=(0.5, 0.5, 0.5, 0.1),
             apply_func=(AdjustBrightness, AdjustContrast, AdjustSaturation, AdjustHue)
     ):
-        self.funcs = [func(offset) for offset, func in zip(offsets, apply_func)]
+        funcs = [func(offset) for offset, func in zip(offsets, apply_func)]
+        self.apply = RandomChoice(funcs)
 
-    def __call__(self, image):
-        return RandomChoice(self.funcs)(image)
+    def __call__(self, image, **kwargs):
+        return self.apply(image=image)
 
 
 class GaussianBlur:
@@ -296,7 +298,7 @@ class GaussianBlur:
         self.ksize = ksize
         self.sigma = sigma
 
-    def __call__(self, image):
+    def __call__(self, image, **kwargs):
         h, w, c = image.shape
 
         ksize = self.ksize
@@ -304,10 +306,10 @@ class GaussianBlur:
             ksize = min(w, h) // 8
             ksize = (ksize * 2) + 1
 
-        return dict(
-            image=cv2.GaussianBlur(image, ksize, sigmaX=self.sigma[0], sigmaY=self.sigma[1]),
-            ksize=ksize
-        )
+        return {
+            'image': cv2.GaussianBlur(image, ksize, sigmaX=self.sigma[0], sigmaY=self.sigma[1]),
+            'pixel.GaussianBlur': dict(ksize=ksize)
+        }
 
 
 class MotionBlur:
@@ -318,7 +320,7 @@ class MotionBlur:
     def get_params(self):
         return self.degree, self.angle
 
-    def __call__(self, image, degree=None, angle=None):
+    def __call__(self, image, degree=None, angle=None, **kwargs):
         degree, angle = self.get_params()
 
         M = cv2.getRotationMatrix2D((degree // 2, degree // 2), angle, 1)
@@ -329,11 +331,12 @@ class MotionBlur:
         image = cv2.filter2D(image, -1, motion_blur_kernel)
         image = np.clip(image, 0, 255).astype(np.uint8)
 
-        return dict(
-            image=image,
-            degree=degree,
-            angle=angle
-        )
+        return {
+            'image': image,
+            'pixel.MotionBlur': dict(
+                degree=degree,
+                angle=angle
+            )}
 
 
 class RandomMotionBlur(MotionBlur):

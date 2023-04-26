@@ -24,22 +24,34 @@ fill_mode = [
 class HFlip:
     """See Also `torchvision.transforms.RandomHorizontalFlip`"""
 
-    def __call__(self, image):
+    def __call__(self, image, bboxes=None, **kwargs):
+        h, w = image.shape[:2]
         image = cv2.flip(image, 1)
 
+        if bboxes is not None:
+            bboxes = np.array(bboxes)
+            bboxes[:, 0::2] = w - bboxes[:, 0::2]
+
         return dict(
-            image=image
+            image=image,
+            bboxes=bboxes
         )
 
 
 class VFlip:
     """See Also `torchvision.transforms.RandomVerticalFlip`"""
 
-    def __call__(self, image):
+    def __call__(self, image, bboxes=None, **kwargs):
+        h, w = image.shape[:2]
         image = cv2.flip(image, 0)
 
+        if bboxes is not None:
+            bboxes = np.array(bboxes)
+            bboxes[:, 1::2] = h - bboxes[:, 1::2]
+
         return dict(
-            image=image
+            image=image,
+            bboxes=bboxes
         )
 
 
@@ -48,7 +60,7 @@ class RandomVShift:
         self.ignore_overlap = ignore_overlap
         self.shift_class = shift_class
 
-    def __call__(self, image, bboxes, classes=None):
+    def __call__(self, image, bboxes, classes=None, **kwargs):
         # check and select bbox
         new_bboxes = np.array(bboxes, dtype=int)
         classes = classes.copy()
@@ -68,7 +80,7 @@ class RandomVShift:
             if self.ignore_overlap:
                 shift_flag = shift_flag & (~flag)
             else:
-                raise ValueError('shift area must be not overlapped')
+                raise ValueError('shift area must be not overlapped, or set `ignore_overlap=True` while init the class')
 
         shift_img = np.zeros_like(image, dtype=image.dtype)
 
@@ -138,7 +150,7 @@ class RandomVShift:
 
 
 class RandomHShift(RandomVShift):
-    def __call__(self, image, bboxes, classes=None):
+    def __call__(self, image, bboxes, classes=None, **kwargs):
         bboxes = bboxes.copy()
         image = image.copy()
         image = image.T
@@ -188,7 +200,7 @@ class Rotate:
         (a, b, c, d, e, f) = matrix
         return a * x + b * y + c, d * x + e * y + f
 
-    def __call__(self, image):
+    def __call__(self, image, **kwargs):
         angle = self.get_params()
 
         h, w, c = image.shape
@@ -293,7 +305,7 @@ class Affine:
         M[5] += cy
         return M
 
-    def __call__(self, image):
+    def __call__(self, image, **kwargs):
         src_h, src_w = image.shape[:2]
         angle, translate, scale, shear = self.get_params()
 
@@ -352,10 +364,11 @@ class RandomAffine(Affine):
 
 
 class Perspective:
-    def __init__(self, distortion=0.25, interpolation=0, fill_type=0):
+    def __init__(self, distortion=0.25, interpolation=0, fill_type=0, keep_shape=True):
         self.distortion = distortion
         self.interpolation = interpolation_mode[interpolation]
         self.fill_type = fill_mode[fill_type]
+        self.keep_shape = keep_shape
 
     def get_params(self, h, w):
         offset_h = self.distortion * h
@@ -368,7 +381,7 @@ class Perspective:
             (offset_w, h - 1 - offset_h)
         ], dtype=np.float32)
 
-    def __call__(self, image):
+    def __call__(self, image, **kwargs):
         h, w = image.shape[:2]
         end_points = self.get_params(h, w)
         start_points = np.array([(0, 0), (w - 1, 0), (w - 1, h - 1), (0, h - 1)], dtype=np.float32)
@@ -382,13 +395,13 @@ class Perspective:
             borderMode=self.fill_type
         )
 
-        # crop
-        # rect = cv2.minAreaRect(end_points)
-        # bbox = cv2.boxPoints(rect).astype(dtype=np.int)
-        # max_x, max_y = bbox[:, 0].max(), bbox[:, 1].max()
-        # min_x, min_y = bbox[:, 0].min(), bbox[:, 1].min()
-        # min_x, min_y = max(min_x, 0), max(min_y, 0)
-        # image = image[min_y:, min_x:]
+        if not self.keep_shape:
+            rect = cv2.minAreaRect(end_points)
+            bbox = cv2.boxPoints(rect).astype(dtype=np.int)
+            max_x, max_y = bbox[:, 0].max(), bbox[:, 1].max()
+            min_x, min_y = bbox[:, 0].min(), bbox[:, 1].min()
+            min_x, min_y = max(min_x, 0), max(min_y, 0)
+            image = image[min_y:max_y, min_x:max_x]
 
         return dict(
             image=image,

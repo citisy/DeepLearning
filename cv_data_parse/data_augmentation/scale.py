@@ -19,16 +19,21 @@ class Proportion:
     def __init__(self, interpolation=0):
         self.interpolation = interpolation_mode[interpolation]
 
-    def __call__(self, image, dst):
+    def __call__(self, image, dst, bboxes=None, **kwargs):
         h, w, c = image.shape
         a = min(w, h)
         p = dst / a
         image = cv2.resize(image, None, fx=p, fy=p, interpolation=self.interpolation)
 
-        return dict(
-            image=image,
-            p=p
-        )
+        if bboxes is not None:
+            bboxes = np.array(bboxes)
+            bboxes *= p
+
+        return {
+            'image': image,
+            'bboxes': bboxes,
+            'scale.Proportion': dict(p=p)
+        }
 
 
 class Rectangle:
@@ -38,12 +43,24 @@ class Rectangle:
     def __init__(self, interpolation=0):
         self.interpolation = interpolation_mode[interpolation]
 
-    def __call__(self, image, dst):
+    def __call__(self, image, dst, bboxes=None, **kwargs):
+        h, w, c = image.shape
+
         image = cv2.resize(image, (dst, dst), interpolation=self.interpolation)
 
-        return dict(
-            image=image
-        )
+        pw = dst / w
+        ph = dst / h
+
+        if bboxes is not None:
+            bboxes = np.array(bboxes)
+            bboxes[:, 0::2] *= pw
+            bboxes[:, 1::2] *= ph
+
+        return {
+            'image': image,
+            'bboxes': bboxes,
+            'scale.Rectangle': dict(pw=pw, ph=ph)
+        }
 
 
 class LetterBox:
@@ -55,8 +72,8 @@ class LetterBox:
             crop.Center(is_pad=True, pad_type=2)
         ])
 
-    def __call__(self, image, dst):
-        return self.apply(image, dst)
+    def __call__(self, image, dst, bboxes=None, **kwargs):
+        return self.apply(image=image, dst=dst, bboxes=bboxes)
 
 
 class Jitter:
@@ -68,10 +85,10 @@ class Jitter:
         self.resize = Proportion()
         self.crop = crop.Random(is_pad=True, pad_type=2)
 
-    def __call__(self, image, dst):
+    def __call__(self, image, dst, bboxes=None, **kwargs):
         s = np.random.randint(*self.size_range)
-        ret = dict(_dst=s)
-        ret.update(self.resize(image, s))
-        ret.update(self.crop(ret['image'], dst))
+        ret = {'scale.Jitter': dict(dst=s)}
+        ret.update(self.resize(image, s, bboxes=bboxes))
+        ret.update(self.crop(ret['image'], dst, bboxes=ret['bboxes']))
 
         return ret
