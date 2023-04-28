@@ -28,7 +28,6 @@ class SqueezeNet(nn.Module):
             out_module = OutModule(output_size, input_size=1000)
 
         layers = [
-            in_module,
             Conv(3, 96, 7, s=2),
         ]
 
@@ -41,16 +40,20 @@ class SqueezeNet(nn.Module):
                 in_ch = out_ches[1] + out_ches[2]
 
         layers.append(Conv(in_ch, 1000, 1))
-        layers.append(nn.AdaptiveAvgPool2d(1))
 
+        self.input = in_module
         self.conv_seq = nn.Sequential(*layers)
-        self.flatten = nn.Flatten()
+        self.flatten = nn.Sequential(
+            nn.AdaptiveAvgPool2d(1),
+            nn.Flatten()
+        )
         self.fcn = nn.Sequential(
             Linear(1 * 1 * 1000, 1000),
             out_module
         )
 
     def forward(self, x):
+        x = self.input(x)
         x = self.conv_seq(x)
         x = self.flatten(x)
         x = self.fcn(x)

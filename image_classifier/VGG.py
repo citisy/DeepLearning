@@ -27,9 +27,7 @@ class VGG(nn.Module):
         if out_module is None:
             out_module = OutModule(output_size, input_size=1000)
 
-        layers = [
-            in_module
-        ]
+        layers = []
 
         in_ch, out_ch = 3, 3
 
@@ -37,6 +35,7 @@ class VGG(nn.Module):
             layers.append(VGGBlock(in_ch, out_ch, n_conv))
             in_ch = out_ch
 
+        self.input = in_module
         self.conv_seq = nn.Sequential(*layers)
         self.flatten = nn.Flatten()
         self.fcn = nn.Sequential(
@@ -51,6 +50,7 @@ class VGG(nn.Module):
         )
 
     def forward(self, x):
+        x = self.input(x)
         x = self.conv_seq(x)
         x = self.flatten(x)
         x = self.fcn(x)

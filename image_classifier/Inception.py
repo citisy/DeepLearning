@@ -54,8 +54,6 @@ class Inception(nn.Module):
         assert len(conv_config) == 9, f'Must have 9 Inception blocks, but have {len(conv_config)} Inception blocks now'
 
         layers = [
-            in_module,
-
             Conv(3, 64, 7, s=2, is_bn=is_bn),
             nn.MaxPool2d(3, 2, padding=1),
 
@@ -81,10 +79,12 @@ class Inception(nn.Module):
             layers.append(InceptionA(in_ch, *out_ch))
             in_ch = out_ch[0] + out_ch[2] + out_ch[4] + out_ch[5]
 
-        layers.append(nn.AdaptiveAvgPool2d(1))
-
+        self.input = in_module
         self.conv_seq = nn.Sequential(*layers)
-        self.flatten = nn.Flatten()
+        self.flatten = nn.Sequential(
+            nn.AdaptiveAvgPool2d(1),
+            nn.Flatten()
+        )
         self.fcn = nn.Sequential(
             nn.Dropout(drop_prob),
             Linear(1 * 1 * 1024, 1000),
@@ -92,6 +92,7 @@ class Inception(nn.Module):
         )
 
     def forward(self, x):
+        x = self.input(x)
         x = self.conv_seq(x)
         x = self.flatten(x)
         x = self.fcn(x)

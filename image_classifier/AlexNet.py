@@ -20,6 +20,7 @@ class AlexNet(nn.Module):
         if out_module is None:
             out_module = OutModule(output_size, input_size=1000)
 
+        self.input = in_module
         self.conv_seq = nn.Sequential(
             in_module,
 
@@ -48,6 +49,7 @@ class AlexNet(nn.Module):
         )
 
     def forward(self, x):
+        x = self.input(x)
         x = self.conv_seq(x)
         x = self.flatten(x)
         x = self.fcn(x)

@@ -19,8 +19,8 @@ class Model(nn.Module):
         if out_module is None:
             out_module = OutModule(output_size, input_size=84)
 
+        self.input = in_module
         self.conv_seq = nn.Sequential(
-            in_module,
             Conv(3, 6, 1),
             Conv(6, 6, 3, s=2),
             Conv(6, 16, 5, p=0),
@@ -34,6 +34,7 @@ class Model(nn.Module):
         )
 
     def forward(self, x):
+        x = self.input(x)
         x = self.conv_seq(x)
         x = self.flatten(x)
         x = self.fcn(x)
