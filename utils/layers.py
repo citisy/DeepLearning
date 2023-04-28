@@ -1,7 +1,7 @@
 from torch import nn
 
 
-class ImgClsModelExample(nn.Module):
+class BaseImgClsModel(nn.Module):
     def __init__(
             self,
             in_ch=None, input_size=None, output_size=None,
@@ -10,11 +10,15 @@ class ImgClsModelExample(nn.Module):
     ):
         super().__init__()
 
+        self.in_channels = in_ch
+        self.in_features = input_size
+        self.out_features = output_size
+
         if in_module is None:
-            in_module = ConvInModule(in_ch, input_size, out_ch=3, output_size=224)
+            self.in_module = ConvInModule(in_ch, input_size, out_ch=3, output_size=224)
 
         if out_module is None:
-            out_module = OutModule(output_size, input_size=1000)
+            self.out_module = OutModule(output_size, input_size=1000)
 
         layers = [
             in_module,
@@ -38,7 +42,7 @@ class ImgClsModelExample(nn.Module):
         return x
 
 
-class ObjectDetectModelExample(nn.Module):
+class BaseObjectDetectionModel(nn.Module):
     def __init__(
             self,
             in_ch=None, input_size=None, output_size=None,
@@ -79,6 +83,7 @@ class ConvInModule(nn.Module):
         assert in_ch <= out_ch, f'input channel must not be greater than {out_ch = }'
         assert input_size >= output_size, f'input size must not be smaller than {output_size = }'
 
+        self.in_channels = in_ch
         self.out_channels = out_ch
 
         # in_ch -> min_in_ch
@@ -143,14 +148,18 @@ class Conv(nn.Module):
 
 
 class Linear(nn.Module):
-    def __init__(self, in_size, out_size, act=nn.Sigmoid, is_bn=True):
+    def __init__(self, in_size, out_size, act=nn.Sigmoid, is_bn=True, drop_prob=None):
         super().__init__()
         self.is_bn = is_bn
+        self.is_drop = bool(drop_prob)
 
         self.linear = nn.Linear(in_size, out_size)
 
         if self.is_bn:
             self.bn = nn.BatchNorm1d(out_size)
+
+        if self.is_drop:
+            self.drop = nn.Dropout(drop_prob)
 
         self.act = act()
 
@@ -159,6 +168,9 @@ class Linear(nn.Module):
 
         if self.is_bn:
             x = self.bn(x)
+
+        if self.is_drop:
+            x = self.drop(x)
 
         x = self.act(x)
 
