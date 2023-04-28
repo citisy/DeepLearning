@@ -2,7 +2,7 @@
 import cv2
 import numpy as np
 import numbers
-from utils import visualize
+from metrics.object_detection import Iou
 
 interpolation_mode = [
     cv2.INTER_LINEAR,
@@ -63,9 +63,13 @@ class RandomVShift:
     def __call__(self, image, bboxes, classes=None, **kwargs):
         # check and select bbox
         new_bboxes = np.array(bboxes, dtype=int)
-        classes = classes.copy()
+        if classes is not None:
+            classes = np.array(classes)
 
-        flag = self.check_coor_overlap(new_bboxes[:, 1], new_bboxes[:, 3])
+        iou = Iou.line_iou(new_bboxes[:, (1, 3)], new_bboxes[:, (1, 3)])
+        _ = list(range(len(iou)))
+        iou[_, _] = False
+        flag = np.any(iou, axis=1) | np.any(iou, axis=0)
 
         if isinstance(self.shift_class, int):
             shift_flag = classes == self.shift_class
@@ -86,8 +90,8 @@ class RandomVShift:
 
         _bboxes = new_bboxes[shift_flag]
         shift_bbox = _bboxes.copy()
-        non_bbox = new_bboxes[~shift_flag].copy()
-        non_delta = np.zeros((len(non_bbox), 2))
+        non_shift_bbox = new_bboxes[~shift_flag].copy()
+        non_shift_delta = np.zeros((len(non_shift_bbox), 2))
 
         argidx = np.argsort(_bboxes[:, 1])
 
@@ -109,56 +113,68 @@ class RandomVShift:
             shift_img[new_end: new_b] = image[c: d]
 
             shift_bbox[idx[i], (1, 3)] = (new_end, new_b)
-            non_delta[(non_bbox[:, 1] + non_delta[:, 0] > new_end)] = delta
+            non_shift_delta[(non_shift_bbox[:, 1] + non_shift_delta[:, 0] > new_end)] = delta
 
             new_start = new_b
             old_start = b
 
         shift_img[new_start:] = image[old_start:]
-        non_bbox[:, (1, 3)] += non_delta.astype(int)
-        new_bboxes = np.concatenate([non_bbox, shift_bbox], axis=0)
-
-        if classes is not None:
-            classes = np.concatenate([classes[~shift_flag], classes[shift_flag]])
+        non_shift_bbox[:, (1, 3)] += non_shift_delta.astype(int)
+        new_bboxes[shift_flag] = shift_bbox
+        new_bboxes[~shift_flag] = non_shift_bbox
 
         return dict(
             image=shift_img,
             bboxes=new_bboxes.astype(bboxes.dtype),
-            classes=classes
         )
-
-    @staticmethod
-    def check_coor_overlap(a, b):
-        """box1 = (ya1, yb1), box2 = (ya2, yb2),
-        which were overlap in y axis where
-        (ya1 < ya2 & yb1 > ya2) | (yb1 > ya2 & yb1 < yb2)
-        """
-        f1 = (a[:, None] <= a[None, :]) & (b[:, None] >= a[None, :])
-        f2 = (b[:, None] >= a[None, :]) & (b[:, None] <= b[None, :])
-        _ = list(range(len(a)))
-        f1[_, _] = False
-        f2[_, _] = False
-
-        return np.any(f1 | f2, axis=1) | np.any(f1 | f2, axis=0)
 
 
 class RandomHShift(RandomVShift):
     def __call__(self, image, bboxes, classes=None, **kwargs):
-        bboxes = bboxes.copy()
-        image = image.copy()
-        image = image.T
-        bboxes[:, (0, 1, 2, 3)] = bboxes[:, (1, 0, 3, 2)]
-
-        ret = super().__call__(image, bboxes, classes)
-
-        ret['image'] = ret['image'].T
-        ret['bboxes'][:, (0, 1, 2, 3)] = ret['bboxes'][:, (1, 0, 3, 2)]
+        ret = dict(image=image, bboxes=bboxes, classes=classes)
+        ret.update(SimpleRotate(90)(**ret))
+        ret.update(super().__call__(**ret))
+        ret.update(SimpleRotate(-90)(**ret))
+        ret.pop('geo.Rotate')
 
         return ret
 
 
+class SimpleRotate:
+    """only rotates the image by a multiple of angle, and could be change the shape of image"""
+
+    def __init__(self, angle=90):
+        self.angle = angle
+
+    def __call__(self, image, bboxes=None, **kwargs):
+        k = round(self.angle / 90) % 4
+
+        image = np.rot90(image, k)
+        image = np.ascontiguousarray(image)
+
+        if bboxes is not None:
+            h, w = image.shape[:2]
+            if k == 1:
+                bboxes = bboxes[:, (1, 2, 3, 0)]
+                bboxes[:, 1::2] = h - bboxes[:, 1::2]
+            elif k == 2:
+                bboxes = bboxes[:, (2, 3, 0, 1)]
+                bboxes[:, 1::2] = h - bboxes[:, 1::2]
+                bboxes[:, 0::2] = w - bboxes[:, 0::2]
+            elif k == 3:
+                bboxes = bboxes[:, (3, 0, 1, 2)]
+                bboxes[:, 0::2] = w - bboxes[:, 0::2]
+
+        return {
+            'image': image,
+            'bboxes': bboxes,
+            'geo.Rotate': dict(
+                angle=k * 90,
+            )}
+
+
 class Rotate:
-    """Rotates the image by angle.
+    """Rotates the image by angle without changing the shape of image.
 
     Args:
         angle (float or int): In degrees counter-clockwise order.
@@ -282,6 +298,7 @@ class RandomRotate(Rotate):
 
 class Affine:
     """rotate, scale and shift the image"""
+
     def __init__(self, angle=45, translate=(0., 0.), interpolation=0, fill_type=0, scale=1., shear=0.):
         self.angle = angle
         self.translate = translate

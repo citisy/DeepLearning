@@ -9,7 +9,7 @@ RECTANGLE = 2
 
 class ImageVisualize:
     @staticmethod
-    def box(img, boxes, visual_type=POLYGON, colors=None, line_thickness=None):
+    def box(img, boxes, visual_type=RECTANGLE, colors=None, line_thickness=None):
         """添加若干个线框
         char_boxes: polygon: (-1, -1, 2) or rectangle: (-1, 4)
         """
@@ -136,7 +136,7 @@ class ImageVisualize:
         boxes: (-1, 4)
         """
         line_thickness = line_thickness or round(0.001 * (img.shape[0] + img.shape[1]) / 2) + 1  # line/font thickness
-        colors = colors or [np.random.randint(0, 255) for _ in range(3)] * len(boxes)
+        colors = colors or [tuple(np.random.randint(0, 255) for _ in range(3))] * len(boxes)
 
         img = cls.box(img, boxes, visual_type=RECTANGLE, colors=colors, line_thickness=line_thickness)
 

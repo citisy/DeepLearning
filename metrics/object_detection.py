@@ -65,6 +65,19 @@ class Area:
 
 class Iou:
     @staticmethod
+    def line_iou(line1, line2):
+        """line1 = (a1, b1), line2 = (a2, b2),
+        which were overlap in 1-d cord where
+        (a1 < a2 & b1 > a2) | (b1 > a2 & b1 < b2)
+        """
+        a1, b1, a2, b2 = line1[:, 0], line1[:, 1], line2[:, 0], line2[:, 1]
+
+        f1 = (a1[:, None] <= a2[None, :]) & (b1[:, None] >= a2[None, :])
+        f2 = (b1[:, None] >= a2[None, :]) & (b1[:, None] <= b2[None, :])
+
+        return f1 | f2
+
+    @staticmethod
     def vanilla(box1, box2, inter=None, union=None):
         """vanilla iou
         Area(box1 & box2) / Area(box1 | box2)
