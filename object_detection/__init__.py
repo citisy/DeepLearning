@@ -50,7 +50,7 @@ class NMS(nn.Module):
             if arg.numel() == 1:
                 break
 
-            iou = torchvision.ops.box_iou(bx[i], bx)
+            iou = torchvision.ops.box_iou(bx[i, :4], bx[:, 4])
             fi = iou < self.iou_thres
             arg = arg[fi]
 
