@@ -3,6 +3,7 @@ import cv2
 import numbers
 import numpy as np
 from . import RandomChoice
+from metrics.object_detection import Iou
 
 
 class GaussNoise:
@@ -342,6 +343,111 @@ class MotionBlur:
 class RandomMotionBlur(MotionBlur):
     def get_params(self):
         degree = int((np.random.beta(4, 4) - 0.5) * 2 * self.degree)
-        angle = int(np.random.uniform(-self.angle, self.angle))
+
+        if isinstance(self.angle, numbers.Number):
+            angle = int(np.random.uniform(-self.angle, self.angle))
+        else:
+            angle = int(np.random.uniform(self.angle[0], self.angle[1]))
 
         return degree, angle
+
+
+class Erase:
+    def __init__(self, scale=0.1, ratio=1., fill=None, max_iter=10):
+        self.scale = scale
+        self.ratio = ratio
+        self.fill = fill if fill is not None else np.random.randint(100, 125, size=3)
+        self.max_iter = max_iter
+
+    def get_params(self):
+        return self.scale, self.ratio
+
+    def __call__(self, image, **kwargs):
+        h, w, c = image.shape
+        area = h * w
+        scale, ratio = None, None
+
+        for _ in range(self.max_iter):
+            scale, ratio = self.get_params()
+            erase_area = area * scale
+
+            _h = int(round(np.sqrt(erase_area * ratio)))
+            _w = int(round(np.sqrt(erase_area / ratio)))
+
+            if _w < w and _h < h:
+                y1 = np.random.randint(0, h - _h)
+                x1 = np.random.randint(0, w - _w)
+                if c == 3:
+                    image[y1:y1 + _h, x1:x1 + _w] = self.fill
+
+                break
+
+        return {
+            'image': image,
+            'pixel.Erase': dict(
+                scale=scale,
+                ratio=ratio
+            )}
+
+
+class RandomErasing(Erase):
+    """https://arxiv.org/abs/1708.04896
+    see also `torchvision.transforms.RandomErasing`"""
+
+    def get_params(self):
+        if isinstance(self.scale, numbers.Number):
+            scale = np.random.uniform(self.scale - 0.05, self.scale + 0.05)
+        else:
+            scale = np.random.uniform(self.scale[0], self.scale[1])
+
+        if isinstance(self.ratio, numbers.Number):
+            ratio = np.random.uniform(self.ratio - 0.5, self.ratio + 0.5)
+        else:
+            ratio = np.random.uniform(self.ratio[0], self.ratio[1])
+
+        return scale, ratio
+
+
+class CutOut:
+    """https://arxiv.org/abs/1708.04552
+    """
+
+    def __init__(self, iou_thres=0.6):
+        self.scales = [0.5] * 1 + [0.25] * 2 + [0.125] * 4 + [0.0625] * 8 + [0.03125] * 16  # image size fraction
+        self.iou_thres = iou_thres
+
+    def __call__(self, image, bboxes=None, classes=None, **kwargs):
+        h, w = image.shape[:2]
+
+        mask_bboxes = []
+
+        for s in self.scales:
+            mask_h = np.random.randint(1, int(h * s))  # create random masks
+            mask_w = np.random.randint(1, int(w * s))
+
+            # box
+            xmin = max(0, np.random.randint(0, w) - mask_w // 2)
+            ymin = max(0, np.random.randint(0, h) - mask_h // 2)
+            xmax = min(w, xmin + mask_w)
+            ymax = min(h, ymin + mask_h)
+
+            # apply random color mask
+            image[ymin:ymax, xmin:xmax] = [np.random.randint(64, 191) for _ in range(3)]
+
+            if bboxes is not None and s > 0.03:
+                mask_bboxes.append([xmin, ymin, xmax, ymax])
+
+        if bboxes is not None:
+            iou = Iou.vanilla(bboxes, mask_bboxes)
+            iou = np.max(iou, axis=1)
+            idx = iou < self.iou_thres
+            bboxes = bboxes[idx]
+
+            if classes is not None:
+                classes = classes[idx]
+
+        return dict(
+            image=image,
+            bboxes=bboxes,
+            classes=classes,
+        )

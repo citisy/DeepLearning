@@ -114,13 +114,6 @@ class RandomVShift:
             new_start = new_b
             old_start = b
 
-            tmp_bbox = non_bbox.copy()
-            tmp_bbox[:, (1, 3)] += non_delta.astype(int)
-            tmp_img = visualize.ImageVisualize.box(shift_img.copy(), shift_bbox, visual_type=visualize.RECTANGLE)
-            tmp_img = visualize.ImageVisualize.box(tmp_img, tmp_bbox, visual_type=visualize.RECTANGLE)
-            tmp_img = np.concatenate([image, tmp_img], axis=1)
-            cv2.imwrite(f'{i}.png', tmp_img)
-
         shift_img[new_start:] = image[old_start:]
         non_bbox[:, (1, 3)] += non_delta.astype(int)
         new_bboxes = np.concatenate([non_bbox, shift_bbox], axis=0)
@@ -200,7 +193,7 @@ class Rotate:
         (a, b, c, d, e, f) = matrix
         return a * x + b * y + c, d * x + e * y + f
 
-    def __call__(self, image, **kwargs):
+    def __call__(self, image, bboxes=None, **kwargs):
         angle = self.get_params()
 
         h, w, c = image.shape
@@ -249,20 +242,46 @@ class Rotate:
             borderValue=self.fill
         )
 
-        return dict(
-            image=image,
-            angle=angle
-        )
+        if bboxes is not None:
+            n = len(bboxes)
+            xy = np.ones((n * 4, 3))
+            xy[:, :2] = bboxes[:, [0, 1, 2, 3, 0, 3, 2, 1]].reshape(n * 4, 2)  # x1y1, x2y2, x1y2, x2y1
+            xy = xy @ M.T  # transform
+            xy = xy[:, :2].reshape(n, 8)  # perspective rescale or affine
+
+            # create new boxes
+            x = xy[:, [0, 2, 4, 6]]
+            y = xy[:, [1, 3, 5, 7]]
+            new = np.concatenate((x.min(1), y.min(1), x.max(1), y.max(1))).reshape(4, n).T
+
+            # clip
+            new[:, [0, 2]] = new[:, [0, 2]].clip(0, w)
+            new[:, [1, 3]] = new[:, [1, 3]].clip(0, h)
+
+            bboxes = new
+
+        return {
+            'image': image,
+            'bboxes': bboxes,
+            'geo.Rotate': dict(
+                angle=angle,
+            )}
 
 
 class RandomRotate(Rotate):
     """See Also `torchvision.transforms.RandomRotation`"""
 
     def get_params(self):
-        return int(np.random.uniform(-self.angle, self.angle))
+        if isinstance(self.angle, numbers.Number):
+            angle = int(np.random.uniform(-self.angle, self.angle))
+        else:
+            angle = int(np.random.uniform(self.angle[0], self.angle[1]))
+
+        return angle
 
 
 class Affine:
+    """rotate, scale and shift the image"""
     def __init__(self, angle=45, translate=(0., 0.), interpolation=0, fill_type=0, scale=1., shear=0.):
         self.angle = angle
         self.translate = translate
@@ -305,26 +324,26 @@ class Affine:
         M[5] += cy
         return M
 
-    def __call__(self, image, **kwargs):
-        src_h, src_w = image.shape[:2]
+    def __call__(self, image, bboxes=None, **kwargs):
+        h, w = image.shape[:2]
         angle, translate, scale, shear = self.get_params()
 
-        M = self._get_inverse_affine_matrix((src_w / 2, src_h / 2), angle, (0, 0), scale, shear)
+        M = self._get_inverse_affine_matrix((w / 2, h / 2), angle, (0, 0), scale, shear)
         M = np.array(M).reshape(2, 3)
 
-        startpoints = [(0, 0), (src_w - 1, 0), (src_w - 1, src_h - 1), (0, src_h - 1)]
+        startpoints = [(0, 0), (w - 1, 0), (w - 1, h - 1), (0, h - 1)]
         project = lambda x, y, a, b, c: int(a * x + b * y + c)
         endpoints = [(project(x, y, *M[0]), project(x, y, *M[1])) for x, y in startpoints]
 
         rect = cv2.minAreaRect(np.array(endpoints))
-        bbox = cv2.boxPoints(rect).astype(dtype=np.int)
+        bbox = cv2.boxPoints(rect).astype(int)
         max_x, max_y = bbox[:, 0].max(), bbox[:, 1].max()
         min_x, min_y = bbox[:, 0].min(), bbox[:, 1].min()
 
         dst_w = int(max_x - min_x)
         dst_h = int(max_y - min_y)
-        M[0, 2] += (dst_w - src_w) / 2
-        M[1, 2] += (dst_h - src_h) / 2
+        M[0, 2] += (dst_w - w) / 2
+        M[1, 2] += (dst_h - h) / 2
 
         # add translate
         dst_w += int(abs(translate[0]))
@@ -338,27 +357,54 @@ class Affine:
             image,
             M, (dst_w, dst_h),
             flags=self.interpolation,
-            borderMode=self.fill_type
+            borderMode=self.fill_type,
+            borderValue=(114, 114, 114)
         )
 
-        return dict(
-            image=image,
-            angle=angle,
-            translate=translate,
-            scale=scale,
-            shear=shear
-        )
+        if bboxes is not None:
+            n = len(bboxes)
+            xy = np.ones((n * 4, 3))
+            xy[:, :2] = bboxes[:, [0, 1, 2, 3, 0, 3, 2, 1]].reshape(n * 4, 2)  # x1y1, x2y2, x1y2, x2y1
+            xy = xy @ M.T  # transform
+            xy = xy[:, :2].reshape(n, 8)  # perspective rescale or affine
+
+            # create new boxes
+            x = xy[:, [0, 2, 4, 6]]
+            y = xy[:, [1, 3, 5, 7]]
+            new = np.concatenate((x.min(1), y.min(1), x.max(1), y.max(1))).reshape(4, n).T
+
+            # clip
+            new[:, [0, 2]] = new[:, [0, 2]].clip(0, dst_w)
+            new[:, [1, 3]] = new[:, [1, 3]].clip(0, dst_h)
+
+            bboxes = new
+
+        return {
+            'image': image,
+            'bboxes': bboxes,
+            'geo.Affine': dict(
+                angle=angle,
+                translate=translate,
+                scale=scale,
+                shear=shear
+            )}
 
 
 class RandomAffine(Affine):
     """see also `torchvision.transforms.RandomAffine`"""
 
     def get_params(self):
-        angle = int(np.random.uniform(-self.angle, self.angle))
-        translate = (
-            int(np.random.uniform(-self.translate[0], self.translate[0])),
-            int(np.random.uniform(-self.translate[1], self.translate[1]))
-        )
+        if isinstance(self.angle, numbers.Number):
+            angle = int(np.random.uniform(-self.angle, self.angle))
+        else:
+            angle = int(np.random.uniform(self.angle[0], self.angle[1]))
+
+        if isinstance(self.translate, numbers.Number):
+            translate = np.array([-self.translate, self.translate])
+        else:
+            translate = np.array(self.translate)
+
+        translate = np.random.uniform(*translate, size=2).astype(int)
 
         return angle, translate, self.scale, self.shear
 
@@ -381,7 +427,7 @@ class Perspective:
             (offset_w, h - 1 - offset_h)
         ], dtype=np.float32)
 
-    def __call__(self, image, **kwargs):
+    def __call__(self, image, bboxes=None, **kwargs):
         h, w = image.shape[:2]
         end_points = self.get_params(h, w)
         start_points = np.array([(0, 0), (w - 1, 0), (w - 1, h - 1), (0, h - 1)], dtype=np.float32)
@@ -392,7 +438,8 @@ class Perspective:
             image,
             M, (w, h),
             flags=self.interpolation,
-            borderMode=self.fill_type
+            borderMode=self.fill_type,
+            borderValue=(114, 114, 114)
         )
 
         if not self.keep_shape:
@@ -403,21 +450,46 @@ class Perspective:
             min_x, min_y = max(min_x, 0), max(min_y, 0)
             image = image[min_y:max_y, min_x:max_x]
 
-        return dict(
-            image=image,
-            end_points=end_points
-        )
+        if bboxes is not None:
+            n = len(bboxes)
+            xy = np.ones((n * 4, 3))
+            xy[:, :2] = bboxes[:, [0, 1, 2, 3, 0, 3, 2, 1]].reshape(n * 4, 2)  # x1y1, x2y2, x1y2, x2y1
+            xy = xy @ M.T  # transform
+            xy = (xy[:, :2] / xy[:, 2:3]).reshape(n, 8)  # perspective rescale or affine
+
+            # create new boxes
+            x = xy[:, [0, 2, 4, 6]]
+            y = xy[:, [1, 3, 5, 7]]
+            new = np.concatenate((x.min(1), y.min(1), x.max(1), y.max(1))).reshape(4, n).T
+
+            # clip
+            new[:, [0, 2]] = new[:, [0, 2]].clip(0, w)
+            new[:, [1, 3]] = new[:, [1, 3]].clip(0, h)
+
+            bboxes = new
+
+        return {
+            'image': image,
+            'bboxes': bboxes,
+            'geo.Perspective': dict(
+                end_points=end_points
+            )}
 
 
 class RandomPerspective(Perspective):
     """see also `torchvision.transforms.RandomPerspective`"""
 
     def get_params(self, h, w):
-        _offset_h = self.distortion * h
-        _offset_w = self.distortion * w
+        if isinstance(self.distortion, numbers.Number):
+            distortion = np.array([-self.distortion, self.distortion])
+        else:
+            distortion = np.array(self.distortion)
 
-        offset_h = np.random.uniform(-_offset_h, _offset_h, size=4)
-        offset_w = np.random.uniform(-_offset_w, _offset_w, size=4)
+        _offset_h = distortion * h
+        _offset_w = distortion * w
+
+        offset_h = np.random.uniform(*_offset_h, size=4)
+        offset_w = np.random.uniform(*_offset_w, size=4)
 
         return np.array([
             (offset_w[0], offset_h[0]),
