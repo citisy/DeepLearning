@@ -163,13 +163,14 @@ class Iou:
 
 class ConfusionMatrix:
     @staticmethod
-    def tp(true, pred, classes=None, iou_thres=0.5,
+    def tp(gt_box, det_box, classes=None, iou_thres=0.5,
            iou=None, iou_method=Iou.vanilla, iou_method_kwarg=dict()):
         """
 
         Args:
-            true: (N, )
-            pred: (M, )
+            gt_box: (N, 4)
+            det_box: (M, 4)
+            classes (List[iter]):
             iou_thres:
             iou: (N, M)
             iou_method:
@@ -181,13 +182,13 @@ class ConfusionMatrix:
 
         """
         if iou is None:
-            iou = iou_method(true, pred, **iou_method_kwarg)
+            iou = iou_method(gt_box, det_box, **iou_method_kwarg)
             iou = np.where(iou < iou_thres, 0, 1)
 
         if classes:
             true_class, pred_class = classes
 
-            iou = iou_method(true, pred, **iou_method_kwarg)
+            iou = iou_method(gt_box, det_box, **iou_method_kwarg)
             x = np.where((iou >= iou_thres))
             correct_index = np.where(true_class[x[0]] == pred_class[x[1]])
 
@@ -195,7 +196,7 @@ class ConfusionMatrix:
             x = x[correct_index[0], :]
 
             if x.shape[0]:
-                matches = np.concatenate((x, iou[x[:, 0], x[:, 1]][:, None]), 1)  # [true, pred, iou]
+                matches = np.concatenate((x, iou[x[:, 0], x[:, 1]][:, None]), 1)  # [gt_box, det_box, iou]
                 if x.shape[0] > 1:
                     matches = matches[matches[:, 2].argsort()[::-1]]
                     matches = matches[np.unique(matches[:, 1], return_index=True)[1]]
@@ -203,7 +204,7 @@ class ConfusionMatrix:
             else:
                 matches = np.zeros((0, 3))
 
-            tp = np.zeros(pred.shape[0], dtype=bool)
+            tp = np.zeros(det_box.shape[0], dtype=bool)
             tp[matches[:, 1].astype(int)] = True
 
             return tp, iou
@@ -220,15 +221,15 @@ class ConfusionMatrix:
 
 class PR:
     @staticmethod
-    def recall(true=None, pred=None, conf=None, tp=None, n_true=None, eps=1e-16,
+    def recall(gt_box=None, det_box=None, conf=None, tp=None, n_true=None, eps=1e-16,
                iou_thres=0.5, iou_method=Iou.vanilla, iou_method_kwarg=dict()):
         """
 
         Args:
-            true:
-            pred:
+            gt_box:
+            det_box:
             conf:
-            tp: if set, `true`, `pred`, `conf` is not necessary, but n_true must be set
+            tp: if set, `gt_box`, `det_box`, `conf` is not necessary, but n_true must be set
             n_true:
             iou_thres:
             iou_method:
@@ -240,24 +241,24 @@ class PR:
         sort_idx = None
         if tp is None:
             sort_idx = np.argsort(-conf)
-            pred = pred[sort_idx]
-            tp, iou = ConfusionMatrix.tp(true, pred, iou_thres, iou_method=iou_method, iou_method_kwarg=iou_method_kwarg)
-            n_true = len(true)
+            det_box = det_box[sort_idx]
+            tp, iou = ConfusionMatrix.tp(gt_box, det_box, iou_thres, iou_method=iou_method, iou_method_kwarg=iou_method_kwarg)
+            n_true = len(gt_box)
 
         acc_tp = np.cumsum(tp)
 
         return acc_tp / (n_true + eps), tp, sort_idx
 
     @staticmethod
-    def precision(true=None, pred=None, conf=None, tp=None, eps=1e-16,
+    def precision(gt_box=None, det_box=None, conf=None, tp=None, eps=1e-16,
                   iou_thres=0.5, iou_method=Iou.vanilla, iou_method_kwarg=dict()):
         """
 
         Args:
-            true:
-            pred:
+            gt_box:
+            det_box:
             conf:
-            tp: if set, `true`, `pred`, `conf` is not necessary
+            tp: if set, `gt_box`, `det_box`, `conf` is not necessary
             iou_thres:
             iou_method:
             iou_method_kwarg:
@@ -268,8 +269,8 @@ class PR:
         sort_idx = None
         if tp is None:
             sort_idx = np.argsort(-conf)
-            pred = pred[sort_idx]
-            tp, iou = ConfusionMatrix.tp(true, pred, iou_thres, iou_method=iou_method, iou_method_kwarg=iou_method_kwarg)
+            det_box = det_box[sort_idx]
+            tp, iou = ConfusionMatrix.tp(gt_box, det_box, iou_thres, iou_method=iou_method, iou_method_kwarg=iou_method_kwarg)
 
         acc_tp = np.cumsum(tp)
         n = np.cumsum(np.ones_like(acc_tp))
@@ -282,18 +283,18 @@ class AP:
 
     @classmethod
     def ap_thres(
-            cls, true=None, pred=None, conf=None, classes=None,
+            cls, gt_box=None, det_box=None, conf=None, classes=None,
             tp=None, n_true=None,
             iou_thres=0.5, ap_method=None, ap_method_kwargs=dict(),
             iou_method=Iou.vanilla, iou_method_kwarg=dict(),
-            return_more_info=True,
+            return_more_info=True, **kwargs
     ):
         """AP@0.5"""
         ap_method = ap_method or cls.interp
 
         if classes is None:
             return cls.per_class_ap(
-                true, pred, conf, tp, n_true=n_true,
+                gt_box, det_box, conf, tp, n_true=n_true,
                 iou_thres=iou_thres, ap_method=ap_method, ap_method_kwargs=ap_method_kwargs,
                 iou_method=iou_method, iou_method_kwarg=iou_method_kwarg
             )
@@ -302,7 +303,7 @@ class AP:
             true_class, pred_class = classes
 
             if tp is None:
-                tp, iou = ConfusionMatrix.tp(true, pred, classes,
+                tp, iou = ConfusionMatrix.tp(gt_box, det_box, classes,
                                              iou_thres=iou_thres, iou_method=iou_method, iou_method_kwarg=iou_method_kwarg)
 
             sort_idx = np.argsort(-conf)
@@ -313,7 +314,7 @@ class AP:
 
             for c in unique_class:
                 r = cls.per_class_ap(
-                    tp=tmp_tp[tmp_pred_class == c], n_true=len(true[true_class == c]),
+                    tp=tmp_tp[tmp_pred_class == c], n_true=len(gt_box[true_class == c]),
                     iou_thres=iou_thres, ap_method=ap_method, ap_method_kwargs=ap_method_kwargs,
                     iou_method=iou_method, iou_method_kwarg=iou_method_kwarg
                 )
@@ -321,8 +322,8 @@ class AP:
                 if return_more_info:
                     r.update(
                         sort_idx=sort_idx[pred_class == c],
-                        pred=pred[pred_class == c],
-                        true=true[true_class == c],
+                        det_box=det_box[pred_class == c],
+                        gt_box=gt_box[true_class == c],
                         conf=conf[pred_class == c]
                     )
 
@@ -332,18 +333,18 @@ class AP:
 
     @staticmethod
     def per_class_ap(
-            true=None, pred=None, conf=None,
+            gt_box=None, det_box=None, conf=None,
             tp=None, n_true=None,
             iou_thres=0.5, ap_method=None, ap_method_kwargs=dict(),
             iou_method=Iou.vanilla, iou_method_kwarg=dict()
     ):
 
         recall, tp, sort_idx = PR.recall(
-            true, pred, conf, tp, n_true=n_true,
+            gt_box, det_box, conf, tp, n_true=n_true,
             iou_thres=iou_thres, iou_method=iou_method, iou_method_kwarg=iou_method_kwarg
         )
         precision, tp, _ = PR.precision(
-            true, pred, conf, tp,
+            gt_box, det_box, conf, tp,
             iou_thres=iou_thres, iou_method=iou_method, iou_method_kwarg=iou_method_kwarg
         )
 
@@ -382,7 +383,7 @@ class AP:
 
     @classmethod
     def ap_thres_range(
-            cls, true, pred, conf, classes=None,
+            cls, gt_box, det_box, conf, classes=None,
             tp=None, n_true=None, thres_range=np.arange(0.5, 1, 0.05),
             iou_method=Iou.vanilla, iou_method_kwarg=dict(),
             ap_method=None, ap_method_kwargs=dict()
@@ -392,7 +393,7 @@ class AP:
 
         for thres in thres_range:
             result = cls.ap_thres(
-                true, pred, conf, classes=classes, tp=tp, n_true=n_true,
+                gt_box, det_box, conf, classes=classes, tp=tp, n_true=n_true,
                 iou_thres=thres, iou_method=iou_method, iou_method_kwarg=iou_method_kwarg,
                 ap_method=ap_method, **ap_method_kwargs)
 
@@ -415,14 +416,14 @@ class AP:
 
     @classmethod
     def mAP(
-            cls, trues, preds, confs, classes=None,
+            cls, gt_boxes, det_boxes, confs, classes=None,
             iou_thres=0.5, ap_method=None, ap_method_kwargs=dict(),
             iou_method=Iou.vanilla, iou_method_kwarg=dict(),
             return_more_info=True,
     ):
         if classes is None:
             tps = []
-            for data in zip(trues, preds):
+            for data in zip(gt_boxes, det_boxes):
                 tp, iou = ConfusionMatrix.tp(
                     *data, iou_thres=iou_thres,
                     iou_method=iou_method, iou_method_kwarg=iou_method_kwarg
@@ -435,7 +436,7 @@ class AP:
         else:
             tmp_true_classes, tmp_pred_classes = [], []
             tps = []
-            for data in zip(trues, preds, classes):
+            for data in zip(gt_boxes, det_boxes, classes):
                 class_ = data[2]
                 tp, iou = ConfusionMatrix.tp(
                     *data,
@@ -448,12 +449,12 @@ class AP:
             tps = np.concatenate(tps, axis=0)
             classes = (np.concatenate(tmp_true_classes), np.concatenate(tmp_pred_classes))
 
-        preds = np.concatenate(preds, axis=0)
-        trues = np.concatenate(trues, axis=0)
+        det_boxes = np.concatenate(det_boxes, axis=0)
+        gt_boxes = np.concatenate(gt_boxes, axis=0)
         confs = np.concatenate(confs, axis=0)
 
         results = cls.ap_thres(
-            trues, preds, confs, classes=classes, tp=tps, n_true=len(trues),
+            gt_boxes, det_boxes, confs, classes=classes, tp=tps, n_true=len(gt_boxes),
             iou_thres=iou_thres, ap_method=ap_method, ap_method_kwargs=ap_method_kwargs,
             iou_method=iou_method, iou_method_kwarg=iou_method_kwarg,
             return_more_info=return_more_info
@@ -463,7 +464,7 @@ class AP:
 
     @classmethod
     def mAP_thres_range(
-            cls, trues, preds, confs, classes=None,
+            cls, gt_boxes, det_boxes, confs, classes=None,
             thres_range=np.arange(0.5, 1, 0.05), ap_method=None, ap_method_kwargs=dict(),
             iou_method=Iou.vanilla, iou_method_kwarg=dict()
     ):
@@ -471,7 +472,7 @@ class AP:
 
         for thres in thres_range:
             result = cls.mAP(
-                trues, preds, confs, classes,
+                gt_boxes, det_boxes, confs, classes,
                 return_more_info=False,
                 iou_thres=thres, iou_method=iou_method, iou_method_kwarg=iou_method_kwarg,
                 ap_method=ap_method, **ap_method_kwargs
