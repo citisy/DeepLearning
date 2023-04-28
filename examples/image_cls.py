@@ -6,10 +6,10 @@ from tqdm import tqdm
 from utils.layers import SimpleInModule
 from cv_data_parse.data_augmentation import crop, scale, geometry, pixel_perturbation, RandomApply
 from cv_data_parse.base import DataRegister
-from .base import Process
+from .base import ClsProcess
 
 
-class LeNet_mnist(Process):
+class LeNet_mnist(ClsProcess):
     """
     Usage:
         .. code-block:: python
@@ -53,11 +53,11 @@ class LeNet_mnist(Process):
 
         return loader(set_type=DataRegister.TEST, image_type=DataRegister.IMAGE, generator=False)[0]
 
-    def data_augment(self, x):
-        return x
+    def data_augment(self, ret):
+        return ret
 
 
-class LeNet_cifar(Process):
+class LeNet_cifar(ClsProcess):
     """
     Usage:
         .. code-block:: python
@@ -103,7 +103,7 @@ class LeNet_cifar(Process):
         return loader(set_type=DataRegister.TEST, image_type=DataRegister.IMAGE, generator=False)
 
 
-class AlexNet_ImageNet(Process):
+class AlexNet_ImageNet(ClsProcess):
     """
     Usage:
         .. code-block:: python
@@ -134,7 +134,7 @@ class AlexNet_ImageNet(Process):
         return data
 
 
-class Vgg_ImageNet(Process):
+class Vgg_ImageNet(ClsProcess):
     """
     Usage:
         .. code-block:: python
@@ -157,13 +157,14 @@ class Vgg_ImageNet(Process):
             input_size=input_size
         )
 
-    def data_augment(self, x):
-        x = scale.Jitter((256, 384))(x, self.input_size)['image']
-        x = RandomApply([geometry.HFlip()])(x)['image']
-        return x
+    def data_augment(self, ret):
+        ret.update(dst=self.input_size)
+        ret.update(scale.Jitter((256, 384))(**ret))
+        ret.update(RandomApply([geometry.HFlip()])(**ret))
+        return ret
 
 
-class Inception_ImageNet(Process):
+class Inception_ImageNet(ClsProcess):
     """
     Usage:
         .. code-block:: python
@@ -205,7 +206,7 @@ class Inception_ImageNet(Process):
         return data
 
 
-class ResNet_ImageNet(Process):
+class ResNet_ImageNet(ClsProcess):
     """
     Usage:
         .. code-block:: python
@@ -228,13 +229,14 @@ class ResNet_ImageNet(Process):
             input_size=input_size
         )
 
-    def data_augment(self, x):
-        x = scale.Jitter((256, 384))(x, self.input_size)['image']
-        x = RandomApply([geometry.HFlip()])(x)['image']
-        return x
+    def data_augment(self, ret):
+        ret.update(dst=self.input_size)
+        ret.update(scale.Jitter((256, 384))(**ret))
+        ret.update(RandomApply([geometry.HFlip()])(**ret))
+        return ret
 
 
-class DenseNet_ImageNet(Process):
+class DenseNet_ImageNet(ClsProcess):
     """
     Usage:
         .. code-block:: python
@@ -265,7 +267,7 @@ class DenseNet_ImageNet(Process):
         return data
 
 
-class SENet_ImageNet(Process):
+class SENet_ImageNet(ClsProcess):
     """
     Usage:
         .. code-block:: python
@@ -297,7 +299,7 @@ class SENet_ImageNet(Process):
         return data
 
 
-class SqueezeNet_ImageNet(Process):
+class SqueezeNet_ImageNet(ClsProcess):
     """
     Usage:
         .. code-block:: python
@@ -328,7 +330,7 @@ class SqueezeNet_ImageNet(Process):
         return data
 
 
-class MobileNet_ImageNet(Process):
+class MobileNet_ImageNet(ClsProcess):
     """
     Usage:
         .. code-block:: python
@@ -363,7 +365,7 @@ class MobileNet_ImageNet(Process):
 """{'p': 0.9795918367346939, 'r': 0.96, 'f': 0.9696969696969697, 'score': 0.9696969696969697}"""
 
 
-class ShuffleNet_ImageNet(Process):
+class ShuffleNet_ImageNet(ClsProcess):
     """
     Usage:
         .. code-block:: python
@@ -394,7 +396,7 @@ class ShuffleNet_ImageNet(Process):
         return data
 
 
-class IGC_cifar(Process):
+class IGC_cifar(ClsProcess):
     """
     Usage:
         .. code-block:: python
@@ -442,7 +444,7 @@ class IGC_cifar(Process):
         return loader(set_type=DataRegister.TEST, image_type=DataRegister.IMAGE, generator=False)[0]
 
 
-class CondenseNet_ImageNet(Process):
+class CondenseNet_ImageNet(ClsProcess):
     """
     Usage:
         .. code-block:: python
