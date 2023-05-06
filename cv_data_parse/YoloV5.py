@@ -254,7 +254,7 @@ class Generator(DataGenerator):
 
     def gen_sets(self, label_dirs=(), image_dirs=(), save_dir='', set_task='',
                  id_distinguish='', id_sort=False,
-                 set_names=('train', 'test'), split_ratio=(0.8, 1)):
+                 set_names=('train', 'val'), split_ratio=(0.8, 1)):
         """
 
         Args:
@@ -311,20 +311,22 @@ class Generator(DataGenerator):
 
         if label_dirs:
             for label_dir in label_dirs:
-                data += list(Path(label_dir).glob(f'*.{self.label_suffix}'))
+                tmp = list(Path(label_dir).glob(f'*.{self.label_suffix}'))
 
                 if id_distinguish:
-                    idx = [i.stem for i in data]
+                    idx += [i.stem for i in tmp]
 
-                data = [os.path.abspath(str(i).replace(self.label_suffix, self.image_suffix)) for i in data]
+                tmp = [os.path.abspath(str(i).replace(self.label_suffix, self.image_suffix)) for i in tmp]
+                data += tmp
 
         else:
             for image_dir in image_dirs:
-                data += list(Path(image_dir).glob(f'*.{self.image_suffix}'))
+                tmp = list(Path(image_dir).glob(f'*.{self.image_suffix}'))
 
                 if id_distinguish:
-                    idx = [i.stem for i in data]
+                    idx += [i.stem for i in tmp]
 
-                data = [os.path.abspath(i) for i in data]
+                tmp = [os.path.abspath(i) for i in tmp]
+                data += tmp
 
         self._gen_sets(data, idx, id_distinguish, id_sort, save_dir, set_names, split_ratio)

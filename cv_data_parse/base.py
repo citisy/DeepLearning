@@ -168,7 +168,8 @@ class DataGenerator:
             tmp = defaultdict(list)
             for i, (d, _idx) in enumerate(zip(data, idx)):
                 stem = Path(_idx).stem
-                a, b = stem.split('_', 1)
+                _ = stem.split(id_distinguish)
+                a, b = id_distinguish.join(_[:-1]), _[-1]
                 tmp[a].append([i, b])
 
             if id_sort:
@@ -178,9 +179,6 @@ class DataGenerator:
                         vv[1] = int(vv[1])
 
                     tmp[k] = sorted(v, key=lambda x: x[1])
-            else:
-                for v in tmp.values():
-                    np.random.shuffle(v)
 
             ids = list(tmp.keys())
             np.random.shuffle(ids)
@@ -191,6 +189,9 @@ class DataGenerator:
                 candidate_ids = []
                 for k in ids[i:j]:
                     candidate_ids += [vv[0] for vv in tmp[k]]
+
+                if not id_sort:
+                    np.random.shuffle(candidate_ids)
 
                 with open(f'{save_dir}/{set_name}.txt', 'w', encoding='utf8') as f:
                     for candidate_id in candidate_ids:
