@@ -145,9 +145,33 @@ class Pca:
         )
 
 
+class AdjustHsv:
+    def __init__(self, hgain=0.5, sgain=0.5, vgain=0.5):
+        self.hgain = hgain
+        self.sgain = sgain
+        self.vgain = vgain
+
+    def __call__(self, image, **kwargs):
+        r = np.random.uniform(-1, 1, 3) * [self.hgain, self.sgain, self.vgain] + 1  # random gains
+        hue, sat, val = cv2.split(cv2.cvtColor(image, cv2.COLOR_BGR2HSV))
+        dtype = image.dtype
+
+        x = np.arange(0, 256, dtype=r.dtype)
+        lut_hue = ((x * r[0]) % 180).astype(dtype)
+        lut_sat = np.clip(x * r[1], 0, 255).astype(dtype)
+        lut_val = np.clip(x * r[2], 0, 255).astype(dtype)
+
+        im_hsv = cv2.merge((cv2.LUT(hue, lut_hue), cv2.LUT(sat, lut_sat), cv2.LUT(val, lut_val)))
+        image = cv2.cvtColor(im_hsv, cv2.COLOR_HSV2BGR)
+
+        return dict(
+            image=image
+        )
+
+
 class AdjustBrightness:
     """Adjusts brightness of an image.
-    See Also `torchvision.transforms.functional.adjust_brightness`
+    See Also `torchvision.transforms.functional.adjust_brightness` or `albumentations.adjust_brightness_torchvision`
 
     Args:
         offset (float):
@@ -171,7 +195,7 @@ class AdjustBrightness:
 
 class AdjustContrast:
     """Adjusts contrast of an image.
-    See Also `torchvision.transforms.functional.adjust_contrast`
+    See Also `torchvision.transforms.functional.adjust_contrast` or `albumentations.adjust_contrast_torchvision`
 
     Args:
         offset (float):
@@ -195,7 +219,7 @@ class AdjustContrast:
 
 class AdjustSaturation:
     """Adjusts color saturation of an image.
-    See Also `torchvision.transforms.functional.adjust_saturation`
+    See Also `torchvision.transforms.functional.adjust_saturation` or `albumentations.adjust_saturation_torchvision`
 
     Args:
         offset (float):
@@ -224,7 +248,7 @@ class AdjustSaturation:
 
 class AdjustHue:
     """Adjusts hue of an image.
-    See Also `torchvision.transforms.functional.adjust_hue`
+    See Also `torchvision.transforms.functional.adjust_hue` or `albumentations.adjust_hue_torchvision`
 
     The image hue is adjusted by converting the image to HSV and
     cyclically shifting the intensities in the hue channel (H).
@@ -272,7 +296,7 @@ class AdjustHue:
 
 class Jitter:
     """Randomly change the brightness, contrast, saturation and hue of an image.
-    See Also `torchvision.transforms.ColorJitter`
+    See Also `torchvision.transforms.ColorJitter` or `albumentations.ColorJitter`
 
     Args:
         apply_func: (brightness, contrast, saturation, hue)
@@ -293,7 +317,7 @@ class Jitter:
 
 
 class GaussianBlur:
-    """see also `torchvision.transforms.GaussianBlur`"""
+    """see also `torchvision.transforms.GaussianBlur` or `albumentations.GaussianBlur`"""
 
     def __init__(self, ksize=None, sigma=(.5, .5)):
         self.ksize = ksize
@@ -314,6 +338,7 @@ class GaussianBlur:
 
 
 class MotionBlur:
+    """see also `albumentations.MotionBlur`"""
     def __init__(self, degree=12, angle=90):
         self.degree = degree
         self.angle = angle
@@ -410,6 +435,7 @@ class RandomErasing(Erase):
 
 class CutOut:
     """https://arxiv.org/abs/1708.04552
+    See Also `albumentations.Cutout`
     """
 
     def __init__(self, iou_thres=0.6):

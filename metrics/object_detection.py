@@ -63,20 +63,41 @@ class Area:
         return (np.maximum(box1[:, None, 2:], box2[:, 2:]) - np.minimum(box1[:, None, :2], box2[:, :2])).clip(0).prod(2)
 
 
-class Iou:
+class Overlap:
+    """only judge whether 2 object is overlap or not"""
+
     @staticmethod
-    def line_iou(line1, line2):
-        """line1 = (a1, b1), line2 = (a2, b2),
-        which were overlap in 1-d cord where
-        (a1 < a2 & b1 > a2) | (b1 > a2 & b1 < b2)
+    def line(line1, line2):
+        """line1 = (a1, a2), line2 = (b1, b2),
+        2 lines do not overlap means that
+           a1 after b2 (a1 > b2)
+        or a2 before b1 (a2 < b1)
         """
-        a1, b1, a2, b2 = line1[:, 0], line1[:, 1], line2[:, 0], line2[:, 1]
+        a1, a2 = line1.T
+        b1, b2 = line2.T
 
-        f1 = (a1[:, None] <= a2[None, :]) & (b1[:, None] >= a2[None, :])
-        f2 = (b1[:, None] >= a2[None, :]) & (b1[:, None] <= b2[None, :])
+        f = (a1[:, None] > b2[None, :]) | (a2[:, None] < b1[None, :])
 
-        return f1 | f2
+        return ~f
 
+    @staticmethod
+    def box(box1, box2):
+        """box1 = (xa1, ya1, xa2, ya2), box2 = (xb1, yb1, xb2, yb2)
+        2 boxes do not overlap means that
+           point 'a1' in the right down of box2 (xa1 > xb2 | ya1 > yb2)
+        or point 'a2' in the left top of box2 (xa2 < xb1 | ya2 < yb1)
+        """
+
+        xa1, ya1, xa2, ya2 = box1.T
+        xb1, yb1, xb2, yb2 = box2.T
+
+        f1 = (xa1[:, None] > xb2[None, :]) | (ya1[:, None] > yb2[None, :])
+        f2 = (xa2[:, None] < xb1[None, :]) | (ya2[:, None] < yb1[None, :])
+
+        return ~(f1 | f2)
+
+
+class Iou:
     @staticmethod
     def vanilla(box1, box2, inter=None, union=None):
         """vanilla iou

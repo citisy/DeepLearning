@@ -16,7 +16,7 @@ LEFT, RIGHT, TOP, DOWN = 0, 1, 0, 1
 
 
 class Pad:
-    """See Also `torchvision.transforms.Pad`
+    """See Also `torchvision.transforms.Pad` or `albumentations.PadIfNeeded`
 
     Args:
         direction: w or h
@@ -166,12 +166,13 @@ class Crop:
 
 
 class Random:
+    """See Also `torchvision.transforms.RandomCrop` or `albumentations.RandomCrop`"""
+
     def __init__(self, is_pad=True, **pad_kwargs):
         self.crop = Crop(is_pad=is_pad, **pad_kwargs)
 
     def __call__(self, image, dst, bboxes=None, **kwargs):
-        """(w, h) -> (dst, dst)
-        See Also `torchvision.transforms.RandomCrop`"""
+        """(w, h) -> (dst, dst)"""
         h, w, c = image.shape
 
         w_ = np.random.randint(w - dst) if w > dst else 0
@@ -244,11 +245,12 @@ class TenCrop:
 
 
 class Center:
+    """See Also `torchvision.transforms.CenterCrop` or `albumentations.CenterCrop`"""
+
     def __init__(self, is_pad=True, **pad_kwargs):
         self.crop = Crop(is_pad=is_pad, **pad_kwargs)
 
     def __call__(self, image, dst, bboxes=None, **kwargs):
-        """See Also `torchvision.transforms.CenterCrop`"""
         h, w, c = image.shape
 
         w_ = max(w - dst, 0) // 2

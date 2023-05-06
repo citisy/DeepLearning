@@ -5,8 +5,6 @@ from torch.nn import functional as F
 from image_classifier.ResNet import ResNet
 from utils.layers import Conv, Linear, ConvInModule, OutModule
 
-torchvision.models.detection.faster_rcnn
-
 
 class FasterRCNN(nn.Module):
     """

@@ -2,7 +2,7 @@
 import cv2
 import numpy as np
 import numbers
-from metrics.object_detection import Iou
+from metrics.object_detection import Overlap
 
 interpolation_mode = [
     cv2.INTER_LINEAR,
@@ -22,7 +22,7 @@ fill_mode = [
 
 
 class HFlip:
-    """See Also `torchvision.transforms.RandomHorizontalFlip`"""
+    """See Also `torchvision.transforms.RandomHorizontalFlip` or `albumentations.HorizontalFlip`"""
 
     def __call__(self, image, bboxes=None, **kwargs):
         h, w = image.shape[:2]
@@ -39,7 +39,7 @@ class HFlip:
 
 
 class VFlip:
-    """See Also `torchvision.transforms.RandomVerticalFlip`"""
+    """See Also `torchvision.transforms.RandomVerticalFlip` or `albumentations.VerticalFlip`"""
 
     def __call__(self, image, bboxes=None, **kwargs):
         h, w = image.shape[:2]
@@ -66,7 +66,7 @@ class RandomVShift:
         if classes is not None:
             classes = np.array(classes)
 
-        iou = Iou.line_iou(new_bboxes[:, (1, 3)], new_bboxes[:, (1, 3)])
+        iou = Overlap.line(new_bboxes[:, (1, 3)], new_bboxes[:, (1, 3)])
         _ = list(range(len(iou)))
         iou[_, _] = False
         flag = np.any(iou, axis=1) | np.any(iou, axis=0)
@@ -175,6 +175,7 @@ class SimpleRotate:
 
 class Rotate:
     """Rotates the image by angle without changing the shape of image.
+    See Also `albumentations.Rotate`
 
     Args:
         angle (float or int): In degrees counter-clockwise order.
@@ -408,7 +409,7 @@ class Affine:
 
 
 class RandomAffine(Affine):
-    """see also `torchvision.transforms.RandomAffine`"""
+    """see also `torchvision.transforms.RandomAffine` or `albumentations.Affine`"""
 
     def get_params(self):
         if isinstance(self.angle, numbers.Number):
@@ -494,7 +495,7 @@ class Perspective:
 
 
 class RandomPerspective(Perspective):
-    """see also `torchvision.transforms.RandomPerspective`"""
+    """see also `torchvision.transforms.RandomPerspective` or `albumentations.Perspective`"""
 
     def get_params(self, h, w):
         if isinstance(self.distortion, numbers.Number):

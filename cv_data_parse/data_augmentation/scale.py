@@ -14,7 +14,7 @@ interpolation_mode = [
 
 class Proportion:
     """proportional scale the shortest edge to destination size
-    See Also `torchvision.transforms.Resize`"""
+    See Also `torchvision.transforms.Resize` or `albumentations.Resize`"""
 
     def __init__(self, interpolation=0):
         self.interpolation = interpolation_mode[interpolation]
@@ -38,7 +38,7 @@ class Proportion:
 
 class Rectangle:
     """scale to special dst * dst
-    See Also `torchvision.transforms.Resize`"""
+    See Also `torchvision.transforms.Resize` or `albumentations.Resize`"""
 
     def __init__(self, interpolation=0):
         self.interpolation = interpolation_mode[interpolation]
