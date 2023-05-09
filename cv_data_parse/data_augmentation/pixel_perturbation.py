@@ -85,10 +85,18 @@ class Normalize:
     See Also `torchvision.transforms.Normalize`
     """
 
-    def __call__(self, image, **kwargs):
-        mean = np.mean(image, axis=(0, 1))
-        std = np.std(image, axis=(0, 1))
+    def __init__(self, mean=None, std=None):
+        self.mean = mean
+        self.std = std
 
+    def get_params(self, image):
+        mean = self.mean if self.mean is not None else np.mean(image, axis=(0, 1))
+        std = self.std if self.std is not None else np.std(image, axis=(0, 1))
+
+        return mean, std
+
+    def __call__(self, image, **kwargs):
+        mean, std = self.get_params(image)
         image = (image - mean) / std
 
         return {
@@ -97,6 +105,15 @@ class Normalize:
                 mean=mean,
                 std=std
             )}
+
+    @staticmethod
+    def restore(ret):
+        params = ret['pixel.Normalize']
+        image = ret['image']
+        mean, std = params['mean'], params['std']
+        ret['image'] = image * std + mean
+
+        return ret
 
 
 class Pca:
@@ -339,6 +356,7 @@ class GaussianBlur:
 
 class MotionBlur:
     """see also `albumentations.MotionBlur`"""
+
     def __init__(self, degree=12, angle=90):
         self.degree = degree
         self.angle = angle
@@ -372,7 +390,7 @@ class RandomMotionBlur(MotionBlur):
         if isinstance(self.angle, numbers.Number):
             angle = int(np.random.uniform(-self.angle, self.angle))
         else:
-            angle = int(np.random.uniform(self.angle[0], self.angle[1]))
+            angle = int(np.random.uniform(*self.angle))
 
         return degree, angle
 
@@ -423,12 +441,12 @@ class RandomErasing(Erase):
         if isinstance(self.scale, numbers.Number):
             scale = np.random.uniform(self.scale - 0.05, self.scale + 0.05)
         else:
-            scale = np.random.uniform(self.scale[0], self.scale[1])
+            scale = np.random.uniform(*self.scale)
 
         if isinstance(self.ratio, numbers.Number):
             ratio = np.random.uniform(self.ratio - 0.5, self.ratio + 0.5)
         else:
-            ratio = np.random.uniform(self.ratio[0], self.ratio[1])
+            ratio = np.random.uniform(*self.ratio)
 
         return scale, ratio
 

@@ -11,29 +11,57 @@ interpolation_mode = [
     cv2.INTER_LANCZOS4
 ]
 
+SHORTEST, LONGEST = 1, 2
+AUTO = 3
+
 
 class Proportion:
-    """proportional scale the shortest edge to destination size
+    """proportional scale the choice edge to destination size
     See Also `torchvision.transforms.Resize` or `albumentations.Resize`"""
 
-    def __init__(self, interpolation=0):
+    def __init__(self, interpolation=0, choice_edge=SHORTEST):
         self.interpolation = interpolation_mode[interpolation]
+        self.choice_edge = choice_edge
+
+    def get_params(self, dst, w, h):
+        if self.choice_edge == SHORTEST:
+            p = dst / min(w, h)
+        elif self.choice_edge == LONGEST:
+            p = dst / max(w, h)
+        elif self.choice_edge == AUTO:
+            p1 = abs(dst - w) / w
+            p2 = abs(dst - h) / h
+            p = dst / w if p1 < p2 else dst / h
+        else:
+            raise ValueError(f'dont support {self.choice_edge = }')
+
+        return p
 
     def __call__(self, image, dst, bboxes=None, **kwargs):
         h, w, c = image.shape
-        a = min(w, h)
-        p = dst / a
+        p = self.get_params(dst, w, h)
         image = cv2.resize(image, None, fx=p, fy=p, interpolation=self.interpolation)
 
         if bboxes is not None:
-            bboxes = np.array(bboxes)
-            bboxes *= p
+            bboxes = np.array(bboxes, dtype=float) * p
+            bboxes = bboxes.astype(int)
 
         return {
             'image': image,
             'bboxes': bboxes,
             'scale.Proportion': dict(p=p)
         }
+
+    @staticmethod
+    def restore(ret):
+        params = ret.get('scale.Proportion')
+        bboxes = ret['bboxes']
+        p = params['p']
+        bboxes = np.array(bboxes, dtype=float) / p
+        bboxes = bboxes.astype(int)
+        ret['bboxes'] = bboxes
+
+        return ret
 
 
 class Rectangle:
@@ -52,9 +80,8 @@ class Rectangle:
         ph = dst / h
 
         if bboxes is not None:
-            bboxes = np.array(bboxes)
-            bboxes[:, 0::2] *= pw
-            bboxes[:, 1::2] *= ph
+            bboxes = np.array(bboxes, dtype=float) * np.array([pw, ph, pw, ph])
+            bboxes = bboxes.astype(int)
 
         return {
             'image': image,
@@ -62,18 +89,32 @@ class Rectangle:
             'scale.Rectangle': dict(pw=pw, ph=ph)
         }
 
+    @staticmethod
+    def restore(ret):
+        params = ret.get('scale.Rectangle')
+        bboxes = ret['bboxes']
+        pw, ph = params['pw'], params['ph']
+        bboxes = np.array(bboxes, dtype=float) / np.array([pw, ph, pw, ph])
+        bboxes = bboxes.astype(int)
+        ret['bboxes'] = bboxes
+
+        return ret
+
 
 class LetterBox:
     """resize, crop, and pad"""
 
     def __init__(self):
         self.apply = Apply([
-            Proportion(),
+            Proportion(choice_edge=2),  # scale to longest edge
             crop.Center(is_pad=True, pad_type=2)
         ])
 
     def __call__(self, image, dst, bboxes=None, **kwargs):
         return self.apply(image=image, dst=dst, bboxes=bboxes)
+
+    def restore(self, ret):
+        return self.apply.restore(ret)
 
 
 class Jitter:
@@ -85,8 +126,12 @@ class Jitter:
         self.resize = Proportion()
         self.crop = crop.Random(is_pad=True, pad_type=2)
 
+    def get_params(self, dst):
+        return self.size_range if self.size_range else (int(dst * 1.14), int(dst * 1.71))
+
     def __call__(self, image, dst, bboxes=None, **kwargs):
-        s = np.random.randint(*self.size_range)
+        size_range = self.get_params(dst)
+        s = np.random.randint(size_range)
         ret = {'scale.Jitter': dict(dst=s)}
         ret.update(self.resize(image, s, bboxes=bboxes))
         ret.update(self.crop(ret['image'], dst, bboxes=ret['bboxes']))

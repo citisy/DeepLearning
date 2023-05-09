@@ -41,6 +41,22 @@ class Apply:
 
         return ret
 
+    def restore(self, ret):
+        if self.full_result:
+            _ret = []
+            for r in ret:
+                for func in self.funcs[::-1]:
+                    r = func.restore(r)
+                _ret.append(r)
+
+            ret = _ret
+
+        else:
+            for func in self.funcs[::-1]:
+                ret = func.restore(ret)
+
+        return ret
+
 
 class RandomApply:
     """running the func with the prob of each func
@@ -72,11 +88,12 @@ class RandomApply:
         ret = kwargs
         full_result = []
 
-        for func, probs in zip(funcs, probs):
-            r = dict()
+        for i, (func, probs) in enumerate(zip(funcs, probs)):
+            r = {'RandomApply': []}
 
             if np.random.random() < probs:
-                r = func(**ret)
+                r.update(func(**ret))
+                r['RandomApply'].append(i)
 
             if self.full_result:
                 full_result.append(r)
@@ -86,6 +103,24 @@ class RandomApply:
 
         if full_result:
             ret = full_result
+
+        return ret
+
+    def restore(self, ret):
+        if self.full_result:
+            _ret = []
+            for r in ret:
+                for idx in r['RandomApply'][::-1]:
+                    func = self.funcs[idx]
+                    r = func.restore(r)
+                _ret.append(r)
+
+            ret = _ret
+
+        else:
+            for idx in ret['RandomApply'][::-1]:
+                func = self.funcs[idx]
+                ret = func.restore(ret)
 
         return ret
 
@@ -138,5 +173,25 @@ class RandomChoice:
             ret = full_result
 
         ret.update(func_arg=func_arg)
+
+        return ret
+
+    def restore(self, ret):
+        func_arg = ret['func_arg']
+
+        if self.full_result:
+            _ret = []
+            for r in ret:
+                for idx in func_arg[::-1]:
+                    func = self.funcs[idx]
+                    r = func.restore(r)
+                _ret.append(r)
+
+            ret = _ret
+
+        else:
+            for idx in func_arg[::-1]:
+                func = self.funcs[idx]
+                ret = func.restore(ret)
 
         return ret

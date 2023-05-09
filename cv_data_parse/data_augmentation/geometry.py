@@ -30,12 +30,21 @@ class HFlip:
 
         if bboxes is not None:
             bboxes = np.array(bboxes)
-            bboxes[:, 0::2] = w - bboxes[:, 0::2]
+            bboxes[:, (0, 2)] = w - bboxes[:, (2, 0)]
 
         return dict(
             image=image,
             bboxes=bboxes
         )
+
+    @staticmethod
+    def restore(ret):
+        h, w = ret['image'].shape[:2]
+        bboxes = ret['bboxes']
+        bboxes[:, (0, 2)] = w - bboxes[:, (2, 0)]
+        ret['bboxes'] = bboxes
+
+        return ret
 
 
 class VFlip:
@@ -47,12 +56,21 @@ class VFlip:
 
         if bboxes is not None:
             bboxes = np.array(bboxes)
-            bboxes[:, 1::2] = h - bboxes[:, 1::2]
+            bboxes[:, (1, 3)] = h - bboxes[:, (3, 1)]
 
         return dict(
             image=image,
             bboxes=bboxes
         )
+
+    @staticmethod
+    def restore(ret):
+        h, w = ret['image'].shape[:2]
+        bboxes = ret['bboxes']
+        bboxes[:, (1, 3)] = h - bboxes[:, (3, 1)]
+        ret['bboxes'] = bboxes
+
+        return ret
 
 
 class RandomVShift:
@@ -292,7 +310,7 @@ class RandomRotate(Rotate):
         if isinstance(self.angle, numbers.Number):
             angle = int(np.random.uniform(-self.angle, self.angle))
         else:
-            angle = int(np.random.uniform(self.angle[0], self.angle[1]))
+            angle = int(np.random.uniform(*self.angle))
 
         return angle
 
@@ -415,7 +433,7 @@ class RandomAffine(Affine):
         if isinstance(self.angle, numbers.Number):
             angle = int(np.random.uniform(-self.angle, self.angle))
         else:
-            angle = int(np.random.uniform(self.angle[0], self.angle[1]))
+            angle = int(np.random.uniform(*self.angle))
 
         if isinstance(self.translate, numbers.Number):
             translate = np.array([-self.translate, self.translate])
