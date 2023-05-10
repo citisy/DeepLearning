@@ -180,6 +180,7 @@ class Crop:
             bboxes = bboxes[idx]
 
             if classes is not None:
+                classes = np.array(classes)
                 classes = classes[idx]
 
         image = ret['image'][y1:y2, x1: x2]

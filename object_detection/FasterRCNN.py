@@ -15,7 +15,8 @@ rpn_config = dict()
 
 roi_config = dict()
 
-torchvision.models.detection.fasterrcnn_resnet50_fpn_v2()
+
+# torchvision.models.detection.fasterrcnn_resnet50_fpn_v2()
 
 
 class FasterRCNN(nn.Module):
@@ -25,7 +26,7 @@ class FasterRCNN(nn.Module):
 
     def __init__(
             self,
-            in_ch=None, input_size=None, output_size=None, max_sample=256,
+            in_ch=None, input_size=None, output_size=None,
             in_module=None, backbone=None,
             backbone_config=resnet_config,
             neck_config=rpn_config,
@@ -40,7 +41,6 @@ class FasterRCNN(nn.Module):
         if backbone is None:
             backbone = ResNet(**backbone_config).conv_seq
 
-        self.max_sample = max_sample
         self.input = in_module
         self.backbone = backbone
         self.neck = RPN(256, **neck_config)
@@ -53,92 +53,38 @@ class FasterRCNN(nn.Module):
         if isinstance(features, torch.Tensor):
             features = [features]
 
-        proposals, scores, feature_infos = self.neck(x, features)
+        proposals, scores, regs, feature_infos = self.neck(x, features)
         detections, det_cls, _feature_infos = self.head(proposals, features, feature_infos)
 
         if self.training:
-            img_size = x.shape[-1]
-
-            real_det_boxes, real_det_cls = [], []
-            for box, cls, feature_info in zip(proposals, scores, feature_infos):
-                real_det_boxes.append(box[:feature_info.shape[0]] / img_size)
+            real_det_boxes, real_det_cls, real_det_reg = [], [], []
+            for box, cls, reg, feature_info in zip(proposals, scores, regs, feature_infos):
+                real_det_boxes.append(box[:feature_info.shape[0]])
                 real_det_cls.append(cls[:feature_info.shape[0]])
+                real_det_reg.append(reg[:feature_info.shape[0]])
 
             rpn_cls = []
             for cls in gt_cls:
                 rpn_cls.append(torch.ones_like(cls).type_as(cls))  # all object is pos sample
 
-            neck_loss = self.loss(real_det_boxes, real_det_cls, gt_boxes, rpn_cls, self.neck.neg_iou, self.neck.pos_iou, self.max_sample)
+            neck_loss = self.neck.loss(real_det_boxes, real_det_cls, real_det_reg, gt_boxes, rpn_cls)
 
+            img_size = x.shape[-1]
             real_det_boxes, real_det_cls = [], []
             for i in range(x.shape[0]):
                 feature_idx = torch.where(_feature_infos == i)
                 real_det_boxes.append(detections[feature_idx])
                 real_det_cls.append(det_cls[feature_idx])
 
-            head_loss = self.loss(real_det_boxes, real_det_cls, gt_boxes, gt_cls, self.head.neg_iou, self.head.pos_iou, self.max_sample)
+            gt_boxes = [box / img_size for box in gt_boxes]
+
+            head_loss = self.head.loss(real_det_boxes, real_det_cls, gt_boxes, gt_cls)
             loss = neck_loss + head_loss
 
             return detections, det_cls, loss
 
         else:
             return detections, det_cls
-
-    def loss(self, det_boxes, det_cls, gt_boxes, gt_cls, neg_iou, pos_iou, max_sample):
-        labels, match_gt_boxes, match_gt_cls = self.divide_sample(det_boxes, gt_boxes, gt_cls, neg_iou, pos_iou)
-
-        det_boxes = torch.cat(det_boxes)
-        det_cls = torch.cat(det_cls)
-
-        pos_idx = torch.where(labels == 1)[0]
-        neg_idx = torch.where(labels == -1)[0]
-
-        n_pos = min(len(pos_idx), max_sample)
-        n_neg = max_sample - n_pos
-
-        pos_idx = pos_idx[torch.randperm(pos_idx.numel(), device=pos_idx.device)[:n_pos]]
-        neg_idx = neg_idx[torch.randperm(neg_idx.numel(), device=neg_idx.device)[:n_neg]]
-        total_idx = torch.cat([pos_idx, neg_idx])
-
-        reg_loss = F.smooth_l1_loss(
-            det_boxes[pos_idx],
-            match_gt_boxes[pos_idx],
-            beta=1 / 9,
-            reduction="sum",
-        ) / total_idx.numel()
-
-        cls_loss = F.cross_entropy(det_cls[total_idx], match_gt_cls[total_idx])
-
-        return cls_loss + reg_loss
-
-    def divide_sample(self, det_boxes, gt_boxes, gt_cls, neg_iou, pos_iou):
-        """divide pred sample to pos and neg"""
-        labels = []
-        match_gt_boxes = []
-        match_gt_cls = []
-
-        for det, gt, cls in zip(det_boxes, gt_boxes, gt_cls):
-            device = det.device
-
-            label = torch.zeros((det.shape[0],)).type_as(det)
-            gt_idx = torch.zeros((det.shape[0],), dtype=torch.int32, device=device)
-
-            if gt.numel():
-                iou_mat = torchvision.ops.box_iou(gt, det)
-                iou, gt_idx = iou_mat.max(dim=0)
-
-                label[iou < neg_iou] = -1
-                label[iou > pos_iou] = 1
-
-            labels.append(label)
-            match_gt_boxes.append(gt[gt_idx])
-            match_gt_cls.append(cls[gt_idx])
-
-        labels = torch.cat(labels)
-        match_gt_boxes = torch.cat(match_gt_boxes)
-        match_gt_cls = torch.cat(match_gt_cls)
-
-        return labels, match_gt_boxes, match_gt_cls
 
 
 class RPN(nn.Module):
@@ -147,7 +93,7 @@ class RPN(nn.Module):
     """
 
     def __init__(self, in_ch, n_conv=1, max_bboxes=2000,
-                 filter_iou=.7, pos_iou=0.7, neg_iou=0.3,
+                 filter_iou=.7, pos_iou=0.7, neg_iou=0.3, max_backprop_sample=256,
                  anchor_config=dict()):
         super().__init__()
 
@@ -155,13 +101,14 @@ class RPN(nn.Module):
         self.pos_iou = pos_iou
         self.neg_iou = neg_iou
         self.max_bboxes = max_bboxes
+        self.max_backprop_sample = max_backprop_sample
         self.anchor_generator = AnchorGenerator(**anchor_config)
         self.head = RPNHead(in_ch, self.anchor_generator.num_anchors, n_conv)
 
     def gen_proposals(self, anchors, feature_info, cls, reg):
         feature_idx = feature_info[:, 0]
         deltas = reg[:, feature_idx]
-        box = self.bbox_transform_inv(anchors, deltas)
+        box = self.bbox2proposal(anchors, deltas)
         score = cls[:, feature_idx, 1].squeeze(-1)
         score = score.detach()  # score only help to sort proposals, do not backprop through
 
@@ -183,7 +130,7 @@ class RPN(nn.Module):
         return proposals, feature_infos
 
     @staticmethod
-    def bbox_transform_inv(boxes, deltas):
+    def bbox2proposal(boxes, deltas):
         widths = boxes[..., 2] - boxes[..., 0] + 1.0
         heights = boxes[..., 3] - boxes[..., 1] + 1.0
         ctr_x = boxes[..., 0] + 0.5 * widths
@@ -199,22 +146,71 @@ class RPN(nn.Module):
         pred_w = torch.exp(dw) * widths
         pred_h = torch.exp(dh) * heights
 
-        pred_boxes = boxes.clone()
-        pred_boxes[..., 0] = pred_ctr_x - 0.5 * pred_w
-        pred_boxes[..., 1] = pred_ctr_y - 0.5 * pred_h
-        pred_boxes[..., 2] = pred_ctr_x + 0.5 * pred_w
-        pred_boxes[..., 3] = pred_ctr_y + 0.5 * pred_h
+        proposal = boxes.clone()
+        proposal[..., 0] = pred_ctr_x - 0.5 * pred_w
+        proposal[..., 1] = pred_ctr_y - 0.5 * pred_h
+        proposal[..., 2] = pred_ctr_x + 0.5 * pred_w
+        proposal[..., 3] = pred_ctr_y + 0.5 * pred_h
 
-        pred_boxes = pred_boxes.clamp(min=0)
+        proposal = proposal.clamp(min=0)
 
-        return pred_boxes
+        return proposal
+
+    @staticmethod
+    def bbox2deltas(det_boxes, gt_boxes):
+        ex_widths = det_boxes[..., 2] - det_boxes[..., 0] + 1.0
+        ex_heights = det_boxes[..., 3] - det_boxes[..., 1] + 1.0
+        ex_ctr_x = det_boxes[..., 0] + 0.5 * ex_widths
+        ex_ctr_y = det_boxes[..., 1] + 0.5 * ex_heights
+
+        gt_widths = gt_boxes[..., 2] - gt_boxes[..., 0] + 1.0
+        gt_heights = gt_boxes[..., 3] - gt_boxes[..., 1] + 1.0
+        gt_ctr_x = gt_boxes[..., 0] + 0.5 * gt_widths
+        gt_ctr_y = gt_boxes[..., 1] + 0.5 * gt_heights
+
+        dx = (gt_ctr_x - ex_ctr_x) / ex_widths
+        dy = (gt_ctr_y - ex_ctr_y) / ex_heights
+        dw = torch.log(gt_widths / ex_widths)
+        dh = torch.log(gt_heights / ex_heights)
+
+        deltas = torch.stack((dx, dy, dw, dh), -1)
+
+        return deltas
 
     def forward(self, images, features):
         anchors, feature_info = self.anchor_generator(images, features)
         cls, reg = self.head(features)
         proposals, feature_infos = self.gen_proposals(anchors, feature_info, cls, reg)
 
-        return proposals, cls, feature_infos
+        return proposals, cls, reg, feature_infos
+
+    def loss(self, det_boxes, det_cls, det_reg, gt_boxes, gt_cls):
+        labels, match_gt_boxes, match_gt_cls = divide_sample(det_boxes, gt_boxes, gt_cls, self.neg_iou, self.pos_iou)
+        det_boxes = torch.cat(det_boxes)
+        det_reg = torch.cat(det_reg)
+        det_cls = torch.cat(det_cls)
+        target = self.bbox2deltas(det_boxes, match_gt_boxes)
+
+        pos_idx = torch.where(labels == 1)[0]
+        neg_idx = torch.where(labels == -1)[0]
+
+        n_pos = min(len(pos_idx), self.max_backprop_sample)
+        n_neg = self.max_backprop_sample - n_pos
+
+        pos_idx = pos_idx[torch.randperm(pos_idx.numel(), device=pos_idx.device)[:n_pos]]
+        neg_idx = neg_idx[torch.randperm(neg_idx.numel(), device=neg_idx.device)[:n_neg]]
+        total_idx = torch.cat([pos_idx, neg_idx])
+
+        reg_loss = F.smooth_l1_loss(
+            det_reg[pos_idx],
+            target[pos_idx],
+            beta=1 / 9,
+            reduction="sum",
+        ) / total_idx.numel()
+
+        cls_loss = F.cross_entropy(det_cls[total_idx], match_gt_cls[total_idx])
+
+        return cls_loss + reg_loss
 
 
 class RPNHead(nn.Module):
@@ -351,7 +347,7 @@ class AnchorGenerator(nn.Module):
 
 
 class ROIHead(nn.Module):
-    def __init__(self, in_ch, pooling_size, output_size,
+    def __init__(self, in_ch, pooling_size, output_size, max_backprop_sample=256,
                  max_bboxes=100, pos_iou=0.5, neg_iou=0.5):
         super().__init__()
 
@@ -359,6 +355,7 @@ class ROIHead(nn.Module):
         self.max_bboxes = max_bboxes
         self.pos_iou = pos_iou
         self.neg_iou = neg_iou
+        self.max_backprop_sample = max_backprop_sample
 
         # self.pool = ROIPooling(pooling_size)
 
@@ -376,7 +373,7 @@ class ROIHead(nn.Module):
         _feature_infos = []
         for j, feature in enumerate(features):
             box = []
-            for i in range(proposals.shape[0]):
+            for i in range(len(proposals)):
                 feature_info = feature_infos[i]
                 proposal = proposals[i]
                 feature_idx = torch.where(feature_info[:, 1] == j)[0]
@@ -406,6 +403,32 @@ class ROIHead(nn.Module):
 
         return reg, cls, _feature_infos
 
+    def loss(self, det_boxes, det_cls, gt_boxes, gt_cls):
+        labels, match_gt_boxes, match_gt_cls = divide_sample(det_boxes, gt_boxes, gt_cls, self.neg_iou, self.pos_iou)
+        det_boxes = torch.cat(det_boxes)
+        det_cls = torch.cat(det_cls)
+
+        pos_idx = torch.where(labels == 1)[0]
+        neg_idx = torch.where(labels == -1)[0]
+
+        n_pos = min(len(pos_idx), self.max_backprop_sample)
+        n_neg = self.max_backprop_sample - n_pos
+
+        pos_idx = pos_idx[torch.randperm(pos_idx.numel(), device=pos_idx.device)[:n_pos]]
+        neg_idx = neg_idx[torch.randperm(neg_idx.numel(), device=neg_idx.device)[:n_neg]]
+        total_idx = torch.cat([pos_idx, neg_idx])
+
+        reg_loss = F.smooth_l1_loss(
+            det_boxes[pos_idx],
+            match_gt_boxes[pos_idx],
+            beta=1 / 9,
+            reduction="sum",
+        ) / total_idx.numel()
+
+        cls_loss = F.cross_entropy(det_cls[total_idx], match_gt_cls[total_idx])
+
+        return cls_loss + reg_loss
+
 
 class ROIPooling(nn.Module):
     def __init__(self, output_size):
@@ -421,6 +444,36 @@ class ROIPooling(nn.Module):
         y = torch.cat(y)
 
         return y
+
+
+def divide_sample(det_boxes, gt_boxes, gt_cls, neg_iou, pos_iou):
+    """divide pred sample to pos and neg"""
+    labels = []
+    match_gt_boxes = []
+    match_gt_cls = []
+
+    for det, gt, cls in zip(det_boxes, gt_boxes, gt_cls):
+        device = det.device
+
+        label = torch.zeros((det.shape[0],)).type_as(det)
+        gt_idx = torch.zeros((det.shape[0],), dtype=torch.int32, device=device)
+
+        if gt.numel():
+            iou_mat = torchvision.ops.box_iou(gt, det)
+            iou, gt_idx = iou_mat.max(dim=0)
+
+            label[iou < neg_iou] = -1
+            label[iou > pos_iou] = 1
+
+        labels.append(label)
+        match_gt_boxes.append(gt[gt_idx])
+        match_gt_cls.append(cls[gt_idx])
+
+    labels = torch.cat(labels)
+    match_gt_boxes = torch.cat(match_gt_boxes)
+    match_gt_cls = torch.cat(match_gt_cls)
+
+    return labels, match_gt_boxes, match_gt_cls
 
 
 Model = FasterRCNN

@@ -59,10 +59,9 @@ class OdTrainDataset(ClsTrainDataset):
         image = np.transpose(image, (2, 1, 0))
         image = image / 255
 
-        w, h = image.shape[-2:]
-        img_size = np.array((w, h, w, h))
-
-        bboxes /= img_size
+        # w, h = image.shape[-2:]
+        # img_size = np.array((w, h, w, h))
+        # bboxes /= img_size
 
         return torch.Tensor(image), torch.Tensor(bboxes), torch.Tensor(classes)
 
@@ -80,7 +79,7 @@ class Process:
     test_dataset = ClsTrainDataset
 
     def __init__(self, model=None, model_version=None, dataset_version='ImageNet2012', device='1', input_size=224):
-        self.device = torch.device(f"cuda:{device}" if torch.cuda.is_available() else "cpu")
+        self.device = torch.device(f"cuda:{device}" if torch.cuda.is_available() else "cpu") if device else 'cpu'
         self.model = model
         self.model_version = model_version
         self.dataset_version = dataset_version
@@ -347,9 +346,11 @@ class OdProcess(Process):
             num_workers=8
         )
 
+        print(self.model)
         self.model.to(self.device)
 
-        optimizer = optim.Adam(self.model.parameters())
+        # optimizer = optim.Adam(self.model.parameters())
+        optimizer = optim.SGD(self.model.parameters(), 0.01)
 
         # 训练
         self.model.train()  # 训练模式
