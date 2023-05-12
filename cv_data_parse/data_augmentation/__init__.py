@@ -143,11 +143,12 @@ class RandomChoice:
             ret.update(RandomChoice([crop.Center(), geometry.HFlip()])(**ret))
     """
 
-    def __init__(self, funcs=None, probs=None, full_result=False, replace=True):
+    def __init__(self, funcs=None, probs=None, full_result=False, replace=True, choice_size=None):
         self.funcs = funcs
         self.probs = probs or np.ones(len(funcs)) / len(funcs)
         self.full_result = full_result
         self.replace = replace
+        self.choice_size = choice_size
 
     def __call__(self, **kwargs):
         funcs = self.funcs
@@ -157,7 +158,8 @@ class RandomChoice:
 
         tmp = [(func, probs) for func, probs in zip(funcs, probs)]
 
-        func_arg = np.random.choice(range(len(tmp)), size=len(tmp), replace=False, p=probs)
+        choice_size = self.choice_size or len(tmp)
+        func_arg = np.random.choice(range(len(tmp)), size=choice_size, replace=False, p=probs)
 
         for i in func_arg:
             func, probs = tmp[i]

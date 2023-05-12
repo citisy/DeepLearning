@@ -228,6 +228,9 @@ class Random:
 
         return self.crop(image, (w_, w_ + dst, h_, h_ + dst), **kwargs)
 
+    def restore(self, ret):
+        return self.crop.restore(ret)
+
 
 class Corner:
     def __init__(self, pos=(LEFT, TOP), is_pad=True, **pad_kwargs):
@@ -249,6 +252,9 @@ class Corner:
             raise ValueError(f'dont support {self.pos = }')
 
         return self.crop(image, (w_, w_ + dst, h_, h_ + dst), **kwargs)
+
+    def restore(self, ret):
+        return self.crop.restore(ret)
 
 
 class FiveCrop:

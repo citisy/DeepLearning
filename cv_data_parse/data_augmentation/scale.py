@@ -105,16 +105,23 @@ class LetterBox:
     """resize, crop, and pad"""
 
     def __init__(self):
-        self.apply = Apply([
-            Proportion(choice_edge=2),  # scale to longest edge
-            crop.Center(is_pad=True, pad_type=2)
-        ])
+        self.resize = Proportion(choice_edge=2)  # scale to longest edge
+        self.crop = crop.Random(is_pad=True, pad_type=2)
 
     def __call__(self, image, dst, bboxes=None, **kwargs):
-        return self.apply(image=image, dst=dst, bboxes=bboxes)
+        h, w, c = image.shape
+        _dst = max(h, w)
+        ret = self.crop(image, _dst, bboxes=bboxes, **kwargs)
+        ret.update(self.resize(ret['image'], dst, bboxes=ret['bboxes'], **kwargs))
+        ret['scale.LetterBox'] = {'dst': _dst}
+
+        return ret
 
     def restore(self, ret):
-        return self.apply.restore(ret)
+        ret = self.resize.restore(ret)
+        ret = self.crop.restore(ret)
+
+        return ret
 
 
 class Jitter:
