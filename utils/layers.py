@@ -77,8 +77,11 @@ class SimpleInModule(nn.Sequential):
 
 
 class ConvInModule(nn.Module):
-    def __init__(self, in_ch, input_size, out_ch=3, output_size=224):
+    def __init__(self, in_ch=3, input_size=224, out_ch=None, output_size=None):
         super().__init__()
+
+        out_ch = out_ch or in_ch
+        output_size = output_size or input_size
 
         assert in_ch <= out_ch, f'input channel must not be greater than {out_ch = }'
         assert input_size >= output_size, f'input size must not be smaller than {output_size = }'

@@ -135,8 +135,10 @@ class ImageVisualize:
         """将每个已识别的结构框住，并添加标签
         boxes: (-1, 4)
         """
+        img = img.copy()
         line_thickness = line_thickness or round(0.001 * (img.shape[0] + img.shape[1]) / 2) + 1  # line/font thickness
         colors = colors or [tuple(np.random.randint(0, 255) for _ in range(3))] * len(boxes)
+        labels = [str(i) for i in labels]
 
         img = cls.box(img, boxes, visual_type=RECTANGLE, colors=colors, line_thickness=line_thickness)
 

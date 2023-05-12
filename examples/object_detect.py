@@ -2,6 +2,14 @@ from .base import OdProcess
 
 
 class FastererRCNN_Voc(OdProcess):
+    """
+    Usage:
+        .. code-block:: python
+            from examples.object_detect import FastererRCNN_Voc as Process
+
+            Process().run()
+            {'score': 0.9899}
+    """
     def __init__(self):
         from object_detection.FasterRCNN import Model
 
@@ -10,7 +18,7 @@ class FastererRCNN_Voc(OdProcess):
         output_size = 20
 
         super().__init__(
-            model=Model(in_ch, input_size, output_size),
+            model=Model(in_module_config=dict(in_ch=in_ch, input_size=input_size), output_size=output_size),
             model_version='AlexNet',
             input_size=input_size,
             device=0

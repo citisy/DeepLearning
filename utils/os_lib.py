@@ -399,7 +399,7 @@ class MemoryInfo:
             if v > 1024:
                 v /= 1024.
             else:
-                return f'{v: .2f} {suffix}'
+                return f'{v:.2f} {suffix}'
 
     @classmethod
     def get_process_mem_info(cls, pretty_output=True):
@@ -456,6 +456,8 @@ class MemoryInfo:
         if pretty_output:
             for k, v in info.items():
                 info[k] = cls.pretty_str(v)
+
+        return info
 
     @classmethod
     def get_mem_info(cls, pretty_output=True):
