@@ -2,8 +2,12 @@ import cv2
 import json
 import os
 import numpy as np
-from pathlib import Path
 import pickle
+import time
+import psutil
+from functools import wraps
+from pathlib import Path
+from typing import List
 
 
 def mk_dir(dir_path):
@@ -150,7 +154,7 @@ class Loader:
             self,
             obj: str or bytes, scale_ratio: float = 1.33,
             rotate: int = 0, alpha=False, bgr=False
-    ) -> 'List[np.ndarray]':
+    ) -> List[np.ndarray]:
         import fitz
 
         if isinstance(obj, str):
@@ -179,7 +183,7 @@ class Loader:
     def load_pdf_to_images2(
             self,
             obj: str or bytes, scale_ratio: float = 1.33,
-    ) -> 'List[np.ndarray]':
+    ) -> List[np.ndarray]:
         from pdf2image import convert_from_path, convert_from_bytes
 
         dpi = 72 * scale_ratio
@@ -292,3 +296,173 @@ class FakeIo:
 saver = Saver()
 loader = Loader()
 cache = Cache()
+
+
+class Retry:
+    print_method = print
+    count = 3
+    wait = 15
+
+    @classmethod
+    def add_try(
+            cls,
+            error_message='',
+            err_type=(ConnectionError, TimeoutError)
+    ):
+        def wrap2(func):
+            @wraps(func)
+            def wrap(*args, **kwargs):
+                for i in range(cls.count):
+                    try:
+                        ret = func(*args, **kwargs)
+
+                    except err_type as e:
+                        if i >= cls.count - 1:
+                            raise e
+
+                        msg = error_message or f'Something error occur, sleep {cls.wait} seconds, and then retry'
+
+                        cls.print_method(msg)
+                        time.sleep(cls.wait)
+                        cls.print_method(f'{i + 2}th try!')
+
+                return ret
+
+            return wrap
+
+        return wrap2
+
+
+class AutoLog:
+    print_method = print
+    is_simple_log = True
+    is_time_log = True
+    is_memory_log = True
+
+    @classmethod
+    def simple_log(cls, string):
+        def wrap2(func):
+            @wraps(func)
+            def wrap(*args, **kwargs):
+                r = func(*args, **kwargs)
+                if cls.is_simple_log:
+                    cls.print_method(string)
+                return r
+
+            return wrap
+
+        return wrap2
+
+    @classmethod
+    def time_log(cls, prefix_string=''):
+        def wrap2(func):
+
+            @wraps(func)
+            def wrap(*args, **kwargs):
+                if cls.is_time_log:
+                    st = time.time()
+                    r = func(*args, **kwargs)
+                    et = time.time()
+                    cls.print_method(f'{prefix_string} - elapse[{et - st:.3f}s]!')
+                else:
+                    r = func(*args, **kwargs)
+                return r
+
+            return wrap
+
+        return wrap2
+
+    @classmethod
+    def memory_log(cls, prefix_string=''):
+        def wrap2(func):
+
+            @wraps(func)
+            def wrap(*args, **kwargs):
+                if cls.is_memory_log:
+                    a = MemoryInfo.get_process_mem_info()
+                    r = func(*args, **kwargs)
+                    b = MemoryInfo.get_process_mem_info()
+                    cls.print_method(f'{prefix_string}\nbefore: {a}\nafter: {b}')
+                else:
+                    r = func(*args, **kwargs)
+                return r
+
+            return wrap
+
+        return wrap2
+
+
+class MemoryInfo:
+    @staticmethod
+    def pretty_str(v):
+        for suffix in ['b', 'kb', 'mb', 'gb', 'tb']:
+            if v > 1024:
+                v /= 1024.
+            else:
+                return f'{v: .2f} {suffix}'
+
+    @classmethod
+    def get_process_mem_info(cls, pretty_output=True):
+        """
+        uss, 进程独立占用的物理内存（不包含共享库占用的内存）
+        rss, 该进程实际使用物理内存（包含共享库占用的全部内存）
+        vms, 虚拟内存总量
+        """
+        pid = os.getpid()
+        p = psutil.Process(pid)
+        info = p.memory_full_info()
+        info = {
+            'pid': str(pid),
+            'uss': info.uss,
+            'rss': info.rss,
+            'vms': info.vms,
+        }
+
+        if pretty_output:
+            for k, v in info.items():
+                if k != 'pid':
+                    info[k] = cls.pretty_str(v)
+
+        return info
+
+    @classmethod
+    def get_cpu_mem_info(cls, pretty_output=True):
+        """
+        percent, 实际已经使用的内存占比
+        total, 内存总的大小
+        available, 还可以使用的内存
+        free, 剩余的内存
+        used, 已经使用的内存
+        """
+        info = dict(psutil.virtual_memory()._asdict())
+        if pretty_output:
+            for k, v in info.items():
+                if k != 'percent':
+                    info[k] = cls.pretty_str(v)
+
+        return info
+
+    @classmethod
+    def get_gpu_mem_info(cls, device=0, pretty_output=True):
+        import pynvml
+        pynvml.nvmlInit()
+        handle = pynvml.nvmlDeviceGetHandleByIndex(device)
+        info = pynvml.nvmlDeviceGetMemoryInfo(handle)
+        info = dict(
+            total=info.free,
+            used=info.used,
+            free=info.free,
+        )
+        if pretty_output:
+            for k, v in info.items():
+                info[k] = cls.pretty_str(v)
+
+    @classmethod
+    def get_mem_info(cls, pretty_output=True):
+        info = dict(
+            process_mem=cls.get_process_mem_info(pretty_output),
+            env_mem=cls.get_cpu_mem_info(pretty_output),
+            gpu_mem=cls.get_gpu_mem_info(pretty_output),
+        )
+
+        return info
