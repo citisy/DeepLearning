@@ -132,6 +132,9 @@ class Pad:
         params = ret.get('crop.Pad')
         bboxes = ret['bboxes']
 
+        if not params:
+            return ret
+
         pad_left = params.get('l', 0)
         pad_top = params.get('t', 0)
 

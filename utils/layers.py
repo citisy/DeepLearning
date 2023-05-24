@@ -91,7 +91,7 @@ class ConvInModule(nn.Module):
 
         # in_ch -> min_in_ch
         # input_size -> min_input_size
-        self.layer = Conv(in_ch, out_ch, (input_size - output_size) + 1, p=0)
+        self.layer = Conv(in_ch, out_ch, (input_size - output_size) + 1, p=0, is_bn=False)
 
     def forward(self, x):
         return self.layer(x)

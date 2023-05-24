@@ -6,6 +6,15 @@ from . import RandomChoice
 from metrics.object_detection import Iou
 
 
+class MinMax:
+    """[0, 255] to [0, 1]"""
+
+    def __call__(self, image, **kwargs):
+        return dict(
+            image=image / 255
+        )
+
+
 class GaussNoise:
     """添加高斯噪声
 

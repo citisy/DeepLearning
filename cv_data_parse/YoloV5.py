@@ -59,7 +59,7 @@ class Loader(DataLoader):
             a dict had keys of
                 _id: image file name
                 image: see also image_type
-                bboxes: a np.ndarray with shape of (-1, 4), 4 means [top_left_x, top_left_y, w, h]
+                bboxes: a np.ndarray with shape of (-1, 4), 4 means [center_x, center_y, w, h] after norm
                 classes: a list
         """
 
@@ -80,7 +80,8 @@ class Loader(DataLoader):
 
             labels = np.genfromtxt(image_path.replace('images', 'labels').replace(f'.{self.image_suffix}', '.txt')).reshape((-1, 5))
 
-            # norm bboxes, (mid x, mid y, w, h)
+            # (center x, center y, box w, box h) after norm
+            # e.g. norm box w = real box w / real image w
             bboxes = labels[:, 1:]
             classes = labels[:, 0].astype(int)
 
@@ -104,7 +105,8 @@ class Loader(DataLoader):
 
                 labels = np.genfromtxt(image_path.replace('images', 'labels').replace(f'.{self.image_suffix}', '.txt')).reshape((-1, 5))
 
-                # norm bboxes, (mid x, mid y, w, h)
+                # (center x, center y, box w, box h) after norm
+                # e.g. norm box w = real box w / real image w
                 bboxes = labels[:, 1:]
                 classes = labels[:, 0]
 
@@ -178,7 +180,7 @@ class Saver(DataSaver):
         set_task = kwargs.get('set_task', '')
 
         if set_type == DataRegister.place_holder:
-            f = os_lib.FakeOs()
+            f = os_lib.FakeIo()
         else:
             f = open(f'{self.data_dir}/image_sets/{set_task}/{set_type.value}.txt', 'w', encoding='utf8')
 

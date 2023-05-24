@@ -1,5 +1,6 @@
 import numpy as np
 from collections import defaultdict
+from typing import List
 
 
 class Area:
@@ -219,22 +220,25 @@ class ConfusionMatrix:
             iou = iou_method(gt_box, det_box, **iou_method_kwarg)
             iou = np.where(iou < iou_thres, 0, 1)
 
-        if classes:
+        if classes is not None:
             true_class, pred_class = classes
 
             iou = iou_method(gt_box, det_box, **iou_method_kwarg)
             x = np.where((iou >= iou_thres))
-            correct_index = np.where(true_class[x[0]] == pred_class[x[1]])
+            if x[0].shape[0]:
+                correct_index = np.where(true_class[x[0]] == pred_class[x[1]])
 
-            x = np.stack(x, axis=1)
-            x = x[correct_index[0], :]
+                x = np.stack(x, axis=1)
+                x = x[correct_index[0], :]
 
-            if x.shape[0]:
-                matches = np.concatenate((x, iou[x[:, 0], x[:, 1]][:, None]), 1)  # [gt_box, det_box, iou]
-                if x.shape[0] > 1:
-                    matches = matches[matches[:, 2].argsort()[::-1]]
-                    matches = matches[np.unique(matches[:, 1], return_index=True)[1]]
-                    matches = matches[np.unique(matches[:, 0], return_index=True)[1]]
+                if x.shape[0]:
+                    matches = np.concatenate((x, iou[x[:, 0], x[:, 1]][:, None]), 1)  # [gt_box, det_box, iou]
+                    if x.shape[0] > 1:
+                        matches = matches[matches[:, 2].argsort()[::-1]]
+                        matches = matches[np.unique(matches[:, 1], return_index=True)[1]]
+                        matches = matches[np.unique(matches[:, 0], return_index=True)[1]]
+                else:
+                    matches = np.zeros((0, 3))
             else:
                 matches = np.zeros((0, 3))
 
@@ -355,6 +359,8 @@ class AP:
 
                 if return_more_info:
                     r.update(
+                        true_class=true_class[true_class == c],
+                        pred_class=pred_class[pred_class == c],
                         sort_idx=sort_idx[pred_class == c],
                         det_box=det_box[pred_class == c],
                         gt_box=gt_box[true_class == c],
@@ -389,7 +395,10 @@ class AP:
         # Compute the precision envelope
         mean_precision = np.flip(np.maximum.accumulate(np.flip(mean_precision)))
 
-        ap = ap_method(mean_recall, mean_precision, **ap_method_kwargs)
+        if tp.size:
+            ap = ap_method(mean_recall, mean_precision, **ap_method_kwargs)
+        else:
+            ap = 0
 
         return dict(
             ap=ap,
@@ -455,6 +464,23 @@ class AP:
             iou_method=Iou.vanilla, iou_method_kwarg=dict(),
             return_more_info=True,
     ):
+        """
+
+        Args:
+            gt_boxes (List[np.ndarray]):
+            det_boxes (List[np.ndarray]):
+            confs (List[np.ndarray]):
+            classes (List[List[np.ndarray]]):
+            iou_thres:
+            ap_method:
+            ap_method_kwargs:
+            iou_method:
+            iou_method_kwarg:
+            return_more_info:
+
+        Returns:
+
+        """
         if classes is None:
             tps = []
             for data in zip(gt_boxes, det_boxes):
@@ -470,15 +496,14 @@ class AP:
         else:
             tmp_true_classes, tmp_pred_classes = [], []
             tps = []
-            for data in zip(gt_boxes, det_boxes, classes):
-                class_ = data[2]
+            for g, d, tc, pc in zip(gt_boxes, det_boxes, *classes):
                 tp, iou = ConfusionMatrix.tp(
-                    *data,
+                    g, d, [tc, pc],
                     iou_thres=iou_thres, iou_method=iou_method, iou_method_kwarg=iou_method_kwarg
                 )
                 tps.append(tp)
-                tmp_true_classes.append(class_[0])
-                tmp_pred_classes.append(class_[1])
+                tmp_true_classes.append(tc)
+                tmp_pred_classes.append(pc)
 
             tps = np.concatenate(tps, axis=0)
             classes = (np.concatenate(tmp_true_classes), np.concatenate(tmp_pred_classes))

@@ -4,6 +4,11 @@ from pathlib import Path
 import xml.etree.ElementTree as ET
 import numpy as np
 from cv_data_parse.base import DataRegister, DataLoader, DataSaver
+from enum import Enum
+
+
+class VocDataRegister(Enum):
+    TRAIN_VAL = 'trainval'
 
 
 class Loader(DataLoader):
@@ -16,7 +21,7 @@ class Loader(DataLoader):
         │   ├── Action                # human actions sets
         │   ├── Layout                # human layout sets
         │   ├── Main                  # object detection sets
-        │   │     ├── *train.txt      # 5717 items, the first column is file stem, the second column means whether contained the object, -1 means not contained
+        │   │     ├── *train.txt      # 5717 items, the first column is file stem, the second column gives whether contained the object or not, -1 gives not contained
         │   │     ├── *val.txt        # 5823 items
         │   │     └── *trainval.txt   # 11540 items
         │   └── Segmentation          # segmentation sets
@@ -47,6 +52,8 @@ class Loader(DataLoader):
             image = ImageVisualize.label_box(image, bboxes, classes, line_thickness=2)
 
     """
+    default_set_type = [VocDataRegister.TRAIN_VAL]
+
     classes = ["aeroplane", "bicycle", "bird", "boat", "bottle", "bus", "car", "cat", "chair",
                "cow", "diningtable", "dog", "horse", "motorbike", "person", "pottedplant",
                "sheep", "sofa", "train", "tvmonitor"]
@@ -76,41 +83,51 @@ class Loader(DataLoader):
 
     def load_total(self, image_type, **kwargs):
         for xml_file in Path(f'{self.data_dir}/Annotations').glob('*.xml'):
-            tree = ET.parse(xml_file)
-            root = tree.getroot()
+            yield self.parse_xml(xml_file.stem, image_type)
 
-            image_path = os.path.abspath(f'{self.data_dir}/JPEGImages/{xml_file.stem}.{self.image_suffix}')
-            if image_type == DataRegister.PATH:
-                image = image_path
-            elif image_type == DataRegister.IMAGE:
-                image = cv2.imread(image_path)
-            else:
-                raise ValueError(f'Unknown input {image_type = }')
+    def load_task(self, set_type, image_type, task='', **kwargs):
+        if task:
+            task += '_'
 
-            elem = root.find('size')
-            size = {subelem.tag: int(subelem.text) for subelem in elem}
-            # width, height, depth
-            size = (size['width'], size['height'], size['depth'])
+        with open(f'{self.data_dir}/ImageSets/Main/{task}{set_type.value}.txt', 'r', encoding='utf8') as f:
+            for _id in f.read().strip().split('\n'):
+                yield self.parse_xml(_id, image_type)
 
-            bboxes = []
-            classes = []
-            difficult = []
-            for obj in root.iter('object'):
-                obj_name = obj.find('name').text
-                difficult.append(int(obj.find('difficult').text) if obj.find('difficult') else 0)
-                classes.append(self.classes.index(obj_name))
-                xmlbox = obj.find('bndbox')
-                bboxes.append([float(xmlbox.find(value).text) for value in ('xmin', 'ymin', 'xmax', 'ymax')])
-            bboxes = np.array(bboxes)
+    def parse_xml(self, _id, image_type):
+        xml_file = Path(f'{self.data_dir}/Annotations/{_id}.xml')
+        tree = ET.parse(xml_file)
+        root = tree.getroot()
 
-            yield dict(
-                _id=f'{xml_file.stem}.{self.image_suffix}',
-                image=image,
-                size=size,
-                bboxes=bboxes,
-                classes=classes,
-                difficult=difficult
-            )
+        image_path = os.path.abspath(f'{self.data_dir}/JPEGImages/{_id}.{self.image_suffix}')
+        if image_type == DataRegister.PATH:
+            image = image_path
+        elif image_type == DataRegister.IMAGE:
+            image = cv2.imread(image_path)
+        else:
+            raise ValueError(f'Unknown input {image_type = }')
 
-    def load_task(self, set_type, image_type, task=None, **kwargs):
-        pass
+        elem = root.find('size')
+        size = {subelem.tag: int(subelem.text) for subelem in elem}
+        # width, height, depth
+        size = (size['width'], size['height'], size['depth'])
+
+        bboxes = []
+        classes = []
+        difficult = []
+        for obj in root.iter('object'):
+            obj_name = obj.find('name').text
+            difficult.append(int(obj.find('difficult').text) if obj.find('difficult') else 0)
+            classes.append(self.classes.index(obj_name))
+            xmlbox = obj.find('bndbox')
+            bboxes.append([float(xmlbox.find(value).text) for value in ('xmin', 'ymin', 'xmax', 'ymax')])
+        bboxes = np.array(bboxes)
+        classes = np.array(classes)
+
+        return dict(
+            _id=f'{_id}.{self.image_suffix}',
+            image=image,
+            size=size,
+            bboxes=bboxes,
+            classes=classes,
+            difficult=difficult
+        )

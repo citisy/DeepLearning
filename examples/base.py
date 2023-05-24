@@ -8,9 +8,10 @@ from torch import nn, optim
 from torch.utils.data import Dataset, DataLoader
 from utils.os_lib import MemoryInfo
 from utils import os_lib, converter
+from utils.visualize import ImageVisualize
 from cv_data_parse.base import DataRegister
 from metrics import classifier, object_detection
-from cv_data_parse.data_augmentation import crop, scale, geometry, pixel_perturbation, RandomApply
+from cv_data_parse.data_augmentation import crop, scale, geometry, pixel_perturbation, channel, RandomApply, Apply
 
 MODEL = 1
 WEIGHT = 2
@@ -19,27 +20,23 @@ JIT = 4
 TRITON = 5
 
 
-class ClsTrainDataset(Dataset):
+class ClsDataset(Dataset):
     def __init__(self, data, augment_func=None):
         self.data = data
         self.augment_func = augment_func
 
     def __getitem__(self, idx):
         ret = self.data[idx].copy()
-
         ret = self.aug(ret)
-
         image, _class = ret['image'], ret['_class']
-
-        # (h, w, c) -> (c, w, h)
-        image = np.transpose(image, (2, 1, 0))
-        image = image / 255
 
         return torch.Tensor(image), _class
 
     def aug(self, ret):
         if isinstance(ret['image'], str):
             ret['image'] = cv2.imread(ret['image'])
+
+        ret['ori_image'] = ret['image']
 
         if self.augment_func:
             ret = self.augment_func(ret)
@@ -50,22 +47,12 @@ class ClsTrainDataset(Dataset):
         return len(self.data)
 
 
-class OdTrainDataset(ClsTrainDataset):
+class OdDataset(ClsDataset):
     def __getitem__(self, idx):
         ret = self.data[idx].copy()
         ret = self.aug(ret)
 
-        image, bboxes, classes = ret['image'], ret['bboxes'], ret['classes']
-
-        # (h, w, c) -> (c, w, h)
-        image = np.transpose(image, (2, 1, 0))
-        image = image / 255
-
-        # w, h = image.shape[-2:]
-        # img_size = np.array((w, h, w, h))
-        # bboxes /= img_size
-
-        ret['image'] = image
+        ret['idx'] = idx
 
         return ret
 
@@ -78,8 +65,7 @@ class OdTrainDataset(ClsTrainDataset):
 
 
 class Process:
-    train_dataset = ClsTrainDataset
-    val_dataset = ClsTrainDataset
+    dataset = ClsDataset
 
     def __init__(self, model=None, model_version=None, dataset_version='ImageNet2012', device='1', input_size=224):
         self.device = torch.device(f"cuda:{device}" if torch.cuda.is_available() else "cpu") if device is not None else 'cpu'
@@ -89,6 +75,7 @@ class Process:
         self.model_dir = f'model_data/{self.model_version}'
         os_lib.mk_dir(self.model_dir)
         self.model_path = f'{self.model_dir}/{self.dataset_version}.pth'
+        self.save_result_dir = f'cache_data/{self.dataset_version}'
         self.input_size = input_size
 
         self.setup_seed()
@@ -102,18 +89,9 @@ class Process:
         np.random.seed(seed)
 
     def run(self, max_epoch=100, train_batch_size=16, predict_batch_size=16, save_period=None):
-        # cache file would be so big
-        # cache_file = f'cache/{self.model_version}_train.pkl'
-        # if os.path.exists(cache_file):
-        #     data = os_lib.loader.load_pkl(cache_file)
-        # else:
-        #     data = self.get_train_data()
-        #     os_lib.mk_dir('cache')
-        #     os_lib.saver.save_pkl(data, cache_file)
-
         data = self.get_train_data()
 
-        dataset = self.train_dataset(
+        dataset = self.dataset(
             data,
             augment_func=self.data_augment
         )
@@ -121,20 +99,12 @@ class Process:
         self.fit(dataset, max_epoch, train_batch_size, save_period)
         self.save(self.model_path)
 
-        self.load(self.model_path)
-
-        # cache file would be so big
-        # cache_file = f'cache/{self.model_version}_test.pkl'
-        # if os.path.exists(cache_file):
-        #     data = os_lib.loader.load_pkl(cache_file)
-        # else:
-        #     data = self.get_val_data()
-        #     os_lib.mk_dir('cache')
-        #     os_lib.saver.save_pkl(data, cache_file)
+        # self.load(self.model_path)
+        self.load(f'{self.model_dir}/{self.dataset_version}_last.pth')
 
         data = self.get_val_data()
 
-        dataset = self.val_dataset(data, augment_func=self.val_data_augment)
+        dataset = self.dataset(data, augment_func=self.val_data_augment)
         print(self.metric(dataset, predict_batch_size))
 
     def fit(self, *args, **kwargs):
@@ -147,13 +117,21 @@ class Process:
         raise NotImplementedError
 
     def data_augment(self, ret):
+        ret.update(Apply([
+            pixel_perturbation.MinMax(),
+            channel.HWC2CHW()
+        ])(**ret))
         return ret
 
     def val_data_augment(self, ret):
+        ret.update(Apply([
+            pixel_perturbation.MinMax(),
+            channel.HWC2CHW()
+        ])(**ret))
         return ret
 
-    def val_data_restore(self, *args):
-        raise NotImplementedError
+    def val_data_restore(self, ret):
+        return ret
 
     def get_train_data(self, *args, **kwargs):
         raise NotImplementedError
@@ -197,8 +175,7 @@ class Process:
 
 
 class ClsProcess(Process):
-    train_dataset = ClsTrainDataset
-    val_dataset = ClsTrainDataset
+    dataset = ClsDataset
 
     def fit(self, dataset, max_epoch, batch_size, save_period=None):
         dataloader = DataLoader(dataset, shuffle=True, batch_size=batch_size)
@@ -236,7 +213,7 @@ class ClsProcess(Process):
                 self.save(f'{self.model_dir}/{self.dataset_version}_last.pth')
 
                 val_data = self.get_val_data()
-                val_dataset = self.val_dataset(val_data, augment_func=self.val_data_augment)
+                val_dataset = self.dataset(val_data, augment_func=self.val_data_augment)
                 result = self.metric(val_dataset, batch_size)
                 if result['score'] > score:
                     self.save(f'{self.model_dir}/{self.dataset_version}_best.pth')
@@ -282,7 +259,7 @@ class ClsProcess(Process):
             geometry.HFlip(),
             geometry.VFlip(),
         ])(**ret))
-        return ret
+        return super().data_augment(ret)
 
     def get_train_data(self):
         """example"""
@@ -327,31 +304,40 @@ class ClsProcess(Process):
 
 
 class OdProcess(Process):
-    train_dataset = OdTrainDataset
-    val_dataset = OdTrainDataset
+    dataset = OdDataset
 
     def get_train_data(self):
         """example"""
         from cv_data_parse.Voc import Loader
 
         loader = Loader(f'data/VOC2012')
-        data = loader(set_type=DataRegister.TRAIN, image_type=DataRegister.PATH, generator=False, )[0]
+        data = loader(set_type=DataRegister.TRAIN, image_type=DataRegister.PATH, generator=False, task='')[0]
 
         return data
 
     def data_augment(self, ret):
         ret.update(dst=self.input_size)
-        ret.update(crop.Random()(**ret))
+        ret.update(scale.LetterBox()(**ret))
+        ret.update(RandomApply([geometry.HFlip()])(**ret))
+        ret.update(Apply([
+            pixel_perturbation.MinMax(),
+            pixel_perturbation.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+            channel.HWC2CHW()
+        ])(**ret))
         return ret
 
     def val_data_augment(self, ret):
         ret.update(dst=self.input_size)
         ret.update(scale.LetterBox()(**ret))
+        ret.update(Apply([
+            pixel_perturbation.MinMax(),
+            pixel_perturbation.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+            channel.HWC2CHW()
+        ])(**ret))
         return ret
 
     def val_data_restore(self, ret):
         ret = scale.LetterBox().restore(ret)
-
         return ret
 
     def get_val_data(self):
@@ -359,7 +345,8 @@ class OdProcess(Process):
         from cv_data_parse.Voc import Loader
 
         loader = Loader(f'data/VOC2012')
-        data = loader(set_type=DataRegister.VAL, image_type=DataRegister.PATH, generator=False, )[0]
+        data = loader(set_type=DataRegister.VAL, image_type=DataRegister.PATH, generator=False, task='')[0]
+        # data = data[:20]
 
         return data
 
@@ -370,7 +357,7 @@ class OdProcess(Process):
             pin_memory=True,
             batch_size=batch_size,
             collate_fn=dataset.collate_fn,
-            num_workers=4
+            # num_workers=4
         )
 
         self.model.to(self.device)
@@ -378,36 +365,46 @@ class OdProcess(Process):
         optimizer = optim.Adam(self.model.parameters())
         # optimizer = optim.SGD(self.model.parameters(), 0.01)
 
-        self.model.train()
+        score = -1
 
         for i in range(max_epoch):
+            self.model.train()
             pbar = tqdm(dataloader, desc=f'train {i}/{max_epoch}')
+            total_loss = 0
+            total_batch = 0
 
-            for ret in pbar:
-                image, bboxes, classes = ret['image'], ret['bboxes'], ret['classes']
+            for rets in pbar:
+                images = [torch.Tensor(ret.pop('image')).to(self.device) for ret in rets]
+                gt_boxes = [torch.Tensor(ret['bboxes']).to(self.device) for ret in rets]
+                gt_cls = [torch.Tensor(ret['classes']).to(self.device, dtype=torch.int64) for ret in rets]
+                images = torch.stack(images)
 
-                for _ in range(len(image)):
-                    image[_] = torch.Tensor(image[_]).to(self.device)
-                    bboxes[_] = torch.Tensor(bboxes[_]).to(device=self.device)
-                    classes[_] = torch.Tensor(classes[_]).to(dtype=torch.int64, device=self.device)
-
-                image = torch.stack(image, 0)
-
+                output = self.model(images, gt_boxes, gt_cls)
+                loss = output['loss']
                 optimizer.zero_grad()
-
-                detections, det_cls, loss = self.model(image, bboxes, classes)
-
                 loss.backward()
                 optimizer.step()
 
+                total_loss += loss.item()
+                total_batch += len(rets)
+
                 pbar.set_postfix({
                     'loss': f'{loss.item():.06}',
-                    'cpu_info': MemoryInfo.get_process_mem_info(),
-                    'gpu_info': MemoryInfo.get_gpu_mem_info()
+                    'mean_loss': f'{total_loss / total_batch:.06}',
+                    # 'cpu_info': MemoryInfo.get_process_mem_info(),
+                    # 'gpu_info': MemoryInfo.get_gpu_mem_info()
                 })
 
             if save_period and i % save_period == save_period - 1:
-                self.save(self.model_path)
+                self.save(f'{self.model_dir}/{self.dataset_version}_last.pth')
+
+                val_data = self.get_val_data()
+                val_dataset = self.dataset(val_data, augment_func=self.val_data_augment)
+                result = self.metric(val_dataset, batch_size)
+                print(result['score'])
+                if result['score'] > score:
+                    self.save(f'{self.model_dir}/{self.dataset_version}_best.pth')
+                    score = result['score']
 
     def predict(self, dataset, batch_size=128):
         dataloader = DataLoader(
@@ -416,51 +413,30 @@ class OdProcess(Process):
             collate_fn=dataset.collate_fn,
         )
 
+        self.model.to(self.device)
+
         gt_boxes, det_boxes, confs, true_class, pred_class = [], [], [], [], []
 
         with torch.no_grad():
             self.model.eval()
             for rets in tqdm(dataloader):
-                image = [torch.Tensor(ret.pop('image')).to(self.device) for ret in rets]
-                bboxes = [ret.pop('bboxes') for ret in rets]
-                classes = [ret.pop('classes') for ret in rets]
+                images = [torch.Tensor(ret['image']).to(self.device) for ret in rets]
+                images = torch.stack(images)
 
-                for _ in range(len(image)):
-                    image[_] = torch.Tensor(image[_]).to(self.device, non_blocking=True)
+                outputs = self.model(images)
+                outputs = [{k: v.to('cpu').numpy() for k, v in t.items()} for t in outputs]
 
-                image = torch.stack(image, 0)
+                for i in range(len(images)):
+                    output = outputs[i]
+                    ret = rets[i]
 
-                detections, cls = self.model(image)
+                    # self.visualize(ret, output, save_name=f'{self.save_result_dir}/{ret["_id"]}')
 
-                for i in range(len(image)):
-                    detection = detections[i].cpu().detach().numpy()
-
-                    # from utils.visualize import ImageVisualize
-                    # img = image[i].cpu().detach().numpy()
-                    # img = np.transpose(img, (2, 1, 0))
-                    # img = np.ascontiguousarray(img)
-                    # img = img * 255
-                    # img = img.astype(np.uint8)
-                    # img1 = ImageVisualize.label_box(img, bboxes[i], classes[i], line_thickness=2)
-                    #
-                    # img2 = ImageVisualize.label_box(img, detection, cls[i], line_thickness=2)
-                    # img = np.concatenate([img1, img2], 1)
-                    #
-                    # cv2.imwrite('test.png', img)
-
-                    gt_ret = self.val_data_restore(dict(bboxes=bboxes[i], classes=classes[i], **rets[i]))
-                    det_ret = self.val_data_restore(dict(bboxes=detection, classes=cls[i], **rets[i]))
-
-                    gt_boxes.append(gt_ret['bboxes'].tolist())
-                    det_boxes.append(det_ret['bboxes'].tolist())
-                    confs.append(det_ret['classes'].tolist())
-                    true_class.append(gt_ret['classes'].tolist())
-                    pred_class.append(det_ret['classes'].tolist())
-
-        gt_boxes = np.array(gt_boxes)
-        det_boxes = np.array(det_boxes)
-        true_class = np.array(true_class)
-        pred_class = np.array(pred_class)
+                    gt_boxes.append(ret['bboxes'])
+                    det_boxes.append(output['bboxes'])
+                    confs.append(output['conf'].tolist())
+                    true_class.append(ret['classes'])
+                    pred_class.append(output['classes'])
 
         return gt_boxes, det_boxes, confs, true_class, pred_class
 
@@ -469,8 +445,28 @@ class OdProcess(Process):
 
         result = object_detection.AP.mAP(gt_boxes, det_boxes, confs, classes=[true_class, pred_class])
 
-        result.update(
-            score=result['ap']
-        )
+        result = {
+            'per_class': {k: {
+                'ap': v['ap'],
+                'n_pred': len(v['pred_class']),
+                'n_true': len(v['true_class'])
+            } for k, v in result.items()},
+            'score': sum(r['ap'] for r in result.values()) / len(result)
+        }
 
         return result
+
+    def visualize(self, true_ret, pred_ret, save_name=''):
+        img = true_ret.pop('image')
+        true_ret = self.val_data_restore(true_ret)
+        img1 = ImageVisualize.label_box(img, true_ret['bboxes'], true_ret['classes'], line_thickness=2)
+
+        pred_ret_ = true_ret.copy()
+        pred_ret_['bboxes'] = pred_ret['bboxes']
+        pred_ret = self.val_data_restore(pred_ret_)
+        img2 = ImageVisualize.label_box(img, pred_ret['bboxes'], pred_ret['labels'], line_thickness=2)
+
+        img = np.concatenate([img1, img2], 1)
+
+        os_lib.mk_dir(Path(save_name).parent)
+        cv2.imwrite(save_name, img)

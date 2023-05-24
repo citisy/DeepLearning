@@ -46,6 +46,7 @@ class MobileNetV1(nn.Module):
 
         self.input = in_module
         self.conv_seq = nn.Sequential(*layers)
+        self.conv_seq.out_channels = in_ch
         self.flatten = nn.Sequential(
             nn.AdaptiveAvgPool2d(1),
             nn.Flatten()

@@ -3,6 +3,75 @@ from torch import nn
 import torchvision
 
 
+class GetBackbone:
+    @classmethod
+    def get_one(cls, name='ResNet', default_config=dict()):
+        backbones = {
+            'Vgg': cls.get_vgg,
+            'ResNet': cls.get_resnet,
+            'MobileNet': cls.get_mobilenet,
+            'MobileNetV2': cls.get_mobilenet_v2
+        }
+
+        return backbones[name](default_config)
+
+    @staticmethod
+    def get_resnet(default_config=dict()):
+        # from torchvision.models.resnet import BasicBlock, ResNet as Model
+        # model = Model(BasicBlock, [2, 2, 2, 2])
+        # backbone = ...   # todo
+        # backbone.out_channels = 1280
+
+        from image_classifier.ResNet import Model, Res34_config
+
+        default_config = default_config or dict(
+            in_module=nn.Module(),
+            out_module=nn.Module(),
+            conv_config=Res34_config
+        )
+
+        backbone = Model(**default_config).conv_seq
+
+        return backbone
+
+    @staticmethod
+    def get_mobilenet(default_config=dict()):
+        from image_classifier.MobileNet import Model, config
+
+        default_config = default_config or dict(
+            in_module=nn.Module(),
+            out_module=nn.Module(),
+            conv_config=config
+        )
+
+        backbone = Model(**default_config).conv_seq
+
+        return backbone
+
+    @staticmethod
+    def get_mobilenet_v2(default_config=dict()):
+        from torchvision.models.mobilenet import MobileNetV2 as Model
+
+        backbone = Model(**default_config).features
+        backbone.out_channels = 1280
+
+        return backbone
+
+    @staticmethod
+    def get_vgg(default_config=dict()):
+        from image_classifier.VGG import Model, VGG19_config
+
+        default_config = default_config or dict(
+            in_module=nn.Module(),
+            out_module=nn.Module(),
+            conv_config=VGG19_config
+        )
+
+        backbone = Model(**default_config).conv_seq
+
+        return backbone
+
+
 class NMS(nn.Module):
     def __init__(self, conf_thres=0.25, iou_thres=0.45, keep_shape=False, max_anchors=50):
         super().__init__()
@@ -55,4 +124,3 @@ class NMS(nn.Module):
             arg = arg[fi]
 
         return torch.tensor(idx, device=bx.device)
-

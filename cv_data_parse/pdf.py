@@ -60,6 +60,7 @@ class Loader(DataLoader):
             return self.load_per_pdf(fp, **kwargs)
 
     def load_per_pdf(self, fp, **kwargs):
+        fp = Path(fp)
         images = self.loader.load_pdf_to_images2(str(fp))
         doc = fitz.open(str(fp))
 
