@@ -2,35 +2,10 @@ import cv2
 import numpy as np
 from PIL import ImageFont, ImageDraw, Image
 from typing import List
+from excluded.cmap import cmap, terminal_cmap
 
 POLYGON = 1
 RECTANGLE = 2
-
-STANDARD_COLORS = [
-    'AliceBlue', 'Chartreuse', 'Aqua', 'Aquamarine', 'Azure', 'Beige', 'Bisque',
-    'BlanchedAlmond', 'BlueViolet', 'BurlyWood', 'CadetBlue', 'AntiqueWhite',
-    'Chocolate', 'Coral', 'CornflowerBlue', 'Cornsilk', 'Crimson', 'Cyan',
-    'DarkCyan', 'DarkGoldenRod', 'DarkGrey', 'DarkKhaki', 'DarkOrange',
-    'DarkOrchid', 'DarkSalmon', 'DarkSeaGreen', 'DarkTurquoise', 'DarkViolet',
-    'DeepPink', 'DeepSkyBlue', 'DodgerBlue', 'FireBrick', 'FloralWhite',
-    'ForestGreen', 'Fuchsia', 'Gainsboro', 'GhostWhite', 'Gold', 'GoldenRod',
-    'Salmon', 'Tan', 'HoneyDew', 'HotPink', 'IndianRed', 'Ivory', 'Khaki',
-    'Lavender', 'LavenderBlush', 'LawnGreen', 'LemonChiffon', 'LightBlue',
-    'LightCoral', 'LightCyan', 'LightGoldenRodYellow', 'LightGray', 'LightGrey',
-    'LightGreen', 'LightPink', 'LightSalmon', 'LightSeaGreen', 'LightSkyBlue',
-    'LightSlateGray', 'LightSlateGrey', 'LightSteelBlue', 'LightYellow', 'Lime',
-    'LimeGreen', 'Linen', 'Magenta', 'MediumAquaMarine', 'MediumOrchid',
-    'MediumPurple', 'MediumSeaGreen', 'MediumSlateBlue', 'MediumSpringGreen',
-    'MediumTurquoise', 'MediumVioletRed', 'MintCream', 'MistyRose', 'Moccasin',
-    'NavajoWhite', 'OldLace', 'Olive', 'OliveDrab', 'Orange', 'OrangeRed',
-    'Orchid', 'PaleGoldenRod', 'PaleGreen', 'PaleTurquoise', 'PaleVioletRed',
-    'PapayaWhip', 'PeachPuff', 'Peru', 'Pink', 'Plum', 'PowderBlue', 'Purple',
-    'Red', 'RosyBrown', 'RoyalBlue', 'SaddleBrown', 'Green', 'SandyBrown',
-    'SeaGreen', 'SeaShell', 'Sienna', 'Silver', 'SkyBlue', 'SlateBlue',
-    'SlateGray', 'SlateGrey', 'Snow', 'SpringGreen', 'SteelBlue', 'GreenYellow',
-    'Teal', 'Thistle', 'Tomato', 'Turquoise', 'Violet', 'Wheat', 'White',
-    'WhiteSmoke', 'Yellow', 'YellowGreen'
-]
 
 
 class ImageVisualize:
@@ -39,7 +14,7 @@ class ImageVisualize:
         """添加若干个线框
         char_boxes: polygon: (-1, -1, 2) or rectangle: (-1, 4)
         """
-        colors = colors or [tuple(np.random.randint(0, 255) for _ in range(3))] * len(boxes)
+        colors = colors or [cmap['Blue']['array']] * len(boxes)
         line_thickness = line_thickness or round(0.001 * (img.shape[0] + img.shape[1]) / 2) + 1  # line/font thickness
 
         for i in range(len(boxes)):
@@ -73,7 +48,7 @@ class ImageVisualize:
         draw_left = ImageDraw.Draw(img_left)
         draw_right = ImageDraw.Draw(img_right)
 
-        colors = colors or [tuple(np.random.randint(0, 255) for _ in range(3)) for _ in range(len(text_boxes))]
+        colors = colors or [cmap['Blue']['array']] * len(text_boxes)
 
         for idx, (box, txt, score) in enumerate(zip(text_boxes, texts, scores)):
             if score < drop_score:
@@ -163,7 +138,7 @@ class ImageVisualize:
         """
         img = img.copy()
         line_thickness = line_thickness or round(0.001 * (img.shape[0] + img.shape[1]) / 2) + 1  # line/font thickness
-        colors = colors or [tuple(np.random.randint(0, 255) for _ in range(3))] * len(boxes)
+        colors = colors or [cmap['Blue']['array']] * len(boxes)
         labels = [str(i) for i in labels]
 
         img = cls.box(img, boxes, visual_type=RECTANGLE, colors=colors, line_thickness=line_thickness)
@@ -186,50 +161,8 @@ class ImageVisualize:
 
 
 class TextVisualize:
-    # refer to https://en.wikipedia.org/wiki/ANSI_escape_code
-    types = {
-        # front color
-        'black': '30',
-        'red': '31',
-        'green': '32',
-        'yellow': '33',
-        'blue': '34',
-        'magenta': '35',
-        'cyan': '36',
-        'white': '37',
-
-        # background color
-        'bg_black': '30',
-        'bg_red': '31',
-        'bg_green': '32',
-        'bg_yellow': '33',
-        'bg_blue': '34',
-        'bg_magenta': '35',
-        'bg_cyan': '36',
-        'bg_white': '37',
-
-        # bright colors
-        'bright_black': '90',
-        'bright_red': '91',
-        'bright_green': '92',
-        'bright_yellow': '93',
-        'bright_blue': '94',
-        'bright_magenta': '95',
-        'bright_cyan': '96',
-        'bright_white': '97',
-
-        # misc
-        'end': '0',
-        'bold': '1',
-        'underline': '4',
-        'blink': '5',
-        'reverse': '6',
-        'invisible': '7',
-
-    }
-
-    @classmethod
-    def highlight_str(cls, text, types='blue', start='', end=''):
+    @staticmethod
+    def highlight_str(text, types='blue', start='', end=''):
         """hightlight a string
 
         Args:
@@ -251,11 +184,11 @@ class TextVisualize:
             # fmt -> \033[%sm
             start = '\033['
             for t in types:
-                start += cls.types[t] + ';'
+                start += terminal_cmap[t] + ';'
 
             start = start[:-1] + 'm'
 
-        end = end or '\033[' + cls.types['end'] + 'm'
+        end = end or '\033[' + terminal_cmap['end'] + 'm'
 
         return start + text + end
 
