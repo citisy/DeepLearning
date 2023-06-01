@@ -158,7 +158,7 @@ class Iou:
         return iou - (outer - union) / outer
 
     @classmethod
-    def diou(cls, box1, box2, iou=None):
+    def diou(cls, box1, box2, iou=None, eps=1e-7):
         """https://arxiv.org/pdf/1911.08287.pdf
         iou - d ^ 2 / c ^ 2
         See Also `torchvision.ops.distance_box_iou`
@@ -167,20 +167,21 @@ class Iou:
         box2_center = (box2[:, 2:] - box2[:, :2]) / 2
 
         d = np.linalg.norm(box1_center[:, None, :] - box2_center, axis=2) ** 2
-        c = np.linalg.norm((np.maximum(box1[:, None, 2:], box2[:, 2:]) - np.minimum(box1[:, None, :2], box2[:, :2])).clip(0), axis=2) ** 2
+        c = np.linalg.norm((np.maximum(box1[:, None, 2:], box2[:, 2:]) - np.minimum(box1[:, None, :2], box2[:, :2])).clip(0), axis=2) ** 2 + eps
+
         if iou is None:
             iou = cls.vanilla(box1, box2)
 
         return iou - d / c
 
     @classmethod
-    def ciou(cls, box1, box2, a=None, v=None):
+    def ciou(cls, box1, box2, a=None, v=None, eps=1e-7):
         """https://arxiv.org/pdf/1911.08287.pdf
         diou - av
         See Also `torchvision.ops.complete_box_iou`
         """
         iou = cls.vanilla(box1, box2)
-        diou = cls.diou(box1, box2, iou=iou)
+        diou = cls.diou(box1, box2, iou=iou, eps=eps)
 
         if v is None:
             box1_wh = box1[:, 2:] - box1[:, :2]
@@ -191,7 +192,7 @@ class Iou:
             v = 4 / np.pi ** 2 * ((b1[:, None] - b2) ** 2)
 
         if a is None:
-            a = v / (1 - iou + v)
+            a = v / (1 - iou + v + eps)
 
         return diou - a * v
 
@@ -217,38 +218,16 @@ class ConfusionMatrix:
 
         """
         if iou is None:
+            if classes is not None:
+                true_class, pred_class = classes
+                offset = np.max(np.concatenate([gt_box, det_box], 0))
+                gt_box += (true_class * offset)[:, None]
+                det_box += (pred_class * offset)[:, None]
+
             iou = iou_method(gt_box, det_box, **iou_method_kwarg)
-            iou = np.where(iou < iou_thres, 0, 1)
+            iou = iou >= iou_thres
 
-        if classes is not None:
-            true_class, pred_class = classes
-
-            iou = iou_method(gt_box, det_box, **iou_method_kwarg)
-            x = np.where((iou >= iou_thres))
-            if x[0].shape[0]:
-                correct_index = np.where(true_class[x[0]] == pred_class[x[1]])
-
-                x = np.stack(x, axis=1)
-                x = x[correct_index[0], :]
-
-                if x.shape[0]:
-                    matches = np.concatenate((x, iou[x[:, 0], x[:, 1]][:, None]), 1)  # [gt_box, det_box, iou]
-                    if x.shape[0] > 1:
-                        matches = matches[matches[:, 2].argsort()[::-1]]
-                        matches = matches[np.unique(matches[:, 1], return_index=True)[1]]
-                        matches = matches[np.unique(matches[:, 0], return_index=True)[1]]
-                else:
-                    matches = np.zeros((0, 3))
-            else:
-                matches = np.zeros((0, 3))
-
-            tp = np.zeros(det_box.shape[0], dtype=bool)
-            tp[matches[:, 1].astype(int)] = True
-
-            return tp, iou
-
-        else:
-            return np.sum(iou, axis=0, dtype=bool), iou
+        return np.sum(iou, axis=0, dtype=bool), iou
 
     @classmethod
     def fp(cls, *args, **kwargs):
