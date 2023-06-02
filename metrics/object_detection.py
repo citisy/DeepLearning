@@ -1,5 +1,4 @@
 import numpy as np
-from collections import defaultdict
 from typing import List
 
 
@@ -100,7 +99,7 @@ class Overlap:
 
 class Iou:
     @staticmethod
-    def vanilla(box1, box2, inter=None, union=None):
+    def iou(box1, box2, inter=None, union=None):
         """vanilla iou
         Area(box1 & box2) / Area(box1 | box2)
         See Also `torchvision.ops.box_iou`
@@ -153,7 +152,7 @@ class Iou:
         outer = Area.outer_areas(box1, box2)
         inter = Area.intersection_areas(box1, box2)
         union = Area.union_areas(box1, box2)
-        iou = cls.vanilla(box1, box2, inter=inter, union=union)
+        iou = cls.iou(box1, box2, inter=inter, union=union)
 
         return iou - (outer - union) / outer
 
@@ -170,7 +169,7 @@ class Iou:
         c = np.linalg.norm((np.maximum(box1[:, None, 2:], box2[:, 2:]) - np.minimum(box1[:, None, :2], box2[:, :2])).clip(0), axis=2) ** 2 + eps
 
         if iou is None:
-            iou = cls.vanilla(box1, box2)
+            iou = cls.iou(box1, box2)
 
         return iou - d / c
 
@@ -180,7 +179,7 @@ class Iou:
         diou - av
         See Also `torchvision.ops.complete_box_iou`
         """
-        iou = cls.vanilla(box1, box2)
+        iou = cls.iou(box1, box2)
         diou = cls.diou(box1, box2, iou=iou, eps=eps)
 
         if v is None:
@@ -198,9 +197,11 @@ class Iou:
 
 
 class ConfusionMatrix:
-    @staticmethod
-    def tp(gt_box, det_box, classes=None, iou_thres=0.5,
-           iou=None, iou_method=Iou.vanilla, iou_method_kwarg=dict()):
+    def __init__(self, iou_method=None, **iou_method_kwarg):
+        self.iou_method = iou_method or Iou.iou
+        self.iou_method_kwarg = iou_method_kwarg
+
+    def tp(self, gt_box, det_box, classes=None, iou_thres=0.5, iou=None):
         """
 
         Args:
@@ -209,8 +210,6 @@ class ConfusionMatrix:
             classes (List[iter]):
             iou_thres:
             iou: (N, M)
-            iou_method:
-            iou_method_kwarg:
 
         Returns:
             tp: (M, )
@@ -224,33 +223,44 @@ class ConfusionMatrix:
                 gt_box += (true_class * offset)[:, None]
                 det_box += (pred_class * offset)[:, None]
 
-            iou = iou_method(gt_box, det_box, **iou_method_kwarg)
-            iou = iou >= iou_thres
+            iou = self.iou_method(gt_box, det_box, **self.iou_method_kwarg)
 
-        return np.sum(iou, axis=0, dtype=bool), iou
+        tp = np.zeros((det_box.shape[0],), dtype=bool)
+        idx = np.where((iou >= iou_thres))
+        idx = np.stack(idx, 1)
+        if idx.shape[0]:
+            matches = np.concatenate((idx, iou[idx[:, 0], idx[:, 1]][:, None]), 1)  # [idx of gt, idx of det, iou]
+            if idx.shape[0] > 1:
+                matches = matches[matches[:, 2].argsort()[::-1]]
+                matches = matches[np.unique(matches[:, 1], return_index=True)[1]]
+                matches = matches[np.unique(matches[:, 0], return_index=True)[1]]
+            tp[matches[:, 1].astype(int)] = True
 
-    @classmethod
-    def fp(cls, *args, **kwargs):
-        """see also ConfusionMatrix.tp"""
-        tp, iou = cls.tp(*args, **kwargs)
+        # fast
+        # tp = np.any(iou >= iou_thres, axis=0, dtype=bool)
+
+        return tp, iou
+
+    def fp(self, *args, **kwargs):
+        """see also `ConfusionMatrix.tp`"""
+        tp, iou = self.tp(*args, **kwargs)
         return -tp, iou
 
 
 class PR:
-    @staticmethod
-    def recall(gt_box=None, det_box=None, conf=None, tp=None, n_true=None, eps=1e-16,
-               iou_thres=0.5, iou_method=Iou.vanilla, iou_method_kwarg=dict()):
+    def __init__(self, iou_method=None, **iou_method_kwarg):
+        self.confusion_matrix = ConfusionMatrix(iou_method, **iou_method_kwarg)
+
+    def recall(self, gt_box=None, det_box=None, conf=None, tp=None, n_true=None, eps=1e-16, iou_thres=0.5):
         """
 
         Args:
             gt_box:
             det_box:
             conf:
-            tp: if set, `gt_box`, `det_box`, `conf` is not necessary, but n_true must be set
+            tp: if set, `gt_box`, `det_box`, `conf` is not necessary
             n_true:
             iou_thres:
-            iou_method:
-            iou_method_kwarg:
 
         Returns:
 
@@ -259,16 +269,14 @@ class PR:
         if tp is None:
             sort_idx = np.argsort(-conf)
             det_box = det_box[sort_idx]
-            tp, iou = ConfusionMatrix.tp(gt_box, det_box, iou_thres, iou_method=iou_method, iou_method_kwarg=iou_method_kwarg)
+            tp, iou = self.confusion_matrix.tp(gt_box, det_box, iou_thres=iou_thres)
             n_true = len(gt_box)
 
         acc_tp = np.cumsum(tp)
 
         return acc_tp / (n_true + eps), tp, sort_idx
 
-    @staticmethod
-    def precision(gt_box=None, det_box=None, conf=None, tp=None, eps=1e-16,
-                  iou_thres=0.5, iou_method=Iou.vanilla, iou_method_kwarg=dict()):
+    def precision(self, gt_box=None, det_box=None, conf=None, tp=None, eps=1e-16, iou_thres=0.5):
         """
 
         Args:
@@ -277,8 +285,6 @@ class PR:
             conf:
             tp: if set, `gt_box`, `det_box`, `conf` is not necessary
             iou_thres:
-            iou_method:
-            iou_method_kwarg:
 
         Returns:
 
@@ -287,7 +293,7 @@ class PR:
         if tp is None:
             sort_idx = np.argsort(-conf)
             det_box = det_box[sort_idx]
-            tp, iou = ConfusionMatrix.tp(gt_box, det_box, iou_thres, iou_method=iou_method, iou_method_kwarg=iou_method_kwarg)
+            tp, iou = self.confusion_matrix.tp(gt_box, det_box, iou_thres=iou_thres)
 
         acc_tp = np.cumsum(tp)
         n = np.cumsum(np.ones_like(acc_tp))
@@ -298,96 +304,16 @@ class PR:
 class AP:
     """https://github.com/rafaelpadilla/Object-Detection-Metrics/blob/master/paper_survey_on_performance_metrics_for_object_detection_algorithms.pdf"""
 
-    @classmethod
-    def ap_thres(
-            cls, gt_box=None, det_box=None, conf=None, classes=None,
-            tp=None, n_true=None,
-            iou_thres=0.5, ap_method=None, ap_method_kwargs=dict(),
-            iou_method=Iou.vanilla, iou_method_kwarg=dict(),
-            return_more_info=True, **kwargs
+    def __init__(
+            self, ap_method=None, ap_method_kwargs=dict(),
+            iou_method=None, iou_method_kwarg=dict(),
+            return_more_info=False
     ):
-        """AP@0.5"""
-        ap_method = ap_method or cls.interp
-
-        if classes is None:
-            return cls.per_class_ap(
-                gt_box, det_box, conf, tp, n_true=n_true,
-                iou_thres=iou_thres, ap_method=ap_method, ap_method_kwargs=ap_method_kwargs,
-                iou_method=iou_method, iou_method_kwarg=iou_method_kwarg
-            )
-        else:
-            unique_class = np.unique(np.concatenate(classes))
-            true_class, pred_class = classes
-
-            if tp is None:
-                tp, iou = ConfusionMatrix.tp(gt_box, det_box, classes,
-                                             iou_thres=iou_thres, iou_method=iou_method, iou_method_kwarg=iou_method_kwarg)
-
-            sort_idx = np.argsort(-conf)
-            tmp_tp = tp[sort_idx]
-            tmp_pred_class = pred_class[sort_idx]
-
-            results = {}
-
-            for c in unique_class:
-                r = cls.per_class_ap(
-                    tp=tmp_tp[tmp_pred_class == c], n_true=len(gt_box[true_class == c]),
-                    iou_thres=iou_thres, ap_method=ap_method, ap_method_kwargs=ap_method_kwargs,
-                    iou_method=iou_method, iou_method_kwarg=iou_method_kwarg
-                )
-
-                if return_more_info:
-                    r.update(
-                        true_class=true_class[true_class == c],
-                        pred_class=pred_class[pred_class == c],
-                        sort_idx=sort_idx[pred_class == c],
-                        det_box=det_box[pred_class == c],
-                        gt_box=gt_box[true_class == c],
-                        conf=conf[pred_class == c]
-                    )
-
-                results[c] = r
-
-            return results
-
-    @staticmethod
-    def per_class_ap(
-            gt_box=None, det_box=None, conf=None,
-            tp=None, n_true=None,
-            iou_thres=0.5, ap_method=None, ap_method_kwargs=dict(),
-            iou_method=Iou.vanilla, iou_method_kwarg=dict()
-    ):
-
-        recall, tp, sort_idx = PR.recall(
-            gt_box, det_box, conf, tp, n_true=n_true,
-            iou_thres=iou_thres, iou_method=iou_method, iou_method_kwarg=iou_method_kwarg
-        )
-        precision, tp, _ = PR.precision(
-            gt_box, det_box, conf, tp,
-            iou_thres=iou_thres, iou_method=iou_method, iou_method_kwarg=iou_method_kwarg
-        )
-
-        # Append sentinel values to beginning and end
-        mean_recall = np.concatenate(([0.0], recall, [1.0]))
-        mean_precision = np.concatenate(([1.0], precision, [0.0]))
-
-        # Compute the precision envelope
-        mean_precision = np.flip(np.maximum.accumulate(np.flip(mean_precision)))
-
-        if tp.size:
-            ap = ap_method(mean_recall, mean_precision, **ap_method_kwargs)
-        else:
-            ap = 0
-
-        return dict(
-            ap=ap,
-            tp=tp,
-            sort_idx=sort_idx,
-            recall=recall,
-            precision=precision,
-            mean_recall=mean_recall,
-            mean_precision=mean_precision
-        )
+        self.confusion_matrix = ConfusionMatrix(iou_method, **iou_method_kwarg)
+        self.pr = PR(iou_method, **iou_method_kwarg)
+        self.ap_method = ap_method or self.continuous
+        self.ap_method_kwargs = ap_method_kwargs
+        self.return_more_info = return_more_info
 
     @staticmethod
     def interp(mean_recall, mean_precision, point=11, **kwargs):
@@ -403,47 +329,124 @@ class AP:
 
         return ap
 
-    @classmethod
-    def ap_thres_range(
-            cls, gt_box, det_box, conf, classes=None,
-            tp=None, n_true=None, thres_range=np.arange(0.5, 1, 0.05),
-            iou_method=Iou.vanilla, iou_method_kwarg=dict(),
-            ap_method=None, ap_method_kwargs=dict()
+    def per_class_ap(
+            self, gt_box=None, det_box=None, conf=None,
+            tp=None, n_true=None, iou_thres=0.5
     ):
-        """AP@0.5:0.95"""
-        per_thres_result = {}
+        """ap computation core method, ap of per objection per class
 
-        for thres in thres_range:
-            result = cls.ap_thres(
-                gt_box, det_box, conf, classes=classes, tp=tp, n_true=n_true,
-                iou_thres=thres, iou_method=iou_method, iou_method_kwarg=iou_method_kwarg,
-                ap_method=ap_method, **ap_method_kwargs)
+        Args:
+            gt_box (np.ndarray):
+            det_box (np.ndarray):
+            conf (np.ndarray):
+            tp: if set, `gt_box`, `det_box`, `conf` is not necessary
+            iou_thres:
+            n_true (int): if not set, `gt_box` is necessary
 
-            per_thres_result[thres] = result
+        Returns:
 
-        if classes is None:
-            ap = np.mean([result['ap'] for result in per_thres_result.values()])
-        else:
-            ap = defaultdict(float)
-            for thres, results in per_thres_result.items():
-                for class_, result in results.items():
-                    ap[class_] += result['ap']
-
-            ap = {class_: s / len(per_thres_result) for class_, s in ap.items()}
-
-        return dict(
-            ap=ap,
-            per_thres_result=per_thres_result,
-        )
-
-    @classmethod
-    def mAP(
-            cls, gt_boxes, det_boxes, confs, classes=None,
-            iou_thres=0.5, ap_method=None, ap_method_kwargs=dict(),
-            iou_method=Iou.vanilla, iou_method_kwarg=dict(),
-            return_more_info=True,
-    ):
         """
+
+        recall, tp, sort_idx = self.pr.recall(gt_box, det_box, conf, tp, n_true=n_true, iou_thres=iou_thres)
+        precision, tp, _ = self.pr.precision(gt_box, det_box, conf, tp, iou_thres=iou_thres)
+
+        # Append sentinel values to beginning and end
+        mean_recall = np.concatenate(([0.0], recall, [1.0]))
+        mean_precision = np.concatenate(([1.0], precision, [0.0]))
+
+        # Compute the precision envelope
+        mean_precision = np.flip(np.maximum.accumulate(np.flip(mean_precision)))
+
+        if tp.size:
+            ap = self.ap_method(mean_recall, mean_precision, **self.ap_method_kwargs)
+        else:
+            ap = 0
+
+        true_positive = int(np.sum(tp))
+        false_positive = len(tp) - true_positive
+
+        r = true_positive / n_true
+        p = true_positive / len(tp)
+        f1 = 2 * p * r / (p + r + 1e-16)
+
+        ret = {
+            f'ap': round(ap, 6),
+            'true_positive': true_positive,
+            'false_positive': false_positive,
+            'n_true': n_true,
+            'p': round(p, 6),
+            'r': round(r, 6),
+            'f1': round(f1, 6)
+        }
+
+        if self.return_more_info:
+            ret.update(
+                tp=tp,
+                sort_idx=sort_idx,
+                recall=recall,
+                precision=precision,
+                mean_recall=mean_recall,
+                mean_precision=mean_precision
+            )
+
+        return ret
+
+    def ap_thres(
+            self, gt_box=None, det_box=None, conf=None, classes=None,
+            tp=None, n_true=None, iou_thres=0.5
+    ):
+        """AP@iou_thres for each objection
+
+        Args:
+            gt_box (np.ndarray):
+            det_box (np.ndarray):
+            conf (np.ndarray):
+            classes (List[np.ndarray]):
+            tp: if set, `gt_box`, `det_box` is not necessary
+            n_true (int or List[int]): if not set, `gt_box` is necessary
+            iou_thres:
+
+        Returns:
+        """
+        if classes is None:
+            return self.per_class_ap(gt_box, det_box, conf, tp, n_true=n_true, iou_thres=iou_thres)
+        else:
+            unique_class = np.unique(np.concatenate(classes))
+            true_class, pred_class = classes
+
+            if tp is None:
+                tp, iou = self.confusion_matrix.tp(gt_box, det_box, classes, iou_thres=iou_thres)
+
+            sort_idx = np.argsort(-conf)
+            tmp_tp = tp[sort_idx]
+            tmp_pred_class = pred_class[sort_idx]
+
+            results = {}
+
+            for i, c in enumerate(unique_class):
+                _n_true = len(gt_box[true_class == c]) if gt_box is not None else n_true[i]
+                r = self.per_class_ap(
+                    tp=tmp_tp[tmp_pred_class == c],
+                    n_true=_n_true,
+                    iou_thres=iou_thres
+                )
+
+                if self.return_more_info:
+                    r.update(
+                        sort_idx=sort_idx[pred_class == c],
+                        true_class=true_class[true_class == c],
+                        pred_class=pred_class[pred_class == c],
+                        det_box=det_box[pred_class == c] if det_box is not None else None,
+                        gt_box=gt_box[true_class == c] if det_box is not None else None,
+                        conf=conf[pred_class == c]
+                    )
+
+                results[c] = r
+
+            return results
+
+    def mAP(self, gt_boxes, det_boxes, confs, classes=None, iou_thres=0.5):
+        """AP@iou_thres for all objection
 
         Args:
             gt_boxes (List[np.ndarray]):
@@ -451,11 +454,6 @@ class AP:
             confs (List[np.ndarray]):
             classes (List[List[np.ndarray]]):
             iou_thres:
-            ap_method:
-            ap_method_kwargs:
-            iou_method:
-            iou_method_kwarg:
-            return_more_info:
 
         Returns:
 
@@ -463,10 +461,7 @@ class AP:
         if classes is None:
             tps = []
             for data in zip(gt_boxes, det_boxes):
-                tp, iou = ConfusionMatrix.tp(
-                    *data, iou_thres=iou_thres,
-                    iou_method=iou_method, iou_method_kwarg=iou_method_kwarg
-                )
+                tp, iou = self.confusion_matrix.tp(*data, iou_thres=iou_thres)
 
                 tps.append(tp)
 
@@ -476,59 +471,113 @@ class AP:
             tmp_true_classes, tmp_pred_classes = [], []
             tps = []
             for g, d, tc, pc in zip(gt_boxes, det_boxes, *classes):
-                tp, iou = ConfusionMatrix.tp(
-                    g, d, [tc, pc],
-                    iou_thres=iou_thres, iou_method=iou_method, iou_method_kwarg=iou_method_kwarg
-                )
+                tp, iou = self.confusion_matrix.tp(g, d, [tc, pc], iou_thres=iou_thres)
                 tps.append(tp)
                 tmp_true_classes.append(tc)
                 tmp_pred_classes.append(pc)
 
             tps = np.concatenate(tps, axis=0)
-            classes = (np.concatenate(tmp_true_classes), np.concatenate(tmp_pred_classes))
+            classes = [np.concatenate(tmp_true_classes), np.concatenate(tmp_pred_classes)]
 
         det_boxes = np.concatenate(det_boxes, axis=0)
         gt_boxes = np.concatenate(gt_boxes, axis=0)
         confs = np.concatenate(confs, axis=0)
 
-        results = cls.ap_thres(
-            gt_boxes, det_boxes, confs, classes=classes, tp=tps, n_true=len(gt_boxes),
-            iou_thres=iou_thres, ap_method=ap_method, ap_method_kwargs=ap_method_kwargs,
-            iou_method=iou_method, iou_method_kwarg=iou_method_kwarg,
-            return_more_info=return_more_info
-        )
+        return self.ap_thres(gt_boxes, det_boxes, confs, classes=classes, tp=tps, iou_thres=iou_thres)
 
-        return results
-
-    @classmethod
-    def mAP_thres_range(
-            cls, gt_boxes, det_boxes, confs, classes=None,
-            thres_range=np.arange(0.5, 1, 0.05), ap_method=None, ap_method_kwargs=dict(),
-            iou_method=Iou.vanilla, iou_method_kwarg=dict()
+    def ap_thres_range(
+            self, gt_box, det_box, conf, classes=None,
+            tps=None, n_true=None, thres_range=np.arange(0.5, 1, 0.05)
     ):
-        per_thres_result = {}
+        """AP@thres_range for each objection
+
+        Args:
+            gt_box (np.ndarray):
+            det_box (np.ndarray):
+            conf (np.ndarray):
+            classes (List[np.ndarray]):
+            tps (List[np.ndarray]): if set, `gt_box`, `det_box` is not necessary
+            n_true (int or List[int]): if not set, `gt_box` is necessary
+            thres_range (iterator)
+
+        """
+        _ret = {}
+
+        # note that, it is slower, 'cause computing iou matrix each iou threshold,
+        # but it is easy to complete in this way, and I have no plan to refactor the code
+        for i, thres in enumerate(thres_range):
+            tp = tps[i] if tps is not None else None
+            result = self.ap_thres(gt_box, det_box, conf, classes, tp=tp, n_true=n_true, iou_thres=thres)
+
+            for k, v in result.items():
+                tmp = _ret.setdefault(k, {})
+                for kk, vv in v.items():
+                    tmp.setdefault(kk, []).append(vv)
+
+        ret = {k: {} for k in _ret}
+        for k, v in _ret.items():
+            ret[k][f'ap@{thres_range[0]:.2f}:{thres_range[-1]:.2f}'] = np.mean(v['ap'])
+
+            if self.return_more_info:
+                ret[k].update(v)
+            else:
+                ret[k].update({kk: vv[0] for kk, vv in v.items()})
+
+        return ret
+
+    def mAP_thres_range(
+            self, gt_boxes, det_boxes, confs, classes=None,
+            thres_range=np.arange(0.5, 1, 0.05),
+    ):
+        """AP@thres_range for all objection
+
+        Args:
+            gt_boxes (List[np.ndarray]):
+            det_boxes (List[np.ndarray]):
+            confs (List[np.ndarray]):
+            classes (List[List[np.ndarray]]):
+            thres_range:
+
+        Returns:
+
+        """
+        _tps = []
+        tmp_iou = [None for _ in range(len(gt_boxes))]
 
         for thres in thres_range:
-            result = cls.mAP(
-                gt_boxes, det_boxes, confs, classes,
-                return_more_info=False,
-                iou_thres=thres, iou_method=iou_method, iou_method_kwarg=iou_method_kwarg,
-                ap_method=ap_method, **ap_method_kwargs
-            )
+            if classes is None:
+                tps = []
+                for i, data in enumerate(zip(gt_boxes, det_boxes)):
+                    tp, tmp_iou[i] = self.confusion_matrix.tp(*data, iou=tmp_iou[i], iou_thres=thres)
+                    tps.append(tp)
 
-            per_thres_result[thres] = result
+                tps = np.concatenate(tps, axis=0)
+                _tps.append(tps)
 
-        if classes is None:
-            ap = np.mean([result['ap'] for result in per_thres_result.values()])
-        else:
-            ap = defaultdict(float)
-            for thres, results in per_thres_result.items():
-                for class_, result in results.items():
-                    ap[class_] += result['ap']
+            else:
+                tps = []
+                for i, (g, d, tc, pc) in enumerate(zip(gt_boxes, det_boxes, *classes)):
+                    tp, tmp_iou[i] = self.confusion_matrix.tp(g, d, [tc, pc], iou=tmp_iou[i], iou_thres=thres)
+                    tps.append(tp)
 
-            ap = {class_: s / len(per_thres_result) for class_, s in ap.items()}
+                tps = np.concatenate(tps, axis=0)
+                _tps.append(tps)
 
-        return dict(
-            ap=ap,
-            per_thres_result=per_thres_result,
-        )
+        det_boxes = np.concatenate(det_boxes, axis=0)
+        gt_boxes = np.concatenate(gt_boxes, axis=0)
+        confs = np.concatenate(confs, axis=0)
+
+        if classes is not None:
+            tmp_true_classes, tmp_pred_classes = [], []
+            for tc, pc in zip(*classes):
+                tmp_true_classes.append(tc)
+                tmp_pred_classes.append(pc)
+
+            classes = [np.concatenate(tmp_true_classes), np.concatenate(tmp_pred_classes)]
+
+        return self.ap_thres_range(gt_boxes, det_boxes, confs, classes=classes, tps=_tps, thres_range=thres_range)
+
+
+confusion_matrix = ConfusionMatrix()
+pr = PR()
+ap = AP()
