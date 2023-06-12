@@ -2,7 +2,10 @@ import cv2
 import numpy as np
 from PIL import ImageFont, ImageDraw, Image
 from typing import List
-from excluded.cmap import cmap, terminal_cmap
+from .excluded.cmap import cmap, terminal_cmap
+
+cmap_list = list(cmap.keys())
+get_color_array = lambda idx: cmap[cmap_list[idx]]['array']
 
 POLYGON = 1
 RECTANGLE = 2
@@ -14,6 +17,7 @@ class ImageVisualize:
         """添加若干个线框
         char_boxes: polygon: (-1, -1, 2) or rectangle: (-1, 4)
         """
+        img = img.copy()
         colors = colors or [cmap['Blue']['array']] * len(boxes)
         line_thickness = line_thickness or round(0.001 * (img.shape[0] + img.shape[1]) / 2) + 1  # line/font thickness
 
@@ -33,7 +37,7 @@ class ImageVisualize:
         return img
 
     @staticmethod
-    def text_box(img, text_boxes, texts, scores=None, drop_score=0.5, colors=None, font_path="./font/simfang.ttf"):
+    def text_box(img, text_boxes, texts, scores=None, drop_score=0.5, colors=None, font_path="utils/excluded/simfang.ttf"):
         """将每个已识别的文本框住
         use PIL.Image instead of opencv for better chinese font support
         text_boxes: (-1, -1, 2)
@@ -92,7 +96,7 @@ class ImageVisualize:
         return draw_img
 
     @staticmethod
-    def text(img, text_boxes, texts, scores=None, drop_score=0.5, font_path="./font/simfang.ttf"):
+    def text(img, text_boxes, texts, scores=None, drop_score=0.5, font_path="utils/excluded/simfang.ttf"):
         """模拟文字识别效果
         use PIL.Image instead of opencv for better chinese font support
         text_boxes: (-1, 4, 2)
@@ -115,7 +119,7 @@ class ImageVisualize:
 
             # draw the text
             if box_height > 2 * box_width:
-                font_size = max(int(box_width * 0.9), 10)
+                font_size = min(max(int(box_width * 0.9), 10), 10)
                 font = ImageFont.truetype(font_path, font_size, encoding="utf-8")
                 cur_x, cur_y = box[0][0] + 3, box[0][1]
 
@@ -125,7 +129,13 @@ class ImageVisualize:
                     cur_y += char_size[1]
 
             else:
-                font_size = max(int(box_height * 0.8), 10)
+                font_size = min(max(int(box_height * 0.8), 10), 10)
+                n_font_per_line = max(int(box_width / font_size), 20)
+                _txt = ''
+                for i in range(0, len(txt), n_font_per_line):
+                    _txt += txt[i:i + n_font_per_line] + '\n'
+                txt = _txt[:-1]
+
                 font = ImageFont.truetype(font_path, font_size, encoding="utf-8")
                 draw_image.text((box[0][0], box[0][1]), txt, fill=(0, 0, 0), font=font)
 

@@ -81,7 +81,7 @@ class DataLoader:
         """
 
         Args:
-            set_type(DataRegister): a DataRegister type
+            set_type(DataRegister): a DataRegister type, see also `DataLoader.__call__`
             image_type(DataRegister): `DataRegister.PATH` or `DataRegister.IMAGE`
                 PATH -> a str of image abs path
                 IMAGE -> a np.ndarray of image, read from cv2, as (h, w, c)
@@ -176,7 +176,10 @@ class DataGenerator:
                 for k, v in tmp.items():
                     # convert str to int
                     for vv in v:
-                        vv[1] = int(vv[1])
+                        try:
+                            vv[1] = int(vv[1])
+                        except:
+                            pass
 
                     tmp[k] = sorted(v, key=lambda x: x[1])
 

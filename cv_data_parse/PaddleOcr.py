@@ -49,7 +49,7 @@ class Loader(DataLoader):
     default_set_type = [DataRegister.TRAIN, DataRegister.TEST]
     image_suffix = 'png'
 
-    def _call(self, set_type, image_type, set_task='', load_method=None, **kwargs):
+    def _call(self, set_type, image_type=DataRegister.IMAGE, set_task='', load_method=None, **kwargs):
         """See Also `cv_data_parse.base.DataLoader._call`
 
         Args:
@@ -66,7 +66,7 @@ class Loader(DataLoader):
 
         return load_method(set_type, image_type, set_task, **kwargs)
 
-    def load_det(self, set_type, image_type, set_task='', **kwargs):
+    def load_det(self, set_type=DataRegister.TRAIN, image_type=DataRegister.IMAGE, set_task='', label_dir='labels', **kwargs):
         """See Also `self._call`
 
         Returns:
@@ -99,7 +99,7 @@ class Loader(DataLoader):
 
         """
 
-        with open(f'{self.data_dir}/labels/{set_task}/{set_type.value}.txt', 'r', encoding='utf8') as f:
+        with open(f'{self.data_dir}/{label_dir}/{set_task}/{set_type.value}.txt', 'r', encoding='utf8') as f:
             for line in f.read().strip().split('\n'):
                 image_path, labels = line.split('\t', 1)
 
@@ -118,15 +118,19 @@ class Loader(DataLoader):
                     transcriptions.append(label['transcription'])  # (-1, #str)
 
                 segmentations = np.array(segmentations)
+                bboxes = np.zeros((len(segmentations), 4))
+                bboxes[:, :2] = np.min(segmentations, axis=1)
+                bboxes[:, -2:] = np.max(segmentations, axis=1)
 
                 yield dict(
                     _id=Path(image_path).name,
                     image=image,
                     segmentations=segmentations,
+                    bboxes=bboxes,
                     transcriptions=transcriptions,
                 )
 
-    def load_rec(self, set_type, image_type, set_task='', **kwargs):
+    def load_rec(self, set_type=DataRegister.TRAIN, image_type=DataRegister.TRAIN, set_task='', label_dir='labels', **kwargs):
         """See Also `self._call`
 
         Returns:
@@ -153,11 +157,12 @@ class Loader(DataLoader):
 
         """
 
-        with open(f'{self.data_dir}/labels/{set_task}/{set_type.value}.txt', 'r', encoding='utf8') as f:
+        with open(f'{self.data_dir}/{label_dir}/{set_task}/{set_type.value}.txt', 'r', encoding='utf8') as f:
             for line in f.read().strip().split('\n'):
                 image_paths, transcription = line.split('\t', 1)
 
-                if '[' in image_path:
+                # make sure that '[' is not in image_path
+                if '[' in image_paths:
                     image_paths = eval(image_paths)
                 else:
                     image_paths = [image_paths]
@@ -206,7 +211,7 @@ class Saver(DataSaver):
             from cv_data_parse.PaddleOcr import Saver
 
             saver = Saver('data/ppocr_icdar2015')
-            saver(data, set_type=DataRegister.TRAIN, image_type=DataRegister.FILE)
+            saver(data, set_type=DataRegister.TRAIN, image_type=DataRegister.PATH)
     """
 
     def mkdirs(self, set_types, **kwargs):
@@ -221,6 +226,28 @@ class Saver(DataSaver):
         return save_method(iter_data, set_type, image_type, **kwargs)
 
     def save_det(self, iter_data, set_type, image_type, task='', set_task='', **kwargs):
+        """
+
+        Args:
+            iter_data:
+            set_type:
+            image_type:
+            task:
+            set_task:
+
+        Returns:
+
+        Usage:
+            .. code-block:: python
+
+                # save det test data to another dir
+                loader = Loader('your load data dir')
+                iter_data = loader.load_det(set_type=DataRegister.TEST, image_type=DataRegister.PATH, generator=True, set_task='det')
+
+                iter_data = Saver('your save data dir')
+                saver.save_det(iter_data, set_type=DataRegister.TEST, image_type=DataRegister.PATH, task='det', set_task='det')
+
+        """
         f = open(f'{self.data_dir}/labels/{set_task}/{set_type.value}.txt', 'w', encoding='utf8')
 
         for dic in tqdm(iter_data):
@@ -245,6 +272,29 @@ class Saver(DataSaver):
         f.close()
 
     def save_rec(self, iter_data, set_type, image_type, task='', set_task='', **kwargs):
+        """
+
+        Args:
+            iter_data:
+            set_type:
+            image_type:
+            task:
+            set_task:
+            **kwargs:
+
+        Returns:
+
+        Usage:
+            .. code-block:: python
+
+                # save rec test data to another dir
+                loader = Loader('your load data dir')
+                iter_data = loader.load_rec(set_type=DataRegister.TEST, image_type=DataRegister.PATH, generator=True, set_task='rec')
+
+                saver = Saver('your save data dir')
+                saver.save_rec(iter_data, set_type=DataRegister.TEST, image_type=DataRegister.PATH, task='rec', set_task='rec')
+
+        """
         f = open(f'{self.data_dir}/labels/{set_task}/{set_type.value}.txt', 'w', encoding='utf8')
 
         for dic in tqdm(iter_data):
@@ -266,7 +316,29 @@ class Saver(DataSaver):
         f.close()
 
     def save_rec_from_det(self, iter_data, set_type, *args, task='', set_task='', **kwargs):
+        """
+
+        Args:
+            iter_data:
+            set_type:
+            task:
+            set_task:
+
+        Returns:
+
+        Usage:
+            .. code-block:: python
+
+                loader = Loader('your load data dir')
+                data = loader(set_type=DataRegister.ALL, image_type=DataRegister.IMAGE, generator=True, set_task='det')
+
+                saver = Saver('your save data dir')
+                for iter_data, set_type in zip(data, loader.default_set_type):
+                    saver.save_rec_from_det(iter_data, set_type=set_type, task='rec', set_task='rec')
+
+        """
         os_lib.mk_dir(f'{self.data_dir}/labels/{set_task}')
+        os_lib.mk_dir(f'{self.data_dir}/images/{task}')
         f = open(f'{self.data_dir}/labels/{set_task}/{set_type.value}.txt', 'w', encoding='utf8')
 
         for dic in tqdm(iter_data):
@@ -287,7 +359,7 @@ class Saver(DataSaver):
                 img_fp = f'{self.data_dir}/images/{task}/{p.stem}_{i}{p.suffix}'
                 cv2.imwrite(img_fp, img)
 
-                f.write(f'{img_fp}\t{transcription}\n')
+                f.write(f'{img_fp}\t{transcription.strip()}\n')
 
         f.close()
 
@@ -330,6 +402,7 @@ class Generator(DataGenerator):
                 from cv_data_parse.PaddleOcr import Generator
 
                 # simple
+                # data_dir for save_dir
                 gen = Generator(data_dir='data/ppocr_icdar2015', label_dir='data/ppocr_icdar2015/labels/0')
                 gen.gen_sets(set_task='1')
 

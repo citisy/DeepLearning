@@ -1,5 +1,5 @@
 import numpy as np
-from typing import List
+from typing import List, Iterable, Iterator
 
 
 class Area:
@@ -220,8 +220,8 @@ class ConfusionMatrix:
             if classes is not None:
                 true_class, pred_class = classes
                 offset = np.max(np.concatenate([gt_box, det_box], 0))
-                gt_box += (true_class * offset)[:, None]
-                det_box += (pred_class * offset)[:, None]
+                gt_box = gt_box + (true_class * offset)[:, None]
+                det_box = det_box + (pred_class * offset)[:, None]
 
             iou = self.iou_method(gt_box, det_box, **self.iou_method_kwarg)
 
@@ -305,9 +305,8 @@ class AP:
     """https://github.com/rafaelpadilla/Object-Detection-Metrics/blob/master/paper_survey_on_performance_metrics_for_object_detection_algorithms.pdf"""
 
     def __init__(
-            self, ap_method=None, ap_method_kwargs=dict(),
-            iou_method=None, iou_method_kwarg=dict(),
-            return_more_info=False
+            self, return_more_info=False, ap_method=None, ap_method_kwargs=dict(),
+            iou_method=None, **iou_method_kwarg
     ):
         self.confusion_matrix = ConfusionMatrix(iou_method, **iou_method_kwarg)
         self.pr = PR(iou_method, **iou_method_kwarg)
@@ -331,7 +330,7 @@ class AP:
 
     def per_class_ap(
             self, gt_box=None, det_box=None, conf=None,
-            tp=None, n_true=None, iou_thres=0.5
+            tp=None, n_true=None, iou_thres=0.5, eps=1e-6
     ):
         """ap computation core method, ap of per objection per class
 
@@ -365,21 +364,23 @@ class AP:
         true_positive = int(np.sum(tp))
         false_positive = len(tp) - true_positive
 
-        r = true_positive / n_true
-        p = true_positive / len(tp)
-        f1 = 2 * p * r / (p + r + 1e-16)
+        r = true_positive / (n_true + eps)
+        p = true_positive / (len(tp) + eps)
+        f1 = 2 * p * r / (p + r + eps)
 
         ret = {
             f'ap': round(ap, 6),
             'true_positive': true_positive,
             'false_positive': false_positive,
             'n_true': n_true,
+            'n_pred': len(tp),
             'p': round(p, 6),
             'r': round(r, 6),
             'f1': round(f1, 6)
         }
 
         if self.return_more_info:
+            sort_idx = np.argsort(sort_idx) if sort_idx is not None else None
             ret.update(
                 tp=tp,
                 sort_idx=sort_idx,
@@ -393,7 +394,7 @@ class AP:
 
     def ap_thres(
             self, gt_box=None, det_box=None, conf=None, classes=None,
-            tp=None, n_true=None, iou_thres=0.5
+            tp=None, n_true=None, iou_thres=0.5, obj_idx=None,
     ):
         """AP@iou_thres for each objection
 
@@ -408,42 +409,53 @@ class AP:
 
         Returns:
         """
+        results = {}
+
         if classes is None:
-            return self.per_class_ap(gt_box, det_box, conf, tp, n_true=n_true, iou_thres=iou_thres)
+            r = self.per_class_ap(gt_box, det_box, conf, tp, n_true=n_true, iou_thres=iou_thres)
+            if self.return_more_info:
+                r.update(
+                    obj_idx=obj_idx,
+                )
+            results[''] = r
         else:
             unique_class = np.unique(np.concatenate(classes))
-            true_class, pred_class = classes
+            gt_class, det_class = classes
 
             if tp is None:
                 tp, iou = self.confusion_matrix.tp(gt_box, det_box, classes, iou_thres=iou_thres)
 
-            sort_idx = np.argsort(-conf)
-            tmp_tp = tp[sort_idx]
-            tmp_pred_class = pred_class[sort_idx]
-
-            results = {}
-
             for i, c in enumerate(unique_class):
-                _n_true = len(gt_box[true_class == c]) if gt_box is not None else n_true[i]
+                gt_cls_idx = gt_class == c
+                det_cls_idx = det_class == c
+
+                cls_tp = tp[det_cls_idx]
+                cls_conf = conf[det_cls_idx]
+                sort_idx = np.argsort(-cls_conf)
+                sort_cls_tp = cls_tp[sort_idx]
+                _n_true = len(gt_box[gt_cls_idx]) if gt_box is not None else n_true[i]
+
                 r = self.per_class_ap(
-                    tp=tmp_tp[tmp_pred_class == c],
+                    tp=sort_cls_tp,  # after sort
                     n_true=_n_true,
                     iou_thres=iou_thres
                 )
 
                 if self.return_more_info:
+                    sort_idx = np.argsort(sort_idx)
                     r.update(
-                        sort_idx=sort_idx[pred_class == c],
-                        true_class=true_class[true_class == c],
-                        pred_class=pred_class[pred_class == c],
-                        det_box=det_box[pred_class == c] if det_box is not None else None,
-                        gt_box=gt_box[true_class == c] if det_box is not None else None,
-                        conf=conf[pred_class == c]
+                        sort_idx=sort_idx,
+                        gt_class=gt_class[gt_cls_idx],
+                        det_class=det_class[det_cls_idx],
+                        det_box=det_box[det_cls_idx] if det_box is not None else None,
+                        gt_box=gt_box[gt_cls_idx] if det_box is not None else None,
+                        conf=conf[det_cls_idx],
+                        obj_idx=obj_idx[det_cls_idx] if obj_idx is not None else None,
                     )
 
                 results[c] = r
 
-            return results
+        return results
 
     def mAP(self, gt_boxes, det_boxes, confs, classes=None, iou_thres=0.5):
         """AP@iou_thres for all objection
@@ -457,24 +469,30 @@ class AP:
 
         Returns:
 
+        Usage:
+            See Also `quick_metric()` or `shortlist_false_sample()`
         """
         if classes is None:
             tps = []
-            for data in zip(gt_boxes, det_boxes):
+            obj_idx = []
+            for i, data in enumerate(zip(gt_boxes, det_boxes)):
                 tp, iou = self.confusion_matrix.tp(*data, iou_thres=iou_thres)
 
                 tps.append(tp)
+                obj_idx.append(np.zeros(len(tp), dtype=int) + i)
 
             tps = np.concatenate(tps, axis=0)
 
         else:
             tmp_true_classes, tmp_pred_classes = [], []
             tps = []
-            for g, d, tc, pc in zip(gt_boxes, det_boxes, *classes):
+            obj_idx = []
+            for i, (g, d, tc, pc) in enumerate(zip(gt_boxes, det_boxes, *classes)):
                 tp, iou = self.confusion_matrix.tp(g, d, [tc, pc], iou_thres=iou_thres)
                 tps.append(tp)
                 tmp_true_classes.append(tc)
                 tmp_pred_classes.append(pc)
+                obj_idx.append(np.zeros(len(tp), dtype=int) + i)
 
             tps = np.concatenate(tps, axis=0)
             classes = [np.concatenate(tmp_true_classes), np.concatenate(tmp_pred_classes)]
@@ -482,12 +500,14 @@ class AP:
         det_boxes = np.concatenate(det_boxes, axis=0)
         gt_boxes = np.concatenate(gt_boxes, axis=0)
         confs = np.concatenate(confs, axis=0)
+        n_true = len(gt_boxes)
+        obj_idx = np.concatenate(obj_idx, axis=0)
 
-        return self.ap_thres(gt_boxes, det_boxes, confs, classes=classes, tp=tps, iou_thres=iou_thres)
+        return self.ap_thres(gt_boxes, det_boxes, confs, classes=classes, tp=tps, n_true=n_true, iou_thres=iou_thres, obj_idx=obj_idx)
 
     def ap_thres_range(
             self, gt_box, det_box, conf, classes=None,
-            tps=None, n_true=None, thres_range=np.arange(0.5, 1, 0.05)
+            tps=None, n_true=None, thres_range=np.arange(0.5, 1, 0.05), obj_idx=None
     ):
         """AP@thres_range for each objection
 
@@ -503,11 +523,9 @@ class AP:
         """
         _ret = {}
 
-        # note that, it is slower, 'cause computing iou matrix each iou threshold,
-        # but it is easy to complete in this way, and I have no plan to refactor the code
         for i, thres in enumerate(thres_range):
             tp = tps[i] if tps is not None else None
-            result = self.ap_thres(gt_box, det_box, conf, classes, tp=tp, n_true=n_true, iou_thres=thres)
+            result = self.ap_thres(gt_box, det_box, conf, classes, tp=tp, n_true=n_true, iou_thres=thres, obj_idx=obj_idx)
 
             for k, v in result.items():
                 tmp = _ret.setdefault(k, {})
@@ -521,7 +539,7 @@ class AP:
             if self.return_more_info:
                 ret[k].update(v)
             else:
-                ret[k].update({kk: vv[0] for kk, vv in v.items()})
+                ret[k].update({kk: vv[0] for kk, vv in v.items()})  # only return results of ap@0.5
 
         return ret
 
@@ -540,6 +558,8 @@ class AP:
 
         Returns:
 
+        Usage:
+            See Also `AP.mAP`
         """
         _tps = []
         tmp_iou = [None for _ in range(len(gt_boxes))]
@@ -557,7 +577,7 @@ class AP:
             else:
                 tps = []
                 for i, (g, d, tc, pc) in enumerate(zip(gt_boxes, det_boxes, *classes)):
-                    tp, tmp_iou[i] = self.confusion_matrix.tp(g, d, [tc, pc], iou=tmp_iou[i], iou_thres=thres)
+                    tp, _ = self.confusion_matrix.tp(g, d, [tc, pc], iou=tmp_iou[i], iou_thres=thres)
                     tps.append(tp)
 
                 tps = np.concatenate(tps, axis=0)
@@ -566,16 +586,182 @@ class AP:
         det_boxes = np.concatenate(det_boxes, axis=0)
         gt_boxes = np.concatenate(gt_boxes, axis=0)
         confs = np.concatenate(confs, axis=0)
+        n_true = len(gt_boxes)
+        obj_idx = [np.zeros(len(gt_box), dtype=int) + i for i, gt_box in enumerate(gt_boxes)]
+        obj_idx = np.concatenate(obj_idx, axis=0)
 
         if classes is not None:
             tmp_true_classes, tmp_pred_classes = [], []
-            for tc, pc in zip(*classes):
+            for i, (tc, pc) in enumerate(zip(*classes)):
                 tmp_true_classes.append(tc)
                 tmp_pred_classes.append(pc)
 
             classes = [np.concatenate(tmp_true_classes), np.concatenate(tmp_pred_classes)]
 
-        return self.ap_thres_range(gt_boxes, det_boxes, confs, classes=classes, tps=_tps, thres_range=thres_range)
+        return self.ap_thres_range(gt_boxes, det_boxes, confs, classes=classes, tps=_tps, n_true=n_true, thres_range=thres_range, obj_idx=obj_idx)
+
+
+def quick_metric(gt_iter_data, det_iter_data, is_mAP=True, save_path=None):
+    """
+
+    Args:
+        gt_iter_data (Iterable):
+        det_iter_data (Iterable):
+        is_mAP (bool):
+        save_path (str):
+
+    Usage:
+        .. code-block:: python
+
+            # use yolov5 type data result to metric
+            from cv_data_parse.YoloV5 import Loader
+            data_dir = 'your data dir'
+            sub_dir = 'model version, e.g. backbone, etc.'
+            task = 'strategy version, e.g. dataset, train datetime, apply params, etc.'
+
+            loader = Loader(data_dir)
+            gt_iter_data = loader.load_full_labels(sub_dir='true_abs_xyxy')
+            det_iter_data = loader.load_full_labels(sub_dir=sub_dir, task=task)
+
+            quick_metric(gt_iter_data, det_iter_data)
+
+    """
+    import pandas as pd
+    from tqdm import tqdm
+
+    r = {}
+    for ret in tqdm(gt_iter_data):
+        r.setdefault(ret['_id'], {})['gt_boxes'] = ret['bboxes']
+        r.setdefault(ret['_id'], {})['gt_classes'] = ret['classes']
+
+    for ret in tqdm(det_iter_data):
+        r.setdefault(ret['_id'], {})['det_boxes'] = ret['bboxes']
+        r.setdefault(ret['_id'], {})['det_classes'] = ret['classes']
+        r.setdefault(ret['_id'], {})['confs'] = [1] * len(ret['bboxes'])
+
+    gt_boxes = [v['gt_boxes'] for v in r.values()]
+    det_boxes = [v['det_boxes'] for v in r.values()]
+    confs = [v['confs'] for v in r.values()]
+    gt_classes = [v['gt_classes'] for v in r.values()]
+    det_classes = [v['det_classes'] for v in r.values()]
+
+    if is_mAP:
+        ret = ap.mAP(gt_boxes, det_boxes, confs, classes=[gt_classes, det_classes])
+    else:
+        ret = ap.mAP_thres_range(gt_boxes, det_boxes, confs, classes=[gt_classes, det_classes])
+
+    pd.set_option('display.max_columns', None)
+    df = pd.DataFrame(ret).T
+    df.loc['sum'] = df.sum(axis=0)
+    df = df.round(4)
+    print(df)
+
+    if save_path:
+        from utils import os_lib
+        os_lib.saver.auto_save(df, save_path)
+
+    return df
+
+
+def checkout_false_sample(gt_iter_data, det_iter_data, data_dir='checkout_data', image_dir=None, save_res_dir=None, alias=None):
+    """
+
+    Args:
+        gt_iter_data (Iterable):
+        det_iter_data (Iterable):
+        data_dir (str):
+        set_task (str):
+        alias (list or dict):
+
+    Usage:
+        .. code-block:: python
+
+            # use yolov5 type data result to metric
+            from cv_data_parse.YoloV5 import Loader
+            data_dir = 'your data dir'
+            sub_dir = 'model version, e.g. backbone, etc.'
+            task = 'strategy version, e.g. dataset, train time, apply params, etc.'
+            set_task = f'{sub_dir}/{task}'
+            image_dir = f'{data_dir}/images/{task}'
+            save_res_dir = f'{data_dir}/visuals/false_samples/{set_task}'
+
+            loader = Loader(data_dir)
+            gt_iter_data = loader.load_full_labels(sub_dir='true_abs_xyxy')
+            det_iter_data = loader.load_full_labels(sub_dir=sub_dir, task=task)
+            alias = {}  # set if you want to convert class name
+
+            shortlist_false_sample(gt_iter_data, det_iter_data, data_dir=data_dir, image_dir=image_dir, save_res_dir=save_res_dir, alias=alias)
+
+    """
+    from utils import os_lib, visualize
+    from tqdm import tqdm
+
+    r = {}
+    for ret in tqdm(gt_iter_data):
+        r.setdefault(ret['_id'], {})['gt_boxes'] = ret['bboxes']
+        r.setdefault(ret['_id'], {})['gt_classes'] = ret['classes']
+        r.setdefault(ret['_id'], {})['_id'] = ret['_id']
+
+    for ret in tqdm(det_iter_data):
+        r.setdefault(ret['_id'], {})['det_boxes'] = ret['bboxes']
+        r.setdefault(ret['_id'], {})['det_classes'] = ret['classes']
+        r.setdefault(ret['_id'], {})['confs'] = ret['confs']
+
+    gt_boxes = [v['gt_boxes'] for v in r.values()]
+    det_boxes = [v['det_boxes'] for v in r.values()]
+    confs = [v['confs'] for v in r.values()]
+    gt_classes = [v['gt_classes'] for v in r.values()]
+    det_classes = [v['det_classes'] for v in r.values()]
+    _ids = [v['_id'] for v in r.values()]
+
+    ret = AP(return_more_info=True).mAP(gt_boxes, det_boxes, confs, classes=[gt_classes, det_classes])
+
+    alias = alias or {k: k for k in ret}
+    image_dir = image_dir if image_dir is not None else f'{data_dir}/images'
+    save_res_dir = save_res_dir if save_res_dir is not None else f'visuals/false_samples'
+
+    for cls, r in ret.items():
+        save_dir = f'{save_res_dir}/{alias[cls]}'
+        tp = r['tp']
+        obj_idx = r['obj_idx']
+        sort_idx = r['sort_idx']
+        tp = tp[sort_idx]
+        target_obj_idx = obj_idx[~tp]
+
+        idx = np.unique(target_obj_idx)
+        for i in idx:
+            target_idx = obj_idx == i
+            _tp = tp[target_idx]
+
+            gt_class = gt_classes[i]
+            gt_box = gt_boxes[i]
+            conf = confs[i]
+            det_class = det_classes[i]
+            det_box = det_boxes[i]
+            _id = _ids[i]
+            image = os_lib.loader.load_img(f'{image_dir}/{_id}')
+
+            false_obj_idx = np.where(det_class == cls)[0]
+            false_obj_idx = false_obj_idx[~_tp]
+
+            gt_class = [int(c) for c in gt_class]
+            det_class = [int(c) for c in det_class]
+
+            gt_colors = [visualize.get_color_array(c) for c in gt_class]
+            det_colors = [visualize.get_color_array(c) for c in det_class]
+            for _ in false_obj_idx:
+                det_colors[_] = visualize.get_color_array(len(ret) + 1)
+
+            gt_class = [alias[c] for c in gt_class]
+            det_class = [f'{alias[cls]} {c:.6f}' for cls, c in zip(det_class, conf)]
+
+            gt_image = visualize.ImageVisualize.label_box(image, gt_box, gt_class, colors=gt_colors)
+            det_image = visualize.ImageVisualize.label_box(image, det_box, det_class, colors=det_colors)
+
+            image = np.concatenate([gt_image, det_image], axis=1)
+            os_lib.saver.auto_save(image, f'{save_dir}/{_id}')
+
+    return ret
 
 
 confusion_matrix = ConfusionMatrix()

@@ -8,6 +8,15 @@ from utils import os_lib, converter
 from cv_data_parse.base import DataRegister, DataLoader, DataSaver, DataGenerator
 
 
+def _default_convert(x):
+    h, w, c = x['image'].shape
+
+    # ref labels convert to abs labels
+    x['bboxes'] = converter.CoordinateConvert.mid_xywh2top_xyxy(x['bboxes'], wh=(w, h), blow_up=True)
+
+    return x
+
+
 class Loader(DataLoader):
     """https://github.com/ultralytics/yolov5
 
@@ -68,7 +77,7 @@ class Loader(DataLoader):
         else:
             return self.load_set(set_type, image_type, set_task, **kwargs)
 
-    def load_total(self, image_type, task, **kwargs):
+    def load_total(self, image_type, task='', convert_func=None, **kwargs):
         for img_fp in Path(f'{self.data_dir}/images/{task}').glob(f'*.{self.image_suffix}'):
             image_path = os.path.abspath(img_fp)
             if image_type == DataRegister.PATH:
@@ -85,6 +94,10 @@ class Loader(DataLoader):
             bboxes = labels[:, 1:]
             classes = labels[:, 0].astype(int)
 
+            if image_type == DataRegister.IMAGE and convert_func:
+                dic = convert_func(dict(bboxes=bboxes, image=image))
+                bboxes = dic['bboxes']
+
             yield dict(
                 _id=img_fp.name,
                 image=image,
@@ -92,9 +105,9 @@ class Loader(DataLoader):
                 classes=classes,
             )
 
-    def load_set(self, set_type, image_type, set_task, **kwargs):
-        with open(f'{self.data_dir}/image_sets/{set_task}/{set_type.value}.txt', 'r', encoding='utf8') as f:
-            for line in f.read().split('\n'):
+    def load_set(self, set_type, image_type, set_task='', convert_func=None, sub_dir='image_sets', **kwargs):
+        with open(f'{self.data_dir}/{sub_dir}/{set_task}/{set_type.value}.txt', 'r', encoding='utf8') as f:
+            for line in f.read().strip().split('\n'):
                 image_path = os.path.abspath(line)
                 if image_type == DataRegister.PATH:
                     image = image_path
@@ -110,6 +123,10 @@ class Loader(DataLoader):
                 bboxes = labels[:, 1:]
                 classes = labels[:, 0]
 
+                if image_type == DataRegister.IMAGE and convert_func:
+                    dic = convert_func(dict(bboxes=bboxes, image=image))
+                    bboxes = dic['bboxes']
+
                 yield dict(
                     _id=Path(line).name,
                     image=image,
@@ -117,20 +134,28 @@ class Loader(DataLoader):
                     classes=classes,
                 )
 
-    def load_full_labels(self, task):
-        """format of saved label txt like (class, conf, w, h, c, x1, y1, x2, y2)
+    def load_full_labels(self, task='', sub_dir='full_labels'):
+        """format of saved label txt like (class, conf, x1, y1, x2, y2, w, h)
         only return labels but no images. can use _id to load images"""
-        for fp in Path(f'{self.data_dir}/full_labels/{task}').glob('*.txt'):
+        for fp in Path(f'{self.data_dir}/{sub_dir}/{task}').glob('*.txt'):
             # (class_, conf, w, h, x1, y1, x2, y2)
             labels = np.genfromtxt(fp)
-            yield dict(
+            if len(labels.shape) == 1:
+                labels = labels[None, :]
+
+            ret = dict(
                 _id=fp.name.replace('.txt', '.png'),
                 task=task,
                 classes=labels[:, 0],
-                confs=labels[:, 1],
-                image_shape=labels[:, 2:5],  # (w, h, c)
-                bboxes=labels[:, 5:10],
+                bboxes=labels[:, 1:5],
             )
+
+            if labels.shape[-1] > 5:
+                ret.update(
+                    confs=labels[:, 5],
+                    image_shape=labels[:, 6:8],  # (w, h)
+                )
+            yield ret
 
 
 class Saver(DataSaver):
@@ -175,7 +200,7 @@ class Saver(DataSaver):
 
         super().__call__(data, set_type, image_type, **kwargs)
 
-    def _call(self, iter_data, set_type, image_type, **kwargs):
+    def _call(self, iter_data, set_type, image_type, convert_func=None, **kwargs):
         task = kwargs.get('task', '')
         set_task = kwargs.get('set_task', '')
 
@@ -185,6 +210,9 @@ class Saver(DataSaver):
             f = open(f'{self.data_dir}/image_sets/{set_task}/{set_type.value}.txt', 'w', encoding='utf8')
 
         for dic in tqdm(iter_data):
+            if image_type == DataRegister.IMAGE and convert_func:
+                dic = convert_func(dic)
+
             image = dic['image']
             bboxes = np.array(dic['bboxes'])
             classes = np.array(dic['classes'])
@@ -202,23 +230,14 @@ class Saver(DataSaver):
 
             label = np.c_[classes, bboxes]
 
-            np.savetxt(label_path, label, fmt='%.3f')
+            np.savetxt(label_path, label, fmt='%.4f')
 
             f.write(image_path + '\n')
 
         f.close()
 
-    @staticmethod
-    def _default_convert(x):
-        h, w, c = x['image'].shape
-
-        # ref labels convert to abs labels
-        x['bboxes'] = converter.CoordinateConvert.mid_xywh2top_xyxy(x['bboxes'], wh=(w, h), blow_up=True)
-
-        return x
-
     def save_full_labels(self, data, confs=None, convert_func=_default_convert):
-        """format of saved label txt like (class, conf, w, h, c, x1, y1, x2, y2)
+        """format of saved label txt like (class, conf, x1, y1, x2, y2, w, h)
 
         Args:
             data: accept a dict like Loader().load_total() return
@@ -226,28 +245,27 @@ class Saver(DataSaver):
             convert_func
 
         """
-        for i, tmp in enumerate(tqdm(data)):
-            tmp_dir = f'{self.data_dir}/full_labels/{tmp["task"]}'
+        for i, dic in enumerate(tqdm(data)):
+            tmp_dir = f'{self.data_dir}/full_labels/{dic["task"]}'
             os_lib.mk_dir(tmp_dir)
 
             if convert_func:
-                tmp = convert_func(tmp)
+                dic = convert_func(dic)
 
-            h, w, c = tmp['image'].shape
+            h, w, c = dic['image'].shape
 
-            bboxes = tmp['bboxes']
-            classes = tmp['classes']
+            bboxes = dic['bboxes']
+            classes = dic['classes']
 
             labels = np.c_[
                 classes,
                 [1] * len(classes) if confs is None else confs[i],
+                bboxes,
                 [w] * len(classes),
                 [h] * len(classes),
-                [c] * len(classes),
-                bboxes
             ]
 
-            np.savetxt(f'{tmp_dir}/{Path(tmp["_id"]).stem}.txt', labels, fmt='%d')
+            np.savetxt(f'{tmp_dir}/{Path(dic["_id"]).stem}.txt', labels, fmt='%d')
 
 
 class Generator(DataGenerator):

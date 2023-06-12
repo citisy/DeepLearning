@@ -1,10 +1,11 @@
 import cv2
 import json
 import os
-import numpy as np
 import pickle
 import time
 import psutil
+import numpy as np
+import pandas as pd
 from functools import wraps
 from pathlib import Path
 from typing import List
@@ -15,6 +16,12 @@ def mk_dir(dir_path):
 
     if not dir_path.is_dir():
         dir_path.mkdir(parents=True, exist_ok=True)
+
+
+def mk_parent_dir(file_path):
+    file_path = Path(file_path)
+    dir_path = file_path.parent
+    mk_dir(dir_path)
 
 
 class Saver:
@@ -28,7 +35,8 @@ class Saver:
             self.stdout_method(self.stdout_fmt % path)
 
     def auto_save(self, obj, path: str):
-        suffix = Path(path).suffix
+        suffix = Path(path).suffix.lower()
+        mk_parent_dir(path)
 
         if suffix in ('.js', '.json'):
             self.save_json(obj, path)
@@ -36,8 +44,10 @@ class Saver:
             self.save_txt(obj, path)
         elif suffix in ('.pkl',):
             self.save_pkl(obj, path)
-        elif suffix in ('.png', '.jpg', '.jpeg',):
+        elif suffix in ('.png', '.jpg', '.jpeg', 'tiff'):
             self.save_img(obj, path)
+        elif suffix in ('.csv', ):
+            self.save_csv(obj, path)
         else:
             self.save_bytes(obj, path)
 
@@ -71,7 +81,10 @@ class Saver:
         # cv2.imencode('.png', obj)[1].tofile(path)
 
         cv2.imwrite(path, obj)
+        self.stdout(path)
 
+    def save_csv(self, obj: pd.DataFrame, path):
+        obj.to_csv(path)
         self.stdout(path)
 
 
@@ -334,6 +347,18 @@ class Retry:
 
 
 class AutoLog:
+    """
+    Examples
+        .. code-block:: python
+            from utils.os_lib import AutoLog
+
+            class SimpleClass:
+                @AutoLog.memory_log('success')
+                @AutoLog.memory_log()
+                @AutoLog.time_log()
+                def func(self):
+                    ...
+    """
     print_method = print
     is_simple_log = True
     is_time_log = True
