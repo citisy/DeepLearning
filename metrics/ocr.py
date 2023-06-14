@@ -1,4 +1,5 @@
 import json
+import numpy as np
 import pandas as pd
 from tqdm import tqdm
 from . import object_detection, text_generation
@@ -35,7 +36,7 @@ def det_quick_metrics(gt_iter_data, det_iter_data, save_path=None):
 
     for ret in tqdm(det_iter_data):
         r.setdefault(ret['_id'], {})['det_boxes'] = ret['bboxes']
-        r.setdefault(ret['_id'], {})['confs'] = [1] * len(ret['bboxes'])
+        r.setdefault(ret['_id'], {})['confs'] = np.ones(len(ret['bboxes']))
 
     gt_boxes = [v['gt_boxes'] for v in r.values()]
     det_boxes = [v['det_boxes'] for v in r.values()]
@@ -100,20 +101,15 @@ def rec_quick_metrics(gt_iter_data, det_res_path, save_path=None):
         'line': text_generation.TopMetric(confusion_method=text_generation.LineConfusionMatrix)
     }
 
-    for v in _ret.values():
-        v.return_more_info = True
-
     ret.update({k: v.f_measure(det_text, gt_text) for k, v in _ret.items()})
 
     _ret = {
+        'ROUGE-1': text_generation.TopMetric(confusion_method=text_generation.WordConfusionMatrix, n_gram=1, is_cut=True),
         'ROUGE-2': text_generation.TopMetric(confusion_method=text_generation.WordConfusionMatrix, n_gram=2, is_cut=True),
         'ROUGE-3': text_generation.TopMetric(confusion_method=text_generation.WordConfusionMatrix, n_gram=3, is_cut=True),
         'ROUGE-L': text_generation.TopMetric(confusion_method=text_generation.WordLCSConfusionMatrix, is_cut=True),
         'ROUGE-W': text_generation.TopMetric(confusion_method=text_generation.WordLCSConfusionMatrix, lcs_method=nlp_utils.Sequence.weighted_longest_common_subsequence, is_cut=True),
     }
-
-    for v in _ret.values():
-        v.return_more_info = True
 
     det_cut_text = nlp_utils.cut_word_by_jieba(det_text)
     gt_cut_text = nlp_utils.cut_word_by_jieba(gt_text)
@@ -130,7 +126,7 @@ def rec_quick_metrics(gt_iter_data, det_res_path, save_path=None):
     return df
 
 
-def det_checkout_false_sample(gt_iter_data, det_iter_data, data_dir='checkout_data', image_dir=None, set_task=''):
+def det_checkout_false_sample(gt_iter_data, det_iter_data, data_dir='checkout_data', image_dir=None, save_res_dir=None):
     import numpy as np
     from utils import os_lib, visualize
 
@@ -153,7 +149,7 @@ def det_checkout_false_sample(gt_iter_data, det_iter_data, data_dir='checkout_da
     r = ret['']
 
     image_dir = image_dir if image_dir is not None else f'{data_dir}/images'
-    save_dir = f'{data_dir}/{set_task}'
+    save_res_dir = save_res_dir if save_res_dir is not None else f'{data_dir}/visuals/false_samples'
     tp = r['tp']
     obj_idx = r['obj_idx']
     target_obj_idx = obj_idx[~tp]
@@ -179,7 +175,57 @@ def det_checkout_false_sample(gt_iter_data, det_iter_data, data_dir='checkout_da
         det_image = visualize.ImageVisualize.box(image, det_box, colors=det_colors)
 
         image = np.concatenate([gt_image, det_image], axis=1)
-        os_lib.saver.auto_save(image, f'{save_dir}/{_id}')
+        os_lib.saver.auto_save(image, f'{save_res_dir}/{_id}')
 
     return ret
 
+
+def rec_checkout_false_sample(gt_iter_data, det_res_path, data_dir='checkout_data', image_dir=None, save_res_dir=None):
+    from utils import nlp_utils, os_lib, visualize
+
+    r = {}
+    for ret in tqdm(gt_iter_data):
+        image = ret['image']
+        transcription = ret['transcription']
+        r.setdefault(image, {})['true'] = transcription
+        r.setdefault(image, {})['_id'] = ret['_id']
+
+    with open(det_res_path, 'r', encoding='utf8') as f:
+        for line in f.readlines():
+            image, ret = line.split('\t')
+            ret = json.loads(ret)
+            transcription = ret['Student']['label']
+            r.setdefault(image, {})['pred'] = transcription
+
+    det_text = [v['pred'] for v in r.values()]
+    gt_text = [v['true'] for v in r.values()]
+    _ids = [v['_id'] for v in r.values()]
+
+    cm = text_generation.LineConfusionMatrix()
+
+    tp = cm.tp(det_text, gt_text)['tp']
+    cp = cm.cp(gt_text)['cp']
+    idx = np.where(tp != cp)[0]
+    image_dir = image_dir if image_dir is not None else f'{data_dir}/images'
+    save_res_dir = save_res_dir if save_res_dir is not None else f'{data_dir}/visuals/false_samples'
+
+    for i in idx:
+        _id = _ids[i]
+        image = os_lib.loader.load_img(f'{image_dir}/{_id}')
+
+        gt_image = np.zeros_like(image) + 255
+        text_boxes = [[(4, 4), (image.shape[1], 4), (image.shape[1], image.shape[0]), (4, image.shape[0])]]
+        texts = [gt_text[i]]
+        gt_image = visualize.ImageVisualize.text(gt_image, text_boxes, texts)
+
+        det_image = np.zeros_like(image) + 255
+        text_boxes = [[(4, 4), (image.shape[1], 4), (image.shape[1], image.shape[0]), (4, image.shape[0])]]
+        texts = [det_text[i]]
+        det_image = visualize.ImageVisualize.text(det_image, text_boxes, texts)
+
+        image = np.concatenate([image, gt_image, det_image], axis=0)
+        os_lib.saver.auto_save(image, f'{save_res_dir}/{_id}')
+
+        print(gt_text[i])
+        print(det_text[i])
+        print('------------')

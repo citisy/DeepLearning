@@ -7,126 +7,169 @@ class ConfusionMatrix:
 
     def tp(self, true, pred, **kwargs):
         """true positive"""
+        tp = (true == self.pos) & (pred == self.pos)
         return dict(
-            tp=np.sum((true == self.pos) & (pred == self.pos))
+            tp=tp,
+            acc_tp=np.sum(tp)
         )
 
     def fp(self, true, pred, **kwargs):
         """false positive"""
+        fp = (true != self.pos) & (pred == self.pos)
         return dict(
-            fp=np.sum((true != self.pos) & (pred == self.pos))
+            fp=fp,
+            acc_fp=np.sum(fp)
         )
 
     def fn(self, true, pred, **kwargs):
         """false negative"""
+        fn = (true == self.pos) & (pred != self.pos)
         return dict(
-            fn=np.sum((true == self.pos) & (pred != self.pos))
+            fn=fn,
+            acc_fn=np.sum(fn)
         )
 
     def tn(self, true, pred, **kwargs):
         """true negative"""
+        tn = (true != self.pos) & (pred != self.pos)
         return dict(
-            tn=np.sum((true != self.pos) & (pred != self.pos))
+            tn=tn,
+            acc_tn=np.sum(tn)
         )
 
     def cp(self, true, **kwargs):
         """condition positive"""
+        cp = true == self.pos
         return dict(
-            cp=np.sum(true == self.pos)
+            cp=cp,
+            acc_cp=np.sum(cp)
         )
 
     def cn(self, true, **kwargs):
         """condition negative"""
+        cn = true != self.pos
         return dict(
-            cn=np.sum(true != self.pos)
+            cn=cn,
+            acc_cn=np.sum(cn)
         )
 
     def op(self, pred, **kwargs):
         """outcome positive"""
+        op = pred == self.pos
         return dict(
-            op=np.sum(pred == self.pos)
+            op=op,
+            acc_op=np.sum(op)
         )
 
     def on(self, pred, **kwargs):
         """outcome negative"""
+        on = pred != self.pos
         return dict(
-            on=np.sum(pred != self.pos)
+            on=on,
+            acc_on=np.sum(on)
         )
 
 
 class PR:
-    def __init__(self, confusion_method=None, **confusion_method_kwarg):
+    def __init__(self, return_more_info=False, confusion_method=None, **confusion_method_kwarg):
+        self.return_more_info = return_more_info
         self.confusion_matrix = confusion_method(**confusion_method_kwarg) if confusion_method is not None else ConfusionMatrix(**confusion_method_kwarg)
-        # alias
+
+        # alias functions
         self.recall = self.tpr
         self.precision = self.ppv
         self.fallout = self.fpr
 
-    def tpr(self, true=None, pred=None, tp=None, cp=None, **kwargs):
+    def get_pr(self, true=None, pred=None):
+        r = {}
+        r.update(self.confusion_matrix.tp(true, pred))
+        r.update(self.confusion_matrix.cp(true, **r))
+        r.update(self.confusion_matrix.op(pred, **r))
+
+        r.update(self.tpr(**r))
+        r.update(self.ppv(**r))
+        return r
+
+    def tpr(self, true=None, pred=None, acc_tp=None, acc_cp=None, **kwargs):
         """recall"""
         r = {}
-        if tp is None:
+        if acc_tp is None:
             r = self.confusion_matrix.tp(true, pred)
-            tp = r.pop('tp')
+            acc_tp = r.pop('acc_tp')
 
-        if cp is None:
-            r = self.confusion_matrix.cp(true, **r)
-            cp = r.pop('cp')
+        if acc_cp is None:
+            r.update(self.confusion_matrix.cp(true, **r))
+            acc_cp = r.pop('acc_cp')
 
-        return dict(
-            tpr=tp / cp,
-            tp=tp,
-            cp=cp
+        ret = dict(
+            tpr=acc_tp / acc_cp,
+            acc_tp=acc_tp,
+            acc_cp=acc_cp
         )
 
-    def ppv(self, true=None, pred=None, tp=None, op=None, **kwargs):
+        if self.return_more_info:
+            ret.update(r)
+
+        return ret
+
+    def ppv(self, true=None, pred=None, acc_tp=None, acc_op=None, **kwargs):
         """precision"""
         r = {}
-        if tp is None:
+        if acc_tp is None:
             r = self.confusion_matrix.tp(true, pred)
-            tp = r.pop('tp')
+            acc_tp = r.pop('acc_tp')
 
-        if op is None:
-            r = self.confusion_matrix.op(pred, **r)
-            op = r.pop('op')
+        if acc_op is None:
+            r.update(self.confusion_matrix.op(pred, **r))
+            acc_op = r.pop('acc_op')
 
-        return dict(
-            ppv=tp / op,
-            tp=tp,
-            op=op
+        ret = dict(
+            ppv=acc_tp / acc_op,
+            acc_tp=acc_tp,
+            acc_op=acc_op
         )
 
-    def fpr(self, true=None, pred=None, fp=None, cn=None, **kwargs):
+        if self.return_more_info:
+            ret.update(r)
+
+        return ret
+
+    def fpr(self, true=None, pred=None, acc_fp=None, acc_cn=None, **kwargs):
         """fallout"""
         r = {}
-        if fp is None:
+        if acc_fp is None:
             r = self.confusion_matrix.fp(true, pred)
-            fp = r.pop('fp')
+            acc_fp = r.pop('acc_fp')
 
-        if cn is None:
+        if acc_cn is None:
             r = self.confusion_matrix.cn(true, **r)
-            cn = r.pop('cn')
+            acc_cn = r.pop('acc_cn')
 
-        return dict(
-            fpr=fp / cn,
-            fp=fp,
-            cn=cn
+        ret = dict(
+            fpr=acc_fp / acc_cn,
+            acc_fp=acc_fp,
+            acc_cn=acc_cn
         )
 
-    def acc(self, true=None, pred=None, tp=None, tn=None, **kwargs):
-        r = {}
-        if tp is None:
-            r = self.confusion_matrix.tp(true, pred)
-            tp = r.pop('tp')
+        if self.return_more_info:
+            ret.update(r)
 
-        if tn is None:
+        return ret
+
+    def acc(self, true=None, pred=None, acc_tp=None, acc_tn=None, **kwargs):
+        r = {}
+        if acc_tp is None:
+            r = self.confusion_matrix.tp(true, pred)
+            acc_tp = r.pop('acc_tp')
+
+        if acc_tn is None:
             r = self.confusion_matrix.tn(true, **r)
-            tn = r.pop('tn')
+            acc_tn = r.pop('acc_tn')
 
         return dict(
-            acc=(tp + tn) / len(true),
-            tp=tp,
-            tn=tn
+            acc=(acc_tp + acc_tn) / len(true),
+            acc_tp=acc_tp,
+            acc_tn=acc_tn
         )
 
 
@@ -134,21 +177,20 @@ class TopMetric:
     def __init__(self, return_more_info=False, pr_method=None, **pr_method_kwarg):
         self.return_more_info = return_more_info
         self.pr = pr_method(**pr_method_kwarg) if pr_method is not None else PR(**pr_method_kwarg)
+        self.pr.return_more_info = return_more_info
 
     def f_measure(self, true=None, pred=None, a=1, eps=1e-6, p=None, r=None, **kwargs):
-        ret = {}
-        if p is None:
-            ret = self.pr.precision(true, pred)
-            p = ret.pop('ppv')
-
-        if r is None:
-            ret.update(self.pr.recall(true, pred, **ret))
-            r = ret.pop('tpr')
+        ret = self.pr.get_pr(true, pred)
+        p = ret.pop('ppv')
+        r = ret.pop('tpr')
 
         result = dict(
             p=p,
             r=r,
-            f=(a ** 2 + 1) * p * r / (a ** 2 * p + r + eps)
+            f=(a ** 2 + 1) * p * r / (a ** 2 * p + r + eps),
+            acc_tp=ret.pop('acc_tp'),
+            acc_cp=ret.pop('acc_cp'),
+            acc_op=ret.pop('acc_op')
         )
 
         if self.return_more_info:

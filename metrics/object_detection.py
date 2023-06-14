@@ -1,3 +1,4 @@
+import time
 import numpy as np
 from typing import List, Iterable, Iterator
 
@@ -201,13 +202,14 @@ class ConfusionMatrix:
         self.iou_method = iou_method or Iou.iou
         self.iou_method_kwarg = iou_method_kwarg
 
-    def tp(self, gt_box, det_box, classes=None, iou_thres=0.5, iou=None):
+    def tp(self, gt_box, det_box, conf=None, _class=None, iou=None, iou_thres=0.5):
         """
 
         Args:
             gt_box: (N, 4)
             det_box: (M, 4)
-            classes (List[iter]):
+            conf:
+            _class (List[iter]):
             iou_thres:
             iou: (N, M)
 
@@ -217,13 +219,19 @@ class ConfusionMatrix:
 
         """
         if iou is None:
-            if classes is not None:
-                true_class, pred_class = classes
+            if _class is not None:
+                true_class, pred_class = _class
                 offset = np.max(np.concatenate([gt_box, det_box], 0))
                 gt_box = gt_box + (true_class * offset)[:, None]
                 det_box = det_box + (pred_class * offset)[:, None]
 
             iou = self.iou_method(gt_box, det_box, **self.iou_method_kwarg)
+
+        sort_idx = None
+        if conf is not None:
+            sort_idx = np.argsort(-conf)
+            det_box = det_box[sort_idx]
+            sort_idx = np.argsort(sort_idx)
 
         tp = np.zeros((det_box.shape[0],), dtype=bool)
         idx = np.where((iou >= iou_thres))
@@ -239,225 +247,201 @@ class ConfusionMatrix:
         # fast
         # tp = np.any(iou >= iou_thres, axis=0, dtype=bool)
 
-        return tp, iou
+        if sort_idx is not None:
+            tp = tp[sort_idx]
 
-    def fp(self, *args, **kwargs):
-        """see also `ConfusionMatrix.tp`"""
-        tp, iou = self.tp(*args, **kwargs)
-        return -tp, iou
+        return dict(
+            tp=tp,
+            acc_tp=np.sum(tp),
+            iou=iou,
+        )
+
+    def cp(self, gt_box):
+        return dict(
+            cp=[True] * len(gt_box),
+            acc_cp=len(gt_box)
+        )
+
+    def op(self, det_box):
+        return dict(
+            op=[True] * len(det_box),
+            acc_op=len(det_box)
+        )
 
 
 class PR:
-    def __init__(self, iou_method=None, **iou_method_kwarg):
+    def __init__(self, eps=1e-16, iou_method=None, **iou_method_kwarg):
+        self.eps = eps
         self.confusion_matrix = ConfusionMatrix(iou_method, **iou_method_kwarg)
 
-    def recall(self, gt_box=None, det_box=None, conf=None, tp=None, n_true=None, eps=1e-16, iou_thres=0.5):
-        """
+        # alias functions
+        self.recall = self.tpr
+        self.precision = self.ppv
 
-        Args:
-            gt_box:
-            det_box:
-            conf:
-            tp: if set, `gt_box`, `det_box`, `conf` is not necessary
-            n_true:
-            iou_thres:
+    def get_pr(self, gt_boxes=None, det_boxes=None, confs=None, classes=None, ious=None, iou_thres=0.5):
+        rs = {}
+        for i, (g, d) in enumerate(zip(gt_boxes, det_boxes)):
+            conf = confs[i] if confs is not None else None
+            _class = [classes[0][i], classes[1][i]] if classes is not None else None
+            iou = ious[i] if ious is not None else None
+            r = self.confusion_matrix.tp(g, d, conf, _class, iou=iou, iou_thres=iou_thres)
+            for k, v in r.items():
+                rs.setdefault(k, []).append(v)
 
-        Returns:
+            r = self.confusion_matrix.cp(g)
+            for k, v in r.items():
+                rs.setdefault(k, []).append(v)
 
-        """
-        sort_idx = None
-        if tp is None:
-            sort_idx = np.argsort(-conf)
-            det_box = det_box[sort_idx]
-            tp, iou = self.confusion_matrix.tp(gt_box, det_box, iou_thres=iou_thres)
-            n_true = len(gt_box)
+            r = self.confusion_matrix.op(d)
+            for k, v in r.items():
+                rs.setdefault(k, []).append(v)
 
-        acc_tp = np.cumsum(tp)
-
-        return acc_tp / (n_true + eps), tp, sort_idx
-
-    def precision(self, gt_box=None, det_box=None, conf=None, tp=None, eps=1e-16, iou_thres=0.5):
-        """
-
-        Args:
-            gt_box:
-            det_box:
-            conf:
-            tp: if set, `gt_box`, `det_box`, `conf` is not necessary
-            iou_thres:
-
-        Returns:
-
-        """
-        sort_idx = None
-        if tp is None:
-            sort_idx = np.argsort(-conf)
-            det_box = det_box[sort_idx]
-            tp, iou = self.confusion_matrix.tp(gt_box, det_box, iou_thres=iou_thres)
-
-        acc_tp = np.cumsum(tp)
-        n = np.cumsum(np.ones_like(acc_tp))
-
-        return acc_tp / (n + eps), tp, sort_idx
-
-
-class AP:
-    """https://github.com/rafaelpadilla/Object-Detection-Metrics/blob/master/paper_survey_on_performance_metrics_for_object_detection_algorithms.pdf"""
-
-    def __init__(
-            self, return_more_info=False, ap_method=None, ap_method_kwargs=dict(),
-            iou_method=None, **iou_method_kwarg
-    ):
-        self.confusion_matrix = ConfusionMatrix(iou_method, **iou_method_kwarg)
-        self.pr = PR(iou_method, **iou_method_kwarg)
-        self.ap_method = ap_method or self.continuous
-        self.ap_method_kwargs = ap_method_kwargs
-        self.return_more_info = return_more_info
-
-    @staticmethod
-    def interp(mean_recall, mean_precision, point=11, **kwargs):
-        x = np.linspace(0, 1, point)
-        ap = np.trapz(np.interp(x, mean_recall, mean_precision), x)  # integrate
-
-        return ap
-
-    @staticmethod
-    def continuous(mean_recall, mean_precision, **kwargs):
-        i = np.where(mean_recall[1:] != mean_recall[:-1])[0]  # points where x axis (recall) changes
-        ap = np.sum((mean_recall[i + 1] - mean_recall[i]) * mean_precision[i + 1])  # area under curve
-
-        return ap
-
-    def per_class_ap(
-            self, gt_box=None, det_box=None, conf=None,
-            tp=None, n_true=None, iou_thres=0.5, eps=1e-6
-    ):
-        """ap computation core method, ap of per objection per class
-
-        Args:
-            gt_box (np.ndarray):
-            det_box (np.ndarray):
-            conf (np.ndarray):
-            tp: if set, `gt_box`, `det_box`, `conf` is not necessary
-            iou_thres:
-            n_true (int): if not set, `gt_box` is necessary
-
-        Returns:
-
-        """
-
-        recall, tp, sort_idx = self.pr.recall(gt_box, det_box, conf, tp, n_true=n_true, iou_thres=iou_thres)
-        precision, tp, _ = self.pr.precision(gt_box, det_box, conf, tp, iou_thres=iou_thres)
-
-        # Append sentinel values to beginning and end
-        mean_recall = np.concatenate(([0.0], recall, [1.0]))
-        mean_precision = np.concatenate(([1.0], precision, [0.0]))
-
-        # Compute the precision envelope
-        mean_precision = np.flip(np.maximum.accumulate(np.flip(mean_precision)))
-
-        if tp.size:
-            ap = self.ap_method(mean_recall, mean_precision, **self.ap_method_kwargs)
-        else:
-            ap = 0
-
-        true_positive = int(np.sum(tp))
-        false_positive = len(tp) - true_positive
-
-        r = true_positive / (n_true + eps)
-        p = true_positive / (len(tp) + eps)
-        f1 = 2 * p * r / (p + r + eps)
-
-        ret = {
-            f'ap': round(ap, 6),
-            'true_positive': true_positive,
-            'false_positive': false_positive,
-            'n_true': n_true,
-            'n_pred': len(tp),
-            'p': round(p, 6),
-            'r': round(r, 6),
-            'f1': round(f1, 6)
-        }
-
-        if self.return_more_info:
-            sort_idx = np.argsort(sort_idx) if sort_idx is not None else None
-            ret.update(
-                tp=tp,
-                sort_idx=sort_idx,
-                recall=recall,
-                precision=precision,
-                mean_recall=mean_recall,
-                mean_precision=mean_precision
-            )
-
-        return ret
-
-    def ap_thres(
-            self, gt_box=None, det_box=None, conf=None, classes=None,
-            tp=None, n_true=None, iou_thres=0.5, obj_idx=None,
-    ):
-        """AP@iou_thres for each objection
-
-        Args:
-            gt_box (np.ndarray):
-            det_box (np.ndarray):
-            conf (np.ndarray):
-            classes (List[np.ndarray]):
-            tp: if set, `gt_box`, `det_box` is not necessary
-            n_true (int or List[int]): if not set, `gt_box` is necessary
-            iou_thres:
-
-        Returns:
-        """
         results = {}
-
         if classes is None:
-            r = self.per_class_ap(gt_box, det_box, conf, tp, n_true=n_true, iou_thres=iou_thres)
-            if self.return_more_info:
-                r.update(
-                    obj_idx=obj_idx,
-                )
-            results[''] = r
+            acc_tp = rs['acc_tp']
+            acc_cp = rs['acc_cp']
+            acc_op = rs['acc_op']
+
+            ret = {}
+            ret.update(self.tpr(acc_tp=sum(acc_tp), acc_cp=sum(acc_cp), iou_thres=iou_thres))
+            ret.update(self.ppv(acc_tp=sum(acc_tp), acc_op=sum(acc_op), iou_thres=iou_thres))
+            results[''] = ret
+
         else:
+            tmp_gt_classes, tmp_det_classes = [], []
+            gt_idx, det_idx = [], []
+            for i, (gc, dc) in enumerate(zip(*classes)):
+                tmp_gt_classes.append(gc)
+                tmp_det_classes.append(dc)
+                gt_idx.append([i] * len(gc))
+                det_idx.append([i] * len(dc))
+
+            classes = [np.concatenate(tmp_gt_classes), np.concatenate(tmp_det_classes)]
             unique_class = np.unique(np.concatenate(classes))
             gt_class, det_class = classes
-
-            if tp is None:
-                tp, iou = self.confusion_matrix.tp(gt_box, det_box, classes, iou_thres=iou_thres)
+            gt_idx = np.concatenate(gt_idx)
+            det_idx = np.concatenate(det_idx)
+            tp = np.concatenate(rs['tp'])
+            cp = np.concatenate(rs['cp'])
+            op = np.concatenate(rs['op'])
 
             for i, c in enumerate(unique_class):
                 gt_cls_idx = gt_class == c
                 det_cls_idx = det_class == c
 
                 cls_tp = tp[det_cls_idx]
-                cls_conf = conf[det_cls_idx]
-                sort_idx = np.argsort(-cls_conf)
-                sort_cls_tp = cls_tp[sort_idx]
-                _n_true = len(gt_box[gt_cls_idx]) if gt_box is not None else n_true[i]
+                cls_cp = cp[gt_cls_idx]
+                cls_op = op[det_cls_idx]
 
-                r = self.per_class_ap(
-                    tp=sort_cls_tp,  # after sort
-                    n_true=_n_true,
-                    iou_thres=iou_thres
+                ret = {}
+                ret.update(self.tpr(acc_tp=sum(cls_tp), acc_cp=sum(cls_cp), iou_thres=iou_thres))
+                ret.update(self.ppv(acc_tp=sum(cls_tp), acc_op=sum(cls_op), iou_thres=iou_thres))
+
+                ret.update(
+                    tp=cls_tp,
+                    cp=cls_cp,
+                    op=cls_op,
+                    gt_idx=gt_idx[gt_cls_idx],
+                    det_idx=det_idx[det_cls_idx]
                 )
 
-                if self.return_more_info:
-                    sort_idx = np.argsort(sort_idx)
-                    r.update(
-                        sort_idx=sort_idx,
-                        gt_class=gt_class[gt_cls_idx],
-                        det_class=det_class[det_cls_idx],
-                        det_box=det_box[det_cls_idx] if det_box is not None else None,
-                        gt_box=gt_box[gt_cls_idx] if det_box is not None else None,
-                        conf=conf[det_cls_idx],
-                        obj_idx=obj_idx[det_cls_idx] if obj_idx is not None else None,
-                    )
+                results[c] = ret
 
-                results[c] = r
+        return results, rs['iou']
 
-        return results
+    def tpr(self, gt_box=None, det_box=None, conf=None, _class=None, acc_tp=None, acc_cp=None, iou_thres=0.5):
+        """
 
-    def mAP(self, gt_boxes, det_boxes, confs, classes=None, iou_thres=0.5):
+        Args:
+            gt_box:
+            det_box:
+            conf:
+            _class:
+            acc_tp: if set, `gt_box`, `det_box`, `conf` is not necessary
+            acc_cp: if set, `gt_box`, not necessary
+            iou_thres:
+
+        Returns:
+
+        """
+        r = {}
+
+        if acc_tp is None:
+            r.update(self.confusion_matrix.tp(gt_box, det_box, conf, _class=_class, iou_thres=iou_thres))
+            acc_tp = r.pop('acc_tp')
+
+        if acc_cp is None:
+            r.update(self.confusion_matrix.cp(gt_box))
+            acc_cp = r.pop('acc_cp')
+
+        ret = dict(
+            r=acc_tp / (acc_cp + self.eps),
+            acc_tp=acc_tp,
+            acc_cp=acc_cp,
+            **r
+        )
+
+        return ret
+
+    def ppv(self, gt_box=None, det_box=None, conf=None, _class=None, acc_tp=None, acc_op=None, iou_thres=0.5):
+        """
+
+        Args:
+            gt_box:
+            det_box:
+            conf:
+            _class:
+            acc_tp: if set, `gt_box`, `det_box`, `conf` is not necessary
+            acc_op: if set, `det_box`, not necessary
+            iou_thres:
+
+        Returns:
+
+        """
+        r = {}
+
+        if acc_tp is None:
+            r.update(self.confusion_matrix.tp(gt_box, det_box, conf, _class=_class, iou_thres=iou_thres))
+            acc_tp = r.pop('acc_tp')
+
+        if acc_op is None:
+            r.update(self.confusion_matrix.op(det_box))
+            acc_op = r.pop('acc_op')
+
+        ret = dict(
+            p=acc_tp / (acc_op + self.eps),
+            acc_tp=acc_tp,
+            acc_op=acc_op,
+            **r
+        )
+
+        return ret
+
+
+class AP:
+    """https://github.com/rafaelpadilla/Object-Detection-Metrics/blob/master/paper_survey_on_performance_metrics_for_object_detection_algorithms.pdf"""
+
+    def __init__(
+            self, return_more_info=False, eps=1e-6, ap_method=None, ap_method_kwargs=dict(),
+            pr_method=None, **pr_method_kwarg
+    ):
+        self.pr = pr_method(**pr_method_kwarg) if pr_method is not None else PR(**pr_method_kwarg)
+        self.ap_method = ap_method or self.continuous
+        self.ap_method_kwargs = ap_method_kwargs
+        self.return_more_info = return_more_info
+        self.eps = eps
+
+    @staticmethod
+    def interp(mean_recall, mean_precision, point=11, **kwargs):
+        x = np.linspace(0, 1, point)
+        return np.trapz(np.interp(x, mean_recall, mean_precision), x)  # integrate
+
+    @staticmethod
+    def continuous(mean_recall, mean_precision, **kwargs):
+        i = np.where(mean_recall[1:] != mean_recall[:-1])[0]  # points where x axis (recall) changes
+        return np.sum((mean_recall[i + 1] - mean_recall[i]) * mean_precision[i + 1])  # area under curve
+
+    def mAP_thres(self, gt_boxes, det_boxes, confs=None, classes=None, iou_thres=0.5):
         """AP@iou_thres for all objection
 
         Args:
@@ -472,62 +456,32 @@ class AP:
         Usage:
             See Also `quick_metric()` or `shortlist_false_sample()`
         """
-        if classes is None:
-            tps = []
-            obj_idx = []
-            for i, data in enumerate(zip(gt_boxes, det_boxes)):
-                tp, iou = self.confusion_matrix.tp(*data, iou_thres=iou_thres)
+        _results, _ = self.pr.get_pr(gt_boxes, det_boxes, confs, classes, iou_thres=iou_thres)
+        return self.ap_thres(_results)
 
-                tps.append(tp)
-                obj_idx.append(np.zeros(len(tp), dtype=int) + i)
-
-            tps = np.concatenate(tps, axis=0)
-
-        else:
-            tmp_true_classes, tmp_pred_classes = [], []
-            tps = []
-            obj_idx = []
-            for i, (g, d, tc, pc) in enumerate(zip(gt_boxes, det_boxes, *classes)):
-                tp, iou = self.confusion_matrix.tp(g, d, [tc, pc], iou_thres=iou_thres)
-                tps.append(tp)
-                tmp_true_classes.append(tc)
-                tmp_pred_classes.append(pc)
-                obj_idx.append(np.zeros(len(tp), dtype=int) + i)
-
-            tps = np.concatenate(tps, axis=0)
-            classes = [np.concatenate(tmp_true_classes), np.concatenate(tmp_pred_classes)]
-
-        det_boxes = np.concatenate(det_boxes, axis=0)
-        gt_boxes = np.concatenate(gt_boxes, axis=0)
-        confs = np.concatenate(confs, axis=0)
-        n_true = len(gt_boxes)
-        obj_idx = np.concatenate(obj_idx, axis=0)
-
-        return self.ap_thres(gt_boxes, det_boxes, confs, classes=classes, tp=tps, n_true=n_true, iou_thres=iou_thres, obj_idx=obj_idx)
-
-    def ap_thres_range(
-            self, gt_box, det_box, conf, classes=None,
-            tps=None, n_true=None, thres_range=np.arange(0.5, 1, 0.05), obj_idx=None
-    ):
-        """AP@thres_range for each objection
+    def mAP_thres_range(self, gt_boxes, det_boxes, confs, classes=None, thres_range=np.arange(0.5, 1, 0.05)):
+        """AP@thres_range for all objection
 
         Args:
-            gt_box (np.ndarray):
-            det_box (np.ndarray):
-            conf (np.ndarray):
-            classes (List[np.ndarray]):
-            tps (List[np.ndarray]): if set, `gt_box`, `det_box` is not necessary
-            n_true (int or List[int]): if not set, `gt_box` is necessary
-            thres_range (iterator)
+            gt_boxes (List[np.ndarray]):
+            det_boxes (List[np.ndarray]):
+            confs (List[np.ndarray]):
+            classes (List[List[np.ndarray]]):
+            thres_range:
 
+        Returns:
+
+        Usage:
+            See Also `AP.mAP`
         """
+        ious = None
         _ret = {}
 
-        for i, thres in enumerate(thres_range):
-            tp = tps[i] if tps is not None else None
-            result = self.ap_thres(gt_box, det_box, conf, classes, tp=tp, n_true=n_true, iou_thres=thres, obj_idx=obj_idx)
+        for iou_thres in thres_range:
+            _results, ious = self.pr.get_pr(gt_boxes, det_boxes, confs, classes, ious=ious, iou_thres=iou_thres)
+            results = self.ap_thres(_results)
 
-            for k, v in result.items():
+            for k, v in results.items():
                 tmp = _ret.setdefault(k, {})
                 for kk, vv in v.items():
                     tmp.setdefault(kk, []).append(vv)
@@ -543,62 +497,55 @@ class AP:
 
         return ret
 
-    def mAP_thres_range(
-            self, gt_boxes, det_boxes, confs, classes=None,
-            thres_range=np.arange(0.5, 1, 0.05),
-    ):
-        """AP@thres_range for all objection
+    def ap_thres(self, _results):
+        results = {}
 
-        Args:
-            gt_boxes (List[np.ndarray]):
-            det_boxes (List[np.ndarray]):
-            confs (List[np.ndarray]):
-            classes (List[List[np.ndarray]]):
-            thres_range:
+        for k, _r in _results.items():
+            r = _r.pop('r')
+            p = _r.pop('p')
+            tp = _r['tp']
+            op = _r['op']
+            acc_tp = _r.pop('acc_tp')
+            acc_cp = _r.pop('acc_cp')
+            acc_op = _r.pop('acc_op')
+            f = 2 * p * r / (p + r + self.eps)
 
-        Returns:
+            cumsum_tp = np.cumsum(tp)
+            acc_recall = cumsum_tp / (acc_cp + self.eps)
+            acc_precision = cumsum_tp / (np.cumsum(op) + self.eps)
 
-        Usage:
-            See Also `AP.mAP`
-        """
-        _tps = []
-        tmp_iou = [None for _ in range(len(gt_boxes))]
+            # count ap
+            # Append sentinel values to beginning and end
+            mean_recall = np.concatenate(([0.0], acc_recall, [1.0]))
+            mean_precision = np.concatenate(([1.0], acc_precision, [0.0]))
 
-        for thres in thres_range:
-            if classes is None:
-                tps = []
-                for i, data in enumerate(zip(gt_boxes, det_boxes)):
-                    tp, tmp_iou[i] = self.confusion_matrix.tp(*data, iou=tmp_iou[i], iou_thres=thres)
-                    tps.append(tp)
+            # Compute the precision envelope
+            mean_precision = np.flip(np.maximum.accumulate(np.flip(mean_precision)))
 
-                tps = np.concatenate(tps, axis=0)
-                _tps.append(tps)
-
+            if tp.size:
+                ap = self.ap_method(mean_recall, mean_precision, **self.ap_method_kwargs)
             else:
-                tps = []
-                for i, (g, d, tc, pc) in enumerate(zip(gt_boxes, det_boxes, *classes)):
-                    tp, _ = self.confusion_matrix.tp(g, d, [tc, pc], iou=tmp_iou[i], iou_thres=thres)
-                    tps.append(tp)
+                ap = 0
 
-                tps = np.concatenate(tps, axis=0)
-                _tps.append(tps)
+            ret = dict(
+                ap=ap,
+                p=round(p, 6),
+                r=round(r, 6),
+                f=round(f, 6),
+                true_positive=acc_tp,
+                false_positive=acc_op - acc_tp,
+                n_true=acc_cp,
+                n_pred=acc_op
+            )
 
-        det_boxes = np.concatenate(det_boxes, axis=0)
-        gt_boxes = np.concatenate(gt_boxes, axis=0)
-        confs = np.concatenate(confs, axis=0)
-        n_true = len(gt_boxes)
-        obj_idx = [np.zeros(len(gt_box), dtype=int) + i for i, gt_box in enumerate(gt_boxes)]
-        obj_idx = np.concatenate(obj_idx, axis=0)
+            if self.return_more_info:
+                ret.update(
+                    **_r
+                )
 
-        if classes is not None:
-            tmp_true_classes, tmp_pred_classes = [], []
-            for i, (tc, pc) in enumerate(zip(*classes)):
-                tmp_true_classes.append(tc)
-                tmp_pred_classes.append(pc)
+            results[k] = ret
 
-            classes = [np.concatenate(tmp_true_classes), np.concatenate(tmp_pred_classes)]
-
-        return self.ap_thres_range(gt_boxes, det_boxes, confs, classes=classes, tps=_tps, n_true=n_true, thres_range=thres_range, obj_idx=obj_idx)
+        return results
 
 
 def quick_metric(gt_iter_data, det_iter_data, is_mAP=True, save_path=None):
@@ -637,7 +584,7 @@ def quick_metric(gt_iter_data, det_iter_data, is_mAP=True, save_path=None):
     for ret in tqdm(det_iter_data):
         r.setdefault(ret['_id'], {})['det_boxes'] = ret['bboxes']
         r.setdefault(ret['_id'], {})['det_classes'] = ret['classes']
-        r.setdefault(ret['_id'], {})['confs'] = [1] * len(ret['bboxes'])
+        r.setdefault(ret['_id'], {})['confs'] = ret['confs']
 
     gt_boxes = [v['gt_boxes'] for v in r.values()]
     det_boxes = [v['det_boxes'] for v in r.values()]
@@ -646,7 +593,7 @@ def quick_metric(gt_iter_data, det_iter_data, is_mAP=True, save_path=None):
     det_classes = [v['det_classes'] for v in r.values()]
 
     if is_mAP:
-        ret = ap.mAP(gt_boxes, det_boxes, confs, classes=[gt_classes, det_classes])
+        ret = ap.mAP_thres(gt_boxes, det_boxes, confs, classes=[gt_classes, det_classes])
     else:
         ret = ap.mAP_thres_range(gt_boxes, det_boxes, confs, classes=[gt_classes, det_classes])
 
@@ -670,7 +617,8 @@ def checkout_false_sample(gt_iter_data, det_iter_data, data_dir='checkout_data',
         gt_iter_data (Iterable):
         det_iter_data (Iterable):
         data_dir (str):
-        set_task (str):
+        image_dir (str):
+        save_res_dir:
         alias (list or dict):
 
     Usage:
@@ -714,23 +662,21 @@ def checkout_false_sample(gt_iter_data, det_iter_data, data_dir='checkout_data',
     det_classes = [v['det_classes'] for v in r.values()]
     _ids = [v['_id'] for v in r.values()]
 
-    ret = AP(return_more_info=True).mAP(gt_boxes, det_boxes, confs, classes=[gt_classes, det_classes])
+    ret = AP(return_more_info=True).mAP_thres(gt_boxes, det_boxes, confs, classes=[gt_classes, det_classes])
 
     alias = alias or {k: k for k in ret}
     image_dir = image_dir if image_dir is not None else f'{data_dir}/images'
-    save_res_dir = save_res_dir if save_res_dir is not None else f'visuals/false_samples'
+    save_res_dir = save_res_dir if save_res_dir is not None else f'{data_dir}/visuals/false_samples'
 
     for cls, r in ret.items():
         save_dir = f'{save_res_dir}/{alias[cls]}'
         tp = r['tp']
-        obj_idx = r['obj_idx']
-        sort_idx = r['sort_idx']
-        tp = tp[sort_idx]
-        target_obj_idx = obj_idx[~tp]
+        det_idx = r['det_idx']
+        target_obj_idx = det_idx[~tp]
 
         idx = np.unique(target_obj_idx)
         for i in idx:
-            target_idx = obj_idx == i
+            target_idx = det_idx == i
             _tp = tp[target_idx]
 
             gt_class = gt_classes[i]

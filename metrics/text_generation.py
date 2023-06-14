@@ -5,23 +5,30 @@ from utils import nlp_utils
 
 class LineConfusionMatrix:
     def tp(self, true, pred, **kwargs):
+        tp = [t == p for t, p in zip(true, pred)]
         return dict(
-            tp=sum(1 for t, p in zip(true, pred) if t == p)
+            tp=tp,
+            acc_tp=sum(tp)
         )
 
     def fp(self, true, pred, **kwargs):
+        """useless"""
+        fp = [t != p for t, p in zip(true, pred)]
         return dict(
-            fp=sum(1 for t, p in zip(true, pred) if t != p)
+            fp=fp,
+            acc_fp=sum(fp)
         )
 
     def cp(self, true, **kwargs):
         return dict(
-            cp=len(true)
+            cp=[True] * len(true),
+            acc_cp=len(true)
         )
 
     def op(self, pred, **kwargs):
         return dict(
-            op=len(pred)
+            op=[True] * len(pred),
+            acc_op=len(pred)
         )
 
 
@@ -54,40 +61,45 @@ class WordConfusionMatrix:
         """
         true_with_n_grams = true_with_n_grams or self.make_n_grams(true)
         pred_with_n_grams = pred_with_n_grams or self.make_n_grams(pred)
-        s = sum(len(t & p) for t, p in zip(true_with_n_grams, pred_with_n_grams))
+        tp = [len(t & p) for t, p in zip(true_with_n_grams, pred_with_n_grams)]
 
         return dict(
-            tp=s,
+            tp=tp,
+            acc_tp=sum(tp),
             true_with_n_grams=true_with_n_grams,
             pred_with_n_grams=pred_with_n_grams
         )
 
     def fp(self, true=None, pred=None, true_with_n_grams=None, pred_with_n_grams=None, **kwargs):
+        """useless"""
         true_with_n_grams = true_with_n_grams or self.make_n_grams(true)
         pred_with_n_grams = pred_with_n_grams or self.make_n_grams(pred)
-        s = sum(len(t - p) for t, p in zip(true_with_n_grams, pred_with_n_grams))
+        fp = [len(t - p) for t, p in zip(true_with_n_grams, pred_with_n_grams)]
 
         return dict(
-            fp=s,
+            fp=fp,
+            acc_fp=sum(fp),
             true_with_n_grams=true_with_n_grams,
             pred_with_n_grams=pred_with_n_grams
         )
 
     def cp(self, true=None, true_with_n_grams=None, **kwargs):
         true_with_n_grams = true_with_n_grams or self.make_n_grams(true)
-        s = sum(len(t) for t in true_with_n_grams)
+        cp = [len(t) for t in true_with_n_grams]
 
         return dict(
-            cp=s,
+            cp=cp,
+            acc_cp=sum(cp),
             true_with_n_grams=true_with_n_grams,
         )
 
     def op(self, pred=None, pred_with_n_grams=None, **kwargs):
         pred_with_n_grams = pred_with_n_grams or self.make_n_grams(pred)
-        s = sum(len(p) for p in pred_with_n_grams)
+        op = [len(p) for p in pred_with_n_grams]
 
         return dict(
-            op=s,
+            op=op,
+            acc_op=sum(op),
             pred_with_n_grams=pred_with_n_grams,
         )
 
@@ -101,76 +113,72 @@ class WordLCSConfusionMatrix:
         self.filter_blank = filter_blank
         self.lcs = lcs_method or nlp_utils.Sequence.longest_common_subsequence
 
-    def tp(self, true=None, pred=None, true_cut=None, pred_cut=None, lcs=None, **kwargs):
+    def tp(self, true=None, pred=None, true_cut=None, pred_cut=None, tp=None, **kwargs):
         true_cut = true_cut or nlp_utils.cut_word_by_jieba(true, self.filter_blank) if not self.is_cut else true
         pred_cut = pred_cut or nlp_utils.cut_word_by_jieba(pred, self.filter_blank) if not self.is_cut else pred
-        lcs = lcs if lcs is not None else [self.lcs(t, p)['score'] for t, p in zip(true_cut, pred_cut)]
-        s = sum(lcs)
+        tp = tp if tp is not None else [self.lcs(t, p)['score'] for t, p in zip(true_cut, pred_cut)]
 
         return dict(
-            tp=s,
-            lcs=lcs,
-            true_cut=true_cut,
-            pred_cut=pred_cut
-        )
-
-    def fp(self, true=None, pred=None, true_cut=None, pred_cut=None, lcs=None, **kwargs):
-        true_cut = true_cut or nlp_utils.cut_word_by_jieba(true, self.filter_blank) if not self.is_cut else true
-        pred_cut = pred_cut or nlp_utils.cut_word_by_jieba(pred, self.filter_blank) if not self.is_cut else pred
-        lcs = lcs if lcs is not None else [self.lcs(t, p)['score'] for t, p in zip(true_cut, pred_cut)]
-        s = sum(lcs)
-
-        return dict(
-            fp=s,
-            lcs=lcs,
+            tp=tp,
+            acc_tp=sum(tp),
             true_cut=true_cut,
             pred_cut=pred_cut
         )
 
     def cp(self, true=None, true_cut=None, **kwargs):
         true_cut = true_cut or nlp_utils.cut_word_by_jieba(true, self.filter_blank) if not self.is_cut else true
-        s = sum(len(t) for t in true_cut)
+        cp = [len(t) for t in true_cut]
 
         return dict(
-            cp=s,
+            cp=cp,
+            acc_cp=sum(cp),
             true_cut=true_cut,
         )
 
     def op(self, pred=None, pred_cut=None, **kwargs):
         pred_cut = pred_cut or nlp_utils.cut_word_by_jieba(pred, self.filter_blank) if not self.is_cut else pred
-        s = sum(len(p) for p in pred_cut)
+        op = [len(p) for p in pred_cut]
 
         return dict(
-            op=s,
+            op=sum(op),
+            acc_op=sum(op),
             pred_cut=pred_cut
         )
 
 
 class CharConfusionMatrix:
     def tp(self, true, pred, **kwargs):
+        tp = [len(set(t) & set(p)) for t, p in zip(true, pred)]
         return dict(
-            tp=sum(len(set(t) & set(p)) for t, p in zip(true, pred))
+            tp=tp,
+            acc_tp=sum(tp)
         )
 
     def fp(self, true, pred, **kwargs):
+        fp = [len(set(t) - set(p)) for t, p in zip(true, pred)]
         return dict(
-            fp=sum(len(set(t) - set(p)) for t, p in zip(true, pred))
+            fp=fp,
+            acc_fp=sum(fp)
         )
 
     def cp(self, true, **kwargs):
+        cp = [len(set(t)) for t in true]
         return dict(
-            cp=sum(len(set(t)) for t in true)
+            cp=cp,
+            acc_cp=sum(cp)
         )
 
     def op(self, pred, **kwargs):
+        op = [len(set(p)) for p in pred]
         return dict(
-            op=sum(len(set(p)) for p in pred)
+            op=op,
+            acc_op=sum(op)
         )
 
 
 class PR(classifier.PR):
-    def __init__(self, confusion_method=None, **confusion_method_kwarg):
-        super().__init__(confusion_method=confusion_method or LineConfusionMatrix, **confusion_method_kwarg)
+    def __init__(self, return_more_info=False, confusion_method=None, **confusion_method_kwarg):
+        super().__init__(return_more_info=return_more_info, confusion_method=confusion_method or LineConfusionMatrix, **confusion_method_kwarg)
 
 
 class TopMetric(classifier.TopMetric):
@@ -202,6 +210,7 @@ class TopMetric(classifier.TopMetric):
             ret = TopMetric(is_cut=True).f_measure(det_text, gt_text)
 
     """
+
     def __init__(self, pr_method=None, **pr_method_kwarg):
         super().__init__(pr_method=pr_method or PR, **pr_method_kwarg)
 
