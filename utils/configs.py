@@ -1,8 +1,12 @@
+import os
+import time
 import yaml
+import copy
 import configparser
 import logging
-import copy
-from . import os_lib
+import logging.config
+from logging.handlers import TimedRotatingFileHandler
+from . import os_lib, converter
 
 
 def load_config_from_yml(path) -> dict:
@@ -80,9 +84,100 @@ def merge_dict(d1: dict, d2: dict):
     return cur(copy.deepcopy(d1), copy.deepcopy(d2))
 
 
+class MultiProcessTimedRotatingFileHandler(TimedRotatingFileHandler):
+    @property
+    def dfn(self):
+        current_time = int(time.time())
+        # get the time that this sequence started at and make it a TimeTuple
+        dst_now = time.localtime(current_time)[-1]
+        t = self.rolloverAt - self.interval
+        if self.utc:
+            time_tuple = time.gmtime(t)
+        else:
+            time_tuple = time.localtime(t)
+            dst_then = time_tuple[-1]
+            if dst_now != dst_then:
+                if dst_now:
+                    addend = 3600
+                else:
+                    addend = -3600
+                time_tuple = time.localtime(t + addend)
+        dfn = self.rotation_filename(self.baseFilename + "." + time.strftime(self.suffix, time_tuple))
+
+        return dfn
+
+    def shouldRollover(self, record):
+        """
+        是否应该执行日志滚动操作：
+        1、存档文件已存在时，执行滚动操作
+        2、当前时间 >= 滚动时间点时，执行滚动操作
+        """
+        dfn = self.dfn
+        t = int(time.time())
+        if t >= self.rolloverAt or os.path.exists(dfn):
+            return 1
+        return 0
+
+    def doRollover(self):
+        """
+        执行滚动操作
+        1、文件句柄更新
+        2、存在文件处理
+        3、备份数处理
+        4、下次滚动时间点更新
+        """
+        if self.stream:
+            self.stream.close()
+            self.stream = None
+        # get the time that this sequence started at and make it a TimeTuple
+
+        dfn = self.dfn
+
+        # 存档log 已存在处理
+        if not os.path.exists(dfn):
+            self.rotate(self.baseFilename, dfn)
+
+        # 备份数控制
+        if self.backupCount > 0:
+            for s in self.getFilesToDelete():
+                os.remove(s)
+
+        # 延迟处理
+        if not self.delay:
+            self.stream = self._open()
+
+        # 更新滚动时间点
+        current_time = int(time.time())
+        new_rollover_at = self.computeRollover(current_time)
+        while new_rollover_at <= current_time:
+            new_rollover_at = new_rollover_at + self.interval
+
+        # If DST changes and midnight or weekly rollover, adjust for this.
+        if (self.when == 'MIDNIGHT' or self.when.startswith('W')) and not self.utc:
+            dst_at_rollover = time.localtime(new_rollover_at)[-1]
+            dst_now = time.localtime(current_time)[-1]
+            if dst_now != dst_at_rollover:
+                if not dst_now:  # DST kicks in before next rollover, so we need to deduct an hour
+                    addend = -3600
+                else:  # DST bows out before next rollover, so we need to add an hour
+                    addend = 3600
+                new_rollover_at += addend
+        self.rolloverAt = new_rollover_at
+
+
 def logger_init(config={}, log_dir='logs'):
     """logging配置
-    默认loggers：['', 'basic', 'service_standard', 'service', '__main__']"""
+    默认loggers：['', 'basic', 'service_standard', 'service', '__main__']
+
+    Examples
+        .. code-block:: python
+            import logging
+            from utils.configs import logger_init
+
+            logger_init()
+            logger = logging.getLogger('service')
+            logger.info('')
+    """
 
     default_logging_config = {
         'version': 1,
@@ -110,7 +205,7 @@ def logger_init(config={}, log_dir='logs'):
             'info_standard': {
                 'level': 'INFO',
                 'formatter': 'standard',
-                'class': 'logging.handlers.TimedRotatingFileHandler',
+                'class': 'utils.configs.MultiProcessTimedRotatingFileHandler',
                 'filename': f'{log_dir}/info_standard.log',
                 'when': 'W0',
                 'backupCount': 5,
@@ -120,7 +215,7 @@ def logger_init(config={}, log_dir='logs'):
             'info': {
                 'level': 'INFO',
                 'formatter': 'precise',
-                'class': 'logging.handlers.TimedRotatingFileHandler',
+                'class': 'utils.configs.MultiProcessTimedRotatingFileHandler',
                 'filename': f'{log_dir}/info.log',
                 'when': 'D',
                 'backupCount': 15,
@@ -130,7 +225,7 @@ def logger_init(config={}, log_dir='logs'):
             'error': {
                 'level': 'ERROR',
                 'formatter': 'precise',
-                'class': 'logging.handlers.TimedRotatingFileHandler',
+                'class': 'utils.configs.MultiProcessTimedRotatingFileHandler',
                 'filename': f'{log_dir}/error.log',
                 'when': 'W0',
                 'backupCount': 5,
@@ -180,3 +275,46 @@ def logger_init(config={}, log_dir='logs'):
 
     os_lib.mk_dir(log_dir)
     logging.config.dictConfig(default_logging_config)
+
+
+def parse_params_example() -> dict:
+    """an example for parse parameters"""
+
+    def params_params_from_file(path) -> dict:
+        """user params, low priority"""
+
+        return expand_dict(load_config_from_yml(path))
+
+    def params_params_from_env(flag='Global.') -> dict:
+        """global params, middle priority"""
+        import os
+
+        args = {}
+        for k, v in os.environ.items():
+            if k.startswith(flag):
+                k = k.replace(flag, '')
+                args[k] = v
+
+        config = expand_dict(args)
+        config = converter.DataConvert.str_value_to_constant(config)
+
+        return config
+
+    def params_params_from_arg() -> dict:
+        """local params, high priority"""
+        import argparse
+
+        parser = argparse.ArgumentParser()
+        parser.add_argument('key1', type=str, default='value1', help='note of key1')
+        parser.add_argument('key2', action='store_true', help='note of key2')
+        parser.add_argument('key3', nargs='?', const=True, default=False, help='note of key3')  # return a list
+        ...
+
+        args = parser.parse_args()
+        return expand_dict(vars(args))
+
+    config = params_params_from_file('your config path')
+    config = merge_dict(config, params_params_from_env())
+    config = merge_dict(config, params_params_from_arg())
+
+    return config

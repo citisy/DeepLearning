@@ -46,7 +46,7 @@ class Saver:
             self.save_pkl(obj, path)
         elif suffix in ('.png', '.jpg', '.jpeg', 'tiff'):
             self.save_img(obj, path)
-        elif suffix in ('.csv', ):
+        elif suffix in ('.csv',):
             self.save_csv(obj, path)
         else:
             self.save_bytes(obj, path)
@@ -305,41 +305,63 @@ class FakeIo:
     def __exit__(self, exc_type, exc_val, exc_tb):
         pass
 
-
-saver = Saver()
-loader = Loader()
-cache = Cache()
+    def __call__(self, *args, **kwargs):
+        pass
 
 
 class Retry:
-    print_method = print
-    count = 3
-    wait = 15
+    def __init__(self, print_method=print, count=3, wait=15):
+        self.print_method = print_method
+        self.count = count
+        self.wait = wait
 
-    @classmethod
     def add_try(
-            cls,
+            self,
             error_message='',
             err_type=(ConnectionError, TimeoutError)
     ):
         def wrap2(func):
             @wraps(func)
             def wrap(*args, **kwargs):
-                for i in range(cls.count):
+                for i in range(self.count):
                     try:
                         ret = func(*args, **kwargs)
 
                     except err_type as e:
-                        if i >= cls.count - 1:
+                        if i >= self.count - 1:
                             raise e
 
-                        msg = error_message or f'Something error occur, sleep {cls.wait} seconds, and then retry'
+                        msg = error_message or f'Something error occur, sleep {self.wait} seconds, and then retry'
 
-                        cls.print_method(msg)
-                        time.sleep(cls.wait)
-                        cls.print_method(f'{i + 2}th try!')
+                        self.print_method(msg)
+                        time.sleep(self.wait)
+                        self.print_method(f'{i + 2}th try!')
 
                 return ret
+
+            return wrap
+
+        return wrap2
+
+
+class IgnoreException:
+    def __init__(self, print_method=print):
+        self.print_method = print_method
+
+    def add_ignore(
+            self,
+            error_message='',
+            err_type=(ConnectionError, TimeoutError)
+    ):
+        def wrap2(func):
+            @wraps(func)
+            def wrap(*args, **kwargs):
+                try:
+                    return func(*args, **kwargs)
+
+                except err_type as e:
+                    msg = error_message or f'Something error occur: {e}'
+                    self.print_method(msg)
 
             return wrap
 
@@ -493,3 +515,10 @@ class MemoryInfo:
         )
 
         return info
+
+
+saver = Saver()
+loader = Loader()
+cache = Cache()
+retry = Retry()
+ignore_exception = IgnoreException()

@@ -2,6 +2,8 @@ import base64
 import cv2
 import numpy as np
 import torch
+from .os_lib import IgnoreException, FakeIo
+from distutils.util import strtobool
 
 
 class CoordinateConvert:
@@ -159,6 +161,9 @@ class CoordinateConvert:
         return boxes
 
 
+ignore_exception = IgnoreException(print_method=FakeIo())
+
+
 class DataConvert:
     @classmethod
     def custom2constant(cls, obj):
@@ -223,6 +228,40 @@ class DataConvert:
     @staticmethod
     def base64_to_bytes(obj: str) -> bytes:
         return base64.b64decode(obj)
+
+    @classmethod
+    def str_value_to_constant(cls, obj: dict):
+        for k, v in obj.items():
+            if isinstance(v, dict):
+                cls.str_value_to_constant(v)
+
+            elif isinstance(v, str):
+                obj[k] = cls.str_to_constant(v)
+        return obj
+
+    @classmethod
+    def str_to_constant(cls, obj: str):
+        for func in [cls.str_to_int, cls.str_to_float, cls.str_to_bool]:
+            s = func(obj)
+            if s is not None:
+                return s
+
+        return obj
+
+    @staticmethod
+    @ignore_exception.add_ignore(err_type=ValueError)
+    def str_to_int(obj):
+        return int(obj)
+
+    @staticmethod
+    @ignore_exception.add_ignore(err_type=ValueError)
+    def str_to_float(obj):
+        return float(obj)
+
+    @staticmethod
+    @ignore_exception.add_ignore(err_type=ValueError)
+    def str_to_bool(obj):
+        return strtobool(obj)
 
 
 class ModelConvert:
