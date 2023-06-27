@@ -25,7 +25,7 @@ def det_quick_metrics(gt_iter_data, det_iter_data, save_path=None):
 
             loader = Loader(data_dir)
             gt_iter_data = loader.load_det(set_type=DataRegister.TEST, image_type=DataRegister.PATH, set_task='gt set task')
-            det_iter_data = loader.load_det(set_type=DataRegister.TEST, image_type=DataRegister.PATH, set_task='det set task', label_dir='visuals')
+            det_iter_data = loader.load_det(set_type=DataRegister.TEST, image_type=DataRegister.PATH, set_task='det set task')
 
             det_quick_metrics(gt_iter_data, det_iter_data)
     """
@@ -53,12 +53,12 @@ def det_quick_metrics(gt_iter_data, det_iter_data, save_path=None):
     return df
 
 
-def rec_quick_metrics(gt_iter_data, det_res_path, save_path=None):
+def rec_quick_metrics(gt_iter_data, det_iter_data, save_path=None):
     """
 
     Args:
         gt_iter_data:
-        det_res_path:
+        det_iter_data:
         save_path:
 
     Returns:
@@ -69,10 +69,12 @@ def rec_quick_metrics(gt_iter_data, det_res_path, save_path=None):
             # use ppocr type data result to metric
             from cv_data_parse.PaddleOcr import Loader, DataRegister
             data_dir = 'your data dir'
+            gt_set_task = 'gt_rec'
+            det_rec_task = 'det_rec'
 
             loader = Loader(data_dir)
-            gt_iter_data = loader.load_rec(set_type=DataRegister.TEST, image_type=DataRegister.PATH, set_task='rec')
-            det_res_path = 'your res path'
+            gt_iter_data = loader.load_rec(set_type=DataRegister.TEST, image_type=DataRegister.PATH, set_task=gt_set_task)
+            det_iter_data = loader.load_rec(set_type=DataRegister.TEST, image_type=DataRegister.PATH, set_task=det_rec_task)
 
             rec_quick_metrics(gt_iter_data, det_res_path)
     """
@@ -80,16 +82,12 @@ def rec_quick_metrics(gt_iter_data, det_res_path, save_path=None):
 
     r = {}
     for ret in tqdm(gt_iter_data):
-        image = ret['image']
         transcription = ret['transcription']
-        r.setdefault(image, {})['true'] = transcription
+        r.setdefault(ret['_id'], {})['true'] = transcription
 
-    with open(det_res_path, 'r', encoding='utf8') as f:
-        for line in f.readlines():
-            image, ret = line.split('\t')
-            ret = json.loads(ret)
-            transcription = ret['Student']['label']
-            r.setdefault(image, {})['pred'] = transcription
+    for ret in tqdm(det_iter_data):
+        transcription = ret['transcription']
+        r.setdefault(ret['_id'], {})['pred'] = transcription
 
     det_text = [ret['pred'] for ret in r.values()]
     gt_text = [ret['true'] for ret in r.values()]
@@ -145,18 +143,18 @@ def det_checkout_false_sample(gt_iter_data, det_iter_data, data_dir='checkout_da
     confs = [v['confs'] for v in r.values()]
     _ids = [v['_id'] for v in r.values()]
 
-    ret = object_detection.AP(return_more_info=True).mAP(gt_boxes, det_boxes, confs)
+    ret = object_detection.AP(return_more_info=True).mAP_thres(gt_boxes, det_boxes, confs)
     r = ret['']
 
     image_dir = image_dir if image_dir is not None else f'{data_dir}/images'
     save_res_dir = save_res_dir if save_res_dir is not None else f'{data_dir}/visuals/false_samples'
     tp = r['tp']
-    obj_idx = r['obj_idx']
-    target_obj_idx = obj_idx[~tp]
+    det_obj_idx = r['det_obj_idx']
+    target_obj_idx = det_obj_idx[~tp]
 
     idx = np.unique(target_obj_idx)
     for i in idx:
-        target_idx = obj_idx == i
+        target_idx = det_obj_idx == i
         _tp = tp[target_idx]
 
         gt_box = gt_boxes[i]
@@ -180,22 +178,19 @@ def det_checkout_false_sample(gt_iter_data, det_iter_data, data_dir='checkout_da
     return ret
 
 
-def rec_checkout_false_sample(gt_iter_data, det_res_path, data_dir='checkout_data', image_dir=None, save_res_dir=None):
+def rec_checkout_false_sample(gt_iter_data, det_iter_data, data_dir='checkout_data', image_dir=None, save_res_dir=None):
     from utils import nlp_utils, os_lib, visualize
 
     r = {}
     for ret in tqdm(gt_iter_data):
-        image = ret['image']
         transcription = ret['transcription']
-        r.setdefault(image, {})['true'] = transcription
-        r.setdefault(image, {})['_id'] = ret['_id']
+        r.setdefault(ret['_id'], {})['true'] = transcription
+        r.setdefault(ret['_id'], {})['_id'] = ret['_id']
 
-    with open(det_res_path, 'r', encoding='utf8') as f:
-        for line in f.readlines():
-            image, ret = line.split('\t')
-            ret = json.loads(ret)
-            transcription = ret['Student']['label']
-            r.setdefault(image, {})['pred'] = transcription
+    for ret in tqdm(det_iter_data):
+        transcription = ret['transcription']
+        r.setdefault(ret['_id'], {})['pred'] = transcription
+        r.setdefault(ret['_id'], {})['_id'] = ret['_id']
 
     det_text = [v['pred'] for v in r.values()]
     gt_text = [v['true'] for v in r.values()]
@@ -203,8 +198,8 @@ def rec_checkout_false_sample(gt_iter_data, det_res_path, data_dir='checkout_dat
 
     cm = text_generation.LineConfusionMatrix()
 
-    tp = cm.tp(det_text, gt_text)['tp']
-    cp = cm.cp(gt_text)['cp']
+    tp = np.array(cm.tp(det_text, gt_text)['tp'])
+    cp = np.array(cm.cp(gt_text)['cp'])
     idx = np.where(tp != cp)[0]
     image_dir = image_dir if image_dir is not None else f'{data_dir}/images'
     save_res_dir = save_res_dir if save_res_dir is not None else f'{data_dir}/visuals/false_samples'

@@ -159,7 +159,14 @@ class Loader(DataLoader):
 
         with open(f'{self.data_dir}/{label_dir}/{set_task}/{set_type.value}.txt', 'r', encoding='utf8') as f:
             for line in f.read().strip().split('\n'):
-                image_paths, transcription = line.split('\t', 1)
+                items = line.split('\t')
+                if len(items) == 2:
+                    image_paths, transcription = items
+                    conf = 1
+                elif len(items) == 3:
+                    image_paths, transcription, conf = items
+                else:
+                    raise f'the line: {line}\nthere are {len(items)} items'
 
                 # make sure that '[' is not in image_path
                 if '[' in image_paths:
@@ -180,8 +187,35 @@ class Loader(DataLoader):
                         _id=Path(image_path).name,
                         image=image,
                         transcription=transcription,
+                        conf=conf
                     )
 
+    def load_dist_rec(self, set_type=DataRegister.TRAIN, image_type=DataRegister.TRAIN, set_task='', label_dir='labels', is_student=True, **kwargs):
+        with open(f'{self.data_dir}/{label_dir}/{set_task}/{set_type.value}.txt', 'r', encoding='utf8') as f:
+            for line in f.readlines():
+                image_path, ret = line.split('\t')
+
+                image_path = os.path.abspath(image_path)
+                if image_type == DataRegister.PATH:
+                    image = image_path
+                elif image_type == DataRegister.IMAGE:
+                    image = cv2.imread(image_path)
+                else:
+                    raise ValueError(f'Unknown input {image_type = }')
+
+                ret = json.loads(ret)
+                if is_student:
+                    ret = ret['Student']
+                else:
+                    ret = ret['Teacher']
+
+                transcription = ret['label']
+
+                yield dict(
+                    _id=Path(image_path).name,
+                    image=image,
+                    transcription=transcription,
+                )
 
 class Saver(DataSaver):
     """https://github.com/PaddlePaddle/PaddleOCR

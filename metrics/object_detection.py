@@ -218,6 +218,14 @@ class ConfusionMatrix:
             iou: (N, M)
 
         """
+
+        sort_idx = None
+        if conf is not None:
+            conf = np.array(conf)
+            sort_idx = np.argsort(-conf)
+            det_box = det_box[sort_idx]
+            sort_idx = np.argsort(sort_idx)
+
         if iou is None:
             if _class is not None:
                 true_class, pred_class = _class
@@ -226,12 +234,6 @@ class ConfusionMatrix:
                 det_box = det_box + (pred_class * offset)[:, None]
 
             iou = self.iou_method(gt_box, det_box, **self.iou_method_kwarg)
-
-        sort_idx = None
-        if conf is not None:
-            sort_idx = np.argsort(-conf)
-            det_box = det_box[sort_idx]
-            sort_idx = np.argsort(sort_idx)
 
         tp = np.zeros((det_box.shape[0],), dtype=bool)
         idx = np.where((iou >= iou_thres))
@@ -280,6 +282,7 @@ class PR:
 
     def get_pr(self, gt_boxes=None, det_boxes=None, confs=None, classes=None, ious=None, iou_thres=0.5):
         rs = {}
+        gt_obj_idx, det_obj_idx = [], []
         for i, (g, d) in enumerate(zip(gt_boxes, det_boxes)):
             conf = confs[i] if confs is not None else None
             _class = [classes[0][i], classes[1][i]] if classes is not None else None
@@ -296,34 +299,44 @@ class PR:
             for k, v in r.items():
                 rs.setdefault(k, []).append(v)
 
+            gt_obj_idx.append([i] * len(g))
+            det_obj_idx.append([i] * len(d))
+
+        tp = np.concatenate(rs['tp'])
+        cp = np.concatenate(rs['cp'])
+        op = np.concatenate(rs['op'])
+        gt_idx = np.arange(len(cp), dtype=int)
+        det_idx = np.arange(len(op), dtype=int)
+        gt_obj_idx = np.concatenate(gt_obj_idx)
+        det_obj_idx = np.concatenate(det_obj_idx)
+
         results = {}
         if classes is None:
             acc_tp = rs['acc_tp']
             acc_cp = rs['acc_cp']
             acc_op = rs['acc_op']
 
-            ret = {}
+            ret = dict(
+                tp=tp,
+                cp=cp,
+                op=op,
+                gt_idx=gt_idx,
+                det_idx=det_idx,
+                gt_obj_idx=gt_obj_idx,
+                det_obj_idx=det_obj_idx
+            )
             ret.update(self.tpr(acc_tp=sum(acc_tp), acc_cp=sum(acc_cp), iou_thres=iou_thres))
             ret.update(self.ppv(acc_tp=sum(acc_tp), acc_op=sum(acc_op), iou_thres=iou_thres))
             results[''] = ret
 
         else:
             tmp_gt_classes, tmp_det_classes = [], []
-            gt_idx, det_idx = [], []
             for i, (gc, dc) in enumerate(zip(*classes)):
                 tmp_gt_classes.append(gc)
                 tmp_det_classes.append(dc)
-                gt_idx.append([i] * len(gc))
-                det_idx.append([i] * len(dc))
 
-            classes = [np.concatenate(tmp_gt_classes), np.concatenate(tmp_det_classes)]
-            unique_class = np.unique(np.concatenate(classes))
-            gt_class, det_class = classes
-            gt_idx = np.concatenate(gt_idx)
-            det_idx = np.concatenate(det_idx)
-            tp = np.concatenate(rs['tp'])
-            cp = np.concatenate(rs['cp'])
-            op = np.concatenate(rs['op'])
+            gt_class, det_class = np.concatenate(tmp_gt_classes), np.concatenate(tmp_det_classes)
+            unique_class = np.unique(np.concatenate([gt_class, det_class]))
 
             for i, c in enumerate(unique_class):
                 gt_cls_idx = gt_class == c
@@ -342,7 +355,9 @@ class PR:
                     cp=cls_cp,
                     op=cls_op,
                     gt_idx=gt_idx[gt_cls_idx],
-                    det_idx=det_idx[det_cls_idx]
+                    det_idx=det_idx[det_cls_idx],
+                    gt_obj_idx=gt_obj_idx[gt_cls_idx],
+                    det_obj_idx=det_obj_idx[det_cls_idx]
                 )
 
                 results[c] = ret
@@ -457,7 +472,7 @@ class AP:
             See Also `quick_metric()` or `shortlist_false_sample()`
         """
         _results, _ = self.pr.get_pr(gt_boxes, det_boxes, confs, classes, iou_thres=iou_thres)
-        return self.ap_thres(_results)
+        return self.ap_thres(_results, confs)
 
     def mAP_thres_range(self, gt_boxes, det_boxes, confs, classes=None, thres_range=np.arange(0.5, 1, 0.05)):
         """AP@thres_range for all objection
@@ -497,8 +512,11 @@ class AP:
 
         return ret
 
-    def ap_thres(self, _results):
+    def ap_thres(self, _results, confs=None):
         results = {}
+
+        if confs is not None:
+            confs = np.concatenate(confs)
 
         for k, _r in _results.items():
             r = _r.pop('r')
@@ -510,9 +528,16 @@ class AP:
             acc_op = _r.pop('acc_op')
             f = 2 * p * r / (p + r + self.eps)
 
+            if confs is not None:
+                det_idx = _r['det_idx']
+                _confs = confs[det_idx]
+                _confs = confs
+                sort_idx = np.argsort(-_confs)
+                tp = tp[sort_idx]
+
             cumsum_tp = np.cumsum(tp)
             acc_recall = cumsum_tp / (acc_cp + self.eps)
-            acc_precision = cumsum_tp / (np.cumsum(op) + self.eps)
+            acc_precision = cumsum_tp / np.cumsum(op)
 
             # count ap
             # Append sentinel values to beginning and end
@@ -548,7 +573,7 @@ class AP:
         return results
 
 
-def quick_metric(gt_iter_data, det_iter_data, is_mAP=True, save_path=None):
+def quick_metric(gt_iter_data, det_iter_data, is_mAP=True, save_path=None, verbose=True, stdout_method=print):
     """
 
     Args:
@@ -556,6 +581,8 @@ def quick_metric(gt_iter_data, det_iter_data, is_mAP=True, save_path=None):
         det_iter_data (Iterable):
         is_mAP (bool):
         save_path (str):
+        verbose:
+        stdout_method:
 
     Usage:
         .. code-block:: python
@@ -577,11 +604,11 @@ def quick_metric(gt_iter_data, det_iter_data, is_mAP=True, save_path=None):
     from tqdm import tqdm
 
     r = {}
-    for ret in tqdm(gt_iter_data):
+    for ret in tqdm(gt_iter_data, desc='load gt data'):
         r.setdefault(ret['_id'], {})['gt_boxes'] = ret['bboxes']
         r.setdefault(ret['_id'], {})['gt_classes'] = ret['classes']
 
-    for ret in tqdm(det_iter_data):
+    for ret in tqdm(det_iter_data, desc='load det data'):
         r.setdefault(ret['_id'], {})['det_boxes'] = ret['bboxes']
         r.setdefault(ret['_id'], {})['det_classes'] = ret['classes']
         r.setdefault(ret['_id'], {})['confs'] = ret['confs']
@@ -598,10 +625,14 @@ def quick_metric(gt_iter_data, det_iter_data, is_mAP=True, save_path=None):
         ret = ap.mAP_thres_range(gt_boxes, det_boxes, confs, classes=[gt_classes, det_classes])
 
     pd.set_option('display.max_columns', None)
+    pd.set_option('display.width', None)
     df = pd.DataFrame(ret).T
     df.loc['sum'] = df.sum(axis=0)
+    df.loc['mean'] = df.mean(axis=0)
     df = df.round(4)
-    print(df)
+
+    if verbose:
+        stdout_method(df)
 
     if save_path:
         from utils import os_lib
@@ -645,12 +676,12 @@ def checkout_false_sample(gt_iter_data, det_iter_data, data_dir='checkout_data',
     from tqdm import tqdm
 
     r = {}
-    for ret in tqdm(gt_iter_data):
+    for ret in tqdm(gt_iter_data, desc='load gt data'):
         r.setdefault(ret['_id'], {})['gt_boxes'] = ret['bboxes']
         r.setdefault(ret['_id'], {})['gt_classes'] = ret['classes']
         r.setdefault(ret['_id'], {})['_id'] = ret['_id']
 
-    for ret in tqdm(det_iter_data):
+    for ret in tqdm(det_iter_data, desc='load det data'):
         r.setdefault(ret['_id'], {})['det_boxes'] = ret['bboxes']
         r.setdefault(ret['_id'], {})['det_classes'] = ret['classes']
         r.setdefault(ret['_id'], {})['confs'] = ret['confs']
@@ -671,12 +702,12 @@ def checkout_false_sample(gt_iter_data, det_iter_data, data_dir='checkout_data',
     for cls, r in ret.items():
         save_dir = f'{save_res_dir}/{alias[cls]}'
         tp = r['tp']
-        det_idx = r['det_idx']
-        target_obj_idx = det_idx[~tp]
+        det_obj_idx = r['det_obj_idx']
+        target_obj_idx = det_obj_idx[~tp]
 
         idx = np.unique(target_obj_idx)
         for i in idx:
-            target_idx = det_idx == i
+            target_idx = det_obj_idx == i
             _tp = tp[target_idx]
 
             gt_class = gt_classes[i]

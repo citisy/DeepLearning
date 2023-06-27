@@ -4,6 +4,7 @@ import shutil
 import numpy as np
 from pathlib import Path
 from tqdm import tqdm
+from typing import Iterable
 from utils import os_lib, converter
 from cv_data_parse.base import DataRegister, DataLoader, DataSaver, DataGenerator
 
@@ -201,6 +202,19 @@ class Saver(DataSaver):
         super().__call__(data, set_type, image_type, **kwargs)
 
     def _call(self, iter_data, set_type, image_type, convert_func=None, **kwargs):
+        """
+
+        Args:
+            iter_data (Iterable[dict]):
+                list of dict which has the key of _id, image, bboxes, classes
+            set_type:
+            image_type:
+            convert_func:
+            **kwargs:
+
+        Returns:
+
+        """
         task = kwargs.get('task', '')
         set_task = kwargs.get('set_task', '')
 
@@ -236,30 +250,34 @@ class Saver(DataSaver):
 
         f.close()
 
-    def save_full_labels(self, data, confs=None, convert_func=_default_convert):
+    def save_full_labels(self, iter_data, convert_func=_default_convert):
         """format of saved label txt like (class, conf, x1, y1, x2, y2, w, h)
 
         Args:
-            data: accept a dict like Loader().load_total() return
-            confs: model predictions
+            iter_data (Iterable[dict]):
+                accept a dict like Loader().load_total() return
+                list of dict which has the key of _id, image(non-essential), bboxes, classes, confs
             convert_func
 
         """
-        for i, dic in enumerate(tqdm(data)):
+        for i, dic in enumerate(tqdm(iter_data)):
             tmp_dir = f'{self.data_dir}/full_labels/{dic["task"]}'
             os_lib.mk_dir(tmp_dir)
 
             if convert_func:
                 dic = convert_func(dic)
 
-            h, w, c = dic['image'].shape
+            if 'image' in dic:
+                h, w, c = dic['image'].shape
+            else:
+                h, w = -1, -1
 
             bboxes = dic['bboxes']
             classes = dic['classes']
 
             labels = np.c_[
                 classes,
-                [1] * len(classes) if confs is None else confs[i],
+                dic['confs'] if 'confs' in dic else [1] * len(classes),
                 bboxes,
                 [w] * len(classes),
                 [h] * len(classes),
