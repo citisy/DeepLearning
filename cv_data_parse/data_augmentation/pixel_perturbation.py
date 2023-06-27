@@ -491,7 +491,7 @@ class CutOut:
                 mask_bboxes.append([xmin, ymin, xmax, ymax])
 
         if bboxes is not None:
-            iou = Iou.vanilla(bboxes, mask_bboxes)
+            iou = Iou.iou(bboxes, mask_bboxes)
             iou = np.max(iou, axis=1)
             idx = iou < self.iou_thres
             bboxes = bboxes[idx]

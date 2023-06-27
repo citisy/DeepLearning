@@ -28,7 +28,7 @@ class Proportion:
             p = dst / min(w, h)
         elif self.choice_edge == LONGEST:
             p = dst / max(w, h)
-        elif self.choice_edge == AUTO:
+        elif self.choice_edge == AUTO:  # choice the min scale factor
             p1 = abs(dst - w) / w
             p2 = abs(dst - h) / h
             p = dst / w if p1 < p2 else dst / h
@@ -104,22 +104,20 @@ class Rectangle:
 class LetterBox:
     """resize, crop, and pad"""
 
-    def __init__(self):
-        self.resize = Proportion(choice_edge=2)  # scale to longest edge
-        self.crop = crop.Random(is_pad=True, pad_type=2)
+    def __init__(self, interpolation=0, ):
+        self.resize = Proportion(choice_edge=2, interpolation=interpolation)  # scale to longest edge
+        self.crop = crop.Center(is_pad=True, pad_type=2)
 
     def __call__(self, image, dst, bboxes=None, **kwargs):
-        h, w, c = image.shape
-        _dst = max(h, w)
-        ret = self.crop(image, _dst, bboxes=bboxes, **kwargs)
-        ret.update(self.resize(ret['image'], dst, bboxes=ret['bboxes'], **kwargs))
-        ret['scale.LetterBox'] = {'dst': _dst}
+        ret = dict(image=image, bboxes=bboxes, dst=dst, **kwargs)
+        ret.update(self.resize(**ret))
+        ret.update(self.crop(**ret))
 
         return ret
 
     def restore(self, ret):
-        ret = self.resize.restore(ret)
         ret = self.crop.restore(ret)
+        ret = self.resize.restore(ret)
 
         return ret
 
@@ -144,3 +142,41 @@ class Jitter:
         ret.update(self.crop(ret['image'], dst, bboxes=ret['bboxes']))
 
         return ret
+
+
+class BatchLetterBox:
+    def __init__(self, interpolation=0, choice_edge=SHORTEST):
+        self.interpolation = interpolation_mode[interpolation]
+        self.choice_edge = choice_edge
+        self.aug = LetterBox(interpolation=interpolation)
+
+    def __call__(self, image_list, bboxes_list=None, classes_list=None, **kwargs):
+        image_sizes = [image[:2] for image in image_list]
+
+        if self.choice_edge == SHORTEST:
+            dst = np.min(image_sizes)
+        elif self.choice_edge == LONGEST:
+            dst = np.max(image_sizes)
+        elif self.choice_edge == AUTO:
+            dst = np.mean(image_sizes)
+        else:
+            raise ValueError(f'dont support {self.choice_edge = }')
+
+        rets = []
+
+        for i in range(len(image_list)):
+            ret = dict(
+                image=image_list[i],
+                bboxes=bboxes_list[i],
+                classes=classes_list[i],
+                dst=dst
+            )
+
+            for k, v in kwargs.items():
+                ret[k] = v
+
+            ret.update(self.aug(**ret))
+            rets.append(ret)
+
+        return rets
+

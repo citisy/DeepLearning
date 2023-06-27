@@ -10,3 +10,12 @@ class HWC2CHW:
         return dict(
             image=image
         )
+
+
+class BGR2RGB:
+    def __call__(self, image, **kwargs):
+        image = image.copy()
+        image[(0, 1, 2)] = image[(2, 1, 0)]
+        return dict(
+            image=image
+        )

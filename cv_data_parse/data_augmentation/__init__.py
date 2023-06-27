@@ -9,6 +9,7 @@ class Apply:
 
     Examples
         .. code-block:: python
+
             from cv_data_parse.data_augmentation import crop, geometry, Apply
             from cv_data_parse.data_augmentation import RandomApply
 
@@ -67,6 +68,7 @@ class RandomApply:
 
     Examples
         .. code-block:: python
+
             from cv_data_parse.data_augmentation import crop, geometry, RandomApply
             from cv_data_parse.data_augmentation import RandomApply
 
@@ -134,6 +136,7 @@ class RandomChoice:
 
     Examples
         .. code-block:: python
+
             from cv_data_parse.data_augmentation import crop, geometry, RandomChoice
             from cv_data_parse.data_augmentation import RandomApply
 

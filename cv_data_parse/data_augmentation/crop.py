@@ -290,15 +290,14 @@ class TenCrop:
         self.shift = geometry.VFlip()
 
     def __call__(self, image, dst, bboxes=None, classes=None, **kwargs):
-        ret = self.apply(image=image, dst=dst, bboxes=bboxes)
-        h, w = image.shape[:2]
-        _ = self.shift(image, bboxes, (w, h))
+        rets = self.apply(image=image, dst=dst, bboxes=bboxes)
+        _ = self.shift(image, bboxes)
         image, bboxes = _['image'], _['bboxes']
 
-        _ret = self.apply(image=image, dst=dst, bboxes=bboxes, classes=classes)
-        ret += _ret
+        _rets = self.apply(image=image, dst=dst, bboxes=bboxes, classes=classes)
+        rets += _rets
 
-        return ret
+        return rets
 
 
 class Center:
