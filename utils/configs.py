@@ -165,7 +165,7 @@ class MultiProcessTimedRotatingFileHandler(TimedRotatingFileHandler):
         self.rolloverAt = new_rollover_at
 
 
-def logger_init(config={}, log_dir='logs'):
+def logger_init(config={}, log_dir=None):
     """logging配置
     默认loggers：['', 'basic', 'service_standard', 'service', '__main__']
 
@@ -196,84 +196,91 @@ def logger_init(config={}, log_dir='logs'):
             # 屏幕输出流
             'default': {
                 'level': 'DEBUG',
-                'formatter': 'precise',
+                'formatter': 'standard',
                 'class': 'logging.StreamHandler',
                 'stream': 'ext://sys.stdout',
             },
 
-            # 文件输出流（简略info）
-            'info_standard': {
-                'level': 'INFO',
-                'formatter': 'standard',
-                'class': 'utils.configs.MultiProcessTimedRotatingFileHandler',
-                'filename': f'{log_dir}/info_standard.log',
-                'when': 'W0',
-                'backupCount': 5,
+            # 简单的无格式屏幕输出流
+            'print': {
+                'level': 'DEBUG',
+                'class': 'logging.StreamHandler',
+                'stream': 'ext://sys.stdout',
             },
-
-            # 文件输出流（详细info级别以上）
-            'info': {
-                'level': 'INFO',
-                'formatter': 'precise',
-                'class': 'utils.configs.MultiProcessTimedRotatingFileHandler',
-                'filename': f'{log_dir}/info.log',
-                'when': 'D',
-                'backupCount': 15,
-            },
-
-            # 文件输出流（详细error级别以上）
-            'error': {
-                'level': 'ERROR',
-                'formatter': 'precise',
-                'class': 'utils.configs.MultiProcessTimedRotatingFileHandler',
-                'filename': f'{log_dir}/error.log',
-                'when': 'W0',
-                'backupCount': 5,
-            },
-
-            # 文件输出流（详细critical级别以上）
-            'critical': {
-                'level': 'CRITICAL',
-                'formatter': 'precise',
-                'class': 'logging.handlers.RotatingFileHandler',
-                'filename': f'{log_dir}/critical.log',
-            },
-
         },
         'loggers': {
             # root logger
             '': {
                 'handlers': ['default'],
-                'level': 'WARNING',
-                'propagate': False
-            },
-            'basic': {
-                'handlers': ['default', 'info_standard', 'error', 'critical'],
                 'level': 'INFO',
                 'propagate': False
             },
-            'service_standard': {
-                'handlers': ['default', 'info_standard', 'error', 'critical'],
+
+            # 简单的无格式屏幕输出流
+            'print': {
+                'handlers': ['print'],
                 'level': 'INFO',
                 'propagate': False
-            },
-            'service': {
-                'handlers': ['default', 'info', 'error', 'critical'],
-                'level': 'INFO',
-                'propagate': False
-            },
-            # if __name__ == '__main__'
-            '__main__': {
-                'handlers': ['default'],
-                'level': 'DEBUG',
-                'propagate': False
-            },
+            }
         }
     }
 
-    default_logging_config = merge_dict(default_logging_config, config)
+    if log_dir is not None:     # add file handles
+        os_lib.mk_dir(log_dir)
+        default_logging_config = merge_dict(default_logging_config, {
+            'handlers': {
+                # 简略信息info
+                'info_standard': {
+                    'level': 'INFO',
+                    'formatter': 'standard',
+                    'class': 'utils.configs.MultiProcessTimedRotatingFileHandler',
+                    'filename': f'{log_dir}/info_standard.log',
+                    'when': 'W0',
+                    'backupCount': 5,
+                },
 
-    os_lib.mk_dir(log_dir)
+                # 详细信息info
+                'info': {
+                    'level': 'INFO',
+                    'formatter': 'precise',
+                    'class': 'utils.configs.MultiProcessTimedRotatingFileHandler',
+                    'filename': f'{log_dir}/info.log',
+                    'when': 'D',
+                    'backupCount': 15,
+                },
+
+                # 详细信息error
+                'error': {
+                    'level': 'ERROR',
+                    'formatter': 'precise',
+                    'class': 'utils.configs.MultiProcessTimedRotatingFileHandler',
+                    'filename': f'{log_dir}/error.log',
+                    'when': 'W0',
+                    'backupCount': 5,
+                },
+            },
+
+            'loggers': {
+                'basic': {
+                    'handlers': ['default', 'info_standard', 'error', 'critical'],
+                    'level': 'INFO',
+                    'propagate': False
+                },
+                'service_standard': {
+                    'handlers': ['default', 'info_standard', 'error', 'critical'],
+                    'level': 'INFO',
+                    'propagate': False
+                },
+                'service': {
+                    'handlers': ['default', 'info', 'error', 'critical'],
+                    'level': 'INFO',
+                    'propagate': False
+                },
+            }
+
+        })
+
+    default_logging_config = merge_dict(default_logging_config, config)
     logging.config.dictConfig(default_logging_config)
 
 
@@ -307,7 +314,7 @@ def parse_params_example() -> dict:
         parser = argparse.ArgumentParser()
         parser.add_argument('key1', type=str, default='value1', help='note of key1')
         parser.add_argument('key2', action='store_true', help='note of key2')
-        parser.add_argument('key3', nargs='?', const=True, default=False, help='note of key3')  # return a list
+        parser.add_argument('key3', nargs='+', default=[], help='note of key3')  # return a list
         ...
 
         args = parser.parse_args()
