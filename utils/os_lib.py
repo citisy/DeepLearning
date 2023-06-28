@@ -25,9 +25,9 @@ def mk_parent_dir(file_path):
 
 
 class Saver:
-    def __init__(self, verbose=True, stdout_method=None, stdout_fmt='Save to %s successful!'):
+    def __init__(self, verbose=True, stdout_method=print, stdout_fmt='Save to %s successful!'):
         self.verbose = verbose
-        self.stdout_method = stdout_method or print
+        self.stdout_method = stdout_method
         self.stdout_fmt = stdout_fmt
 
     def stdout(self, path):
@@ -79,7 +79,6 @@ class Saver:
         # it will error with chinese path in low version of cv2
         # it has fixed in high version already
         # cv2.imencode('.png', obj)[1].tofile(path)
-
         cv2.imwrite(path, obj)
         self.stdout(path)
 
@@ -87,11 +86,52 @@ class Saver:
         obj.to_csv(path)
         self.stdout(path)
 
+    def save_pdf_to_img(self, path, page=None, image_dir=None, scale_ratio=1.33):
+        """select pages from pdf, and save with image type"""
+        images = loader.load_pdf_to_images2(
+            path,
+            scale_ratio=scale_ratio
+        )
+
+        if isinstance(page, int):
+            images = [images[page]]
+
+        elif isinstance(page, list):
+            images = [images[_] for _ in page]
+
+        image_dir = image_dir or path.replace('pdfs', 'images').replace(Path(path).suffix, '')
+        mk_dir(image_dir)
+
+        for i, img in enumerate(images):
+            self.save_img(img, f'{image_dir}/{i}.png')
+
+    def save_pdf_to_pdf(self, path, page=None, save_path=None):
+        """select pages from pdf, and save with pdf type"""
+        from PyPDF2 import PdfFileReader, PdfFileWriter
+
+        pdf_reader = PdfFileReader(path)
+        pdf_writer = PdfFileWriter()
+
+        if isinstance(page, int):
+            pdf_writer.addPage(pdf_reader.getPage(page))
+
+        elif isinstance(page, list):
+            for i in page:
+                pdf_writer.addPage(pdf_reader.getPage(i))
+
+        suffix = Path(path).suffix
+        save_path = save_path or path.replace(suffix, '_' + suffix)
+
+        with open(save_path, 'wb') as out:
+            pdf_writer.write(out)
+
+        self.stdout(save_path)
+
 
 class Loader:
-    def __init__(self, verbose=True, stdout_method=None, stdout_fmt='Read %s successful!'):
+    def __init__(self, verbose=True, stdout_method=print, stdout_fmt='Read %s successful!'):
         self.verbose = verbose
-        self.stdout_method = stdout_method or print
+        self.stdout_method = stdout_method
         self.stdout_fmt = stdout_fmt
 
     def stdout(self, path):
@@ -115,7 +155,8 @@ class Loader:
         return obj
 
     def load_json(self, path) -> dict:
-        obj = json.load(path)
+        with open(path, 'r', encoding='utf8') as f:
+            obj = json.load(f)
         self.stdout(path)
 
         return obj
@@ -145,7 +186,6 @@ class Loader:
         # it will error with chinese path in low version of cv2
         # it has fixed in high version already
         # img = cv2.imdecode(np.fromfile(path, dtype=np.uint8), -1)
-
         img = cv2.imread(path)
 
         if channel_fixed_3:
@@ -213,27 +253,30 @@ class Loader:
         return images
 
 
-class Cache:
-    def __init__(self, verbose=True, stdout_method=None, stdout_fmt='Save to %s successful!'):
+class CacheToFile:
+    def __init__(self, cache_dir=None, max_size=None,
+                 verbose=True, stdout_method=print, stdout_fmt='Save to %s successful!',
+                 **saver_kwargs):
+        mk_dir(cache_dir)
+        self.cache_dir = Path(cache_dir)
+        self.max_size = max_size
         self.verbose = verbose
         self.stdout_method = stdout_method
         self.saver = Saver(verbose, stdout_method, stdout_fmt)
 
-    def auto_cache(self, obj, path, max_size=None):
-        p = Path(path)
-        save_dir = str(p.parent)
-        mk_dir(save_dir)
-        self.delete_old_file(save_dir, max_size, suffix=p.suffix)
-
+    def auto_cache(self, obj, file_name):
+        path = f'{self.cache_dir}/{file_name}'
+        self.delete_old(suffix=Path(path).suffix)
         saver.auto_save(obj, path)
 
-    def delete_old_file(self, save_dir, max_size=None, suffix=''):
-        if not max_size:
+    def delete_old(self, suffix=''):
+        """todo: would be raise exceptions in multiprocess while two process caching the same file in the same time"""
+        if not self.max_size:
             return
 
-        caches = [str(_) for _ in Path(save_dir).glob(f'*.{suffix}')]
+        caches = [str(_) for _ in self.cache_dir.glob(f'*.{suffix}')]
 
-        if len(caches) > max_size:
+        if len(caches) > self.max_size:
             ctime = [os.path.getctime(fp) for fp in caches]
             min_ctime = min(ctime)
             old_path = caches[ctime.index(min_ctime)]
@@ -245,51 +288,43 @@ class Cache:
             return old_path
 
 
-class PdfOs:
-    @classmethod
-    def save_pdf_to_img(cls, path, page=None, image_dir=None, scale_ratio=1.33):
-        """pdf转成img保存"""
-        imgs = loader.load_pdf_to_images2(
-            path,
-            scale_ratio=scale_ratio
-        )
+class CacheToMongoDB:
+    def __init__(self, host='127.0.0.1', port=27017, user=None, password=None, database=None, collection=None,
+                 max_size=None, verbose=True, stdout_method=print, stdout_fmt='Save _id[%s] successful!',
+                 **mongo_kwargs):
+        from pymongo import MongoClient
 
-        if isinstance(page, int):
-            imgs = [imgs[page]]
+        self.client = MongoClient(host, port, **mongo_kwargs)
+        self.db = self.client[database]
+        self.db.authenticate(user, password)
+        self.collection = self.db[collection]
+        self.max_size = max_size
+        self.verbose = verbose
+        self.stdout_method = stdout_method
+        self.stdout_fmt = stdout_fmt
 
-        elif isinstance(page, list):
-            imgs = [imgs[_] for _ in page]
+    def auto_cache(self, obj: dict, _id=None):
+        self.delete_old()
 
-        image_dir = image_dir or path.replace('pdfs', 'images').replace(Path(path).suffix, '')
+        obj['update_time'] = int(time.time())
+        if _id is None:
+            x = self.collection.insert_one(obj)
+            _id = x.inserted_id
 
-        mk_dir(image_dir)
+        else:
+            self.collection.update_one({'_id': _id}, {'$set': obj}, upsert=True)
 
-        for i, img in enumerate(imgs):
-            saver.save_img(img, f'{image_dir}/{i}.png')
+        if self.verbose:
+            self.stdout_method(self.stdout_fmt % _id)
 
-    @staticmethod
-    def save_pdf_to_pdf(source_path, page=None, save_path=None):
-        """pdf转成pdf保存"""
-        from PyPDF2 import PdfFileReader, PdfFileWriter
+    def delete_old(self):
+        if not self.max_size:
+            return
 
-        pdf_reader = PdfFileReader(source_path)
-
-        pdf_writer = PdfFileWriter()
-
-        if isinstance(page, int):
-            pdf_writer.addPage(pdf_reader.getPage(page))
-
-        elif isinstance(page, list):
-            for i in page:
-                pdf_writer.addPage(pdf_reader.getPage(i))
-
-        suffix = Path(source_path).suffix
-        save_path = save_path or source_path.replace(suffix, '_' + suffix)
-
-        with open(save_path, 'wb') as out:
-            pdf_writer.write(out)
-
-        print(f'Have save to {save_path}!')
+        query = self.collection.find()
+        if query.count() > self.max_size:
+            x = query.sort({'update_time': 1}).limit(1)
+            self.collection.delete_one(x)
 
 
 class FakeIo:
@@ -310,8 +345,8 @@ class FakeIo:
 
 
 class Retry:
-    def __init__(self, print_method=print, count=3, wait=15):
-        self.print_method = print_method
+    def __init__(self, stdout_method=print, count=3, wait=15):
+        self.stdout_method = stdout_method
         self.count = count
         self.wait = wait
 
@@ -325,19 +360,16 @@ class Retry:
             def wrap(*args, **kwargs):
                 for i in range(self.count):
                     try:
-                        ret = func(*args, **kwargs)
+                        return func(*args, **kwargs)
 
                     except err_type as e:
                         if i >= self.count - 1:
                             raise e
 
                         msg = error_message or f'Something error occur, sleep {self.wait} seconds, and then retry'
-
-                        self.print_method(msg)
+                        self.stdout_method(msg)
                         time.sleep(self.wait)
-                        self.print_method(f'{i + 2}th try!')
-
-                return ret
+                        self.stdout_method(f'{i + 2}th try!')
 
             return wrap
 
@@ -345,8 +377,8 @@ class Retry:
 
 
 class IgnoreException:
-    def __init__(self, print_method=print):
-        self.print_method = print_method
+    def __init__(self, stdout_method=print):
+        self.print_method = stdout_method
 
     def add_ignore(
             self,
@@ -372,45 +404,46 @@ class AutoLog:
     """
     Examples
         .. code-block:: python
+
             from utils.os_lib import AutoLog
+            auto_log = AutoLog()
 
             class SimpleClass:
-                @AutoLog.memory_log('success')
-                @AutoLog.memory_log()
-                @AutoLog.time_log()
+                @auto_log.memory_log('success')
+                @auto_log.memory_log()
+                @auto_log.time_log()
                 def func(self):
                     ...
     """
-    print_method = print
-    is_simple_log = True
-    is_time_log = True
-    is_memory_log = True
 
-    @classmethod
-    def simple_log(cls, string):
+    def __init__(self, stdout_method=print, is_simple_log=True, is_time_log=True, is_memory_log=True):
+        self.stdout_method = stdout_method
+        self.is_simple_log = is_simple_log
+        self.is_time_log = is_time_log
+        self.is_memory_log = is_memory_log
+
+    def simple_log(self, string):
         def wrap2(func):
             @wraps(func)
             def wrap(*args, **kwargs):
                 r = func(*args, **kwargs)
-                if cls.is_simple_log:
-                    cls.print_method(string)
+                if self.is_simple_log:
+                    self.stdout_method(string)
                 return r
 
             return wrap
 
         return wrap2
 
-    @classmethod
-    def time_log(cls, prefix_string=''):
+    def time_log(self, prefix_string=''):
         def wrap2(func):
-
             @wraps(func)
             def wrap(*args, **kwargs):
-                if cls.is_time_log:
+                if self.is_time_log:
                     st = time.time()
                     r = func(*args, **kwargs)
                     et = time.time()
-                    cls.print_method(f'{prefix_string} - elapse[{et - st:.3f}s]!')
+                    self.stdout_method(f'{prefix_string} - elapse[{et - st:.3f}s]!')
                 else:
                     r = func(*args, **kwargs)
                 return r
@@ -419,17 +452,15 @@ class AutoLog:
 
         return wrap2
 
-    @classmethod
-    def memory_log(cls, prefix_string=''):
+    def memory_log(self, prefix_string=''):
         def wrap2(func):
-
             @wraps(func)
             def wrap(*args, **kwargs):
-                if cls.is_memory_log:
+                if self.is_memory_log:
                     a = MemoryInfo.get_process_mem_info()
                     r = func(*args, **kwargs)
                     b = MemoryInfo.get_process_mem_info()
-                    cls.print_method(f'{prefix_string}\nbefore: {a}\nafter: {b}')
+                    self.stdout_method(f'{prefix_string}\nbefore: {a}\nafter: {b}')
                 else:
                     r = func(*args, **kwargs)
                 return r
@@ -519,6 +550,6 @@ class MemoryInfo:
 
 saver = Saver()
 loader = Loader()
-cache = Cache()
 retry = Retry()
+auto_log = AutoLog()
 ignore_exception = IgnoreException()
