@@ -1,17 +1,23 @@
+import logging
 import os
+import copy
 import cv2
 import torch
 import numpy as np
+import pandas as pd
 from tqdm import tqdm
 from pathlib import Path
 from torch import nn, optim
 from torch.utils.data import Dataset, DataLoader
-from utils.os_lib import MemoryInfo
-from utils import os_lib, converter
+from utils import os_lib, converter, configs
 from utils.visualize import ImageVisualize
-from cv_data_parse.base import DataRegister
+from utils.torch_utils import EarlyStopping, ModuleInfo, Export
+from utils.os_lib import MemoryInfo
 from metrics import classifier, object_detection
+from cv_data_parse.base import DataRegister
 from cv_data_parse.data_augmentation import crop, scale, geometry, pixel_perturbation, channel, RandomApply, Apply
+
+configs.logger_init()
 
 MODEL = 1
 WEIGHT = 2
@@ -20,23 +26,39 @@ JIT = 4
 TRITON = 5
 
 
+def setup_seed(seed=42):
+    """42 is lucky number"""
+    import torch.backends.cudnn as cudnn
+
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    torch.cuda.manual_seed(seed)
+    np.random.seed(seed)
+    cudnn.benchmark = False
+    cudnn.deterministic = True
+
+
 class ClsDataset(Dataset):
-    def __init__(self, data, augment_func=None):
+    def __init__(self, data, augment_func=None, complex_augment_func=None):
         self.data = data
         self.augment_func = augment_func
+        self.complex_augment_func = complex_augment_func
 
     def __getitem__(self, idx):
-        ret = self.data[idx].copy()
-        ret = self.aug(ret)
+        ret = self.process_one(idx)
         image, _class = ret['image'], ret['_class']
 
         return torch.Tensor(image), _class
 
-    def aug(self, ret):
+    def process_one(self, idx):
+        ret = copy.deepcopy(self.data[idx])
         if isinstance(ret['image'], str):
+            ret['image_path'] = ret['image']
             ret['image'] = cv2.imread(ret['image'])
 
         ret['ori_image'] = ret['image']
+        ret['ori_bboxes'] = ret['bboxes']
+        ret['idx'] = idx
 
         if self.augment_func:
             ret = self.augment_func(ret)
@@ -49,12 +71,9 @@ class ClsDataset(Dataset):
 
 class OdDataset(ClsDataset):
     def __getitem__(self, idx):
-        ret = self.data[idx].copy()
-        ret = self.aug(ret)
-
-        ret['idx'] = idx
-
-        return ret
+        if self.complex_augment_func:
+            return self.complex_augment_func(idx, self.data, self.process_one)
+        return self.process_one(idx)
 
     def __len__(self):
         return len(self.data)
@@ -66,6 +85,7 @@ class OdDataset(ClsDataset):
 
 class Process:
     dataset = ClsDataset
+    setup_seed()
 
     def __init__(self, model=None, model_version=None, dataset_version='ImageNet2012', device='1', input_size=224):
         self.device = torch.device(f"cuda:{device}" if torch.cuda.is_available() else "cpu") if device is not None else 'cpu'
@@ -77,35 +97,43 @@ class Process:
         self.model_path = f'{self.model_dir}/{self.dataset_version}.pth'
         self.save_result_dir = f'cache_data/{self.dataset_version}'
         self.input_size = input_size
+        self.logger = logging.getLogger()
+        self.model_info()
 
-        self.setup_seed()
+    def model_info(self, depth=3):
+        profile = ModuleInfo.profile_per_layer(self.model, depth=depth)
+        s = f'module info: \n{"name":<20}{"module":<40}{"params":>10}{"grads":>10}\n'
 
-    @staticmethod
-    def setup_seed(seed=42):
-        """42 is lucky number"""
-        torch.manual_seed(seed)
-        torch.cuda.manual_seed_all(seed)
-        torch.cuda.manual_seed(seed)
-        np.random.seed(seed)
+        for p in profile:
+            s += f'{p[0]:<20}{p[1]:<40}{p[2]["params"]:>10}{p[2]["grads"]:>10}\n'
 
-    def run(self, max_epoch=100, train_batch_size=16, predict_batch_size=16, save_period=None):
+        self.logger.info(s)
+
+    def run(self, max_epoch=100, train_batch_size=16, predict_batch_size=None, save_period=None):
         data = self.get_train_data()
 
         dataset = self.dataset(
             data,
-            augment_func=self.data_augment
+            augment_func=self.data_augment,
+            complex_augment_func=self.complex_data_augment if hasattr(self, 'complex_data_augment') else None
         )
 
         self.fit(dataset, max_epoch, train_batch_size, save_period)
         self.save(self.model_path)
 
         # self.load(self.model_path)
-        self.load(f'{self.model_dir}/{self.dataset_version}_last.pth')
+        # self.load(f'{self.model_dir}/{self.dataset_version}_last.pth')
 
         data = self.get_val_data()
 
         dataset = self.dataset(data, augment_func=self.val_data_augment)
-        print(self.metric(dataset, predict_batch_size))
+        r = self.metric(
+            dataset, predict_batch_size or train_batch_size,
+            num_workers=16
+        )
+        for k, v in r.items():
+            self.logger.info(k)
+            self.logger.info(v)
 
     def fit(self, *args, **kwargs):
         raise NotImplementedError
@@ -139,7 +167,7 @@ class Process:
     def get_val_data(self, *args, **kwargs):
         raise NotImplementedError
 
-    def save(self, save_path, save_type=MODEL, verbose=True, print_func=None):
+    def save(self, save_path, save_type=MODEL, verbose=True):
         os_lib.mk_dir(Path(save_path).parent)
 
         if save_type == MODEL:
@@ -148,7 +176,7 @@ class Process:
             torch.save(self.model.state_dict(), save_path)
         elif save_type == JIT:
             trace_input = torch.rand(1, 3, self.input_size, self.input_size).to(self.device)
-            model = converter.ModelConvert.torch2jit(self.model, trace_input)
+            model = Export.to_jit(self.model, trace_input)
             model.save(save_path)
         elif save_type == TRITON:
             pass
@@ -156,10 +184,9 @@ class Process:
             raise ValueError(f'dont support {save_type = }')
 
         if verbose:
-            print_func = print_func or print
-            print_func(f'Successfully saved to {save_path} !')
+            self.logger.info(f'Successfully saved to {save_path} !')
 
-    def load(self, save_path, save_type=MODEL, verbose=True, print_func=None):
+    def load(self, save_path, save_type=MODEL, verbose=True):
         if save_type == MODEL:
             self.model = torch.load(save_path, map_location=self.device)
         elif save_type == WEIGHT:
@@ -170,15 +197,14 @@ class Process:
             raise ValueError(f'dont support {save_type = }')
 
         if verbose:
-            print_func = print_func or print
-            print_func(f'Successfully load {save_path} !')
+            self.logger.info(f'Successfully load {save_path} !')
 
 
 class ClsProcess(Process):
     dataset = ClsDataset
 
-    def fit(self, dataset, max_epoch, batch_size, save_period=None):
-        dataloader = DataLoader(dataset, shuffle=True, batch_size=batch_size)
+    def fit(self, dataset, max_epoch, batch_size, save_period=None, dataloader_kwargs=dict()):
+        dataloader = DataLoader(dataset, shuffle=True, batch_size=batch_size, **dataloader_kwargs)
 
         self.model.to(self.device)
 
@@ -219,8 +245,8 @@ class ClsProcess(Process):
                     self.save(f'{self.model_dir}/{self.dataset_version}_best.pth')
                     score = result['score']
 
-    def predict(self, dataset, batch_size=128):
-        dataloader = DataLoader(dataset, batch_size=batch_size)  # 单卡shuffle=True，多卡shuffle=False
+    def predict(self, dataset, batch_size=128, dataloader_kwargs=dict()):
+        dataloader = DataLoader(dataset, batch_size=batch_size, **dataloader_kwargs)  # 单卡shuffle=True，多卡shuffle=False
 
         pred = []
         true = []
@@ -241,10 +267,10 @@ class ClsProcess(Process):
 
         return true, pred
 
-    def metric(self, dataset, batch_size=128):
-        true, pred = self.predict(dataset, batch_size)
+    def metric(self, dataset, batch_size=128, **kwargs):
+        true, pred = self.predict(dataset, batch_size, **kwargs)
 
-        result = classifier.TopTarget.f_measure(true, pred)
+        result = classifier.top_metric.f_measure(true, pred)
 
         result.update(
             score=result['f']
@@ -316,20 +342,23 @@ class OdProcess(Process):
         return data
 
     def data_augment(self, ret):
-        ret.update(dst=self.input_size)
-        ret.update(scale.LetterBox()(**ret))
         ret.update(RandomApply([geometry.HFlip()])(**ret))
+        ret.update(dst=self.input_size)
         ret.update(Apply([
+            scale.LetterBox(),
             pixel_perturbation.MinMax(),
             pixel_perturbation.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
             channel.HWC2CHW()
         ])(**ret))
         return ret
 
+    def complex_data_augment(self, idx, data, base_process):
+        return base_process(idx)
+
     def val_data_augment(self, ret):
         ret.update(dst=self.input_size)
-        ret.update(scale.LetterBox()(**ret))
         ret.update(Apply([
+            scale.LetterBox(),
             pixel_perturbation.MinMax(),
             pixel_perturbation.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
             channel.HWC2CHW()
@@ -350,22 +379,51 @@ class OdProcess(Process):
 
         return data
 
-    def fit(self, dataset, max_epoch, batch_size, save_period=None):
+    def fit(self, dataset, max_epoch, batch_size, save_period=None, **dataloader_kwargs):
+        # sampler = distributed.DistributedSampler(dataset, shuffle=True)
         dataloader = DataLoader(
             dataset,
             shuffle=True,
+            # sampler=sampler,
             pin_memory=True,
             batch_size=batch_size,
             collate_fn=dataset.collate_fn,
-            # num_workers=4
+            **dataloader_kwargs
         )
 
         self.model.to(self.device)
 
-        optimizer = optim.Adam(self.model.parameters())
-        # optimizer = optim.SGD(self.model.parameters(), 0.01)
+        # optimizer = optim.Adam(self.model.parameters())
+        # optimizer = optim.SGD(self.model.parameters(), lr=0.01)
 
-        score = -1
+        g = [], [], []  # optimizer parameter groups
+        bn = tuple(v for k, v in nn.__dict__.items() if 'Norm' in k)  # normalization layers, i.e. BatchNorm2d()
+        for v in self.model.modules():
+            if hasattr(v, 'bias') and isinstance(v.bias, nn.Parameter):  # bias
+                g[2].append(v.bias)
+            if isinstance(v, bn):  # weight (no decay)
+                g[1].append(v.weight)
+            elif hasattr(v, 'weight') and isinstance(v.weight, nn.Parameter):  # weight (with decay)
+                g[0].append(v.weight)
+
+        weight_decay = 0.0005
+        optimizer = optim.SGD(g[2], lr=0.01, momentum=0.937, nesterov=True)
+        optimizer.add_param_group({'params': g[0], 'weight_decay': weight_decay})  # add g0 with weight_decay
+        optimizer.add_param_group({'params': g[1]})  # add g1 (BatchNorm2d weights)
+
+        del g
+
+        lrf = 0.01
+        lf = lambda x: (1 - x / max_epoch) * (1.0 - lrf) + lrf
+        scheduler = optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lf)
+        scheduler.last_epoch = -1
+
+        scaler = torch.cuda.amp.GradScaler(enabled=True)
+        stopper = EarlyStopping(patience=10, stdout_method=self.logger.info)
+
+        max_score = -1
+        accumulate = 64 / batch_size
+        j = 0
 
         for i in range(max_epoch):
             self.model.train()
@@ -374,16 +432,31 @@ class OdProcess(Process):
             total_batch = 0
 
             for rets in pbar:
-                images = [torch.Tensor(ret.pop('image')).to(self.device) for ret in rets]
-                gt_boxes = [torch.Tensor(ret['bboxes']).to(self.device) for ret in rets]
-                gt_cls = [torch.Tensor(ret['classes']).to(self.device, dtype=torch.int64) for ret in rets]
+                images = [torch.from_numpy(ret.pop('image')).to(self.device, non_blocking=True, dtype=torch.float) for ret in rets]
+                gt_boxes = [torch.from_numpy(ret['bboxes']).to(self.device) for ret in rets]
+                gt_cls = [torch.from_numpy(ret['classes']).to(self.device) for ret in rets]
                 images = torch.stack(images)
 
-                output = self.model(images, gt_boxes, gt_cls)
+                # note that, if the images have the same shape, minmax after stack if possible
+                # it can reduce about 20 seconds per epoch to voc dataset
+                # images = images / 255
+
+                # note that, amp method can make the model run in dtype of half
+                # even though input has dtype of torch.half and weight has dtype of torch.float
+                # so that, it would run in lower memory and cost less time
+                with torch.cuda.amp.autocast(True):
+                    output = self.model(images, gt_boxes, gt_cls)
                 loss = output['loss']
-                optimizer.zero_grad()
-                loss.backward()
-                optimizer.step()
+
+                scaler.scale(loss).backward()
+                if j % accumulate == 0:
+                    scaler.unscale_(optimizer)  # unscale gradients
+                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=10.0)  # clip gradients
+                    scaler.step(optimizer)  # optimizer.step
+                    scaler.update()
+                    optimizer.zero_grad()
+
+                j += 1
 
                 total_loss += loss.item()
                 total_batch += len(rets)
@@ -400,28 +473,36 @@ class OdProcess(Process):
 
                 val_data = self.get_val_data()
                 val_dataset = self.dataset(val_data, augment_func=self.val_data_augment)
-                result = self.metric(val_dataset, batch_size)
-                print(result['score'])
-                if result['score'] > score:
-                    self.save(f'{self.model_dir}/{self.dataset_version}_best.pth')
-                    score = result['score']
+                result = self.metric(val_dataset, batch_size, **dataloader_kwargs)
+                score = result['score']
+                self.logger.info(f"epoch: {i}, score: {score}")
 
-    def predict(self, dataset, batch_size=128):
+                if score > max_score:
+                    self.save(f'{self.model_dir}/{self.dataset_version}_best.pth')
+                    max_score = score
+
+                if stopper(epoch=i, fitness=score):
+                    break
+
+        scheduler.step()
+
+    def predict(self, dataset, batch_size=128, visualize=False, save_ret_func=None, **dataloader_kwargs):
         dataloader = DataLoader(
             dataset,
             batch_size=batch_size,
             collate_fn=dataset.collate_fn,
+            **dataloader_kwargs
         )
 
         self.model.to(self.device)
-
-        gt_boxes, det_boxes, confs, true_class, pred_class = [], [], [], [], []
+        gt_rets, det_rets = [], []
 
         with torch.no_grad():
             self.model.eval()
-            for rets in tqdm(dataloader):
+            for rets in tqdm(dataloader, desc='val'):
                 images = [torch.Tensor(ret['image']).to(self.device) for ret in rets]
                 images = torch.stack(images)
+                # images = images / 255
 
                 outputs = self.model(images)
                 outputs = [{k: v.to('cpu').numpy() for k, v in t.items()} for t in outputs]
@@ -430,41 +511,47 @@ class OdProcess(Process):
                     output = outputs[i]
                     ret = rets[i]
 
-                    # self.visualize(ret, output, save_name=f'{self.save_result_dir}/{ret["_id"]}')
+                    if visualize:
+                        self.visualize(ret, output, save_name=f'{self.save_result_dir}/{ret["_id"]}')
 
-                    gt_boxes.append(ret['bboxes'])
-                    det_boxes.append(output['bboxes'])
-                    confs.append(output['conf'].tolist())
-                    true_class.append(ret['classes'])
-                    pred_class.append(output['classes'])
+                    gt_rets.append(dict(
+                        _id=ret['_id'],
+                        bboxes=ret['bboxes'],
+                        classes=ret['classes'],
+                    ))
 
-        return gt_boxes, det_boxes, confs, true_class, pred_class
+                    det_rets.append(dict(
+                        _id=ret['_id'],
+                        bboxes=output['bboxes'],
+                        classes=output['classes'],
+                        confs=output['confs']
+                    ))
 
-    def metric(self, dataset, batch_size=128):
-        gt_boxes, det_boxes, confs, true_class, pred_class = self.predict(dataset, batch_size)
+        if save_ret_func:
+            save_ret_func(det_rets)
 
-        result = object_detection.AP.mAP(gt_boxes, det_boxes, confs, classes=[true_class, pred_class])
+        return gt_rets, det_rets
 
-        result = {
-            'per_class': {k: {
-                'ap': v['ap'],
-                'n_pred': len(v['pred_class']),
-                'n_true': len(v['true_class'])
-            } for k, v in result.items()},
-            'score': sum(r['ap'] for r in result.values()) / len(result)
-        }
+    def metric(self, dataset, batch_size=128, **kwargs):
+        gt_rets, det_rets = self.predict(dataset, batch_size, **kwargs)
+        df = object_detection.quick_metric(gt_rets, det_rets, verbose=False)
+
+        result = dict(
+            per_class_result=df,
+            score=df['ap']['mean']
+        )
 
         return result
 
     def visualize(self, true_ret, pred_ret, save_name=''):
-        img = true_ret.pop('image')
+        img = true_ret['ori_image']
         true_ret = self.val_data_restore(true_ret)
         img1 = ImageVisualize.label_box(img, true_ret['bboxes'], true_ret['classes'], line_thickness=2)
 
         pred_ret_ = true_ret.copy()
         pred_ret_['bboxes'] = pred_ret['bboxes']
         pred_ret = self.val_data_restore(pred_ret_)
-        img2 = ImageVisualize.label_box(img, pred_ret['bboxes'], pred_ret['labels'], line_thickness=2)
+        img2 = ImageVisualize.label_box(img, pred_ret['bboxes'], pred_ret['classes'], line_thickness=2)
 
         img = np.concatenate([img1, img2], 1)
 

@@ -72,6 +72,14 @@ class GetBackbone:
         return backbone
 
 
+def cls_nms(boxes, scores, classes, nms_thresh):
+    max_coordinate = boxes.max()
+    offsets = classes.to(boxes) * (max_coordinate + 1)
+    boxes_for_nms = boxes + offsets[:, None]
+
+    return torchvision.ops.nms(boxes_for_nms, scores, nms_thresh)
+
+
 class NMS(nn.Module):
     def __init__(self, conf_thres=0.25, iou_thres=0.45, keep_shape=False, max_anchors=50):
         super().__init__()

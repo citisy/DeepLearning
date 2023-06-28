@@ -1,10 +1,11 @@
 from typing import List
+import torchvision
 import torch
 from torch import nn, Tensor
 import torch.nn.functional as F
 from utils.layers import Conv, Linear, ConvInModule
-import torchvision
-from . import GetBackbone
+from . import GetBackbone, cls_nms
+from utils.torch_utils import initialize_layers
 
 in_module_config = dict(
     in_ch=3,
@@ -37,20 +38,22 @@ class FasterRCNN(nn.Module):
     """See Also `torchvision.models.detection.faster_rcnn`"""
 
     def __init__(
-            self, output_size,
+            self, n_classes,
             in_module=None, backbone=None, neck=None, head=None,
             in_module_config=in_module_config, backbone_config=dict(),
             neck_config=rpn_config, head_config=roi_config,
-            score_thresh=0.05, nms_thresh=0.5,
+            score_thres=0.05, nms_thres=0.5,
     ):
         super().__init__()
 
-        self.score_thresh = score_thresh
-        self.nms_thresh = nms_thresh
+        self.score_thres = score_thres
+        self.nms_thres = nms_thres
 
         self.input = in_module(**in_module_config) if in_module else ConvInModule(**in_module_config)
 
         if backbone is None:
+            # note that, if use `torch.cuda.amp.autocast(True)`, it would become slower
+            # it is the problem with torchvision.models.mobilenet
             self.backbone = GetBackbone.get_mobilenet_v2()
         elif isinstance(backbone, str):
             self.backbone = GetBackbone.get_one(backbone, backbone_config)
@@ -58,7 +61,9 @@ class FasterRCNN(nn.Module):
             self.backbone = backbone
 
         self.neck = neck(**neck_config) if neck else RPN(self.backbone.out_channels, **neck_config)
-        self.head = head(**head_config) if head else RoIHead(self.backbone.out_channels, output_size, **roi_config)
+        self.head = head(**head_config) if head else RoIHead(self.backbone.out_channels, n_classes, **roi_config)
+
+        initialize_layers(self)
 
     def forward(self, images, gt_boxes=None, gt_cls=None):
         """
@@ -68,11 +73,7 @@ class FasterRCNN(nn.Module):
             gt_cls (List[Tensor])
 
         Returns:
-            result (list[BoxList] or dict[Tensor]): the output from the model.
-                During training, it returns a dict[Tensor] which contains the losses.
-                During testing, it returns list[BoxList] contains additional fields
-                like `scores`, `labels` and `mask` (for Mask R-CNN models).
-
+            result (dict[Tensor]):
         """
         image_size = images.shape[-2:]
 
@@ -120,7 +121,7 @@ class FasterRCNN(nn.Module):
             detection = detection.reshape(-1, 4)
             s = s.reshape(-1)
 
-            keep = s > self.score_thresh
+            keep = s > self.score_thres
             detection, classes, s = detection[keep], classes[keep], s[keep]
 
             detection = clip_boxes(detection, image_size)
@@ -133,13 +134,13 @@ class FasterRCNN(nn.Module):
                 # - all detection join nms with split class, it is slower but better
                 # it is applied for 2nd strategy
                 # keep = torchvision.ops.nms(detection, s, self.nms_thresh)
-                keep = cls_nms(detection, s, classes, self.nms_thresh)
+                keep = cls_nms(detection, s, classes, self.nms_thres)
                 detection, classes, s = detection[keep], classes[keep], s[keep]
 
             result.append({
                 "bboxes": detection,
                 "classes": classes,
-                "conf": s,
+                "confs": s,
             })
 
         return result
@@ -249,13 +250,6 @@ class RPN(nn.Module):
         # note that, it is compared with anchors not proposals
         labels, match_gt_boxes, match_gt_cls = divide_sample(det_boxes, gt_boxes, obj_gt_cls, self.neg_iou, self.pos_iou, allow_low_quality_matches=True)
 
-        # (bs, n_boxes, n) -> (bs * n_boxes, n)
-        det_boxes = det_boxes.view(-1, 4)
-        det_reg = det_reg.view(-1, 4)
-        det_cls = det_cls.view(-1)
-
-        gt_reg = proposal2deltas(det_boxes, match_gt_boxes)
-
         pos_idx = torch.where(labels == 1)[0]
         neg_idx = torch.where(labels == -1)[0]
 
@@ -271,7 +265,15 @@ class RPN(nn.Module):
         total_idx = torch.cat([pos_idx, neg_idx])
         total_idx = total_idx[torch.randperm(total_idx.numel(), device=pos_idx.device)]
 
-        return od_loss(det_reg[pos_idx], gt_reg[pos_idx], det_cls[total_idx], match_gt_cls[total_idx], total_idx.numel())
+        # (bs, n_boxes, n) -> (bs * n_boxes, n)
+        det_boxes = det_boxes.view(-1, 4)
+        det_reg = det_reg.view(-1, 4)
+        det_cls = det_cls.view(-1)
+
+        det_reg = det_reg[pos_idx]
+        gt_reg = proposal2deltas(det_boxes[pos_idx], match_gt_boxes[pos_idx])
+
+        return od_loss(det_reg, gt_reg, det_cls[total_idx], match_gt_cls[total_idx], total_idx.numel())
 
 
 class AnchorGenerator(nn.Module):
@@ -404,13 +406,14 @@ class RPNHead(nn.Module):
 
 class RoIHead(nn.Module):
     def __init__(
-            self, in_ch, output_size,
+            self, in_ch, n_classes,
             pooling_size=7, max_backprop_sample=512,
             pos_iou=0.5, neg_iou=0.5,
     ):
         super().__init__()
 
-        self.output_size = output_size
+        self.n_classes = n_classes
+        self.output_size = n_classes + 1   # the last cls is bg sample
         self.neg_iou = neg_iou
         self.pos_iou = pos_iou
         self.max_backprop_sample = max_backprop_sample
@@ -423,8 +426,8 @@ class RoIHead(nn.Module):
         )
 
         # note that per cls per box reg not all cls per box reg
-        self.reg_fc = nn.Linear(in_ch, (output_size + 1) * 4)
-        self.cls_fc = nn.Linear(in_ch, output_size + 1)  # the last cls is bg sample
+        self.reg_fc = Linear(in_ch, self.output_size * 4, act=None)
+        self.cls_fc = Linear(in_ch, self.output_size, act=None)
 
     def gen_detections(self, proposals, features, image_size):
         detections = []
@@ -435,6 +438,7 @@ class RoIHead(nn.Module):
         )
         box = torch.cat([ids, box], dim=1)
         for j, feature in enumerate(features):
+            box = box.to(dtype=feature.dtype)
             scale_ratio = feature.shape[2] / image_size[0]
             # note that, original faster rcnn use roi_pool
             # and then, it is a very interesting thing that
@@ -472,7 +476,7 @@ class RoIHead(nn.Module):
                 neg_idx = torch.where(_labels == -1)[0]
 
                 # the last cls is neg sample
-                match_gt_cls[neg_idx] = self.output_size
+                match_gt_cls[neg_idx] = self.n_classes
 
                 n_pos = min(len(pos_idx), self.max_backprop_sample)
                 n_neg = self.max_backprop_sample - n_pos
@@ -506,9 +510,9 @@ class RoIHead(nn.Module):
         return reg, cls, proposals, loss
 
     def loss(self, det_reg, gt_reg, det_cls, gt_cls):
-        gt_cls = torch.cat(gt_cls, dim=0)
+        gt_cls = torch.cat(gt_cls, dim=0).long()
         gt_reg = torch.cat(gt_reg, dim=0)
-        pos_idx = gt_cls < self.output_size
+        pos_idx = gt_cls < self.n_classes
         cls_pos_idx = gt_cls[pos_idx]
         det_reg = det_reg.reshape(len(det_cls), -1, 4)
         pos_det_reg = det_reg[pos_idx, cls_pos_idx]
@@ -606,26 +610,18 @@ def divide_sample(det_boxes, gt_boxes, gt_cls, neg_iou, pos_iou, allow_low_quali
 
             if allow_low_quality_matches:
                 iou, _ = iou_mat.max(dim=1)
-                idx = torch.where(torch.eq(iou_mat, iou[:, None]))[1]
+                idx = torch.where(iou_mat == iou[:, None])[1]
                 label[idx] = 1
 
         labels.append(label)
-        match_gt_boxes.append(gt[gt_idx])
-        match_gt_cls.append(cls[gt_idx])
+        match_gt_boxes.append(gt[gt_idx])  # (n_det, 4)
+        match_gt_cls.append(cls[gt_idx])  # (n_det, n_cls)
 
     labels = torch.cat(labels)
     match_gt_boxes = torch.cat(match_gt_boxes)
     match_gt_cls = torch.cat(match_gt_cls)
 
     return labels, match_gt_boxes, match_gt_cls
-
-
-def cls_nms(boxes, scores, classes, nms_thresh):
-    max_coordinate = boxes.max()
-    offsets = classes.to(boxes) * (max_coordinate + 1)
-    boxes_for_nms = boxes + offsets[:, None]
-
-    return torchvision.ops.nms(boxes_for_nms, scores, nms_thresh)
 
 
 def od_loss(pos_det_reg, pos_gt_reg, det_cls, gt_cls, n_sample, a=0.5):

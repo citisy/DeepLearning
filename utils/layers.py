@@ -1,3 +1,4 @@
+import torch
 from torch import nn
 
 
@@ -88,6 +89,7 @@ class ConvInModule(nn.Module):
 
         self.in_channels = in_ch
         self.out_channels = out_ch
+        self.input_size = input_size
 
         # in_ch -> min_in_ch
         # input_size -> min_input_size
@@ -137,8 +139,6 @@ class Conv(nn.Module):
             self.bn = nn.BatchNorm2d(out_ch)
         self.act = act(True)
 
-        self.weight = self.conv.weight
-
     def forward(self, x):
         x = self.conv(x)
 
@@ -155,6 +155,7 @@ class Linear(nn.Module):
         super().__init__()
         self.is_bn = is_bn
         self.is_drop = bool(drop_prob)
+        self.is_act = bool(act)
 
         self.linear = nn.Linear(in_size, out_size)
 
@@ -164,7 +165,8 @@ class Linear(nn.Module):
         if self.is_drop:
             self.drop = nn.Dropout(drop_prob)
 
-        self.act = act()
+        if self.is_act:
+            self.act = act()
 
     def forward(self, x):
         x = self.linear(x)
@@ -175,6 +177,7 @@ class Linear(nn.Module):
         if self.is_drop:
             x = self.drop(x)
 
-        x = self.act(x)
+        if self.is_act:
+            x = self.act(x)
 
         return x

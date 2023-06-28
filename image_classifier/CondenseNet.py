@@ -75,7 +75,7 @@ class LGConv(nn.Module):
         self.act = nn.ReLU(True)
         self.drop = nn.Dropout(drop_prob)
 
-        self.register_buffer('mask', torch.ones(self.conv.weight.size()))
+        self.register_buffer('mask', torch.ones(self.conv.conv.weight.size()))
         self.c = 0
         self.filter_num = in_ch // condense_factor
 
@@ -88,7 +88,7 @@ class LGConv(nn.Module):
             self.stage = stage
             self.mask_weight()
 
-        self.conv.weight.data *= self.mask
+        self.conv.conv.weight.data *= self.mask
         x = self.conv(x)
         x = self.norm(x)
         x = self.act(x)
@@ -97,7 +97,7 @@ class LGConv(nn.Module):
         return x
 
     def mask_weight(self):
-        weight = self.conv.weight.data
+        weight = self.conv.conv.weight.data
         weight *= self.mask
         weight = weight.abs()
         weight = shuffle_weight(weight, self.g)
@@ -124,7 +124,7 @@ class LGConv(nn.Module):
         if self.stage >= self.g - 1:
             return 0
 
-        weight = self.conv.weight.data * self.mask
+        weight = self.conv.conv.weight.data * self.mask
 
         o, i, k1, k2 = weight.size()
 

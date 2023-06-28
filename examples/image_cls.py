@@ -13,6 +13,7 @@ class LeNet_mnist(ClsProcess):
     """
     Usage:
         .. code-block:: python
+
             from examples.image_cls import LeNet_mnist as Process
 
             Process().run(max_epoch=10, train_batch_size=256, predict_batch_size=256)
@@ -61,6 +62,7 @@ class LeNet_cifar(ClsProcess):
     """
     Usage:
         .. code-block:: python
+
             from examples.image_cls import LeNet_cifar as Process
 
             Process().run(max_epoch=150, train_batch_size=128, predict_batch_size=256)
@@ -107,6 +109,7 @@ class AlexNet_ImageNet(ClsProcess):
     """
     Usage:
         .. code-block:: python
+
             from examples.image_cls import AlexNet_ImageNet as Process
 
             Process().run()
@@ -138,6 +141,7 @@ class Vgg_ImageNet(ClsProcess):
     """
     Usage:
         .. code-block:: python
+
             from examples.image_cls import Vgg_ImageNet as Process
 
             Process().run()
@@ -168,6 +172,7 @@ class Inception_ImageNet(ClsProcess):
     """
     Usage:
         .. code-block:: python
+
             from examples.image_cls import Inception_ImageNet as Process
 
             Process().run()
@@ -210,6 +215,7 @@ class ResNet_ImageNet(ClsProcess):
     """
     Usage:
         .. code-block:: python
+
             from examples.image_cls import ResNet_ImageNet as Process
 
             Process().run()
@@ -240,6 +246,7 @@ class DenseNet_ImageNet(ClsProcess):
     """
     Usage:
         .. code-block:: python
+
             from examples.image_cls import DenseNet_ImageNet as Process
 
             Process().run()
@@ -271,6 +278,7 @@ class SENet_ImageNet(ClsProcess):
     """
     Usage:
         .. code-block:: python
+
             from examples.image_cls import SENet_ImageNet as Process
 
             Process().run()
@@ -303,6 +311,7 @@ class SqueezeNet_ImageNet(ClsProcess):
     """
     Usage:
         .. code-block:: python
+
             from examples.image_cls import SqueezeNet_ImageNet as Process
 
             Process().run(train_batch_size=32, predict_batch_size=32)
@@ -334,6 +343,7 @@ class MobileNet_ImageNet(ClsProcess):
     """
     Usage:
         .. code-block:: python
+
             from examples.image_cls import MobileNet_ImageNet as Process
 
             Process().run(train_batch_size=32, predict_batch_size=32)
@@ -361,14 +371,11 @@ class MobileNet_ImageNet(ClsProcess):
         return data
 
 
-# MobileNet_ImageNet().run(train_batch_size=32, predict_batch_size=32)
-"""{'p': 0.9795918367346939, 'r': 0.96, 'f': 0.9696969696969697, 'score': 0.9696969696969697}"""
-
-
 class ShuffleNet_ImageNet(ClsProcess):
     """
     Usage:
         .. code-block:: python
+
             from examples.image_cls import ShuffleNet_ImageNet as Process
 
             Process().run(train_batch_size=64, predict_batch_size=64)
@@ -400,6 +407,7 @@ class IGC_cifar(ClsProcess):
     """
     Usage:
         .. code-block:: python
+
             from examples.image_cls import IGC_cifar as Process
 
             Process().run(train_batch_size=64, predict_batch_size=64)
@@ -448,6 +456,7 @@ class CondenseNet_ImageNet(ClsProcess):
     """
     Usage:
         .. code-block:: python
+
             from examples.image_cls import CondenseNet_ImageNet as Process
 
             Process().run(train_batch_size=64, predict_batch_size=64)

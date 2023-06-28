@@ -531,7 +531,6 @@ class AP:
             if confs is not None:
                 det_idx = _r['det_idx']
                 _confs = confs[det_idx]
-                _confs = confs
                 sort_idx = np.argsort(-_confs)
                 tp = tp[sort_idx]
 
