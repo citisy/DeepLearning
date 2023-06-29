@@ -2,7 +2,7 @@ import os
 import cv2
 from pathlib import Path
 import xml.etree.ElementTree as ET
-from cv_data_parse.base import DataRegister, DataLoader, DataSaver
+from cv_data_parse.base import DataRegister, DataLoader, DataSaver, get_image
 
 
 class Loader(DataLoader):
@@ -24,7 +24,7 @@ class Loader(DataLoader):
             from cv_data_parse.Wtw import DataRegister, Loader
 
             loader = Loader('data/WTW')
-            data = loader(set_type=DataRegister.ALL, generator=True, image_type=DataRegister.IMAGE)
+            data = loader(set_type=DataRegister.ALL, generator=True, image_type=DataRegister.ARRAY)
             r = next(data[0])
 
             # visual
@@ -59,12 +59,7 @@ class Loader(DataLoader):
 
             elem = root.find('filename')
             image_path = os.path.abspath(f'{root_dir}/images/{elem.text}')
-            if image_type == DataRegister.PATH:
-                image = image_path
-            elif image_type == DataRegister.IMAGE:
-                image = cv2.imread(image_path)
-            else:
-                raise ValueError(f'Unknown input {image_type = }')
+            image = get_image(image_path, image_type)
 
             _id = elem.text
 

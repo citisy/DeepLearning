@@ -4,7 +4,7 @@ import scipy
 import pickle
 from pathlib import Path
 from utils import os_lib
-from cv_data_parse.base import DataRegister, DataLoader, DataSaver
+from cv_data_parse.base import DataRegister, DataLoader, DataSaver, get_image
 
 
 class ImageNet2012Loader(DataLoader):
@@ -33,7 +33,7 @@ class ImageNet2012Loader(DataLoader):
             from cv_data_parse.ImageNet import DataRegister, ImageNet2012Loader as Loader
 
             loader = Loader('data/ImageNet2012')
-            data = loader(set_type=DataRegister.ALL, generator=True, image_type=DataRegister.IMAGE)
+            data = loader(set_type=DataRegister.ALL, generator=True, image_type=DataRegister.ARRAY)
             r = next(data[0])
 
             # visual
@@ -104,12 +104,7 @@ class ImageNet2012Loader(DataLoader):
 
         for img_fp, _class in zip(img_list, classes):
             image_path = os.path.abspath(img_fp)
-            if image_type == DataRegister.PATH:
-                image = image_path
-            elif image_type == DataRegister.IMAGE:
-                image = cv2.imread(image_path)
-            else:
-                raise ValueError(f'Unknown input {image_type = }')
+            image = get_image(image_path, image_type)
 
             yield dict(
                 _id=img_fp.name,
@@ -124,12 +119,7 @@ class ImageNet2012Loader(DataLoader):
         for i, _class in enumerate(_classes):
 
             image_path = os.path.abspath(f'{self.data_dir}/ILSVRC2012_img_val/ILSVRC2012_val_{i + 1:08d}.{self.image_suffix}')
-            if image_type == DataRegister.PATH:
-                image = image_path
-            elif image_type == DataRegister.IMAGE:
-                image = cv2.imread(image_path)
-            else:
-                raise ValueError(f'Unknown input {image_type = }')
+            image = get_image(image_path, image_type)
 
             yield dict(
                 _id=Path(image_path).name,

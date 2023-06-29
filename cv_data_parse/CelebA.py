@@ -3,7 +3,7 @@ import cv2
 import pandas as pd
 from pathlib import Path
 from utils import converter
-from .base import DataLoader, DataRegister
+from .base import DataLoader, DataRegister, get_image
 
 
 class CelebALoader(DataLoader):
@@ -31,7 +31,7 @@ class CelebALoader(DataLoader):
             from cv_data_parse.CelebA import DataRegister, CelebALoader as Loader
 
             loader = Loader('data/CelebA')
-            data = loader(set_type=DataRegister.ALL, generator=True, image_type=DataRegister.IMAGE)
+            data = loader(set_type=DataRegister.ALL, generator=True, image_type=DataRegister.ARRAY)
             r = next(data[0])
 
             # visual
@@ -95,15 +95,9 @@ class CelebALoader(DataLoader):
             else:
                 image_path = os.path.abspath(f'{self.data_dir}/Img/{self.img_task_dict[img_task]}/{_id}')
 
-            if image_type == DataRegister.PATH:
-                image = image_path
-            elif image_type == DataRegister.IMAGE:
-                image = cv2.imread(image_path)
-            else:
-                raise ValueError(f'Unknown input {image_type = }')
-
+            image = get_image(image_path, image_type)
             xywh = list(bbox_df.loc[_id])
-            bbox = converter.top_xywh2top_xyxy(xywh)
+            bbox = converter.CoordinateConvert.top_xywh2top_xyxy(xywh)
             attr = list(attr_df.loc[_id])
             identity = identity_df.loc[_id][1]
             landmarks = list(landmarks_df.loc[_id])

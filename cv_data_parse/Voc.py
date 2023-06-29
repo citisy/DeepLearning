@@ -3,7 +3,7 @@ import cv2
 from pathlib import Path
 import xml.etree.ElementTree as ET
 import numpy as np
-from cv_data_parse.base import DataRegister, DataLoader, DataSaver
+from cv_data_parse.base import DataRegister, DataLoader, DataSaver, get_image
 from enum import Enum
 
 
@@ -39,7 +39,7 @@ class Loader(DataLoader):
             from cv_data_parse.Voc import DataRegister, Loader
 
             loader = Loader('data/VOC2012')
-            data = loader(set_type=DataRegister.ALL, generator=True, image_type=DataRegister.IMAGE)
+            data = loader(set_type=DataRegister.ALL, generator=True, image_type=DataRegister.ARRAY)
             r = next(data[0])
 
             # visual
@@ -99,12 +99,7 @@ class Loader(DataLoader):
         root = tree.getroot()
 
         image_path = os.path.abspath(f'{self.data_dir}/JPEGImages/{_id}.{self.image_suffix}')
-        if image_type == DataRegister.PATH:
-            image = image_path
-        elif image_type == DataRegister.IMAGE:
-            image = cv2.imread(image_path)
-        else:
-            raise ValueError(f'Unknown input {image_type = }')
+        image = get_image(image_path, image_type)
 
         elem = root.find('size')
         size = {subelem.tag: int(subelem.text) for subelem in elem}

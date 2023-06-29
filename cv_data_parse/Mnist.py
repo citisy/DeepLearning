@@ -21,7 +21,7 @@ class Loader(DataLoader):
             from cv_data_parse.Mnist import DataRegister, Loader
 
             loader = Loader('data/mnist')
-            data = loader(set_type=DataRegister.ALL, generator=True, image_type=DataRegister.IMAGE)
+            data = loader(set_type=DataRegister.ALL, generator=True, image_type=DataRegister.ARRAY)
             r = next(data[0])
 
             # visual
@@ -29,7 +29,7 @@ class Loader(DataLoader):
             _class = r['_class']
 
     """
-    default_image_type = DataRegister.IMAGE
+    default_image_type = DataRegister.ARRAY
     classes = list(range(10))
 
     def _call(self, set_type, image_type, decompression=False, **kwargs):
@@ -37,7 +37,7 @@ class Loader(DataLoader):
 
         Args:
             set_type:
-            image_type: only support DataRegister.IMAGE
+            image_type: only support DataRegister.ARRAY
             decompression(bool): if true, the data file would like *.gz
 
         Returns:
@@ -47,7 +47,7 @@ class Loader(DataLoader):
                 _class: int
         """
 
-        assert image_type == DataRegister.IMAGE, f"Only support image_type = DataRegister.IMAGE"
+        assert image_type == DataRegister.ARRAY, f"Only support image_type = DataRegister.ARRAY"
 
         if set_type == DataRegister.TRAIN:
             image_fp = f'{self.data_dir}/train-images-idx3-ubyte'

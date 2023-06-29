@@ -6,7 +6,7 @@ from pathlib import Path
 from tqdm import tqdm
 from typing import Iterable
 from utils import os_lib, converter
-from cv_data_parse.base import DataRegister, DataLoader, DataSaver, DataGenerator
+from cv_data_parse.base import DataRegister, DataLoader, DataSaver, DataGenerator, get_image, save_image
 
 
 def _default_convert(x):
@@ -40,7 +40,7 @@ class Loader(DataLoader):
             from cv_data_parse.YoloV5 import DataRegister, Loader
 
             loader = Loader('data/Yolov5Data')
-            data = loader(set_type=DataRegister.ALL, generator=True, image_type=DataRegister.IMAGE)
+            data = loader(set_type=DataRegister.ALL, generator=True, image_type=DataRegister.ARRAY)
             r = next(data[0])
 
             # visual
@@ -81,13 +81,7 @@ class Loader(DataLoader):
     def load_total(self, image_type, task='', convert_func=None, **kwargs):
         for img_fp in Path(f'{self.data_dir}/images/{task}').glob(f'*.{self.image_suffix}'):
             image_path = os.path.abspath(img_fp)
-            if image_type == DataRegister.PATH:
-                image = image_path
-            elif image_type == DataRegister.IMAGE:
-                image = cv2.imread(image_path)
-            else:
-                raise ValueError(f'Unknown input {image_type = }')
-
+            image = get_image(image_path, image_type)
             labels = np.genfromtxt(image_path.replace('images', 'labels').replace(f'.{self.image_suffix}', '.txt')).reshape((-1, 5))
 
             # (center x, center y, box w, box h) after norm
@@ -95,7 +89,7 @@ class Loader(DataLoader):
             bboxes = labels[:, 1:]
             classes = labels[:, 0].astype(int)
 
-            if image_type == DataRegister.IMAGE and convert_func:
+            if image_type == DataRegister.ARRAY and convert_func:
                 dic = convert_func(dict(bboxes=bboxes, image=image))
                 bboxes = dic['bboxes']
 
@@ -110,13 +104,7 @@ class Loader(DataLoader):
         with open(f'{self.data_dir}/{sub_dir}/{set_task}/{set_type.value}.txt', 'r', encoding='utf8') as f:
             for line in f.read().strip().split('\n'):
                 image_path = os.path.abspath(line)
-                if image_type == DataRegister.PATH:
-                    image = image_path
-                elif image_type == DataRegister.IMAGE:
-                    image = cv2.imread(image_path)
-                else:
-                    raise ValueError(f'Unknown input {image_type = }')
-
+                image = get_image(image_path, image_type)
                 labels = np.genfromtxt(image_path.replace('images', 'labels').replace(f'.{self.image_suffix}', '.txt')).reshape((-1, 5))
 
                 # (center x, center y, box w, box h) after norm
@@ -124,7 +112,7 @@ class Loader(DataLoader):
                 bboxes = labels[:, 1:]
                 classes = labels[:, 0]
 
-                if image_type == DataRegister.IMAGE and convert_func:
+                if image_type == DataRegister.ARRAY and convert_func:
                     dic = convert_func(dict(bboxes=bboxes, image=image))
                     bboxes = dic['bboxes']
 
@@ -224,7 +212,7 @@ class Saver(DataSaver):
             f = open(f'{self.data_dir}/image_sets/{set_task}/{set_type.value}.txt', 'w', encoding='utf8')
 
         for dic in tqdm(iter_data):
-            if image_type == DataRegister.IMAGE and convert_func:
+            if image_type == DataRegister.ARRAY and convert_func:
                 dic = convert_func(dic)
 
             image = dic['image']
@@ -234,14 +222,7 @@ class Saver(DataSaver):
 
             image_path = f'{self.data_dir}/images/{task}/{_id}'
             label_path = f'{self.data_dir}/labels/{task}/{Path(_id).stem}.txt'
-
-            if image_type == DataRegister.PATH:
-                shutil.copy(image, image_path)
-            elif image_type == DataRegister.IMAGE:
-                cv2.imwrite(image_path, image)
-            else:
-                raise ValueError(f'Unknown input {image_type = }')
-
+            save_image(image, image_path, image_type)
             label = np.c_[classes, bboxes]
 
             np.savetxt(label_path, label, fmt='%.4f')

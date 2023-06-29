@@ -23,14 +23,14 @@ class Cifar10Loader(DataLoader):
             from cv_data_parse.Cifar import DataRegister, Cifar10Loader as Loader
 
             loader = Loader('data/cifar-10-batches-py')
-            data = loader(set_type=DataRegister.ALL, generator=True, image_type=DataRegister.IMAGE)
+            data = loader(set_type=DataRegister.ALL, generator=True, image_type=DataRegister.ARRAY)
             r = next(data[0])
 
             # visual
             image = r['image']
             _class = r['_class']
     """
-    default_image_type = DataRegister.IMAGE
+    default_image_type = DataRegister.ARRAY
     image_suffix = 'png'
     classes = ["airplane", "automobile", "bird", "cat", "deer", "dog", "frog", "horse", "ship", "truck"]
 
@@ -45,7 +45,7 @@ class Cifar10Loader(DataLoader):
                 _class: index of `self.classes`
         """
 
-        assert image_type == DataRegister.IMAGE, f"Only support image_type = DataRegister.IMAGE"
+        assert image_type == DataRegister.ARRAY, f"Only support image_type = DataRegister.ARRAY"
 
         if set_type == DataRegister.TRAIN:
             data_dict = dict()

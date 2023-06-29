@@ -2,7 +2,7 @@ import os
 import jsonlines
 import json
 import cv2
-from cv_data_parse.base import DataRegister, DataLoader, DataSaver
+from cv_data_parse.base import DataRegister, DataLoader, DataSaver, get_image
 
 
 class Loader(DataLoader):
@@ -22,7 +22,7 @@ class Loader(DataLoader):
             from cv_data_parse.Icdar import DataRegister, Loader
 
             loader = Loader('data/pubtabnet')
-            data = loader(set_type=DataRegister.ALL, generator=True, image_type=DataRegister.IMAGE)
+            data = loader(set_type=DataRegister.ALL, generator=True, image_type=DataRegister.ARRAY)
             r = next(data[0])
 
             # visual
@@ -51,12 +51,7 @@ class Loader(DataLoader):
             for line in reader:
 
                 image_path = os.path.abspath(f'{self.data_dir}/{set_type.value}/{line["filename"]}')
-                if image_type == DataRegister.PATH:
-                    image = image_path
-                elif image_type == DataRegister.IMAGE:
-                    image = cv2.imread(image_path)
-                else:
-                    raise ValueError(f'Unknown input {image_type = }')
+                image = get_image(image_path, image_type)
 
                 segmentation = [cell['bbox'] for cell in line['html']['cells'] if 'bbox' in cell]
                 transcription = [cell['tokens'] for cell in line['html']['cells'] if 'bbox' in cell]

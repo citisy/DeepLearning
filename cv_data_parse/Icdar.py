@@ -3,7 +3,7 @@ import json
 import cv2
 import numpy as np
 from utils import converter
-from .base import DataLoader, DataRegister
+from .base import DataLoader, DataRegister, get_image
 from pathlib import Path
 
 
@@ -33,7 +33,7 @@ class Icdar2015(DataLoader):
             from cv_data_parse.Icdar import DataRegister, Icdar2015 as Loader
 
             loader = Loader('data/ICDAR2015')
-            data = loader(set_type=DataRegister.ALL, generator=True, image_type=DataRegister.IMAGE)
+            data = loader(set_type=DataRegister.ALL, generator=True, image_type=DataRegister.ARRAY)
             r = next(data[0])
 
             # visual
@@ -94,12 +94,7 @@ class Icdar2015(DataLoader):
 
         for fp in Path(f'{self.data_dir}/{label_dir}').glob('*.txt'):
             image_path = os.path.abspath(f'{self.data_dir}/{image_dir}/{fp.stem.replace("gt_", "")}.{self.image_suffix}')
-            if image_type == DataRegister.PATH:
-                image = image_path
-            elif image_type == DataRegister.IMAGE:
-                image = cv2.imread(image_path)
-            else:
-                raise ValueError(f'Unknown input {image_type = }')
+            image = get_image(image_path, image_type)
 
             with open(fp, 'r', encoding='utf8') as f:
                 lines = f.read().strip().strip('\ufeff').split('\n')

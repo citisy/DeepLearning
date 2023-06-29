@@ -31,7 +31,7 @@ class Loader(DataLoader):
             from cv_data_parse.SciTSR import DataRegister, Loader
 
             loader = Loader('data/SciTSR')
-            data = loader(set_type=DataRegister.ALL, generator=True, image_type=DataRegister.IMAGE)
+            data = loader(set_type=DataRegister.ALL, generator=True, image_type=DataRegister.ARRAY)
             r = next(data[0])
 
             # visual
@@ -64,8 +64,8 @@ class Loader(DataLoader):
                 image_path = os.path.abspath(f'{root_dir}/pdf/{fp.stem}.pdf')
                 if image_type == DataRegister.PATH:
                     raise ValueError('image_type only apply for Register.IMAGE not Register.FILE')
-                elif image_type == DataRegister.IMAGE:
-                    image = os_lib.pdf2images(image_path, scale_ratio=1)[0]
+                elif image_type == DataRegister.ARRAY:
+                    image = os_lib.loader.pdf2images(image_path, scale_ratio=1)[0]
                 else:
                     raise ValueError(f'Unknown input {image_type = }')
 

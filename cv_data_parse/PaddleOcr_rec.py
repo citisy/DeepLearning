@@ -4,7 +4,7 @@ import cv2
 import shutil
 import numpy as np
 from utils import os_lib
-from .base import DataRegister, DataLoader, DataSaver
+from .base import DataRegister, DataLoader, DataSaver, get_image, save_image
 from .PaddleOcr_det import DataGenerator
 from tqdm import tqdm
 from pathlib import Path
@@ -44,7 +44,7 @@ class Loader(DataLoader):
                 from cv_data_parse.PaddleOcr_rec import DataRegister, Loader
 
                 loader = Loader('data/ppocr_icdar2015')
-                train_data = loader(set_type=DataRegister.TRAIN, image_type=DataRegister.IMAGE)[0]
+                train_data = loader(set_type=DataRegister.TRAIN, image_type=DataRegister.ARRAY)[0]
                 r = next(train_data)
 
                 # visual
@@ -74,12 +74,7 @@ class Loader(DataLoader):
 
                 for image_path in image_paths:
                     image_path = os.path.abspath(image_path)
-                    if image_type == DataRegister.PATH:
-                        image = image_path
-                    elif image_type == DataRegister.IMAGE:
-                        image = cv2.imread(image_path)
-                    else:
-                        raise ValueError(f'Unknown input {image_type = }')
+                    image = get_image(image_path, image_type)
 
                     yield dict(
                         _id=Path(image_path).name,
@@ -92,15 +87,8 @@ class Loader(DataLoader):
         with open(f'{self.data_dir}/{label_dir}/{set_task}/{set_type.value}.txt', 'r', encoding='utf8') as f:
             for line in f.readlines():
                 image_path, ret = line.split('\t')
-
                 image_path = os.path.abspath(image_path)
-                if image_type == DataRegister.PATH:
-                    image = image_path
-                elif image_type == DataRegister.IMAGE:
-                    image = cv2.imread(image_path)
-                else:
-                    raise ValueError(f'Unknown input {image_type = }')
-
+                image = get_image(image_path, image_type)
                 ret = json.loads(ret)
                 if is_student:
                     ret = ret['Student']
@@ -170,14 +158,7 @@ class Saver(DataSaver):
             _id = dic['_id']
 
             image_path = os.path.abspath(f'{self.data_dir}/images/{task}/{_id}')
-
-            if image_type == DataRegister.PATH:
-                shutil.copy(image, image_path)
-            elif image_type == DataRegister.IMAGE:
-                cv2.imwrite(image_path, image)
-            else:
-                raise ValueError(f'Unknown input {image_type = }')
-
+            save_image(image, image_path, image_type)
             f.write(f'{image_path}\t{transcription}\n')
 
         f.close()
@@ -197,7 +178,7 @@ class Saver(DataSaver):
             .. code-block:: python
 
                 loader = Loader('your load data dir')
-                data = loader(set_type=DataRegister.ALL, image_type=DataRegister.IMAGE, generator=True, set_task='det labels dir')
+                data = loader(set_type=DataRegister.ALL, image_type=DataRegister.ARRAY, generator=True, set_task='det labels dir')
 
                 saver = Saver('your save data dir')
                 for iter_data, set_type in zip(data, loader.default_set_type):

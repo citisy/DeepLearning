@@ -3,7 +3,7 @@ import json
 import cv2
 import numpy as np
 from utils import converter
-from .base import DataLoader, DataRegister
+from .base import DataLoader, DataRegister, get_image
 
 
 class Loader(DataLoader):
@@ -31,7 +31,7 @@ class Loader(DataLoader):
             from cv_data_parse.Coco import DataRegister, Loader
 
             loader = Loader('data/coco2017')
-            data = loader(set_type=DataRegister.ALL, generator=True, image_type=DataRegister.IMAGE)
+            data = loader(set_type=DataRegister.ALL, generator=True, image_type=DataRegister.ARRAY)
             r = next(data[0])
 
             # visual
@@ -78,12 +78,7 @@ class Loader(DataLoader):
 
         for tmp in js['images']:
             image_path = os.path.abspath(f'{self.data_dir}/{set_type.value}2017/{tmp["file_name"]}')
-            if image_type == DataRegister.PATH:
-                image = image_path
-            elif image_type == DataRegister.IMAGE:
-                image = cv2.imread(image_path)
-            else:
-                raise ValueError(f'Unknown input {image_type = }')
+            image = get_image(image_path, image_type)
 
             size = (tmp['width'], tmp['height'], 3)
             _id = tmp['id']

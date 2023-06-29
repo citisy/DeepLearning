@@ -21,7 +21,7 @@ class Loader(DataLoader):
             from cv_data_parse.pdf import DataRegister, Loader
 
             loader = Loader('data/pdf')
-            data = loader(set_type=DataRegister.ALL, generator=True, image_type=DataRegister.IMAGE)
+            data = loader(set_type=DataRegister.ALL, generator=True, image_type=DataRegister.ARRAY)
             r = next(data[0])
 
             # visual
@@ -44,7 +44,7 @@ class Loader(DataLoader):
         """See Also `cv_data_parse.base.DataLoader._call`
 
         Args:
-            image_type: only support `DataRegister.IMAGE`
+            image_type: only support `DataRegister.ARRAY`
             task(str): one of dir name in `pdfs` dir
             **kwargs: see also `self.load_per_page`
 

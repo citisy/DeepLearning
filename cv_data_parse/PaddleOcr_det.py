@@ -4,7 +4,7 @@ import cv2
 import shutil
 import numpy as np
 from utils import os_lib
-from cv_data_parse.base import DataRegister, DataLoader, DataSaver, DataGenerator
+from cv_data_parse.base import DataRegister, DataLoader, DataSaver, DataGenerator, get_image, save_image
 from tqdm import tqdm
 from pathlib import Path
 
@@ -28,7 +28,7 @@ class Loader(DataLoader):
             from cv_data_parse.PaddleOcr_det import DataRegister, Loader
 
             loader = Loader('data/ppocr_icdar2015')
-            data = loader(set_type=DataRegister.ALL, generator=True, image_type=DataRegister.IMAGE)
+            data = loader(set_type=DataRegister.ALL, generator=True, image_type=DataRegister.ARRAY)
             r = next(data[0])
 
             # visual
@@ -46,7 +46,7 @@ class Loader(DataLoader):
     default_set_type = [DataRegister.TRAIN, DataRegister.TEST]
     image_suffix = 'png'
 
-    def _call(self, set_type=DataRegister.TRAIN, image_type=DataRegister.IMAGE, set_task='', label_dir='labels', **kwargs):
+    def _call(self, set_type=DataRegister.TRAIN, image_type=DataRegister.ARRAY, set_task='', label_dir='labels', **kwargs):
         """See Also `cv_data_parse.base.DataLoader._call`
 
         Returns:
@@ -63,7 +63,7 @@ class Loader(DataLoader):
                 from cv_data_parse.PaddleOcr import DataRegister, Loader
 
                 loader = Loader('data/ppocr_icdar2015')
-                train_data = loader.load_det(set_type=DataRegister.TRAIN, image_type=DataRegister.IMAGE)
+                train_data = loader.load_det(set_type=DataRegister.TRAIN, image_type=DataRegister.ARRAY)
                 r = next(train_data)
 
                 # visual
@@ -82,14 +82,8 @@ class Loader(DataLoader):
         with open(f'{self.data_dir}/{label_dir}/{set_task}/{set_type.value}.txt', 'r', encoding='utf8') as f:
             for line in f.read().strip().split('\n'):
                 image_path, labels = line.split('\t', 1)
-
                 image_path = os.path.abspath(image_path)
-                if image_type == DataRegister.PATH:
-                    image = image_path
-                elif image_type == DataRegister.IMAGE:
-                    image = cv2.imread(image_path)
-                else:
-                    raise ValueError(f'Unknown input {image_type = }')
+                image = get_image(image_path, image_type)
 
                 labels = json.loads(labels)
                 segmentations, transcriptions = [], []
@@ -181,14 +175,7 @@ class Saver(DataSaver):
             _id = dic['_id']
 
             image_path = os.path.abspath(f'{self.data_dir}/images/{task}/{_id}')
-
-            if image_type == DataRegister.PATH:
-                shutil.copy(image, image_path)
-            elif image_type == DataRegister.IMAGE:
-                cv2.imwrite(image_path, image)
-            else:
-                raise ValueError(f'Unknown input {image_type = }')
-
+            save_image(image, image_path, image_type)
             labels = [{'transcription': t, 'points': s} for t, s in zip(transcriptions, segmentations)]
 
             f.write(f'{image_path}\t{json.dumps(labels, ensure_ascii=False)}\n')

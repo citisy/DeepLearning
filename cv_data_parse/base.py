@@ -1,10 +1,12 @@
-from tqdm import tqdm
-from utils import os_lib
+import cv2
 import pickle
+import shutil
+import numpy as np
+from tqdm import tqdm
 from enum import Enum
 from pathlib import Path
 from collections import defaultdict
-import numpy as np
+from utils import os_lib, converter
 
 
 class DataRegister(Enum):
@@ -15,9 +17,37 @@ class DataRegister(Enum):
     TRAIN = 'train'
     TEST = 'test'
     VAL = 'val'
+    DEV = 'dev'
 
     PATH = 1
-    IMAGE = 2
+    ARRAY = 2
+    BASE64 = 3
+
+
+def get_image(obj, image_type):
+    if image_type == DataRegister.PATH:
+        image = obj
+    elif image_type == DataRegister.ARRAY:
+        image = cv2.imread(obj)
+    elif image_type == DataRegister.BASE64:
+        image = cv2.imread(obj)
+        image = converter.DataConvert.image_to_base64(image)
+    else:
+        raise ValueError(f'Unknown input {image_type = }')
+
+    return image
+
+
+def save_image(obj, save_path, image_type):
+    if image_type == DataRegister.PATH:
+        shutil.copy(obj, save_path)
+    elif image_type == DataRegister.ARRAY:
+        cv2.imwrite(save_path, obj)
+    elif image_type == DataRegister.BASE64:
+        obj = converter.DataConvert.base64_to_image(obj)
+        cv2.imwrite(save_path, obj)
+    else:
+        raise ValueError(f'Unknown input {image_type = }')
 
 
 class DataLoader:
@@ -37,7 +67,7 @@ class DataLoader:
                 Mix -> [DataRegister.place_holder]
                 ALL -> DataLoader.default_set_type
                 other set_type -> [set_type]
-            image_type(DataRegister): `DataRegister.PATH` or `DataRegister.IMAGE`
+            image_type(DataRegister): `DataRegister.PATH` or `DataRegister.ARRAY`
                 PATH -> a str of image abs path
                 IMAGE -> a np.ndarray of image, read from cv2, as (h, w, c)
             generator(bool):
@@ -82,7 +112,7 @@ class DataLoader:
 
         Args:
             set_type(DataRegister): a DataRegister type, see also `DataLoader.__call__`
-            image_type(DataRegister): `DataRegister.PATH` or `DataRegister.IMAGE`
+            image_type(DataRegister): `DataRegister.PATH` or `DataRegister.ARRAY`
                 PATH -> a str of image abs path
                 IMAGE -> a np.ndarray of image, read from cv2, as (h, w, c)
 
@@ -116,7 +146,7 @@ class DataSaver:
                 Mix -> [DataRegister.place_holder]
                 ALL -> DataLoader.default_set_type
                 other set_type -> [set_type]
-            image_type(DataRegister): `DataRegister.PATH` or `DataRegister.IMAGE`
+            image_type(DataRegister): `DataRegister.PATH` or `DataRegister.ARRAY`
                 PATH -> a str of image abs path
                 IMAGE -> a np.ndarray of image, read from cv2, as (h, w, c)
 
