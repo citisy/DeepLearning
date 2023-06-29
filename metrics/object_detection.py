@@ -626,8 +626,10 @@ def quick_metric(gt_iter_data, det_iter_data, is_mAP=True, save_path=None, verbo
     pd.set_option('display.max_columns', None)
     pd.set_option('display.width', None)
     df = pd.DataFrame(ret).T
-    df.loc['sum'] = df.sum(axis=0)
-    df.loc['mean'] = df.mean(axis=0)
+    s = df.sum(axis=0)
+    m = df.mean(axis=0)
+    df.loc['sum'] = s
+    df.loc['mean'] = m
     df = df.round(4)
 
     if verbose:
