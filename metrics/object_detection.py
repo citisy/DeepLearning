@@ -224,11 +224,12 @@ class ConfusionMatrix:
             conf = np.array(conf)
             sort_idx = np.argsort(-conf)
             det_box = det_box[sort_idx]
-            sort_idx = np.argsort(sort_idx)
 
         if iou is None:
             if _class is not None:
                 true_class, pred_class = _class
+                if sort_idx is not None:
+                    pred_class = pred_class[sort_idx]
                 offset = np.max(np.concatenate([gt_box, det_box], 0))
                 gt_box = gt_box + (true_class * offset)[:, None]
                 det_box = det_box + (pred_class * offset)[:, None]
@@ -250,12 +251,13 @@ class ConfusionMatrix:
         # tp = np.any(iou >= iou_thres, axis=0, dtype=bool)
 
         if sort_idx is not None:
+            sort_idx = np.argsort(sort_idx)
             tp = tp[sort_idx]
 
         return dict(
             tp=tp,
             acc_tp=np.sum(tp),
-            iou=iou,
+            iou=iou,       # have been sorted by conf
         )
 
     def cp(self, gt_box):
@@ -433,6 +435,18 @@ class PR:
         return ret
 
 
+class ApMethod:
+    @staticmethod
+    def interp(mean_recall, mean_precision, point=101, **kwargs):
+        x = np.linspace(0, 1, point)
+        return np.trapz(np.interp(x, mean_recall, mean_precision), x)  # integrate
+
+    @staticmethod
+    def continuous(mean_recall, mean_precision, **kwargs):
+        i = np.where(mean_recall[1:] != mean_recall[:-1])[0]  # points where x axis (recall) changes
+        return np.sum((mean_recall[i + 1] - mean_recall[i]) * mean_precision[i + 1])  # area under curve
+
+
 class AP:
     """https://github.com/rafaelpadilla/Object-Detection-Metrics/blob/master/paper_survey_on_performance_metrics_for_object_detection_algorithms.pdf"""
 
@@ -441,20 +455,10 @@ class AP:
             pr_method=None, **pr_method_kwarg
     ):
         self.pr = pr_method(**pr_method_kwarg) if pr_method is not None else PR(**pr_method_kwarg)
-        self.ap_method = ap_method or self.continuous
+        self.ap_method = ap_method or ApMethod.interp
         self.ap_method_kwargs = ap_method_kwargs
         self.return_more_info = return_more_info
         self.eps = eps
-
-    @staticmethod
-    def interp(mean_recall, mean_precision, point=11, **kwargs):
-        x = np.linspace(0, 1, point)
-        return np.trapz(np.interp(x, mean_recall, mean_precision), x)  # integrate
-
-    @staticmethod
-    def continuous(mean_recall, mean_precision, **kwargs):
-        i = np.where(mean_recall[1:] != mean_recall[:-1])[0]  # points where x axis (recall) changes
-        return np.sum((mean_recall[i + 1] - mean_recall[i]) * mean_precision[i + 1])  # area under curve
 
     def mAP_thres(self, gt_boxes, det_boxes, confs=None, classes=None, iou_thres=0.5):
         """AP@iou_thres for all objection
@@ -494,7 +498,7 @@ class AP:
 
         for iou_thres in thres_range:
             _results, ious = self.pr.get_pr(gt_boxes, det_boxes, confs, classes, ious=ious, iou_thres=iou_thres)
-            results = self.ap_thres(_results)
+            results = self.ap_thres(_results, confs)
 
             for k, v in results.items():
                 tmp = _ret.setdefault(k, {})
@@ -534,6 +538,7 @@ class AP:
                 sort_idx = np.argsort(-_confs)
                 tp = tp[sort_idx]
 
+            # accumulate the recall and precision, the last one is the total recall and precision
             cumsum_tp = np.cumsum(tp)
             acc_recall = cumsum_tp / (acc_cp + self.eps)
             acc_precision = cumsum_tp / np.cumsum(op)
@@ -572,7 +577,7 @@ class AP:
         return results
 
 
-def quick_metric(gt_iter_data, det_iter_data, is_mAP=True, save_path=None, verbose=True, stdout_method=print):
+def quick_metric(gt_iter_data, det_iter_data, cls_alias=None, is_mAP=True, save_path=None, verbose=True, stdout_method=print):
     """
 
     Args:
@@ -626,18 +631,22 @@ def quick_metric(gt_iter_data, det_iter_data, is_mAP=True, save_path=None, verbo
     pd.set_option('display.max_columns', None)
     pd.set_option('display.width', None)
     df = pd.DataFrame(ret).T
+
+    if cls_alias:
+        df.index = [cls_alias[i] for i in df.index]
+
     s = df.sum(axis=0)
     m = df.mean(axis=0)
     df.loc['sum'] = s
     df.loc['mean'] = m
-    df = df.round(4)
+    df = df.round(6)
 
     if verbose:
         stdout_method(df)
 
     if save_path:
         from utils import os_lib
-        os_lib.saver.auto_save(df, save_path)
+        os_lib.Saver(verbose=verbose, stdout_method=stdout_method).auto_save(df, save_path)
 
     return df
 
