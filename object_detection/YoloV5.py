@@ -15,10 +15,10 @@ in_module_config = dict(
 neck_config = dict()
 
 head_config = dict(
-    anchors=[
-        [10, 13, 16, 30, 33, 23],
-        [30, 61, 62, 45, 59, 119],
-        [116, 90, 156, 198, 373, 326],
+    anchors=[  # length of wh
+        [(10, 13), (16, 30), (33, 23)],
+        [(30, 61), (62, 45), (59, 119)],
+        [(116, 90), (156, 198), (373, 326)],
     ],
 
 )
@@ -26,6 +26,7 @@ head_config = dict(
 
 class Model(nn.Module):
     """refer to https://github.com/ultralytics/yolov5"""
+
     def __init__(
             self, n_classes,
             in_module=None, backbone=None, neck=None, head=None,
@@ -46,6 +47,8 @@ class Model(nn.Module):
         self.nms_thres = nms_thres
         self.max_det = max_det
         self.input_size = self.input.input_size
+        self.grid = None
+        self.stride = self.head.stride
 
         initialize_layers(self)
 
@@ -73,8 +76,29 @@ class Model(nn.Module):
             preds: (b, n, 4 + 1 + n_class)
 
         """
-        result = []
+        if self.grid is None:
+            self.grid = []
+            for i, f in enumerate(preds):
+                a, h, w = f.shape[1:4]
+                shape = 1, a, h, w, 2  # grid shape
+                y, x = torch.arange(h).to(f), torch.arange(w).to(f)
+                yv, xv = torch.meshgrid(y, x, indexing='ij')
+                grid = torch.stack((xv, yv), 2).expand(shape)
+                self.grid.append(grid)
 
+        z = []
+        for i, f in enumerate(preds):
+            xy, wh, s = f.split((2, 2, f.shape[-1] - 4), -1)
+            # to abs box
+            xy = (xy + self.grid[i]) * self.stride[i]
+            wh = wh * self.stride[i]
+            s = s.sigmoid()
+            f = torch.cat([xy, wh, s], -1).view(f.shape[0], -1, f.shape[-1])
+            z.append(f)
+
+        preds = torch.cat(z, 1)
+
+        result = []
         for i, x in enumerate(preds):
             conf = x[:, 4]
             bboxes = x[:, :4]
@@ -192,19 +216,19 @@ class Head(nn.Module):
                  stride=(8, 16, 32), balance=[4.0, 1.0, 0.4],
                  cls_pw=1., obj_pw=1., label_smoothing=0., fl_gamma=0., anchor_t=4.,
                  reg_gain=0.05, cls_gain=0.5, obj_gain=1.0, gr=1.,
-                 inplace=True, auto_balance=False, sort_obj_iou=False):
+                 auto_balance=False, sort_obj_iou=False):
         super().__init__()
         self.n_classes = n_classes
         self.output_size = n_classes + 5
         self.n_layers = len(anchors)
-        self.n_anchors = len(anchors[0]) // 2
+        self.n_anchors = len(anchors[0])
 
-        self.grid = [torch.zeros(1)] * self.n_layers  # init grid
-        self.anchor_grid = [torch.zeros(1)] * self.n_layers  # init anchor grid
-        self.stride = torch.tensor(stride)
-        self.register_buffer('anchors', torch.tensor(anchors).float().view(self.n_layers, -1, 2) / self.stride.view(-1, 1, 1))  # shape(nl,na,2)
+        self.grid = None  # init grid
+        self.anchor_grid = None  # init anchor grid
+        self.stride = torch.tensor(stride)  # image_size / feature_sizes
+        self.register_buffer('anchors', torch.tensor(anchors).float() / self.stride.view(-1, 1, 1))  # shape(nl,na,2)
 
-        self.m = nn.ModuleList(nn.Conv2d(x, self.output_size * self.n_anchors, 1) for x in in_ches)  # output conv
+        self.conv_list = nn.ModuleList(nn.Conv2d(x, self.output_size * self.n_anchors, 1) for x in in_ches)  # output conv
         self._initialize_biases()
 
         self.reg_gain, self.cls_gain, self.obj_gain = reg_gain, cls_gain, obj_gain
@@ -226,80 +250,60 @@ class Head(nn.Module):
 
         self.gr = gr
         self.auto_balance = auto_balance
-        self.inplace = inplace  # use in-place ops (e.g. slice assignment)
         self.sort_obj_iou = sort_obj_iou
         self.anchor_t = anchor_t
 
     def _initialize_biases(self, cf=None):
         """refer to https://arxiv.org/abs/1708.02002 section 3.3"""
-        for mi, s in zip(self.m, self.stride):  # from
+        for mi, s in zip(self.conv_list, self.stride):  # from
             b = mi.bias.view(self.n_anchors, -1).detach()  # conv.bias(255) to (3,85)
             b[:, 4] += math.log(8 / (640 / s) ** 2)  # obj (8 objects per 640 image)
             b[:, 5:] += math.log(0.6 / (self.n_classes - 0.999999)) if cf is None else torch.log(cf / cf.sum())  # cls
             mi.bias = torch.nn.Parameter(b.view(-1), requires_grad=True)
 
     def forward(self, features, gt_boxes=None, gt_cls=None, image_size=None):
-        z = []  # inference output
-        for i, x in enumerate(features):
-            x = self.m[i](x)  # conv
-            b, _, h, w = x.shape  # x(bs,255,20,20) to x(bs,3,20,20,85)
+        for i, f in enumerate(features):
+            f = self.conv_list[i](f)  # conv
+            b, _, h, w = f.shape
 
             # (b, n_anchors * output_size, h, w) -> (b, n_anchors, h, w, output_size)
-            x = x.view(b, self.n_anchors, self.output_size, h, w).permute(0, 1, 3, 4, 2).contiguous()
+            f = f.view(b, self.n_anchors, self.output_size, h, w).permute(0, 1, 3, 4, 2).contiguous()
+            features[i] = f
 
-            if not self.training:  # post process
-                grid = self.grid[i]
-                anchor_grid = self.anchor_grid[i]
-                if grid.shape[2:4] != x.shape[2:4]:
-                    grid, anchor_grid = self._make_grid(w, h, i)
+        if self.anchor_grid is None:  # only run once
+            self.anchor_grid = []
+            for i, f in enumerate(features):
+                h, w = f.shape[2:4]
+                anchor_grid = (self.anchors[i]).view((1, self.n_anchors, 1, 1, 2)).expand(1, self.n_anchors, h, w, 2)
+                self.anchor_grid.append(anchor_grid)
 
-                y = x.sigmoid()
-                if self.inplace:
-                    y[..., 0:2] = (y[..., 0:2] * 2 + grid) * self.stride[i]  # xy
-                    y[..., 2:4] = (y[..., 2:4] * 2) ** 2 * anchor_grid  # wh
-                else:  # for YOLOv5 on AWS Inferentia https://github.com/ultralytics/yolov5/pull/2953
-                    xy, wh, conf = y.split((2, 2, self.n_classes + 1), 4)  # y.tensor_split((2, 4, 5), 4)  # torch 1.8.0
-                    xy = (xy * 2 + grid) * self.stride[i]  # xy
-                    wh = (wh * 2) ** 2 * anchor_grid  # wh
-                    y = torch.cat((xy, wh, conf), 4)
-                z.append(y.view(b, -1, self.output_size))
-                self.grid[i] = grid
-                self.anchor_grid[i] = anchor_grid
-
-            features[i] = x
+        for i, f in enumerate(features):
+            xy, wh, _ = f.split((2, 2, self.n_classes + 1), -1)
+            xy = 2 * xy.sigmoid() - 0.5
+            wh = (2 * wh.sigmoid()) ** 2 * self.anchor_grid[i]
+            features[i] = torch.cat([xy, wh, _], -1)
 
         loss = None
 
         if self.training:
             loss = self.loss(features, gt_boxes, gt_cls, image_size)
-            return features, loss
+        return features, loss
 
-        else:
-            return torch.cat(z, 1), loss
-
-    def _make_grid(self, nx=20, ny=20, i=0):
-        shape = 1, self.n_anchors, ny, nx, 2  # grid shape
-        y, x = torch.arange(ny).to(self.anchors[i]), torch.arange(nx).to(self.anchors[i])
-        yv, xv = torch.meshgrid(y, x, indexing='ij')
-        grid = torch.stack((xv, yv), 2).expand(shape) - 0.5  # add grid offset, i.e. y = 2.0 * x - 0.5
-        anchor_grid = (self.anchors[i] * self.stride[i]).view((1, self.n_anchors, 1, 1, 2)).expand(shape)
-        return grid, anchor_grid
-
-    def loss(self, preds, gt_boxes, gt_cls, image_size):  # predictions, targets
+    def loss(self, features, gt_boxes, gt_cls, image_size):  # predictions, targets
         """
 
         Args:
-            preds (List[torch.Tensor]): n_features * (b, n_anchors, h, w, 4 + 1 + n_class)
+            features (List[torch.Tensor]): n_features * (b, n_anchors, h, w, 4 + 1 + n_class)
 
         Returns:
 
         """
-        device = preds[0].device
+        device = features[0].device
         cls_loss = torch.zeros(1, device=device)  # class loss
         reg_loss = torch.zeros(1, device=device)  # box loss
         obj_loss = torch.zeros(1, device=device)  # object loss
 
-        feature_sizes = [torch.tensor(_.shape[2:4], device=device) for _ in preds]
+        feature_sizes = [torch.tensor(_.shape[2:4], device=device) for _ in features]
         targets = []
         for _, (boxes, cls) in enumerate(zip(gt_boxes, gt_cls)):
             # top xyxy to center xywh
@@ -330,7 +334,7 @@ class Head(nn.Module):
             # [1, 1], [1, -1], [-1, 1], [-1, -1],  # jk,jm,lk,lm
         ], device=targets.device).float() * g  # offsets
 
-        for i, (pi, anchors, hw) in enumerate(zip(preds, self.anchors, feature_sizes)):
+        for i, (pi, anchors, hw) in enumerate(zip(features, self.anchors, feature_sizes)):
             if not nt:
                 continue
 
@@ -361,25 +365,23 @@ class Head(nn.Module):
                 gi, gj = gij.T  # grid indices
                 gi, gj = gi.clamp_(0, hw[0] - 1), gj.clamp_(0, hw[1] - 1)
 
+                # reg: xi - i
                 gt_reg = torch.cat((gxy - gij, gwh), 1)
-
                 pxy, pwh, _, pcls = pi[b, a, gj, gi].split((2, 2, 1, self.n_classes), 1)  # target-subset of predictions
 
                 # Regression
-                pxy = pxy.sigmoid() * 2 - 0.5
-                pwh = (pwh.sigmoid() * 2) ** 2 * anchors[a]
-                pbox = torch.cat((pxy, pwh), 1)  # predicted box
-                iou = bbox_iou(pbox, gt_reg, CIoU=True, xywh=True).squeeze()
+                det_reg = torch.cat((pxy, pwh), 1)  # predicted box
+                iou = bbox_iou(det_reg, gt_reg, CIoU=True, xywh=True).squeeze()     # 1D
 
-                # box1 = pbox
-                # box2 = tbox[i]
+                # box1 = det_reg
+                # box2 = gt_reg
                 # (x1, y1, w1, h1), (x2, y2, w2, h2) = box1.chunk(4, 1), box2.chunk(4, 1)
                 # w1_, h1_, w2_, h2_ = w1 / 2, h1 / 2, w2 / 2, h2 / 2
                 # b1_x1, b1_x2, b1_y1, b1_y2 = x1 - w1_, x1 + w1_, y1 - h1_, y1 + h1_
                 # b2_x1, b2_x2, b2_y1, b2_y2 = x2 - w2_, x2 + w2_, y2 - h2_, y2 + h2_
                 # box1 = torch.cat([b1_x1, b1_y1, b1_x2, b1_y2], 1)
                 # box2 = torch.cat([b2_x1, b2_y1, b2_x2, b2_y2], 1)
-                # iou = torchvision.ops.complete_box_iou(box1, box2)
+                # iou = torchvision.ops.complete_box_iou(box1, box2)    # 2D
                 # iou = iou[range(len(pbox)), range(len(pbox))]
 
                 reg_loss += (1.0 - iou).mean()  # iou loss
