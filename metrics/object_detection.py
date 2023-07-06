@@ -32,7 +32,7 @@ class Area:
         return (np.minimum(box1[:, None, 2:], box2[:, 2:]) - np.maximum(box1[:, None, :2], box2[:, :2])).clip(0).prod(2)
 
     @classmethod
-    def union_areas(cls, box1, box2, inter_area=None):
+    def union_areas(cls, box1, box2, inter=None):
         """Area(box1 | box2)
 
         Arguments:
@@ -44,11 +44,11 @@ class Area:
         """
         area1 = cls.real_areas(box1)
         area2 = cls.real_areas(box2)
-        if inter_area is None:
-            inter_area = cls.intersection_areas(box1, box2)
+        if inter is None:
+            inter = cls.intersection_areas(box1, box2)
 
         xv, yv = np.meshgrid(area1, area2)
-        return xv.T + yv.T - inter_area
+        return xv.T + yv.T - inter
 
     @staticmethod
     def outer_areas(box1, box2):
@@ -62,6 +62,37 @@ class Area:
             outer_areas(np.array): shape=(N, M)
         """
         return (np.maximum(box1[:, None, 2:], box2[:, 2:]) - np.minimum(box1[:, None, :2], box2[:, :2])).clip(0).prod(2)
+
+    @staticmethod
+    def intersection_areas1D(box1, box2):
+        b1_x1, b1_y1, b1_x2, b1_y2 = box1.T
+        b2_x1, b2_y1, b2_x2, b2_y2 = box2.T
+
+        return (np.minimum(b1_x2, b2_x2) - np.maximum(b1_x1, b2_x1)).clip(0) * (np.minimum(b1_y2, b2_y2) - np.maximum(b1_y1, b2_y1)).clip(0)
+
+    @classmethod
+    def union_areas1D(cls, box1, box2, inter=None):
+        area1 = cls.real_areas(box1)
+        area2 = cls.real_areas(box2)
+        if inter is None:
+            inter = cls.intersection_areas1D(box1, box2)
+
+        return area1 + area2 - inter
+
+    @staticmethod
+    def outer_areas1D(box1, box2):
+        """outer rectangle area
+
+        Args:
+            box1(np.array): shape=(N, 4), 4 means xyxy.
+            box2(np.array): shape=(M ,4), 4 means xyxy.
+
+        Returns:
+            outer_areas(np.array): shape=(N, M)
+        """
+        b1_x1, b1_y1, b1_x2, b1_y2 = box1.T
+        b2_x1, b2_y1, b2_x2, b2_y2 = box2.T
+        return (np.maximum(b1_x2, b2_x2) - np.minimum(b1_x1, b2_x1)).clip(0) * (np.maximum(b1_y2, b2_y2) - np.minimum(b1_y1, b2_y1)).clip(0)
 
 
 class Overlap:
@@ -110,7 +141,7 @@ class Iou:
             box2(np.array): shape=(M ,4), 4 means xyxy.
 
         Returns:
-            iou_box(np.array): shape=(N, M)
+            iou_mat(np.array): shape=(N, M)
         """
         box1, box2 = np.array(box1), np.array(box2)
 
@@ -196,6 +227,75 @@ class Iou:
 
         return diou - a * v
 
+    @staticmethod
+    def iou1D(box1, box2, inter=None, union=None):
+        """box1 and box2 must have the same shape
+
+        Args:
+            box1: (N, 4)
+            box2: (N, 4)
+            inter:
+            union:
+
+        Returns:
+            iou_mat(np.array): shape=(N, )
+        """
+
+        if inter is None:
+            inter = Area.intersection_areas1D(box1, box2)
+
+        if union is None:
+            union = Area.union_areas1D(box1, box2, inter)
+
+        return inter / union
+
+    @staticmethod
+    def siou1D(box1, box2):
+        area2 = Area.real_areas(box2)
+        inter = Area.intersection_areas1D(box1, box2)
+
+        return inter / (area2 + 1E-12)
+
+    @classmethod
+    def giou1D(cls, box1, box2):
+        outer = Area.outer_areas1D(box1, box2)
+        inter = Area.intersection_areas1D(box1, box2)
+        union = Area.union_areas1D(box1, box2)
+        iou = cls.iou1D(box1, box2, inter=inter, union=union)
+
+        return iou - (outer - union) / outer
+
+    @classmethod
+    def diou1D(cls, box1, box2, iou=None, eps=1e-7):
+        b1_x1, b1_y1, b1_x2, b1_y2 = box1.T
+        b2_x1, b2_y1, b2_x2, b2_y2 = box2.T
+
+        c = (np.maximum(b1_x2, b2_x2) - np.minimum(b1_x1, b2_x1)) ** 2 + (np.maximum(b1_y2, b2_y2) - np.minimum(b1_y1, b2_y1)) ** 2 + eps
+        d = ((b2_x1 - b1_x1 + b2_x2 - b1_x2) ** 2 + (b2_y1 - b1_y1 + b2_y2 - b1_y2) ** 2) / 4
+
+        if iou is None:
+            iou = cls.iou1D(box1, box2)
+
+        return iou - d / c
+
+    @classmethod
+    def ciou1D(cls, box1, box2, a=None, v=None, eps=1e-7):
+        iou = cls.iou1D(box1, box2)
+        diou = cls.diou1D(box1, box2, iou=iou, eps=eps)
+
+        if v is None:
+            b1_x1, b1_y1, b1_x2, b1_y2 = box1.T
+            b2_x1, b2_y1, b2_x2, b2_y2 = box2.T
+            w1, h1 = b1_x2 - b1_x1, b1_y2 - b1_y1
+            w2, h2 = b2_x2 - b2_x1, b2_y2 - b2_y1
+
+            v = (4 / np.pi ** 2) * ((np.arctan(w2 / h2) - np.arctan(w1 / h1)) ** 2)
+
+        if a is None:
+            a = v / (1 - iou + v + eps)
+
+        return diou - a * v
+
 
 class ConfusionMatrix:
     def __init__(self, iou_method=None, **iou_method_kwarg):
@@ -257,7 +357,7 @@ class ConfusionMatrix:
         return dict(
             tp=tp,
             acc_tp=np.sum(tp),
-            iou=iou,       # have been sorted by conf
+            iou=iou,  # have been sorted by conf
         )
 
     def cp(self, gt_box):
