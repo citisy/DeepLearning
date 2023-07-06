@@ -7,6 +7,7 @@ from enum import Enum
 from pathlib import Path
 from collections import defaultdict
 from utils import os_lib, converter
+from typing import List
 
 
 class DataRegister(Enum):
@@ -24,7 +25,7 @@ class DataRegister(Enum):
     BASE64 = 3
 
 
-def get_image(obj, image_type):
+def get_image(obj: str, image_type):
     if image_type == DataRegister.PATH:
         image = obj
     elif image_type == DataRegister.ARRAY:
@@ -59,6 +60,7 @@ class DataLoader:
 
     def __init__(self, data_dir):
         self.data_dir = data_dir
+        # self.convert_func = lambda x: x
 
     def __call__(self, set_type=None, image_type=None, generator=True, **kwargs):
         """
@@ -69,7 +71,7 @@ class DataLoader:
                 other set_type -> [set_type]
             image_type(DataRegister): `DataRegister.PATH` or `DataRegister.ARRAY`
                 PATH -> a str of image abs path
-                IMAGE -> a np.ndarray of image, read from cv2, as (h, w, c)
+                ARRAY -> a np.ndarray of image, read from cv2, as (h, w, c)
             generator(bool):
                 return a generator if True else a list
 
@@ -100,7 +102,7 @@ class DataLoader:
                 r.append(self._call(set_type, image_type, **kwargs))
 
             else:
-                for _ in tqdm(self._call(set_type, image_type, **kwargs)):
+                for _ in tqdm(self._call(set_type, image_type, **kwargs), desc=f'Load {set_type.value} dataset'):
                     tmp.append(_)
 
                 r.append(tmp)
@@ -182,6 +184,7 @@ class DataSaver:
 
 
 class DataGenerator:
+    """generate datasets for training, testing and valuating"""
     image_suffix = 'jpg'
 
     def __init__(self, data_dir=None, image_dir=None, label_dir=None):
@@ -189,14 +192,37 @@ class DataGenerator:
         self.image_dir = image_dir
         self.label_dir = label_dir
 
+    def gen_sets(self, **kwargs):
+        """please implement this function"""
+        return self._gen_sets(**kwargs)
+
     @staticmethod
     def _gen_sets(
-            data, idx=None, id_distinguish='', id_sort=False, save_dir=None,
-            set_names=('train', 'test'), split_ratio=(0.8, 1), **kwargs
+            iter_data, idx=None, id_distinguish='', id_sort=False, save_dir=None,
+            set_names=('train', 'test'), split_ratio=(0.8, 1.), **kwargs
     ):
+        """
+
+        Args:
+            iter_data (List[str]):
+            idx (List[str]): be used for sorting
+            id_distinguish:
+                the image file name where having same id must not be split to different sets.
+                e.g. id_distinguish = '_', the fmt of image file name would like '{id}_{sub_id}.png'
+            id_sort: if id_distinguish is set, True for sorting by sub_ids and sub_ids must be int type
+            save_dir: save_dir
+            set_names: save txt name
+            split_ratio:
+                split ratio for each set, the shape must apply for set_names
+                if id_distinguish is set, the ration is num of ids not files
+            **kwargs:
+
+        Returns:
+
+        """
         if id_distinguish:
             tmp = defaultdict(list)
-            for i, (d, _idx) in enumerate(zip(data, idx)):
+            for i, (d, _idx) in enumerate(zip(iter_data, idx)):
                 stem = Path(_idx).stem
                 _ = stem.split(id_distinguish)
                 a, b = id_distinguish.join(_[:-1]), _[-1]
@@ -208,7 +234,7 @@ class DataGenerator:
                     for vv in v:
                         try:
                             vv[1] = int(vv[1])
-                        except:
+                        except ValueError:
                             pass
 
                     tmp[k] = sorted(v, key=lambda x: x[1])
@@ -228,17 +254,37 @@ class DataGenerator:
 
                 with open(f'{save_dir}/{set_name}.txt', 'w', encoding='utf8') as f:
                     for candidate_id in candidate_ids:
-                        f.write(data[candidate_id] + '\n')
+                        f.write(iter_data[candidate_id] + '\n')
 
                 i = j
 
         else:
-            np.random.shuffle(data)
+            np.random.shuffle(iter_data)
 
             i = 0
             for j, set_name in zip(split_ratio, set_names):
-                j = int(j * len(data))
+                j = int(j * len(iter_data))
                 with open(f'{save_dir}/{set_name}.txt', 'w', encoding='utf8') as f:
-                    f.write('\n'.join(data[i:j]))
+                    f.write('\n'.join(iter_data[i:j]))
 
                 i = j
+
+
+class DataVisualizer:
+    def __init__(self, save_dir):
+        self.save_dir = save_dir
+        os_lib.mk_dir(save_dir)
+
+    def __call__(self, *iter_data, cls_alias=None):
+        for rets in tqdm(zip(*iter_data), desc='visual'):
+            images = []
+            _id = ''
+            for r in rets:
+                images.append(self.visual_one_image(r, cls_alias))
+                _id = r['_id']
+
+            image = np.concatenate(images, 1)
+            os_lib.Saver(verbose=False).save_img(image, f'{self.save_dir}/{_id}')
+
+    def visual_one_image(self, r, cls_alias=None):
+        raise NotImplementedError

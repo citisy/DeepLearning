@@ -5,17 +5,8 @@ import numpy as np
 from pathlib import Path
 from tqdm import tqdm
 from typing import Iterable
-from utils import os_lib, converter
-from cv_data_parse.base import DataRegister, DataLoader, DataSaver, DataGenerator, get_image, save_image
-
-
-def _default_convert(x):
-    h, w, c = x['image'].shape
-
-    # ref labels convert to abs labels
-    x['bboxes'] = converter.CoordinateConvert.mid_xywh2top_xyxy(x['bboxes'], wh=(w, h), blow_up=True)
-
-    return x
+from utils import os_lib, converter, visualize
+from cv_data_parse.base import DataRegister, DataLoader, DataSaver, DataGenerator, get_image, save_image, DataVisualizer
 
 
 class Loader(DataLoader):
@@ -56,6 +47,15 @@ class Loader(DataLoader):
 
     image_suffix = 'png'
 
+    def convert_func(self, x):
+        if isinstance(x['image'], np.ndarray):
+            h, w, c = x['image'].shape
+
+            # ref labels convert to abs labels
+            x['bboxes'] = converter.CoordinateConvert.mid_xywh2top_xyxy(x['bboxes'], wh=(w, h), blow_up=True)
+
+        return x
+
     def _call(self, set_type, image_type, task='', set_task='', **kwargs):
         """See Also `cv_data_parse.base.DataLoader._call`
 
@@ -81,6 +81,7 @@ class Loader(DataLoader):
     def load_total(self, image_type, task='', convert_func=None, **kwargs):
         for img_fp in Path(f'{self.data_dir}/images/{task}').glob(f'*.{self.image_suffix}'):
             image_path = os.path.abspath(img_fp)
+            img_fp = Path(image_path)
             image = get_image(image_path, image_type)
             labels = np.genfromtxt(image_path.replace('images', 'labels').replace(f'.{self.image_suffix}', '.txt')).reshape((-1, 5))
 
@@ -89,21 +90,24 @@ class Loader(DataLoader):
             bboxes = labels[:, 1:]
             classes = labels[:, 0].astype(int)
 
-            if image_type == DataRegister.ARRAY and convert_func:
-                dic = convert_func(dict(bboxes=bboxes, image=image))
-                bboxes = dic['bboxes']
-
-            yield dict(
+            ret = dict(
                 _id=img_fp.name,
+                image_dir=str(img_fp.parent),
                 image=image,
                 bboxes=bboxes,
                 classes=classes,
             )
 
+            if convert_func:
+                ret = convert_func(ret)
+
+            yield ret
+
     def load_set(self, set_type, image_type, set_task='', convert_func=None, sub_dir='image_sets', **kwargs):
         with open(f'{self.data_dir}/{sub_dir}/{set_task}/{set_type.value}.txt', 'r', encoding='utf8') as f:
             for line in f.read().strip().split('\n'):
                 image_path = os.path.abspath(line)
+                img_fp = Path(image_path)
                 image = get_image(image_path, image_type)
                 labels = np.genfromtxt(image_path.replace('images', 'labels').replace(f'.{self.image_suffix}', '.txt')).reshape((-1, 5))
 
@@ -112,28 +116,33 @@ class Loader(DataLoader):
                 bboxes = labels[:, 1:]
                 classes = labels[:, 0]
 
-                if image_type == DataRegister.ARRAY and convert_func:
-                    dic = convert_func(dict(bboxes=bboxes, image=image))
-                    bboxes = dic['bboxes']
-
-                yield dict(
-                    _id=Path(line).name,
+                ret = dict(
+                    _id=img_fp.name,
+                    image_dir=str(img_fp.parent),
                     image=image,
                     bboxes=bboxes,  # (-1, 4)
                     classes=classes,
                 )
 
-    def load_full_labels(self, task='', sub_dir='full_labels'):
-        """format of saved label txt like (class, conf, x1, y1, x2, y2, w, h)
+                if convert_func:
+                    ret = convert_func(ret)
+
+                yield ret
+
+    def load_full_labels(self, task='', sub_dir='full_labels', convert_func=None):
+        """format of saved label txt like (class, x1, y1, x2, y2, conf, w, h)
         only return labels but no images. can use _id to load images"""
         for fp in Path(f'{self.data_dir}/{sub_dir}/{task}').glob('*.txt'):
-            # (class_, conf, w, h, x1, y1, x2, y2)
+            img_fp = Path(fp.name.replace('.txt', '.png'))
+
+            # (class, x1, y1, x2, y2, conf, w, h)
             labels = np.genfromtxt(fp)
             if len(labels.shape) == 1:
                 labels = labels[None, :]
 
             ret = dict(
-                _id=fp.name.replace('.txt', '.png'),
+                _id=img_fp.name,
+                image_dir=str(img_fp.parent),
                 task=task,
                 classes=labels[:, 0],
                 bboxes=labels[:, 1:5],
@@ -144,6 +153,10 @@ class Loader(DataLoader):
                     confs=labels[:, 5],
                     image_shape=labels[:, 6:8],  # (w, h)
                 )
+
+            if convert_func:
+                ret = convert_func(ret)
+
             yield ret
 
 
@@ -198,6 +211,9 @@ class Saver(DataSaver):
             set_type:
             image_type:
             convert_func:
+                as inputs, the bboxes of standard dataset type is abs top xyxy usually,
+                but as outputs, the bboxes of office yolov5 type is ref center xywh,
+                so can be use a convert function to change the bboxes
             **kwargs:
 
         Returns:
@@ -225,14 +241,14 @@ class Saver(DataSaver):
             save_image(image, image_path, image_type)
             label = np.c_[classes, bboxes]
 
-            np.savetxt(label_path, label, fmt='%.4f')
+            np.savetxt(label_path, label, fmt='%.6f')
 
             f.write(image_path + '\n')
 
         f.close()
 
-    def save_full_labels(self, iter_data, convert_func=_default_convert):
-        """format of saved label txt like (class, conf, x1, y1, x2, y2, w, h)
+    def save_full_labels(self, iter_data, sub_dir='full_labels', task='', convert_func=None):
+        """format of saved label txt like (class, x1, y1, x2, y2, conf, w, h)
 
         Args:
             iter_data (Iterable[dict]):
@@ -241,10 +257,10 @@ class Saver(DataSaver):
             convert_func
 
         """
-        for i, dic in enumerate(tqdm(iter_data)):
-            tmp_dir = f'{self.data_dir}/full_labels/{dic["task"]}'
-            os_lib.mk_dir(tmp_dir)
+        save_dir = f'{self.data_dir}/{sub_dir}/{task}'
+        os_lib.mk_dir(save_dir)
 
+        for i, dic in enumerate(tqdm(iter_data)):
             if convert_func:
                 dic = convert_func(dic)
 
@@ -258,13 +274,13 @@ class Saver(DataSaver):
 
             labels = np.c_[
                 classes,
-                dic['confs'] if 'confs' in dic else [1] * len(classes),
                 bboxes,
+                dic['confs'] if 'confs' in dic else [1] * len(classes),
                 [w] * len(classes),
                 [h] * len(classes),
             ]
 
-            np.savetxt(f'{tmp_dir}/{Path(dic["_id"]).stem}.txt', labels, fmt='%d')
+            np.savetxt(f'{save_dir}/{Path(dic["_id"]).stem}.txt', labels, fmt='%.6f')
 
 
 class Generator(DataGenerator):
@@ -273,7 +289,7 @@ class Generator(DataGenerator):
 
     def gen_sets(self, label_dirs=(), image_dirs=(), save_dir='', set_task='',
                  id_distinguish='', id_sort=False,
-                 set_names=('train', 'val'), split_ratio=(0.8, 1)):
+                 set_names=('train', 'val'), split_ratio=(0.8, 1), **kwargs):
         """
 
         Args:
@@ -349,3 +365,21 @@ class Generator(DataGenerator):
                 data += tmp
 
         self._gen_sets(data, idx, id_distinguish, id_sort, save_dir, set_names, split_ratio)
+
+
+class Visualizer(DataVisualizer):
+    def visual_one_image(self, r, cls_alias=None):
+        image = r['image']
+        bboxes = r['bboxes']
+        classes = r['classes']
+        colors = [visualize.get_color_array(int(cls)) for cls in classes]
+
+        if cls_alias:
+            classes = [cls_alias[_] for _ in classes]
+
+        if 'confs' in r:
+            classes = [f'{cls} {conf:.6f}' for cls, conf in zip(classes, r['confs'])]
+
+        image = visualize.ImageVisualize.label_box(image, bboxes, classes, colors=colors, line_thickness=2)
+
+        return image
