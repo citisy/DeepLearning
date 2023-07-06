@@ -45,7 +45,8 @@ class ModuleInfo:
 
 
 class EarlyStopping:
-    def __init__(self, patience=30, verbose=True, stdout_method=print):
+    def __init__(self, thres=0.005, patience=30, verbose=True, stdout_method=print):
+        self.thres = thres
         self.best_fitness = 0.0
         self.best_epoch = 0
         self.acc_epoch = 0
@@ -54,13 +55,13 @@ class EarlyStopping:
         self.verbose = verbose
         self.stdout_method = stdout_method
 
-    def __call__(self, epoch, fitness, thres=10e-3):
+    def __call__(self, epoch, fitness, ):
         if fitness >= self.best_fitness:
             self.best_epoch = epoch
             self.best_fitness = fitness
             self.acc_epoch = 0
 
-        elif self.best_fitness - fitness < thres:
+        elif self.best_fitness - fitness < self.thres:
             self.acc_epoch += epoch - self.last_epoch
 
         self.last_epoch = epoch
@@ -82,11 +83,18 @@ def initialize_layers(module):
             m.eps = 1e-3
             m.momentum = 0.03
 
-        if t in [nn.Hardswish, nn.LeakyReLU, nn.ReLU, nn.ReLU6, nn.SiLU]:
+        elif t in [nn.Hardswish, nn.LeakyReLU, nn.ReLU, nn.ReLU6, nn.SiLU]:
             m.inplace = True
+
+        elif t is nn.Conv2d:
+            pass
 
 
 class Export:
+    @staticmethod
+    def to_pickle(model):
+        pass
+
     @staticmethod
     def to_jit(model, trace_input):
         with torch.no_grad():
