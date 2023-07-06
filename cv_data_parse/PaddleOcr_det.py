@@ -190,7 +190,7 @@ class Generator(DataGenerator):
     def gen_sets(
             self, label_files=(), save_dir='', set_task='',
             id_distinguish='', id_sort=False,
-            set_names=('train', 'test'), split_ratio=(0.8, 1)
+            set_names=('train', 'test'), split_ratio=(0.8, 1), **kwargs
     ):
         """generate new set for training or testing
 

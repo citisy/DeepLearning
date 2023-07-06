@@ -45,14 +45,14 @@ class LeNet_mnist(ClsProcess):
 
         loader = Loader('data/mnist')
 
-        return loader(set_type=DataRegister.TRAIN, image_type=DataRegister.IMAGE, generator=False)[0]
+        return loader(set_type=DataRegister.TRAIN, image_type=DataRegister.ARRAY, generator=False)[0]
 
     def get_val_data(self):
         from cv_data_parse.Mnist import Loader
 
         loader = Loader('data/mnist')
 
-        return loader(set_type=DataRegister.TEST, image_type=DataRegister.IMAGE, generator=False)[0]
+        return loader(set_type=DataRegister.TEST, image_type=DataRegister.ARRAY, generator=False)[0]
 
     def data_augment(self, ret):
         return ret
@@ -95,14 +95,14 @@ class LeNet_cifar(ClsProcess):
 
         loader = Loader('data/cifar-10-batches-py')
 
-        return loader(set_type=DataRegister.TRAIN, image_type=DataRegister.IMAGE, generator=False)
+        return loader(set_type=DataRegister.TRAIN, image_type=DataRegister.ARRAY, generator=False)
 
     def get_val_data(self):
         from cv_data_parse.Cifar import Loader
 
         loader = Loader('data/cifar-10-batches-py')
 
-        return loader(set_type=DataRegister.TEST, image_type=DataRegister.IMAGE, generator=False)
+        return loader(set_type=DataRegister.TEST, image_type=DataRegister.ARRAY, generator=False)
 
 
 class AlexNet_ImageNet(ClsProcess):
@@ -442,14 +442,14 @@ class IGC_cifar(ClsProcess):
 
         loader = Loader('data/cifar-10-batches-py')
 
-        return loader(set_type=DataRegister.TRAIN, image_type=DataRegister.IMAGE, generator=False)[0]
+        return loader(set_type=DataRegister.TRAIN, image_type=DataRegister.ARRAY, generator=False)[0]
 
     def get_val_data(self):
         from cv_data_parse.Cifar import Loader
 
         loader = Loader('data/cifar-10-batches-py')
 
-        return loader(set_type=DataRegister.TEST, image_type=DataRegister.IMAGE, generator=False)[0]
+        return loader(set_type=DataRegister.TEST, image_type=DataRegister.ARRAY, generator=False)[0]
 
 
 class CondenseNet_ImageNet(ClsProcess):

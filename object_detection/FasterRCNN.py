@@ -34,7 +34,7 @@ roi_config = dict(
 )
 
 
-class FasterRCNN(nn.Module):
+class Model(nn.Module):
     """See Also `torchvision.models.detection.faster_rcnn`"""
 
     def __init__(
@@ -638,6 +638,3 @@ def od_loss(pos_det_reg, pos_gt_reg, det_cls, gt_cls, n_sample, a=0.5):
         cls_loss = F.cross_entropy(det_cls, gt_cls)
 
     return a * reg_loss + (1 - a) * cls_loss
-
-
-Model = FasterRCNN

@@ -1,8 +1,10 @@
 import logging
 import os
 import copy
+import sys
 import cv2
 import torch
+import math
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
@@ -294,7 +296,7 @@ class ClsProcess(Process):
         loader = Loader(f'data/ImageNet2012')
         convert_class = {7: 0, 40: 1}
 
-        data = loader(set_type=DataRegister.TRAIN, image_type=DataRegister.IMAGE, generator=False,
+        data = loader(set_type=DataRegister.TRAIN, image_type=DataRegister.ARRAY, generator=False,
                       wnid=[
                           'n02124075',  # Egyptian cat,
                           'n02110341'  # dalmatian, coach dog, carriage dog
@@ -346,8 +348,8 @@ class OdProcess(Process):
         ret.update(dst=self.input_size)
         ret.update(Apply([
             scale.LetterBox(),
-            pixel_perturbation.MinMax(),
-            pixel_perturbation.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+            # pixel_perturbation.MinMax(),
+            # pixel_perturbation.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
             channel.HWC2CHW()
         ])(**ret))
         return ret
@@ -359,8 +361,8 @@ class OdProcess(Process):
         ret.update(dst=self.input_size)
         ret.update(Apply([
             scale.LetterBox(),
-            pixel_perturbation.MinMax(),
-            pixel_perturbation.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+            # pixel_perturbation.MinMax(),
+            # pixel_perturbation.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
             channel.HWC2CHW()
         ])(**ret))
         return ret
@@ -414,7 +416,12 @@ class OdProcess(Process):
         del g
 
         lrf = 0.01
-        lf = lambda x: (1 - x / max_epoch) * (1.0 - lrf) + lrf
+
+        # lf = lambda x: (1 - x / max_epoch) * (1.0 - lrf) + lrf
+
+        # cos_lr
+        lf = lambda x: ((1 - math.cos(x * math.pi / max_epoch)) / 2) * (lrf - 1) + 1
+
         scheduler = optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lf)
         scheduler.last_epoch = -1
 
@@ -439,7 +446,7 @@ class OdProcess(Process):
 
                 # note that, if the images have the same shape, minmax after stack if possible
                 # it can reduce about 20 seconds per epoch to voc dataset
-                # images = images / 255
+                images = images / 255
 
                 # note that, amp method can make the model run in dtype of half
                 # even though input has dtype of torch.half and weight has dtype of torch.float
@@ -502,7 +509,7 @@ class OdProcess(Process):
             for rets in tqdm(dataloader, desc='val'):
                 images = [torch.Tensor(ret['image']).to(self.device) for ret in rets]
                 images = torch.stack(images)
-                # images = images / 255
+                images = images / 255
 
                 outputs = self.model(images)
                 outputs = [{k: v.to('cpu').numpy() for k, v in t.items()} for t in outputs]
@@ -513,6 +520,10 @@ class OdProcess(Process):
 
                     if visualize:
                         self.visualize(ret, output, save_name=f'{self.save_result_dir}/{ret["_id"]}')
+
+                    output = configs.merge_dict(ret, output)
+                    ret = self.val_data_restore(ret)
+                    output = self.val_data_restore(output)
 
                     gt_rets.append(dict(
                         _id=ret['_id'],
@@ -534,7 +545,7 @@ class OdProcess(Process):
 
     def metric(self, dataset, batch_size=128, **kwargs):
         gt_rets, det_rets = self.predict(dataset, batch_size, **kwargs)
-        df = object_detection.quick_metric(gt_rets, det_rets, verbose=False)
+        df = object_detection.quick_metric(gt_rets, det_rets, save_path=f'{self.model_dir}/{self.dataset_version}.csv', verbose=False)
 
         result = dict(
             per_class_result=df,

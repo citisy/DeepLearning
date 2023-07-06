@@ -53,7 +53,7 @@ def expand_dict(d: dict):
 
     def cur_dict(cur_dic, new_dic):
         for k, v in cur_dic.items():
-            new_dic.update(cur_str(k, v, new_dic))
+            new_dic = merge_dict(new_dic, cur_str(k, v, new_dic))
 
         return new_dic
 
@@ -198,14 +198,14 @@ def logger_init(config={}, log_dir=None):
                 'level': 'DEBUG',
                 'formatter': 'standard',
                 'class': 'logging.StreamHandler',
-                'stream': 'ext://sys.stdout',
+                'stream': 'ext://sys.stderr',
             },
 
             # 简单的无格式屏幕输出流
             'print': {
                 'level': 'DEBUG',
                 'class': 'logging.StreamHandler',
-                'stream': 'ext://sys.stdout',
+                'stream': 'ext://sys.stderr',
             },
         },
         'loggers': {

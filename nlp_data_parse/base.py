@@ -10,9 +10,11 @@ class DataRegister(Enum):
     TRAIN = 'train'
     TEST = 'test'
     VAL = 'val'
+    DEV = 'dev'
 
     PATH = 1
-    IMAGE = 2
+    ARRAY = 2
+    BASE64 = 3
 
 
 class DataLoader:
@@ -54,3 +56,7 @@ class DataLoader:
 
     def _call(self, set_type, **kwargs):
         raise NotImplementedError
+
+
+class DataSaver:
+    pass

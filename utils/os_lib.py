@@ -240,7 +240,7 @@ class Loader:
         from pdf2image import convert_from_path, convert_from_bytes
 
         dpi = 72 * scale_ratio
-        if isinstance(obj, str):
+        if isinstance(obj, (str, Path)):
             images = convert_from_path(obj, dpi=dpi)
         else:
             images = convert_from_bytes(obj, dpi=dpi)
@@ -270,7 +270,6 @@ class CacheToFile:
         saver.auto_save(obj, path)
 
     def delete_old(self, suffix=''):
-        """todo: would be raise exceptions in multiprocess while two process caching the same file in the same time"""
         if not self.max_size:
             return
 
@@ -280,7 +279,12 @@ class CacheToFile:
             ctime = [os.path.getctime(fp) for fp in caches]
             min_ctime = min(ctime)
             old_path = caches[ctime.index(min_ctime)]
-            os.remove(old_path)
+            try:
+                os.remove(old_path)
+            except FileNotFoundError:
+                # todo: if it occur, number of file would be greater than max_size
+                self.stdout_method('Two process were crashed while deleting file possibly')
+                return
 
             if self.verbose:
                 self.stdout_method(f'Have delete {old_path}!')

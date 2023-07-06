@@ -103,7 +103,7 @@ class Loader(DataLoader):
 
         elem = root.find('size')
         size = {subelem.tag: int(subelem.text) for subelem in elem}
-        # width, height, depth
+        # h, w, c
         size = (size['width'], size['height'], size['depth'])
 
         bboxes = []

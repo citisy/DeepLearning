@@ -38,7 +38,7 @@ class CoordinateConvert:
         """中心点xywh转换成顶点xyxy
 
         Args:
-            bbox(tuple): xywh, xy, middle coordinate, wh, width and height of object
+            bbox: xywh, xy, middle coordinate, wh, width and height of object
             wh(tuple): 原始图片宽高，如果传入，则根据blow_up进行转换
             blow_up(bool): 是否放大
 
@@ -58,7 +58,7 @@ class CoordinateConvert:
         """顶点xywh转换成顶点xyxy
 
         Args:
-            bbox(tuple): xywh, xy, left top coordinate, wh, width and height of object
+            bbox: xywh, xy, left top coordinate, wh, width and height of object
             wh(tuple): 原始图片宽高，如果传入，则根据blow_up进行转换
             blow_up(bool): 是否放大
 
@@ -78,7 +78,7 @@ class CoordinateConvert:
         """顶点xywh转中心点xywh
 
         Args:
-            bbox(tuple): xywh, xy, left top coordinate, wh, width and height of object
+            bbox: xywh, xy, left top coordinate, wh, width and height of object
             wh(tuple): 原始图片宽高，如果传入，则根据blow_up进行转换
             blow_up(bool): 是否放大
 
@@ -98,7 +98,7 @@ class CoordinateConvert:
         """顶点xyxy转顶点xywh
 
         Args:
-            bbox(tuple): xyxy, left top and right down
+            bbox: xyxy, left top and right down
             wh(tuple): 原始图片宽高，如果传入，则根据blow_up进行转换
             blow_up(bool): 是否放大
 
@@ -118,7 +118,7 @@ class CoordinateConvert:
         """顶点xyxy转换成中心点xywh
 
         Args:
-            bbox(tuple): xyxy, left top and right down
+            bbox: xyxy, left top and right down
             wh(tuple): 原始图片宽高，如果传入，则根据blow_up进行转换
             blow_up(bool): 是否放大
 
@@ -236,6 +236,11 @@ class DataConvert:
         return base64.b64decode(obj)
 
     @classmethod
+    def file_to_base64(cls, obj: str or Path):
+        with open(obj, 'rb') as f:
+            return cls.bytes_to_base64(f.read())
+
+    @classmethod
     def str_value_to_constant(cls, obj: dict):
         """
         >>> DataConvert.str_value_to_constant({0: '1', 1: '1.0', 2: 'true', 3: 'abc'})
@@ -296,7 +301,7 @@ class DataConvert:
         elif isinstance(obj, Path):
             return cls.file_to_md5(obj)
         else:
-            return cls.bytes_to_md5(bytes(obj))
+            return cls.str_to_md5(str(obj))
 
     @staticmethod
     def bytes_to_md5(obj: bytes):
@@ -311,7 +316,7 @@ class DataConvert:
         if sort:
             sort_keys = sorted(obj.keys())
             obj = {k: obj[k] for k in sort_keys}
-        return cls.bytes_to_md5(bytes(obj))
+        return cls.str_to_md5(str(obj))
 
     @classmethod
     def file_to_md5(cls, obj: str or Path):

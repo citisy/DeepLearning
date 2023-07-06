@@ -6,7 +6,7 @@ from . import object_detection, text_generation
 from utils import os_lib
 
 
-def det_quick_metrics(gt_iter_data, det_iter_data, save_path=None):
+def det_quick_metrics(gt_iter_data, det_iter_data, save_path=None, verbose=True, stdout_method=print):
     """
 
     Args:
@@ -45,15 +45,17 @@ def det_quick_metrics(gt_iter_data, det_iter_data, save_path=None):
     ret = object_detection.ap.mAP_thres_range(gt_boxes, det_boxes, confs)
     df = pd.DataFrame(ret)
     df = df.round(4)
-    print(df)
+
+    if verbose:
+        stdout_method(df)
 
     if save_path:
-        os_lib.saver.auto_save(df, save_path)
+        os_lib.Saver(verbose=verbose, stdout_method=stdout_method).auto_save(df, save_path)
 
     return df
 
 
-def rec_quick_metrics(gt_iter_data, det_iter_data, save_path=None):
+def rec_quick_metrics(gt_iter_data, det_iter_data, save_path=None, verbose=True, stdout_method=print):
     """
 
     Args:
@@ -115,11 +117,13 @@ def rec_quick_metrics(gt_iter_data, det_iter_data, save_path=None):
     ret.update({k: v.f_measure(det_cut_text, gt_cut_text) for k, v in _ret.items()})
 
     df = pd.DataFrame(ret).T
-    df = df.round(4)
-    print(df)
+    df = df.round(6)
+
+    if verbose:
+        stdout_method(df)
 
     if save_path:
-        os_lib.saver.auto_save(df, save_path)
+        os_lib.Saver(verbose=verbose, stdout_method=stdout_method).auto_save(df, save_path)
 
     return df
 
