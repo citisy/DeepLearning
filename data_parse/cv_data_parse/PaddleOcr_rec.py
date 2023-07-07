@@ -41,7 +41,7 @@ class Loader(DataLoader):
             .. code-block:: python
 
                 # get data
-                from cv_data_parse.PaddleOcr_rec import DataRegister, Loader
+                from data_parse.cv_data_parse.PaddleOcr_rec import DataRegister, Loader
 
                 loader = Loader('data/ppocr_icdar2015')
                 train_data = loader(set_type=DataRegister.TRAIN, image_type=DataRegister.ARRAY)[0]

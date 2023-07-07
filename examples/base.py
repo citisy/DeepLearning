@@ -16,8 +16,9 @@ from utils.visualize import ImageVisualize
 from utils.torch_utils import EarlyStopping, ModuleInfo, Export
 from utils.os_lib import MemoryInfo
 from metrics import classifier, object_detection
-from cv_data_parse.base import DataRegister
-from cv_data_parse.data_augmentation import crop, scale, geometry, pixel_perturbation, channel, RandomApply, Apply
+from data_parse.cv_data_parse.base import DataRegister
+from data_parse.cv_data_parse.data_augmentation import crop, scale, geometry, pixel_perturbation, RandomApply, Apply
+from data_parse.cv_data_parse.data_augmentation import channel
 
 configs.logger_init()
 
@@ -291,7 +292,7 @@ class ClsProcess(Process):
 
     def get_train_data(self):
         """example"""
-        from cv_data_parse.ImageNet import Loader
+        from data_parse.cv_data_parse.ImageNet import Loader
 
         loader = Loader(f'data/ImageNet2012')
         convert_class = {7: 0, 40: 1}
@@ -310,7 +311,7 @@ class ClsProcess(Process):
 
     def get_val_data(self):
         """example"""
-        from cv_data_parse.ImageNet import Loader
+        from data_parse.cv_data_parse.ImageNet import Loader
         loader = Loader(f'data/ImageNet2012')
         convert_class = {7: 0, 40: 1}
         cache_data = loader(set_type=DataRegister.VAL, image_type=DataRegister.PATH, generator=False)[0]
@@ -336,7 +337,7 @@ class OdProcess(Process):
 
     def get_train_data(self):
         """example"""
-        from cv_data_parse.Voc import Loader
+        from data_parse.cv_data_parse.Voc import Loader
 
         loader = Loader(f'data/VOC2012')
         data = loader(set_type=DataRegister.TRAIN, image_type=DataRegister.PATH, generator=False, task='')[0]
@@ -373,7 +374,7 @@ class OdProcess(Process):
 
     def get_val_data(self):
         """example"""
-        from cv_data_parse.Voc import Loader
+        from data_parse.cv_data_parse.Voc import Loader
 
         loader = Loader(f'data/VOC2012')
         data = loader(set_type=DataRegister.VAL, image_type=DataRegister.PATH, generator=False, task='')[0]

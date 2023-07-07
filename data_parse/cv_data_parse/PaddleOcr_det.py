@@ -4,7 +4,7 @@ import cv2
 import shutil
 import numpy as np
 from utils import os_lib
-from cv_data_parse.base import DataRegister, DataLoader, DataSaver, DataGenerator, get_image, save_image
+from .base import DataRegister, DataLoader, DataSaver, DataGenerator, get_image, save_image
 from tqdm import tqdm
 from pathlib import Path
 
@@ -25,7 +25,7 @@ class Loader(DataLoader):
         .. code-block:: python
 
             # get data
-            from cv_data_parse.PaddleOcr_det import DataRegister, Loader
+            from data_parse.cv_data_parse.PaddleOcr_det import DataRegister, Loader
 
             loader = Loader('data/ppocr_icdar2015')
             data = loader(set_type=DataRegister.ALL, generator=True, image_type=DataRegister.ARRAY)
@@ -60,7 +60,7 @@ class Loader(DataLoader):
             .. code-block:: python
 
                 # get data
-                from cv_data_parse.PaddleOcr import DataRegister, Loader
+                from data_parse.data_parse.cv_data_parse.PaddleOcr import DataRegister, Loader
 
                 loader = Loader('data/ppocr_icdar2015')
                 train_data = loader.load_det(set_type=DataRegister.TRAIN, image_type=DataRegister.ARRAY)
@@ -123,7 +123,7 @@ class Saver(DataSaver):
 
             # convert ICDAR2015 to PaddleOcr
             # load data from ICDAR2015
-            from cv_data_parse.Icdar import Loader
+            from data_parse.cv_data_parse.Icdar import Loader
             from utils.register import DataRegister
 
             loader = Loader('data/ICDAR2015')
@@ -218,7 +218,7 @@ class Generator(DataGenerator):
         Usage:
             .. code-block:: python
 
-                from cv_data_parse.PaddleOcr_det import Generator
+                from data_parse.cv_data_parse.PaddleOcr_det import Generator
 
                 # simple
                 # data_dir for save_dir

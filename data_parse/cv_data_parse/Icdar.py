@@ -30,7 +30,7 @@ class Icdar2015(DataLoader):
         .. code-block:: python
 
             # get data
-            from cv_data_parse.Icdar import DataRegister, Icdar2015 as Loader
+            from data_parse.cv_data_parse.Icdar import DataRegister, Icdar2015 as Loader
 
             loader = Loader('data/ICDAR2015')
             data = loader(set_type=DataRegister.ALL, generator=True, image_type=DataRegister.ARRAY)

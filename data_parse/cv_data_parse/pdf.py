@@ -1,7 +1,7 @@
 import re
 import numpy as np
 from utils import os_lib, converter
-from cv_data_parse.base import DataRegister, DataLoader, DataSaver
+from .base import DataRegister, DataLoader, DataSaver
 from pathlib import Path
 from tqdm import tqdm
 import fitz
@@ -18,7 +18,7 @@ class Loader(DataLoader):
         .. code-block:: python
 
             # get data
-            from cv_data_parse.pdf import DataRegister, Loader
+            from data_parse.cv_data_parse.pdf import DataRegister, Loader
 
             loader = Loader('data/pdf')
             data = loader(set_type=DataRegister.ALL, generator=True, image_type=DataRegister.ARRAY)

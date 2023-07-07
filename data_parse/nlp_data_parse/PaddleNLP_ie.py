@@ -28,7 +28,7 @@ class Loader(DataLoader):
     image_suffix = 'png'
 
     def _call(self, set_type, image_type=DataRegister.BASE64, set_task='', **kwargs):
-        """See Also `cv_data_parse.base.DataLoader._call`
+        """See Also `data_parse.cv_data_parse.base.DataLoader._call`
 
         Args:
             set_type:

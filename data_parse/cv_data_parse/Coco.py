@@ -28,7 +28,7 @@ class Loader(DataLoader):
         .. code-block:: python
 
             # get data
-            from cv_data_parse.Coco import DataRegister, Loader
+            from data_parse.cv_data_parse.Coco import DataRegister, Loader
 
             loader = Loader('data/coco2017')
             data = loader(set_type=DataRegister.ALL, generator=True, image_type=DataRegister.ARRAY)

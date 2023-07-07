@@ -6,7 +6,7 @@ from pathlib import Path
 from tqdm import tqdm
 from typing import Iterable
 from utils import os_lib, converter, visualize
-from cv_data_parse.base import DataRegister, DataLoader, DataSaver, DataGenerator, get_image, save_image, DataVisualizer
+from .base import DataRegister, DataLoader, DataSaver, DataGenerator, get_image, save_image, DataVisualizer
 
 
 class Loader(DataLoader):
@@ -28,7 +28,7 @@ class Loader(DataLoader):
         .. code-block:: python
 
             # get data
-            from cv_data_parse.YoloV5 import DataRegister, Loader
+            from data_parse.cv_data_parse.YoloV5 import DataRegister, Loader
 
             loader = Loader('data/Yolov5Data')
             data = loader(set_type=DataRegister.ALL, generator=True, image_type=DataRegister.ARRAY)
@@ -180,7 +180,7 @@ class Saver(DataSaver):
 
             # convert voc to yolov5
             # load data from voc
-            from cv_data_parse.Voc import Loader
+            from data_parse.cv_data_parse.Voc import Loader
             from utils.register import DataRegister
             loader = Loader('data/VOC2012')
             data = loader(set_type=DataRegister.TRAIN)

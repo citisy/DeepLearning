@@ -1,7 +1,7 @@
 import gzip
 import struct
 import numpy as np
-from cv_data_parse.base import DataRegister, DataLoader, DataSaver
+from .base import DataRegister, DataLoader, DataSaver
 
 
 class Loader(DataLoader):
@@ -18,7 +18,7 @@ class Loader(DataLoader):
         .. code-block:: python
 
             # get data
-            from cv_data_parse.Mnist import DataRegister, Loader
+            from data_parse.cv_data_parse.Mnist import DataRegister, Loader
 
             loader = Loader('data/mnist')
             data = loader(set_type=DataRegister.ALL, generator=True, image_type=DataRegister.ARRAY)

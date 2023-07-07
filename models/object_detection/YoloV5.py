@@ -3,9 +3,9 @@ import torch
 from torch import nn
 from utils.loss import FocalLoss
 from utils.torch_utils import initialize_layers
-from utils.layers import Conv, Linear, ConvInModule
+from utils.layers import Conv, ConvInModule
 from . import cls_nms
-from image_classifier.DarkNet import CspDarkNet, Cache, C3Block, darknet_config
+from ..image_classifier.DarkNet import CspDarkNet, Cache, C3Block, darknet_config
 
 in_module_config = dict(
     in_ch=3,

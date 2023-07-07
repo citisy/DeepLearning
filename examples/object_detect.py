@@ -1,5 +1,5 @@
 from .base import OdProcess
-from cv_data_parse.data_augmentation import crop, scale, geometry, pixel_perturbation, channel, RandomApply, Apply, complex
+from data_parse.cv_data_parse.data_augmentation import scale, geometry, RandomApply, Apply, complex, channel
 from utils import converter
 import numpy as np
 
@@ -16,7 +16,7 @@ class FastererRCNN_Voc(OdProcess):
     """
 
     def __init__(self, device=1):
-        from object_detection.FasterRCNN import Model
+        from models.object_detection.FasterRCNN import Model
 
         in_ch = 3
         input_size = 800
@@ -92,7 +92,7 @@ class YoloV5_Voc(YoloV5):
     """
 
     def __init__(self, device=1):
-        from object_detection.YoloV5 import Model
+        from models.object_detection.YoloV5 import Model
 
         in_ch = 3
         input_size = 640
@@ -112,7 +112,7 @@ class YoloV5_Voc(YoloV5):
 
 class YoloV5_yolov5(YoloV5):
     def __init__(self, classes, device=1):
-        from object_detection.YoloV5 import Model
+        from models.object_detection.YoloV5 import Model
 
         in_ch = 3
         input_size = 640
@@ -130,7 +130,7 @@ class YoloV5_yolov5(YoloV5):
         )
 
     def get_train_data(self):
-        from cv_data_parse.YoloV5 import Loader, DataRegister
+        from data_parse.cv_data_parse.YoloV5 import Loader, DataRegister
 
         loader = Loader('yolov5/data_mapping')
         data = loader(set_type=DataRegister.TRAIN, image_type=DataRegister.PATH, generator=False, sub_dir='')[0]
@@ -143,7 +143,7 @@ class YoloV5_yolov5(YoloV5):
         return super().data_augment(ret)
 
     def get_val_data(self):
-        from cv_data_parse.YoloV5 import Loader, DataRegister
+        from data_parse.cv_data_parse.YoloV5 import Loader, DataRegister
 
         loader = Loader('yolov5/data_mapping')
         data = loader(set_type=DataRegister.VAL, image_type=DataRegister.PATH, generator=False, sub_dir='')[0]

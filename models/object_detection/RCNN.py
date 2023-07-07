@@ -1,6 +1,5 @@
 from torch import nn
-from image_classifier.AlexNet import AlexNet
-from utils.layers import Conv, Linear, ConvInModule, OutModule
+from utils.layers import ConvInModule, OutModule
 
 
 class ObjectDetectModelExample(nn.Module):
@@ -31,6 +30,6 @@ class ObjectDetectModelExample(nn.Module):
         return x
 
 
-class SPP(nn.Module):
+class SelectiveSearch(nn.Module):
     def __init__(self):
         super().__init__()

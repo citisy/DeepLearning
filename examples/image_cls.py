@@ -1,11 +1,10 @@
 import numpy as np
-import torch
 from torch import nn, optim
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import DataLoader
 from tqdm import tqdm
 from utils.layers import SimpleInModule
-from cv_data_parse.data_augmentation import crop, scale, geometry, pixel_perturbation, RandomApply
-from cv_data_parse.base import DataRegister
+from data_parse.cv_data_parse.data_augmentation import scale, geometry, RandomApply
+from data_parse.cv_data_parse.base import DataRegister
 from .base import ClsProcess
 
 
@@ -21,7 +20,7 @@ class LeNet_mnist(ClsProcess):
     """
 
     def __init__(self):
-        from image_classifier.LeNet import Model
+        from models.image_classifier.LeNet import Model
 
         in_ch = 1
         input_size = 28
@@ -41,14 +40,14 @@ class LeNet_mnist(ClsProcess):
         return dict(score=acc)
 
     def get_train_data(self):
-        from cv_data_parse.Mnist import Loader
+        from data_parse.cv_data_parse.Mnist import Loader
 
         loader = Loader('data/mnist')
 
         return loader(set_type=DataRegister.TRAIN, image_type=DataRegister.ARRAY, generator=False)[0]
 
     def get_val_data(self):
-        from cv_data_parse.Mnist import Loader
+        from data_parse.cv_data_parse.Mnist import Loader
 
         loader = Loader('data/mnist')
 
@@ -70,7 +69,7 @@ class LeNet_cifar(ClsProcess):
     """
 
     def __init__(self):
-        from image_classifier.LeNet import Model
+        from models.image_classifier.LeNet import Model
 
         in_ch = 3
         input_size = 32
@@ -117,7 +116,7 @@ class AlexNet_ImageNet(ClsProcess):
     """
 
     def __init__(self):
-        from image_classifier.AlexNet import Model
+        from models.image_classifier import Model
 
         in_ch = 3
         input_size = 224
@@ -149,7 +148,7 @@ class Vgg_ImageNet(ClsProcess):
     """
 
     def __init__(self):
-        from image_classifier.VGG import Model
+        from models.image_classifier.VGG import Model
 
         in_ch = 3
         input_size = 224
@@ -184,11 +183,11 @@ class Inception_ImageNet(ClsProcess):
 
     def __init__(self, model_version='InceptionV1'):
         if model_version == 'InceptionV1':
-            from image_classifier.Inception import Model
+            from models.image_classifier.Inception import Model
             input_size = 224
 
         elif model_version == 'InceptionV3':
-            from image_classifier.Inception import InceptionV3 as Model
+            from models.image_classifier.Inception import InceptionV3 as Model
             input_size = 299
 
         else:
@@ -223,7 +222,7 @@ class ResNet_ImageNet(ClsProcess):
     """
 
     def __init__(self):
-        from image_classifier.ResNet import Model
+        from models.image_classifier.ResNet import Model
 
         in_ch = 3
         input_size = 224
@@ -254,7 +253,7 @@ class DenseNet_ImageNet(ClsProcess):
     """
 
     def __init__(self):
-        from image_classifier.DenseNet import Model
+        from models.image_classifier.DenseNet import Model
 
         in_ch = 3
         input_size = 224
@@ -286,7 +285,7 @@ class SENet_ImageNet(ClsProcess):
     """
 
     def __init__(self):
-        from image_classifier.SENet import Model
+        from models.image_classifier.SENet import Model
         # from image_classifier.SENet import SEResNet as Model
 
         in_ch = 3
@@ -319,7 +318,7 @@ class SqueezeNet_ImageNet(ClsProcess):
     """
 
     def __init__(self):
-        from image_classifier.SqueezeNet import Model
+        from models.image_classifier.SqueezeNet import Model
 
         in_ch = 3
         input_size = 224
@@ -351,7 +350,7 @@ class MobileNet_ImageNet(ClsProcess):
     """
 
     def __init__(self):
-        from image_classifier.MobileNet import Model
+        from models.image_classifier.MobileNet import Model
 
         in_ch = 3
         input_size = 224
@@ -383,7 +382,7 @@ class ShuffleNet_ImageNet(ClsProcess):
     """
 
     def __init__(self):
-        from image_classifier.ShuffleNet import Model
+        from models.image_classifier.ShuffleNet import Model
 
         in_ch = 3
         input_size = 224
@@ -415,7 +414,7 @@ class IGC_cifar(ClsProcess):
     """
 
     def __init__(self):
-        from image_classifier.IGC import Model
+        from models.image_classifier.IGC import Model
 
         in_ch = 3
         input_size = 32
@@ -438,14 +437,14 @@ class IGC_cifar(ClsProcess):
         return dict(score=acc)
 
     def get_train_data(self):
-        from cv_data_parse.Cifar import Loader
+        from data_parse.cv_data_parse.Cifar import Loader
 
         loader = Loader('data/cifar-10-batches-py')
 
         return loader(set_type=DataRegister.TRAIN, image_type=DataRegister.ARRAY, generator=False)[0]
 
     def get_val_data(self):
-        from cv_data_parse.Cifar import Loader
+        from data_parse.cv_data_parse.Cifar import Loader
 
         loader = Loader('data/cifar-10-batches-py')
 
@@ -464,7 +463,7 @@ class CondenseNet_ImageNet(ClsProcess):
     """
 
     def __init__(self):
-        from image_classifier.CondenseNet import Model
+        from models.image_classifier.CondenseNet import Model
 
         in_ch = 3
         input_size = 224
@@ -484,7 +483,7 @@ class CondenseNet_ImageNet(ClsProcess):
         return data
 
     def fit(self, dataset, max_epoch, batch_size):
-        from image_classifier import CondenseNet
+        from models.image_classifier import CondenseNet
 
         group_lasso_lambda = 0.1
 

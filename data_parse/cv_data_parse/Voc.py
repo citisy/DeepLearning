@@ -3,7 +3,7 @@ import cv2
 from pathlib import Path
 import xml.etree.ElementTree as ET
 import numpy as np
-from cv_data_parse.base import DataRegister, DataLoader, DataSaver, get_image
+from .base import DataRegister, DataLoader, DataSaver, get_image
 from enum import Enum
 
 
@@ -36,7 +36,7 @@ class Loader(DataLoader):
         .. code-block:: python
 
             # get data
-            from cv_data_parse.Voc import DataRegister, Loader
+            from data_parse.cv_data_parse.Voc import DataRegister, Loader
 
             loader = Loader('data/VOC2012')
             data = loader(set_type=DataRegister.ALL, generator=True, image_type=DataRegister.ARRAY)

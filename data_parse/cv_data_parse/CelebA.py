@@ -28,7 +28,7 @@ class CelebALoader(DataLoader):
         .. code-block:: python
 
             # get data
-            from cv_data_parse.CelebA import DataRegister, CelebALoader as Loader
+            from data_parse.cv_data_parse.CelebA import DataRegister, CelebALoader as Loader
 
             loader = Loader('data/CelebA')
             data = loader(set_type=DataRegister.ALL, generator=True, image_type=DataRegister.ARRAY)

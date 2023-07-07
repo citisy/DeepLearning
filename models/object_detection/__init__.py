@@ -22,7 +22,7 @@ class GetBackbone:
         # backbone = ...   # todo
         # backbone.out_channels = 1280
 
-        from image_classifier.ResNet import Model, Res34_config
+        from models.image_classifier.ResNet import Model, Res34_config
 
         default_config = default_config or dict(
             in_module=nn.Module(),
@@ -36,7 +36,7 @@ class GetBackbone:
 
     @staticmethod
     def get_mobilenet(default_config=dict()):
-        from image_classifier.MobileNet import Model, config
+        from models.image_classifier.MobileNet import Model, config
 
         default_config = default_config or dict(
             in_module=nn.Module(),
@@ -59,7 +59,7 @@ class GetBackbone:
 
     @staticmethod
     def get_vgg(default_config=dict()):
-        from image_classifier.VGG import Model, VGG19_config
+        from models.image_classifier.VGG import Model, VGG19_config
 
         default_config = default_config or dict(
             in_module=nn.Module(),
