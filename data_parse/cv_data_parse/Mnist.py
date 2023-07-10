@@ -6,6 +6,7 @@ from .base import DataRegister, DataLoader, DataSaver
 
 class Loader(DataLoader):
     """http://yann.lecun.com/exdb/mnist/
+    See Also https://github.com/zalandoresearch/fashion-mnist/
 
     Data structure:
         .
@@ -73,10 +74,11 @@ class Loader(DataLoader):
         labels = np.frombuffer(label_f.read(), dtype=np.uint8)
         label_f.close()
 
-        for x, y in zip(images, labels):
+        for i, (x, y) in enumerate(zip(images, labels)):
             x = x.reshape(28, 28)
             x = np.expand_dims(x, axis=-1)
             yield dict(
+                _id=f'{i}.{self.image_suffix}',
                 image=x,
                 size=x.shape,
                 _class=y,

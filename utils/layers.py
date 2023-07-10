@@ -112,7 +112,7 @@ class OutModule(nn.Module):
 
 
 class Conv(nn.Module):
-    def __init__(self, in_ch, out_ch, k, s=1, p=None, act=nn.ReLU,
+    def __init__(self, in_ch, out_ch, k, s=1, p=None, act=None,
                  is_bn=True,
                  conv_kwargs=dict()):
         """
@@ -137,7 +137,46 @@ class Conv(nn.Module):
         self.conv = nn.Conv2d(in_ch, out_ch, k, s, p, bias=False, **conv_kwargs)
         if is_bn:
             self.bn = nn.BatchNorm2d(out_ch)
-        self.act = act(True)
+        self.act = act or nn.ReLU(True)
+
+    def forward(self, x):
+        x = self.conv(x)
+
+        if self.is_bn:
+            x = self.bn(x)
+
+        x = self.act(x)
+
+        return x
+
+
+class ConvT(nn.Module):
+    def __init__(self, in_ch, out_ch, k, s=1, p=None, act=None,
+                 is_bn=True,
+                 conv_kwargs=dict()):
+        """
+
+        Args:
+            in_ch (int): channel size
+            out_ch (int): channel size
+            k (int or tuple): kernel size
+            s: stride
+            p: padding size, None for full padding
+            act (nn.Module): activation function
+
+        """
+        super().__init__()
+        self.is_bn = is_bn
+        self.in_channels = in_ch
+        self.out_channels = out_ch
+
+        if p is None:
+            p = k // 2 if isinstance(k, int) else [x // 2 for x in k]
+
+        self.conv = nn.ConvTranspose2d(in_ch, out_ch, k, s, p, bias=False, **conv_kwargs)
+        if is_bn:
+            self.bn = nn.BatchNorm2d(out_ch)
+        self.act = act or nn.ReLU(True)
 
     def forward(self, x):
         x = self.conv(x)

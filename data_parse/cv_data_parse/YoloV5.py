@@ -365,21 +365,3 @@ class Generator(DataGenerator):
                 data += tmp
 
         self._gen_sets(data, idx, id_distinguish, id_sort, save_dir, set_names, split_ratio)
-
-
-class Visualizer(DataVisualizer):
-    def visual_one_image(self, r, cls_alias=None):
-        image = r['image']
-        bboxes = r['bboxes']
-        classes = r['classes']
-        colors = [visualize.get_color_array(int(cls)) for cls in classes]
-
-        if cls_alias:
-            classes = [cls_alias[_] for _ in classes]
-
-        if 'confs' in r:
-            classes = [f'{cls} {conf:.6f}' for cls, conf in zip(classes, r['confs'])]
-
-        image = visualize.ImageVisualize.label_box(image, bboxes, classes, colors=colors, line_thickness=2)
-
-        return image

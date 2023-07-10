@@ -25,14 +25,20 @@ def mk_parent_dir(file_path):
 
 
 class Saver:
-    def __init__(self, verbose=True, stdout_method=print, stdout_fmt='Save to %s successful!'):
+    def __init__(self, verbose=True, stdout_method=print, stdout_fmt='Save to %s successful!', stderr_method=print, stderr_fmt='Save to %s failed!'):
         self.verbose = verbose
         self.stdout_method = stdout_method
         self.stdout_fmt = stdout_fmt
+        self.stderr_method = stderr_method
+        self.stderr_fmt = stderr_fmt
 
     def stdout(self, path):
         if self.verbose:
             self.stdout_method(self.stdout_fmt % path)
+
+    def stderr(self, path):
+        if self.verbose:
+            self.stderr_method(self.stderr_fmt % path)
 
     def auto_save(self, obj, path: str):
         suffix = Path(path).suffix.lower()
@@ -79,8 +85,11 @@ class Saver:
         # it will error with chinese path in low version of cv2
         # it has fixed in high version already
         # cv2.imencode('.png', obj)[1].tofile(path)
-        cv2.imwrite(path, obj)
-        self.stdout(path)
+        flag = cv2.imwrite(path, obj)
+        if flag:
+            self.stdout(path)
+        else:
+            self.stderr(path)
 
     def save_csv(self, obj: pd.DataFrame, path):
         obj.to_csv(path)

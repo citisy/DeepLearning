@@ -82,12 +82,14 @@ def initialize_layers(module):
         if t is nn.BatchNorm2d:
             m.eps = 1e-3
             m.momentum = 0.03
+            m.weight.data.normal_(1.0, 0.02)
+            m.bias.data.fill_(0)
 
         elif t in [nn.Hardswish, nn.LeakyReLU, nn.ReLU, nn.ReLU6, nn.SiLU]:
             m.inplace = True
 
-        elif t is nn.Conv2d:
-            pass
+        elif t in [nn.Conv2d, nn.ConvTranspose2d]:
+            m.weight.data.normal_(0.0, 0.02)
 
 
 class Export:

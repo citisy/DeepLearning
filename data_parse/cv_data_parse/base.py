@@ -6,7 +6,7 @@ from tqdm import tqdm
 from enum import Enum
 from pathlib import Path
 from collections import defaultdict
-from utils import os_lib, converter
+from utils import os_lib, converter, visualize
 from typing import List
 
 
@@ -271,20 +271,63 @@ class DataGenerator:
 
 
 class DataVisualizer:
-    def __init__(self, save_dir):
+    def __init__(self, save_dir, **saver_kwargs):
         self.save_dir = save_dir
+        self.saver = os_lib.Saver(**saver_kwargs)
         os_lib.mk_dir(save_dir)
 
-    def __call__(self, *iter_data, cls_alias=None):
+    def __call__(self, *iter_data, **visual_kwargs):
+        """
+
+        Args:
+            *iter_data (List[dict]):
+                each dict must have the of 'image' and '_id' at lease
+                    - image (np.ndarray): must have the same shape
+                    - _id (str): the name to save the image
+            **visual_kwargs:
+
+        Returns:
+
+        """
         for rets in tqdm(zip(*iter_data), desc='visual'):
             images = []
             _id = ''
             for r in rets:
-                images.append(self.visual_one_image(r, cls_alias))
+                images.append(self.visual_one_image(r, **visual_kwargs))
                 _id = r['_id']
 
-            image = np.concatenate(images, 1)
-            os_lib.Saver(verbose=False).save_img(image, f'{self.save_dir}/{_id}')
+            image = self.concat_images(images)
+            self.saver.save_img(image, f'{self.save_dir}/{_id}')
 
+    def visual_one_image(self, r, **kwargs):
+        return r['image']
+
+    def concat_images(self, images):
+        n = len(images)
+        if n < 4:
+            return np.concatenate(images, 1)
+
+        n_row = int(np.ceil(np.sqrt(n)))
+        images += [np.zeros_like(images[0])] * (n_row * n_row - n)
+
+        images = [np.concatenate(images[i: i + n_row], 1) for i in range(0, len(images), n_row)]
+
+        return np.concatenate(images, 0)
+
+
+class OdVisualizer(DataVisualizer):
     def visual_one_image(self, r, cls_alias=None):
-        raise NotImplementedError
+        image = r['image']
+        bboxes = r['bboxes']
+        classes = r['classes']
+        colors = [visualize.get_color_array(int(cls)) for cls in classes]
+
+        if cls_alias:
+            classes = [cls_alias[_] for _ in classes]
+
+        if 'confs' in r:
+            classes = [f'{cls} {conf:.6f}' for cls, conf in zip(classes, r['confs'])]
+
+        image = visualize.ImageVisualize.label_box(image, bboxes, classes, colors=colors, line_thickness=2)
+
+        return image

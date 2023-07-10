@@ -1,11 +1,153 @@
+import copy
+import cv2
 import numpy as np
+import torch
 from torch import nn, optim
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
 from utils.layers import SimpleInModule
-from data_parse.cv_data_parse.data_augmentation import scale, geometry, RandomApply
+from utils.os_lib import MemoryInfo
+from metrics import classifier
+from data_parse.cv_data_parse.data_augmentation import crop, scale, geometry, pixel_perturbation, RandomApply, Apply, channel
 from data_parse.cv_data_parse.base import DataRegister
-from .base import ClsProcess
+from .base import Process, BaseDataset
+
+
+class ClsDataset(BaseDataset):
+    def __getitem__(self, idx):
+        ret = super().__getitem__(idx)
+        image, _class = ret['image'], ret['_class']
+
+        return torch.Tensor(image), _class
+
+
+class ClsProcess(Process):
+    dataset = ClsDataset
+
+    def fit(self, dataset, max_epoch, batch_size, save_period=None, dataloader_kwargs=dict()):
+        dataloader = DataLoader(dataset, shuffle=True, batch_size=batch_size, **dataloader_kwargs)
+
+        self.model.to(self.device)
+
+        optimizer = optim.Adam(self.model.parameters())
+        loss_func = nn.CrossEntropyLoss()
+        score = -1
+
+        self.model.train()
+
+        for i in range(max_epoch):
+            pbar = tqdm(dataloader, desc=f'train {i}/{max_epoch}')
+
+            for data, label in pbar:
+                data = data.to(self.device, non_blocking=True)
+                label = label.to(self.device)
+
+                optimizer.zero_grad()
+
+                pred = self.model(data)
+                loss = loss_func(pred, label)
+
+                loss.backward()
+                optimizer.step()
+
+                pbar.set_postfix({
+                    'loss': f'{loss.item():.06}',
+                    'cpu_info': MemoryInfo.get_process_mem_info(),
+                    'gpu_info': MemoryInfo.get_gpu_mem_info()
+                })
+
+            if save_period and i % save_period == save_period - 1:
+                self.save(f'{self.model_dir}/{self.dataset_version}_last.pth')
+
+                val_data = self.get_val_data()
+                val_dataset = self.dataset(val_data, augment_func=self.val_data_augment)
+                result = self.metric(val_dataset, batch_size)
+                if result['score'] > score:
+                    self.save(f'{self.model_dir}/{self.dataset_version}_best.pth')
+                    score = result['score']
+
+    def predict(self, dataset, batch_size=128, dataloader_kwargs=dict()):
+        dataloader = DataLoader(dataset, batch_size=batch_size, **dataloader_kwargs)  # 单卡shuffle=True，多卡shuffle=False
+
+        pred = []
+        true = []
+        with torch.no_grad():
+            self.model.eval()
+            for data, label in tqdm(dataloader):
+                data = data.to(self.device)
+                label = label.cpu().detach().numpy()
+
+                p = self.model(data).cpu().detach().numpy()
+                p = np.argmax(p, axis=1)
+
+                pred.extend(p.tolist())
+                true.extend(label.tolist())
+
+        pred = np.array(pred)
+        true = np.array(true)
+
+        return true, pred
+
+    def metric(self, dataset, batch_size=128, **kwargs):
+        true, pred = self.predict(dataset, batch_size, **kwargs)
+
+        result = classifier.top_metric.f_measure(true, pred)
+
+        result.update(
+            score=result['f']
+        )
+
+        return result
+
+    def data_augment(self, ret):
+        ret.update(dst=self.input_size)
+        ret.update(crop.Random()(**ret))
+        ret.update(RandomApply([
+            geometry.HFlip(),
+            geometry.VFlip(),
+        ])(**ret))
+        return super().data_augment(ret)
+
+    def get_train_data(self):
+        """example"""
+        from data_parse.cv_data_parse.ImageNet import Loader
+
+        loader = Loader(f'data/ImageNet2012')
+        convert_class = {7: 0, 40: 1}
+
+        data = loader(set_type=DataRegister.TRAIN, image_type=DataRegister.ARRAY, generator=False,
+                      wnid=[
+                          'n02124075',  # Egyptian cat,
+                          'n02110341'  # dalmatian, coach dog, carriage dog
+                      ]
+                      )[0]
+
+        for tmp in data:
+            tmp['_class'] = convert_class[tmp['_class']]
+
+        return data
+
+    def get_val_data(self):
+        """example"""
+        from data_parse.cv_data_parse.ImageNet import Loader
+        loader = Loader(f'data/ImageNet2012')
+        convert_class = {7: 0, 40: 1}
+        cache_data = loader(set_type=DataRegister.VAL, image_type=DataRegister.PATH, generator=False)[0]
+        data = []
+
+        for tmp in cache_data:
+            if tmp['_class'] not in [7, 40]:
+                continue
+
+            tmp['_class'] = convert_class[tmp['_class']]
+            x = cv2.imread(tmp['image'])
+            x = scale.Proportion()(x, 256)['image']
+            x = crop.Center()(x, self.input_size)['image']
+            tmp['image'] = x
+
+            data.append(tmp)
+
+        return data
 
 
 class LeNet_mnist(ClsProcess):
@@ -90,14 +232,14 @@ class LeNet_cifar(ClsProcess):
         return dict(score=acc)
 
     def get_train_data(self):
-        from cv_data_parse.Cifar import Loader
+        from data_parse.cv_data_parse.Cifar import Loader
 
         loader = Loader('data/cifar-10-batches-py')
 
         return loader(set_type=DataRegister.TRAIN, image_type=DataRegister.ARRAY, generator=False)
 
     def get_val_data(self):
-        from cv_data_parse.Cifar import Loader
+        from data_parse.cv_data_parse.Cifar import Loader
 
         loader = Loader('data/cifar-10-batches-py')
 
@@ -116,7 +258,7 @@ class AlexNet_ImageNet(ClsProcess):
     """
 
     def __init__(self):
-        from models.image_classifier import Model
+        from models.image_classifier.AlexNet import Model
 
         in_ch = 3
         input_size = 224
