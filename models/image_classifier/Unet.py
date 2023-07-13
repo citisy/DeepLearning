@@ -2,39 +2,47 @@ import torch
 import torch.nn as nn
 from utils.layers import Conv, ConvInModule, ConvT
 
+# top(outer) -> bottom(inner)
 # in_ches, hidden_ches, out_ches
-# bottom -> top
 unet256_config = (
-    [64 * 8, *[64 * 8] * 3, 64 * 4, 64 * 2, 64, 3],
-    [64 * 8, *[64 * 8] * 3, 64 * 8, 64 * 4, 64 * 2, 64],
-    [64 * 8, *[64 * 8] * 3, 64 * 4, 64 * 2, 64, 3],
+    [3, 64, 64 * 2, 64 * 4, *[64 * 8] * 3, 64 * 8],     # in_ches
+    [64, 64*2, 64 * 4, 64 * 8, *[64 * 8] * 3, 64 * 8],  # hidden_ches
+    [3, 64, 64 * 2, 64 * 4, *[64 * 8] * 3, 64 * 8],     # out_ches
 )
 
 
 class Model(nn.Module):
-    def __init__(self, conv_config=unet256_config):
+    def __init__(self, in_ch, input_size, in_module=None, out_module=None, conv_config=unet256_config):
         super().__init__()
-
         in_ches, hidden_ches, out_ches = conv_config
 
-        # bottom -> top
-        submodule = CurBlock(in_ches, hidden_ches, out_ches)
-        while not submodule.is_top_block:
-            submodule = CurBlock(in_ches, hidden_ches, out_ches, submodule=submodule)
+        if in_module is None:
+            in_module = ConvInModule(in_ch, input_size, out_ch=in_ches[0])
 
-        self.conv_seq = submodule
+        if out_module is None:
+            out_module = nn.Sequential()
+
+        self.input = in_module
+
+        # top(outer) -> bottom(inner)
+        self.conv_seq = CurBlock(in_ches, hidden_ches, out_ches, is_top_block=True)
+        self.output = out_module
 
     def forward(self, x):
-        return self.conv_seq(x)
+        x = self.input(x)
+        x = self.conv_seq(x)
+        x = self.output(x)
+        return x
 
 
 class CurBlock(nn.Module):
-    def __init__(self, in_ches, hidden_ches, out_ches, submodule=None):
+    def __init__(self, in_ches, hidden_ches, out_ches, is_top_block=False):
         super().__init__()
         in_ch, hidden_ch, out_ch = in_ches.pop(0), hidden_ches.pop(0), out_ches.pop(0)
 
-        is_bottom_block = submodule is None
-        is_top_block = len(in_ches) == 0
+        is_bottom_block = len(in_ches) == 0
+        self.is_bottom_block = is_bottom_block
+        self.is_top_block = is_top_block
 
         layers = []
 
@@ -48,7 +56,7 @@ class CurBlock(nn.Module):
 
         # sub
         if not is_bottom_block:
-            layers.append(submodule)
+            layers.append(CurBlock(in_ches, hidden_ches, out_ches))
 
         # up
         if is_top_block:
@@ -60,8 +68,6 @@ class CurBlock(nn.Module):
             layers.append(ConvT(hidden_ch * 2, out_ch, k=4, s=2, p=1, mode='acn'))
 
         self.conv_seq = nn.Sequential(*layers)
-        self.is_bottom_block = is_bottom_block
-        self.is_top_block = is_top_block
 
     def forward(self, x):
         y = self.conv_seq(x)
