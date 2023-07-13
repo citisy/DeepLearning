@@ -210,7 +210,10 @@ class Pix2pix_facade(IgProcess):
         in_ch = 3
 
         super().__init__(
-            model=Model(in_ch),
+            model=Model(
+                in_ch=in_ch,
+                input_size=input_size
+            ),
             model_version='Pix2pix',
             dataset_version='facade',
             input_size=input_size,
