@@ -80,7 +80,7 @@ class Process:
         self.logger = logging.getLogger()
         self.model_info()
 
-    def model_info(self, depth=3):
+    def model_info(self, depth=None):
         profile = ModuleInfo.profile_per_layer(self.model, depth=depth)
         s = f'module info: \n{"name":<20}{"module":<40}{"params":>10}{"grads":>10}\n'
 

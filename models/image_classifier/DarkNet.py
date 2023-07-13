@@ -15,7 +15,7 @@ class CspDarkNet(nn.Module):
         out_ch, n_conv, cache_block_idx = conv_config
 
         layers = [
-            Conv(in_ch, out_ch, 6, s=2, p=2)
+            Conv(in_ch, out_ch, 6, s=2, p=2, act=nn.SiLU())
         ]
 
         in_ch = out_ch
@@ -23,7 +23,7 @@ class CspDarkNet(nn.Module):
         for i, n in enumerate(n_conv):
             out_ch = in_ch * 2
             m = nn.Sequential(
-                Conv(in_ch, out_ch, 3, 2),
+                Conv(in_ch, out_ch, 3, 2, act=nn.SiLU()),
                 C3(out_ch, out_ch, n=n)
             )
 
@@ -57,11 +57,11 @@ class C3(nn.Module):
         super().__init__()
         c_ = int(out_ch * e)  # hidden channels
         self.seq1 = nn.Sequential(
-            Conv(in_ch, c_, 1, 1),
+            Conv(in_ch, c_, 1, 1, act=nn.SiLU()),
             *(Bottleneck(c_, c_, shortcut, g, e=1.0) for _ in range(n))
         )
-        self.cv2 = Conv(in_ch, c_, 1, 1)
-        self.cv3 = Conv(c_ * 2, out_ch, 1)  # optional act=FReLU(c2)
+        self.cv2 = Conv(in_ch, c_, 1, 1, act=nn.SiLU())
+        self.cv3 = Conv(c_ * 2, out_ch, 1, act=nn.SiLU())  # optional act=FReLU(c2)
 
     def forward(self, x):
         x1 = self.seq1(x)
@@ -75,8 +75,8 @@ class Bottleneck(nn.Module):
     def __init__(self, in_ch, out_ch, shortcut=True, g=1, e=0.5):  # ch_in, ch_out, shortcut, groups, expansion
         super().__init__()
         c_ = int(out_ch * e)  # hidden channels
-        self.cv1 = Conv(in_ch, c_, 1, 1)
-        self.cv2 = Conv(c_, out_ch, 3, 1, conv_kwargs=dict(groups=g))
+        self.cv1 = Conv(in_ch, c_, 1, 1, act=nn.SiLU())
+        self.cv2 = Conv(c_, out_ch, 3, 1,  act=nn.SiLU(), conv_kwargs=dict(groups=g))
         self.add = shortcut and in_ch == out_ch
 
     def forward(self, x):
@@ -88,8 +88,8 @@ class SPPF(nn.Module):
     def __init__(self, in_ch, out_ch, k=5):  # equivalent to SPP(k=(5, 9, 13))
         super().__init__()
         c_ = in_ch // 2  # hidden channels
-        self.cv1 = Conv(in_ch, c_, 1, 1)
-        self.cv2 = Conv(c_ * 4, out_ch, 1, 1)
+        self.cv1 = Conv(in_ch, c_, 1, 1, act=nn.SiLU())
+        self.cv2 = Conv(c_ * 4, out_ch, 1, 1, act=nn.SiLU())
         self.m = nn.MaxPool2d(kernel_size=k, stride=1, padding=k // 2)
 
     def forward(self, x):
