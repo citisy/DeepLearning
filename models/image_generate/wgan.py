@@ -29,17 +29,17 @@ class DcganD(nn.Module):
 
         out_ch = 64
 
-        layers = [Conv(in_ch, out_ch, 4, s=2, p=1, is_norm=False, act=nn.LeakyReLU(0.2, inplace=True))]
+        layers = [Conv(in_ch, out_ch, 4, s=2, p=1, is_norm=False, act=nn.LeakyReLU(0.2))]
         in_ch = out_ch
 
         for _ in range(n_conv):
-            layers.append(Conv(in_ch, in_ch, 3, s=1, p=1, act=nn.LeakyReLU(0.2, inplace=False)))
+            layers.append(Conv(in_ch, in_ch, 3, s=1, p=1, act=nn.LeakyReLU(0.2)))
 
         n = np.log2(input_size // 8).astype(int)
         for _ in range(n):
             in_ch = out_ch
             out_ch *= 2
-            layers.append(Conv(in_ch, out_ch, 4, s=2, p=1, act=nn.LeakyReLU(0.2, inplace=False)))
+            layers.append(Conv(in_ch, out_ch, 4, s=2, p=1, act=nn.LeakyReLU(0.2)))
 
         in_ch = out_ch
         layers.append(nn.Conv2d(in_ch, 1, 4, 1, 0, bias=False))

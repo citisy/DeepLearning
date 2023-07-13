@@ -8,7 +8,7 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 from pathlib import Path
 from data_parse.cv_data_parse.data_augmentation import crop, scale, geometry, pixel_perturbation, RandomApply, Apply, channel, complex
-from data_parse.cv_data_parse.base import DataRegister, OdVisualizer
+from data_parse.cv_data_parse.base import DataRegister, DataVisualizer
 from .base import Process, BaseDataset
 from utils.torch_utils import EarlyStopping
 from utils.visualize import ImageVisualize
@@ -24,7 +24,7 @@ class OdDataset(BaseDataset):
             ret['image'] = cv2.imread(ret['image'])
 
         ret['ori_image'] = ret['image']
-        ret['ori_boxes'] = ret['boxes']
+        ret['ori_bboxes'] = ret['bboxes']
         ret['idx'] = idx
 
         if self.augment_func:
@@ -241,7 +241,7 @@ class OdProcess(Process):
                     for ret, output in zip(rets, output):
                         ret['image'] = ret['ori_image']
                         output['image'] = ret['ori_image']
-                    OdVisualizer(self.save_result_dir)(rets, outputs)
+                    DataVisualizer(self.save_result_dir)(rets, outputs)
 
         if save_ret_func:
             save_ret_func(det_rets)

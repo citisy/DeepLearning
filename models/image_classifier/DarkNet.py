@@ -2,16 +2,17 @@ import torch
 from torch import nn
 from utils.layers import Conv, Linear, ConvInModule, OutModule
 
-# in_ch, (n_conv per C3 block,), (cache_block, )
+# in_ch, (n_conv per C3 block,), (cache_block_idx, )
 darknet_config = (64, (3, 6, 9, 3), (1, 2))
 
 
 class CspDarkNet(nn.Module):
     """refer to https://github.com/ultralytics/yolov5"""
+
     def __init__(self, in_ch=3, conv_config=darknet_config):
         super().__init__()
 
-        out_ch, n_convs, cache_block = conv_config
+        out_ch, n_conv, cache_block_idx = conv_config
 
         layers = [
             Conv(in_ch, out_ch, 6, s=2, p=2)
@@ -19,15 +20,15 @@ class CspDarkNet(nn.Module):
 
         in_ch = out_ch
 
-        for i, n_conv in enumerate(n_convs):
+        for i, n in enumerate(n_conv):
             out_ch = in_ch * 2
             m = nn.Sequential(
                 Conv(in_ch, out_ch, 3, 2),
-                C3Block(out_ch, out_ch)
+                C3(out_ch, out_ch, n=n)
             )
 
             layers.append(m)
-            if i in cache_block:
+            if i in cache_block_idx:
                 layers.append(Cache())
 
             in_ch = out_ch
@@ -50,31 +51,23 @@ class CspDarkNet(nn.Module):
         return features
 
 
-class C3Block(nn.Module):
-    def __init__(self, in_ch, out_ch, n_block=3, **C3_kwargs):
-        super().__init__()
-
-        self.m = nn.Sequential(
-            C3(in_ch, out_ch, **C3_kwargs),
-            *[C3(out_ch, out_ch, **C3_kwargs) for _ in range(n_block - 1)],
-        )
-
-    def forward(self, x):
-        return self.m(x)
-
-
 class C3(nn.Module):
     # CSP Bottleneck with 3 convolutions
     def __init__(self, in_ch, out_ch, n=1, shortcut=True, g=1, e=0.5):  # ch_in, ch_out, number, shortcut, groups, expansion
         super().__init__()
         c_ = int(out_ch * e)  # hidden channels
-        self.cv1 = Conv(in_ch, c_, 1, 1)
+        self.seq1 = nn.Sequential(
+            Conv(in_ch, c_, 1, 1),
+            *(Bottleneck(c_, c_, shortcut, g, e=1.0) for _ in range(n))
+        )
         self.cv2 = Conv(in_ch, c_, 1, 1)
-        self.cv3 = Conv(2 * c_, out_ch, 1)  # optional act=FReLU(c2)
-        self.m = nn.Sequential(*(Bottleneck(c_, c_, shortcut, g, e=1.0) for _ in range(n)))
+        self.cv3 = Conv(c_ * 2, out_ch, 1)  # optional act=FReLU(c2)
 
     def forward(self, x):
-        return self.cv3(torch.cat((self.m(self.cv1(x)), self.cv2(x)), 1))
+        x1 = self.seq1(x)
+        x2 = self.cv2(x)
+        x = torch.cat((x1, x2), 1)
+        return self.cv3(x)
 
 
 class Bottleneck(nn.Module):
@@ -117,5 +110,3 @@ class Cache(nn.Module):
         else:
             features.append(x)
         return x, features
-
-

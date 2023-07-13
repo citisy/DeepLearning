@@ -39,12 +39,8 @@ class VGG(nn.Module):
         self.conv_seq = nn.Sequential(*layers)
         self.flatten = nn.Flatten()
         self.fcn = nn.Sequential(
-            Linear(out_ch * 7 * 7, 4096),  # 7 = 224/2^5
-            nn.Dropout(drop_prob),
-
-            Linear(4096, 4096),
-            nn.Dropout(drop_prob),
-
+            Linear(out_ch * 7 * 7, 4096, is_drop=True, drop_prob=drop_prob),  # 7 = 224/2^5
+            Linear(4096, 4096, is_drop=True, drop_prob=drop_prob),
             Linear(4096, 1000),
             out_module
         )

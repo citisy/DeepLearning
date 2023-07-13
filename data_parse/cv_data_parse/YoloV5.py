@@ -9,6 +9,45 @@ from utils import os_lib, converter, visualize
 from .base import DataRegister, DataLoader, DataSaver, DataGenerator, get_image, save_image, DataVisualizer
 
 
+def filter_func(x: Path):
+    """example to filter,
+    filter picture which is in the filter list, and checkout them
+
+    Usage:
+
+        >>> loader = Loader()
+        >>> filter_list = list()
+        >>> visualizer = DataVisualizer()
+        >>> cls_alias = dict()
+        >>> loader.filter_func = filter_func
+    """
+    if x.stem in filter_list:
+        label_path = str(x).replace('images', 'labels').replace('.png', '.txt')
+        image = os_lib.loader.load_img(str(x))
+        labels = np.genfromtxt(label_path).reshape((-1, 5))
+        bboxes = labels[:, 1:]
+        bboxes = converter.CoordinateConvert.mid_xywh2top_xyxy(bboxes, wh=(image.shape[1], image.shape[0]), blow_up=True)
+        visualizer([{'_id': x.stem + '.png', 'image': image, 'bboxes': bboxes, 'classes': labels[:, 0]}], cls_alias=cls_alias)
+        return False
+
+    return True
+
+
+def convert_func(ret):
+    """example to convert
+    Usage:
+
+        >>> Loader().convert_func = convert_func
+    """
+    if isinstance(ret['image'], np.ndarray):
+        h, w, c = ret['image'].shape
+
+        # ref labels convert to abs labels
+        ret['bboxes'] = converter.CoordinateConvert.mid_xywh2top_xyxy(ret['bboxes'], wh=(w, h), blow_up=True)
+
+    return ret
+
+
 class Loader(DataLoader):
     """https://github.com/ultralytics/yolov5
 
@@ -47,15 +86,6 @@ class Loader(DataLoader):
 
     image_suffix = 'png'
 
-    def convert_func(self, x):
-        if isinstance(x['image'], np.ndarray):
-            h, w, c = x['image'].shape
-
-            # ref labels convert to abs labels
-            x['bboxes'] = converter.CoordinateConvert.mid_xywh2top_xyxy(x['bboxes'], wh=(w, h), blow_up=True)
-
-        return x
-
     def _call(self, set_type, image_type, task='', set_task='', **kwargs):
         """See Also `cv_data_parse.base.DataLoader._call`
 
@@ -78,7 +108,7 @@ class Loader(DataLoader):
         else:
             return self.load_set(set_type, image_type, set_task, **kwargs)
 
-    def load_total(self, image_type, task='', convert_func=None, **kwargs):
+    def load_total(self, image_type, task='', **kwargs):
         for img_fp in Path(f'{self.data_dir}/images/{task}').glob(f'*.{self.image_suffix}'):
             image_path = os.path.abspath(img_fp)
             img_fp = Path(image_path)
@@ -98,12 +128,12 @@ class Loader(DataLoader):
                 classes=classes,
             )
 
-            if convert_func:
-                ret = convert_func(ret)
+            ret = self.convert_func(ret)
 
-            yield ret
+            if self.filter_func(ret):
+                yield ret
 
-    def load_set(self, set_type, image_type, set_task='', convert_func=None, sub_dir='image_sets', **kwargs):
+    def load_set(self, set_type, image_type, set_task='', sub_dir='image_sets', **kwargs):
         with open(f'{self.data_dir}/{sub_dir}/{set_task}/{set_type.value}.txt', 'r', encoding='utf8') as f:
             for line in f.read().strip().split('\n'):
                 image_path = os.path.abspath(line)
@@ -124,12 +154,12 @@ class Loader(DataLoader):
                     classes=classes,
                 )
 
-                if convert_func:
-                    ret = convert_func(ret)
+                ret = self.convert_func(ret)
 
-                yield ret
+                if self.filter_func(ret):
+                    yield ret
 
-    def load_full_labels(self, task='', sub_dir='full_labels', convert_func=None):
+    def load_full_labels(self, task='', sub_dir='full_labels'):
         """format of saved label txt like (class, x1, y1, x2, y2, conf, w, h)
         only return labels but no images. can use _id to load images"""
         for fp in Path(f'{self.data_dir}/{sub_dir}/{task}').glob('*.txt'):
@@ -154,10 +184,10 @@ class Loader(DataLoader):
                     image_shape=labels[:, 6:8],  # (w, h)
                 )
 
-            if convert_func:
-                ret = convert_func(ret)
+            ret = self.convert_func(ret)
 
-            yield ret
+            if self.filter_func(ret):
+                yield ret
 
 
 class Saver(DataSaver):
@@ -347,6 +377,7 @@ class Generator(DataGenerator):
         if label_dirs:
             for label_dir in label_dirs:
                 tmp = list(Path(label_dir).glob(f'*.{self.label_suffix}'))
+                tmp = [x for x in tmp if self.filter_func(x)]
 
                 if id_distinguish:
                     idx += [i.stem for i in tmp]
@@ -357,6 +388,7 @@ class Generator(DataGenerator):
         else:
             for image_dir in image_dirs:
                 tmp = list(Path(image_dir).glob(f'*.{self.image_suffix}'))
+                tmp = [x for x in tmp if self.filter_func(x)]
 
                 if id_distinguish:
                     idx += [i.stem for i in tmp]

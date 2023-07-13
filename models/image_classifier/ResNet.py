@@ -73,16 +73,14 @@ class ResBlock(nn.Module):
         if n_conv == 2:
             self.conv_seq = nn.Sequential(
                 Conv(in_ch, out_ch, k=3, s=s),
-                nn.Conv2d(out_ch, out_ch, kernel_size=3, stride=1, padding=1),
-                nn.BatchNorm2d(out_ch)
+                Conv(out_ch, out_ch, k=3, s=1, p=1, is_act=False),
             )
         elif n_conv == 3:  # use bottleneck
-            tmp_ch = out_ch // 4
+            hidden_ch = out_ch // 4
             self.conv_seq = nn.Sequential(
-                Conv(in_ch, tmp_ch, k=1, s=s),
-                Conv(tmp_ch, tmp_ch, k=3),
-                nn.Conv2d(tmp_ch, out_ch, kernel_size=3, stride=1, padding=1),
-                nn.BatchNorm2d(out_ch)
+                Conv(in_ch, hidden_ch, k=1, s=s),
+                Conv(hidden_ch, hidden_ch, k=3),
+                Conv(hidden_ch, out_ch, k=3, s=1, p=1, is_act=False),
             )
 
         else:
@@ -94,16 +92,15 @@ class ResBlock(nn.Module):
         self.is_projection_x = in_ch != out_ch
         if self.is_projection_x:
             self.conv_x = Conv(in_ch, out_ch, k=1, s=s)
+        else:
+            self.conv_x = nn.Sequential()
 
         self.act = nn.ReLU()
 
     def forward(self, x):
-        xl = self.conv_seq(x)
-
-        if self.is_projection_x:
-            x = self.conv_x(x)
-
-        x = self.act(xl + x)
+        x1 = self.conv_seq(x)
+        x2 = self.conv_x(x)
+        x = self.act(x1 + x2)
         return x
 
 

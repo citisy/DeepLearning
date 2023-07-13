@@ -58,7 +58,7 @@ class ConDenseBlock(nn.Module):
 class LGConv(nn.Module):
     def __init__(self, in_ch, out_ch, k, s=1, p=None, g=1, act=nn.ReLU,
                  condense_factor=4, drop_prob=0.5, max_epochs=100,
-                 is_bn=True, conv_kwargs=dict(),
+                 is_norm=True, conv_kwargs=dict(),
                  ):
         super().__init__()
         self.condense_factor = condense_factor
@@ -68,7 +68,7 @@ class LGConv(nn.Module):
 
         self.conv = Conv(
             in_ch, out_ch, k, s=s, p=p, act=act,
-            is_norm=is_bn,
+            is_norm=is_norm,
             conv_kwargs=conv_kwargs
         )
         self.norm = nn.BatchNorm2d(out_ch)

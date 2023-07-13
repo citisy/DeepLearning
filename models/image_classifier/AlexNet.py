@@ -38,12 +38,8 @@ class AlexNet(nn.Module):
         )
         self.flatten = nn.Flatten()
         self.fcn = nn.Sequential(
-            Linear(128 * 2 * 6 * 6, 2048 * 2),
-            nn.Dropout(drop_prob),
-
-            Linear(2048 * 2, 2048 * 2),
-            nn.Dropout(drop_prob),
-
+            Linear(128 * 2 * 6 * 6, 2048 * 2, is_drop=True, drop_prob=drop_prob),
+            Linear(2048 * 2, 2048 * 2, is_drop=True, drop_prob=drop_prob),
             Linear(2048 * 2, 1000),
             out_module
         )

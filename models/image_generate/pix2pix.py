@@ -29,7 +29,7 @@ class NetD(nn.Module):
     def __init__(self, in_ch, hidden_ch=64, n_conv=3):
         super().__init__()
 
-        layers = [Conv(in_ch, hidden_ch, k=4, s=2, p=1, bias=True, act=nn.LeakyReLU(0.2, True), is_norm=False)]
+        layers = [Conv(in_ch, hidden_ch, k=4, s=2, p=1, bias=True, act=nn.LeakyReLU(0.2), is_norm=False)]
 
         out_ch = hidden_ch
         for n in range(1, n_conv + 1):
@@ -37,9 +37,9 @@ class NetD(nn.Module):
             out_ch = hidden_ch * min(2 ** n, 8)
 
             if n == n_conv:
-                layers.append(Conv(in_ch, out_ch, k=4, s=1, p=1, act=nn.LeakyReLU(0.2, True)))
+                layers.append(Conv(in_ch, out_ch, k=4, s=1, p=1, act=nn.LeakyReLU(0.2)))
             else:
-                layers.append(Conv(in_ch, out_ch, k=4, s=2, p=1, act=nn.LeakyReLU(0.2, True)))
+                layers.append(Conv(in_ch, out_ch, k=4, s=2, p=1, act=nn.LeakyReLU(0.2)))
 
         layers.append(Conv(out_ch, 1, k=4, s=1, p=1, bias=True, is_norm=False, is_act=False))
         self.conv_seq = nn.Sequential(*layers)

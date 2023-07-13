@@ -5,7 +5,7 @@ from utils.loss import FocalLoss
 from utils.torch_utils import initialize_layers
 from utils.layers import Conv, ConvInModule
 from . import cls_nms, bbox_iou
-from ..image_classifier.DarkNet import CspDarkNet, Cache, C3Block, darknet_config
+from ..image_classifier.DarkNet import CspDarkNet, Cache, C3Block, C3, darknet_config
 
 in_module_config = dict(
     in_ch=3,
@@ -141,7 +141,7 @@ class Neck(nn.Module):
 
             nn.Upsample(None, 2, 'nearest'),
             Concat(1),
-            C3Block(in_ch, out_ch),
+            C3(in_ch, out_ch, n=3, shortcut=False),
         ]
 
         in_ch = out_ch
@@ -154,7 +154,7 @@ class Neck(nn.Module):
 
             nn.Upsample(None, 2, 'nearest'),
             Concat(0),
-            C3Block(in_ch, out_ch),
+            C3(in_ch, out_ch, n=3, shortcut=False),
             Cache(0),
 
             Conv(out_ch, out_ch, 3, 2),
@@ -166,7 +166,7 @@ class Neck(nn.Module):
         out_channels.append(out_ch)
 
         layers += [
-            C3Block(out_ch, out_ch),
+            C3(out_ch, out_ch, n=3, shortcut=False),
             Cache(1),
 
             Conv(out_ch, out_ch, 3, 2),
@@ -178,7 +178,7 @@ class Neck(nn.Module):
         out_channels.append(out_ch)
 
         layers += [
-            C3Block(out_ch, out_ch),
+            C3(out_ch, out_ch, n=3, shortcut=False),
             Cache(2)
         ]
 

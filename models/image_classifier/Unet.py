@@ -50,9 +50,9 @@ class CurBlock(nn.Module):
         if is_top_block:
             layers.append(Conv(in_ch, hidden_ch, k=4, s=2, p=1, is_act=False, is_norm=False, mode='acn'))
         elif is_bottom_block:
-            layers.append(Conv(in_ch, hidden_ch, k=4, s=2, p=1, act=nn.LeakyReLU(0.2, True), is_norm=False, mode='acn'))
+            layers.append(Conv(in_ch, hidden_ch, k=4, s=2, p=1, act=nn.LeakyReLU(0.2), is_norm=False, mode='acn'))
         else:
-            layers.append(Conv(in_ch, hidden_ch, k=4, s=2, p=1, act=nn.LeakyReLU(0.2, True), mode='acn'))
+            layers.append(Conv(in_ch, hidden_ch, k=4, s=2, p=1, act=nn.LeakyReLU(0.2), mode='acn'))
 
         # sub
         if not is_bottom_block:

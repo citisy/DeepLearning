@@ -4,11 +4,6 @@ from pathlib import Path
 import xml.etree.ElementTree as ET
 import numpy as np
 from .base import DataRegister, DataLoader, DataSaver, get_image
-from enum import Enum
-
-
-class VocDataRegister(Enum):
-    TRAIN_VAL = 'trainval'
 
 
 class Loader(DataLoader):
@@ -52,7 +47,7 @@ class Loader(DataLoader):
             image = ImageVisualize.label_box(image, bboxes, classes, line_thickness=2)
 
     """
-    default_set_type = [VocDataRegister.TRAIN_VAL]
+    default_set_type = [DataRegister.TRAIN_VAL]
 
     classes = ["aeroplane", "bicycle", "bird", "boat", "bottle", "bus", "car", "cat", "chair",
                "cow", "diningtable", "dog", "horse", "motorbike", "person", "pottedplant",
