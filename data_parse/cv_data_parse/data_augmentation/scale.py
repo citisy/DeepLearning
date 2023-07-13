@@ -40,6 +40,9 @@ class Proportion:
     def __call__(self, image, dst, bboxes=None, **kwargs):
         h, w, c = image.shape
         p = self.get_params(dst, w, h)
+        return self.apply(image, p, bboxes, **kwargs)
+
+    def apply(self, image, p, bboxes=None, **kwargs):
         image = cv2.resize(image, None, fx=p, fy=p, interpolation=self.interpolation)
 
         if bboxes is not None:

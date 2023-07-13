@@ -14,8 +14,8 @@ class Model(nn.ModuleList):
     def __init__(self, input_size, in_ch, hidden_ch, n_conv=0):
         super().__init__()
 
-        self.model_d = DcganD(input_size, in_ch, n_conv)
-        self.model_g = DcganG(input_size, hidden_ch, in_ch, n_conv)
+        self.net_d = DcganD(input_size, in_ch, n_conv)
+        self.net_g = DcganG(input_size, hidden_ch, in_ch, n_conv)
 
         initialize_layers(self)
 
@@ -29,7 +29,7 @@ class DcganD(nn.Module):
 
         out_ch = 64
 
-        layers = [Conv(in_ch, out_ch, 4, s=2, p=1, is_bn=False, act=nn.LeakyReLU(0.2, inplace=True))]
+        layers = [Conv(in_ch, out_ch, 4, s=2, p=1, is_norm=False, act=nn.LeakyReLU(0.2, inplace=True))]
         in_ch = out_ch
 
         for _ in range(n_conv):
@@ -69,7 +69,7 @@ class DcganG(nn.Module):
         for _ in range(n_conv):
             layers.append(Conv(in_ch, in_ch, 3, s=1, p=1))
 
-        layers.append(ConvT(in_ch, output_size, 4, s=2, p=1, is_bn=False, act=nn.Tanh()))
+        layers.append(ConvT(in_ch, output_size, 4, s=2, p=1, is_norm=False, act=nn.Tanh()))
         self.conv_seq = nn.Sequential(*layers)
 
     def forward(self, x):

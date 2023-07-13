@@ -387,7 +387,7 @@ class RPNHead(nn.Module):
         super().__init__()
 
         self.num_anchors = num_anchors
-        self.conv_seq = nn.Sequential(*[Conv(in_ch, in_ch, 3, is_bn=False) for _ in range(n_conv)])
+        self.conv_seq = nn.Sequential(*[Conv(in_ch, in_ch, 3, is_norm=False) for _ in range(n_conv)])
 
         # it is 2 cls in paper, if setting 2, use softmax instead after
         self.cls = nn.Conv2d(in_ch, num_anchors, 1)

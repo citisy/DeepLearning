@@ -3,6 +3,8 @@ from torch import nn
 
 
 class BaseImgClsModel(nn.Module):
+    """a template to make a image classifier model by yourself"""
+
     def __init__(
             self,
             in_ch=None, input_size=None, output_size=None,
@@ -93,7 +95,7 @@ class ConvInModule(nn.Module):
 
         # in_ch -> min_in_ch
         # input_size -> min_input_size
-        self.layer = Conv(in_ch, out_ch, (input_size - output_size) + 1, p=0, is_bn=False)
+        self.layer = Conv(in_ch, out_ch, (input_size - output_size) + 1, p=0, is_norm=False)
 
     def forward(self, x):
         return self.layer(x)
@@ -112,8 +114,8 @@ class OutModule(nn.Module):
 
 
 class Conv(nn.Module):
-    def __init__(self, in_ch, out_ch, k, s=1, p=None, act=None,
-                 is_bn=True,
+    def __init__(self, in_ch, out_ch, k, s=1, p=None, bias=False,
+                 is_act=True, act=None, is_norm=True, norm=None, mode='cna',
                  conv_kwargs=dict()):
         """
 
@@ -124,35 +126,39 @@ class Conv(nn.Module):
             s: stride
             p: padding size, None for full padding
             act (nn.Module): activation function
+            mode (str):
+                'c' gives convolution function, 'n' gives normalization function, 'a' gives activate function
+                e.g. 'cna' gives conv - norm - act
 
         """
         super().__init__()
-        self.is_bn = is_bn
+        self.is_act = is_act
+        self.is_norm = is_norm
         self.in_channels = in_ch
         self.out_channels = out_ch
 
         if p is None:
             p = k // 2 if isinstance(k, int) else [x // 2 for x in k]
 
-        self.conv = nn.Conv2d(in_ch, out_ch, k, s, p, bias=False, **conv_kwargs)
-        if is_bn:
-            self.bn = nn.BatchNorm2d(out_ch)
-        self.act = act or nn.ReLU(True)
+        layers = []
+
+        for m in mode:
+            if m == 'c':
+                layers.append(nn.Conv2d(in_ch, out_ch, k, s, p, bias=bias, **conv_kwargs))
+            elif m == 'n' and is_norm:
+                layers.append(norm or nn.BatchNorm2d(out_ch))
+            elif m == 'a' and is_act:
+                layers.append(act or nn.ReLU(True))
+
+        self.seq = nn.Sequential(*layers)
 
     def forward(self, x):
-        x = self.conv(x)
-
-        if self.is_bn:
-            x = self.bn(x)
-
-        x = self.act(x)
-
-        return x
+        return self.seq(x)
 
 
 class ConvT(nn.Module):
-    def __init__(self, in_ch, out_ch, k, s=1, p=None, act=None,
-                 is_bn=True,
+    def __init__(self, in_ch, out_ch, k, s=1, p=None, bias=False,
+                 is_act=True, act=None, is_norm=True, norm=None, mode='cna',
                  conv_kwargs=dict()):
         """
 
@@ -163,60 +169,54 @@ class ConvT(nn.Module):
             s: stride
             p: padding size, None for full padding
             act (nn.Module): activation function
+            mode (str):
+                'c' gives convolution function, 'n' gives normalization function, 'a' gives activate function
+                e.g. 'cna' gives conv - norm - act
 
         """
         super().__init__()
-        self.is_bn = is_bn
+        self.is_act = is_act
+        self.is_norm = is_norm
         self.in_channels = in_ch
         self.out_channels = out_ch
 
         if p is None:
             p = k // 2 if isinstance(k, int) else [x // 2 for x in k]
 
-        self.conv = nn.ConvTranspose2d(in_ch, out_ch, k, s, p, bias=False, **conv_kwargs)
-        if is_bn:
-            self.bn = nn.BatchNorm2d(out_ch)
-        self.act = act or nn.ReLU(True)
+        layers = []
+
+        for m in mode:
+            if m == 'c':
+                layers.append(nn.ConvTranspose2d(in_ch, out_ch, k, s, p, bias=bias, **conv_kwargs))
+            elif m == 'n' and is_norm:
+                layers.append(norm or nn.BatchNorm2d(out_ch))
+            elif m == 'a' and is_act:
+                layers.append(act or nn.ReLU(True))
+
+        self.seq = nn.Sequential(*layers)
 
     def forward(self, x):
-        x = self.conv(x)
-
-        if self.is_bn:
-            x = self.bn(x)
-
-        x = self.act(x)
-
-        return x
+        return self.seq(x)
 
 
 class Linear(nn.Module):
-    def __init__(self, in_size, out_size, act=nn.Sigmoid, is_bn=True, drop_prob=None):
+    def __init__(self, in_size, out_size,
+                 is_act=True, act=None, is_bn=True, bn=None, is_drop=False, drop_prob=0.7):
         super().__init__()
+        self.is_act = is_act
         self.is_bn = is_bn
-        self.is_drop = bool(drop_prob)
-        self.is_act = bool(act)
+        self.is_drop = is_drop
 
-        self.linear = nn.Linear(in_size, out_size)
+        layers = [nn.Linear(in_size, out_size)]
 
         if self.is_bn:
-            self.bn = nn.BatchNorm1d(out_size)
-
+            layers.append(bn or nn.BatchNorm1d(out_size))
         if self.is_drop:
-            self.drop = nn.Dropout(drop_prob)
-
+            layers.append(nn.Dropout(drop_prob))
         if self.is_act:
-            self.act = act()
+            layers.append(act or nn.Sigmoid())
+
+        self.seq = nn.Sequential(*layers)
 
     def forward(self, x):
-        x = self.linear(x)
-
-        if self.is_bn:
-            x = self.bn(x)
-
-        if self.is_drop:
-            x = self.drop(x)
-
-        if self.is_act:
-            x = self.act(x)
-
-        return x
+        return self.seq(x)

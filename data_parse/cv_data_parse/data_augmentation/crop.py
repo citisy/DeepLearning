@@ -45,49 +45,21 @@ class Pad:
         self.fill_type = fill_type
         self.fill = fill
 
-    def __call__(self, image, dst, bboxes=None, **kwargs):
-        """
-
-        Args:
-            image: (h, w, c) image
-            dst: padding to destination size
-
-        """
-        h, w, c = image.shape
-
+    def get_params(self, dst, w, h):
         if self.direction == W:
             pad_info = self.get_lr_params(dst, w)
-            pad_left, pad_right = pad_info['l'], pad_info['r']
-            pad_top, pad_down = 0, 0
 
         elif self.direction == H:
             pad_info = self.get_td_params(dst, h)
-            pad_left, pad_right = 0, 0
-            pad_top, pad_down = pad_info['t'], pad_info['d']
 
         elif self.direction == WH:
             pad_info = self.get_lr_params(dst, w)
             pad_info.update(self.get_td_params(dst, h))
-            pad_left, pad_right = pad_info['l'], pad_info['r']
-            pad_top, pad_down = pad_info['t'], pad_info['d']
 
         else:
             raise ValueError(f'dont support {self.direction = }')
 
-        if bboxes is not None:
-            bboxes = np.array(bboxes)
-            shift = np.array([pad_left, pad_top, pad_left, pad_top])
-            bboxes += shift
-
-        return {
-            'image': cv2.copyMakeBorder(
-                image, pad_top, pad_down, pad_left, pad_right,
-                borderType=fill_mode[self.fill_type],
-                value=self.fill
-            ),
-            'bboxes': bboxes,
-            'crop.Pad': pad_info
-        }
+        return pad_info
 
     def get_lr_params(self, dst, w):
         if self.pad_type == LEFT:
@@ -126,6 +98,39 @@ class Pad:
             t=pad_top,
             d=pad_down
         )
+
+    def __call__(self, image, dst, bboxes=None, **kwargs):
+        """
+
+        Args:
+            image: (h, w, c) image
+            dst: padding to destination size
+
+        """
+        h, w, c = image.shape
+        pad_info = self.get_params(dst, w, h)
+        return self.apply(image, pad_info, bboxes, **kwargs)
+
+    def apply(self, image, pad_info, bboxes=None, **kwargs):
+        pad_top = pad_info.get('t', 0)
+        pad_down = pad_info.get('d', 0)
+        pad_left = pad_info.get('l', 0)
+        pad_right = pad_info.get('r', 0)
+
+        if bboxes is not None:
+            bboxes = np.array(bboxes)
+            shift = np.array([pad_left, pad_top, pad_left, pad_top])
+            bboxes += shift
+
+        return {
+            'image': cv2.copyMakeBorder(
+                image, pad_top, pad_down, pad_left, pad_right,
+                borderType=fill_mode[self.fill_type],
+                value=self.fill
+            ),
+            'bboxes': bboxes,
+            'crop.Pad': pad_info
+        }
 
     @staticmethod
     def restore(ret):
@@ -171,6 +176,8 @@ class Crop:
             else:
                 raise ValueError(f'image width = {w} and height = {h} must be greater than {x2 = } and {y2 = } or set pad=True')
 
+        image = ret['image'][y1:y2, x1: x2]
+
         if bboxes is not None:
             bboxes = ret['bboxes']
             shift = np.array([x1, y1, x1, y1])
@@ -186,7 +193,6 @@ class Crop:
                 classes = np.array(classes)
                 classes = classes[idx]
 
-        image = ret['image'][y1:y2, x1: x2]
         ret.update({
             'image': image,
             'crop.Crop': dict(

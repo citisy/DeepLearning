@@ -68,7 +68,7 @@ class LGConv(nn.Module):
 
         self.conv = Conv(
             in_ch, out_ch, k, s=s, p=p, act=act,
-            is_bn=is_bn,
+            is_norm=is_bn,
             conv_kwargs=conv_kwargs
         )
         self.norm = nn.BatchNorm2d(out_ch)

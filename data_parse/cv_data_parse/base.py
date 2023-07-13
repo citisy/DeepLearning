@@ -19,6 +19,7 @@ class DataRegister(Enum):
     TEST = 'test'
     VAL = 'val'
     DEV = 'dev'
+    TRAIN_VAL = 'trainval'
 
     PATH = 1
     ARRAY = 2
@@ -60,7 +61,6 @@ class DataLoader:
 
     def __init__(self, data_dir):
         self.data_dir = data_dir
-        # self.convert_func = lambda x: x
 
     def __call__(self, set_type=None, image_type=None, generator=True, **kwargs):
         """
@@ -129,6 +129,12 @@ class DataLoader:
             data = pickle.load(f)
 
         return data
+
+    def convert_func(self, ret):
+        return ret
+
+    def filter_func(self, ret):
+        return True
 
 
 class DataSaver:
@@ -269,6 +275,9 @@ class DataGenerator:
 
                 i = j
 
+    def filter_func(self, x):
+        return True
+
 
 class DataVisualizer:
     def __init__(self, save_dir, **saver_kwargs):
@@ -294,13 +303,31 @@ class DataVisualizer:
             _id = ''
             for r in rets:
                 images.append(self.visual_one_image(r, **visual_kwargs))
+                if 'pix_image' in r:
+                    images.append(self.visual_one_image({'image': r['pix_image']}, **visual_kwargs))
                 _id = r['_id']
 
             image = self.concat_images(images)
             self.saver.save_img(image, f'{self.save_dir}/{_id}')
 
-    def visual_one_image(self, r, **kwargs):
-        return r['image']
+    def visual_one_image(self, r, **visual_kwargs):
+        image = r['image']
+
+        if 'bboxes' in r:
+            bboxes = r['bboxes']
+            classes = r['classes']
+            colors = [visualize.get_color_array(int(cls)) for cls in classes]
+
+            if 'cls_alias' in visual_kwargs:
+                cls_alias = visual_kwargs['cls_alias']
+                classes = [cls_alias[_] for _ in classes]
+
+            if 'confs' in r:
+                classes = [f'{cls} {conf:.6f}' for cls, conf in zip(classes, r['confs'])]
+
+            image = visualize.ImageVisualize.label_box(image, bboxes, classes, colors=colors)
+
+        return image
 
     def concat_images(self, images):
         n = len(images)
@@ -314,20 +341,3 @@ class DataVisualizer:
 
         return np.concatenate(images, 0)
 
-
-class OdVisualizer(DataVisualizer):
-    def visual_one_image(self, r, cls_alias=None):
-        image = r['image']
-        bboxes = r['bboxes']
-        classes = r['classes']
-        colors = [visualize.get_color_array(int(cls)) for cls in classes]
-
-        if cls_alias:
-            classes = [cls_alias[_] for _ in classes]
-
-        if 'confs' in r:
-            classes = [f'{cls} {conf:.6f}' for cls, conf in zip(classes, r['confs'])]
-
-        image = visualize.ImageVisualize.label_box(image, bboxes, classes, colors=colors, line_thickness=2)
-
-        return image

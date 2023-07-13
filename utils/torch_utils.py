@@ -5,7 +5,7 @@ from torch import nn
 
 class ModuleInfo:
     @classmethod
-    def profile_per_layer(cls, module: nn.Module, depth=1):
+    def profile_per_layer(cls, module: nn.Module, depth=None):
         profiles = []
 
         def cur(current_m, dep):
@@ -15,6 +15,7 @@ class ModuleInfo:
                 else:
                     cur(m, dep - 1)
 
+        depth = depth or float('inf')
         cur(module, depth)
         return profiles
 
@@ -75,21 +76,31 @@ class EarlyStopping:
         return stop
 
 
-def initialize_layers(module):
+def initialize_layers(module, init_gain=0.02, init_type='normal'):
     for m in module.modules():
         t = type(m)
 
         if t is nn.BatchNorm2d:
             m.eps = 1e-3
             m.momentum = 0.03
-            m.weight.data.normal_(1.0, 0.02)
-            m.bias.data.fill_(0)
+            m.weight.data.normal_(1.0, init_gain)
+            m.bias.data.fill_(0.)
 
         elif t in [nn.Hardswish, nn.LeakyReLU, nn.ReLU, nn.ReLU6, nn.SiLU]:
             m.inplace = True
 
-        elif t in [nn.Conv2d, nn.ConvTranspose2d]:
-            m.weight.data.normal_(0.0, 0.02)
+        elif t in [nn.Conv2d, nn.ConvTranspose2d, nn.Linear]:
+            if init_type == 'normal':
+                nn.init.normal_(m.weight.data, 0.0, init_gain)
+            elif init_type == 'xavier':
+                nn.init.xavier_normal_(m.weight.data, gain=init_gain)
+            elif init_type == 'kaiming':
+                nn.init.kaiming_normal_(m.weight.data, a=0, mode='fan_in')
+            elif init_type == 'orthogonal':
+                nn.init.orthogonal_(m.weight.data, gain=init_gain)
+
+            if hasattr(m, 'bias') and m.bias is not None:
+                nn.init.constant_(m.bias.data, 0.0)
 
 
 class Export:
