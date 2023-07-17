@@ -109,28 +109,29 @@ class Pad:
         """
         h, w, c = image.shape
         pad_info = self.get_params(dst, w, h)
-        return self.apply(image, pad_info, bboxes, **kwargs)
-
-    def apply(self, image, pad_info, bboxes=None, **kwargs):
-        pad_top = pad_info.get('t', 0)
-        pad_down = pad_info.get('d', 0)
-        pad_left = pad_info.get('l', 0)
-        pad_right = pad_info.get('r', 0)
-
-        if bboxes is not None:
-            bboxes = np.array(bboxes)
-            shift = np.array([pad_left, pad_top, pad_left, pad_top])
-            bboxes += shift
+        image = self.apply_image(image, **pad_info)
+        bboxes = self.apply_bboxes(bboxes, **pad_info)
 
         return {
-            'image': cv2.copyMakeBorder(
-                image, pad_top, pad_down, pad_left, pad_right,
-                borderType=fill_mode[self.fill_type],
-                value=self.fill
-            ),
+            'image': image,
             'bboxes': bboxes,
             'crop.Pad': pad_info
         }
+
+    def apply_image(self, image, t=0, d=0, l=0, r=0):
+        return cv2.copyMakeBorder(
+            image, t, d, l, r,
+            borderType=fill_mode[self.fill_type],
+            value=self.fill
+        )
+
+    def apply_bboxes(self, bboxes, t=0, l=0, **kwargs):
+        if bboxes is not None:
+            bboxes = np.array(bboxes)
+            shift = np.array([l, t, l, t])
+            bboxes += shift
+
+        return bboxes
 
     @staticmethod
     def restore(ret):
@@ -176,10 +177,24 @@ class Crop:
             else:
                 raise ValueError(f'image width = {w} and height = {h} must be greater than {x2 = } and {y2 = } or set pad=True')
 
-        image = ret['image'][y1:y2, x1: x2]
+        image = self.apply_image(ret['image'], x1, x2, y1, y2)
+        bboxes, classes = self.apply_bboxes_classes(ret['bboxes'], classes, x1, x2, y1, y2)
 
+        ret.update({
+            'image': image,
+            'bboxes': bboxes,
+            'classes': classes,
+            'crop.Crop': dict(x1=x1, x2=x2, y1=y1, y2=y2),
+        })
+
+        return ret
+
+    def apply_image(self, image, x1, x2, y1, y2):
+        return image[y1:y2, x1: x2]
+
+    def apply_bboxes_classes(self, bboxes, classes, x1, x2, y1, y2, ):
         if bboxes is not None:
-            bboxes = ret['bboxes']
+            bboxes = bboxes
             shift = np.array([x1, y1, x1, y1])
             bboxes -= shift
             bboxes = bboxes.clip(min=0)
@@ -193,26 +208,14 @@ class Crop:
                 classes = np.array(classes)
                 classes = classes[idx]
 
-        ret.update({
-            'image': image,
-            'crop.Crop': dict(
-                l=x1,
-                r=w - x2,
-                t=y1,
-                d=h - y2,
-            ),
-            'bboxes': bboxes,
-            'classes': classes
-        })
-
-        return ret
+        return bboxes, classes
 
     def restore(self, ret):
         params = ret.get('crop.Crop')
         bboxes = ret['bboxes']
 
-        x1 = params['l']
-        y1 = params['t']
+        x1 = params['x1']
+        y1 = params['y1']
 
         shift = np.array([x1, y1, x1, y1])
         bboxes += shift

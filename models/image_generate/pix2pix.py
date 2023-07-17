@@ -15,6 +15,13 @@ net_d_config = dict(
 
 
 class Model(nn.ModuleList):
+    """refer to:
+    paper:
+        - [Image-to-Image Translation with Conditional Adversarial Networks](https://arxiv.org/pdf/1611.07004.pdf)
+    code:
+        - https://github.com/phillipi/pix2pix
+        - https://github.com/junyanz/pytorch-CycleGAN-and-pix2pix
+    """
     def __init__(self, in_ch, input_size, net_g_config=net_g_config, net_d_config=net_d_config):
         super().__init__()
 

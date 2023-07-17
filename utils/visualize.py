@@ -14,8 +14,8 @@ RECTANGLE = 2
 class ImageVisualize:
     @staticmethod
     def box(img, boxes, visual_type=RECTANGLE, colors=None, line_thickness=None):
-        """添加若干个线框
-        char_boxes: polygon: (-1, -1, 2) or rectangle: (-1, 4)
+        """目标框
+        boxes: polygon: (-1, -1, 2) or rectangle: (-1, 4)
         """
         img = img.copy()
         colors = colors or [cmap['Blue']['array']] * len(boxes)
@@ -38,7 +38,7 @@ class ImageVisualize:
 
     @staticmethod
     def text_box(img, text_boxes, texts, scores=None, drop_score=0.5, colors=None, font_path="utils/excluded/simfang.ttf"):
-        """将每个已识别的文本框住
+        """目标框 + 文本
         use PIL.Image instead of opencv for better chinese font support
         text_boxes: (-1, -1, 2)
         """
@@ -97,7 +97,7 @@ class ImageVisualize:
 
     @staticmethod
     def text(img, text_boxes, texts, scores=None, drop_score=0.5, font_path="utils/excluded/simfang.ttf"):
-        """模拟文字识别效果
+        """文本
         use PIL.Image instead of opencv for better chinese font support
         text_boxes: (-1, 4, 2)
         """
@@ -143,7 +143,7 @@ class ImageVisualize:
 
     @classmethod
     def label_box(cls, img, boxes, labels, colors=None, line_thickness=None):
-        """将每个已识别的结构框住，并添加标签
+        """目标框 + 标签
         boxes: (-1, 4)
         """
         img = img.copy()
@@ -168,6 +168,35 @@ class ImageVisualize:
                         lineType=cv2.LINE_AA)
 
         return img
+
+    @staticmethod
+    def block(img, boxes, visual_type=RECTANGLE, colors=None, alpha=1):
+        """目标块
+        boxes: polygon: (-1, -1, 2) or rectangle: (-1, 4)
+        alpha: [0, 1], 1 gives opaque totally
+        """
+        img = img.copy()
+        colors = colors or [cmap['Blue']['array']] * len(boxes)
+
+        for i in range(len(boxes)):
+            if visual_type == POLYGON:  # polygon: (-1, -1, 2)
+                cv2.fillPoly(img, [np.array(boxes[i], dtype=int)], color=colors[i], lineType=cv2.LINE_AA)
+
+            elif visual_type == RECTANGLE:  # rectangle: (-1, 4)
+                x1, y1, x2, y2 = boxes[i]
+                block = img[y1:y2, x1:x2]
+                img[y1:y2, x1:x2] = (block * (1 - alpha) + (np.zeros_like(block) + colors[i]) * alpha).astype(img.dtype)
+
+            else:
+                raise ValueError
+
+        return img
+
+
+def get_variable_name(var, local_vars):
+    for k, v in local_vars.items():
+        if local_vars[k] is var:
+            return k
 
 
 class TextVisualize:

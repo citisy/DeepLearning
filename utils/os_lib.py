@@ -4,6 +4,7 @@ import os
 import pickle
 import time
 import psutil
+import random
 import numpy as np
 import pandas as pd
 from functools import wraps
@@ -262,23 +263,69 @@ class Loader:
         return images
 
 
-class CacheToFile:
-    def __init__(self, cache_dir=None, max_size=None,
+class MemoryCacher:
+    def __init__(self, max_size=None,
                  verbose=True, stdout_method=print, stdout_fmt='Save to %s successful!',
-                 **saver_kwargs):
+                 **saver_kwargs
+                 ):
+        self.max_size = max_size
+        self.verbose = verbose
+        self.stdout_method = stdout_method
+        self.cache = {}
+
+    def cache_one(self, obj):
+        key = time.time()
+        self.delete_over_range()
+        self.cache[key] = obj
+
+    def cache_batch(self, objs):
+        for i, obj in enumerate(objs):
+            key = time.time() + 1e-6 * i
+            self.delete_over_range()
+            self.cache[key] = obj
+
+    def delete_over_range(self):
+        if len(self.cache) >= self.max_size:
+            key = min(self.cache.keys())
+            self.cache.pop(key)
+
+    def get_one(self, _id=None):
+        if _id is None:
+            _id = random.choice(list(self.cache.keys()))
+        return self.cache[_id]
+
+    def get_batch(self, _ids=None, size=None):
+        if _ids is None:
+            _ids = np.random.choice(list(self.cache.keys()), size, replace=False)
+
+        return [self.cache[_id] for _id in _ids]
+
+
+class FileCacher:
+    def __init__(self, cache_dir=None, max_size=None,
+                 verbose=True, stdout_method=print, stdout_fmt='Have deleted %s successful!',
+                 saver_kwargs=dict(), loader_kwargs=dict()):
         mk_dir(cache_dir)
         self.cache_dir = Path(cache_dir)
         self.max_size = max_size
         self.verbose = verbose
         self.stdout_method = stdout_method
-        self.saver = Saver(verbose, stdout_method, stdout_fmt)
+        self.stdout_fmt = stdout_fmt
+        self.saver = Saver(verbose, stdout_method, **saver_kwargs)
+        self.loader = Loader(verbose, stdout_method, **loader_kwargs)
 
-    def auto_cache(self, obj, file_name):
+    def cache_one(self, obj, file_name):
         path = f'{self.cache_dir}/{file_name}'
-        self.delete_old(suffix=Path(path).suffix)
-        saver.auto_save(obj, path)
+        self.delete_over_range(suffix=Path(path).suffix)
+        self.saver.auto_save(obj, path)
 
-    def delete_old(self, suffix=''):
+    def cache_batch(self, objs, file_names):
+        for obj, file_name in zip(objs, file_names):
+            path = f'{self.cache_dir}/{file_name}'
+            self.delete_over_range(suffix=Path(path).suffix)
+            self.saver.auto_save(obj, path)
+
+    def delete_over_range(self, suffix=''):
         if not self.max_size:
             return
 
@@ -296,12 +343,30 @@ class CacheToFile:
                 return
 
             if self.verbose:
-                self.stdout_method(f'Have delete {old_path}!')
+                self.stdout_method(self.stdout_fmt % old_path)
 
             return old_path
 
+    def get_one(self, file_name=None):
+        if file_name is None:
+            caches = [str(_) for _ in self.cache_dir.glob(f'*')]
+            path = random.choice(caches)
+        else:
+            path = f'{self.cache_dir}/{file_name}'
 
-class CacheToMongoDB:
+        return self.loader.auto_load(path)
+
+    def get_batch(self, file_names=None, size=None):
+        if file_names is None:
+            caches = [str(_) for _ in self.cache_dir.glob(f'*')]
+            paths = np.random.choice(caches, size, replace=False)
+        else:
+            paths = [f'{self.cache_dir}/{file_name}' for file_name in file_names]
+
+        return [self.loader.auto_load(path) for path in paths]
+
+
+class MongoDBCacher:
     def __init__(self, host='127.0.0.1', port=27017, user=None, password=None, database=None, collection=None,
                  max_size=None, verbose=True, stdout_method=print, stdout_fmt='Save _id[%s] successful!',
                  **mongo_kwargs):
@@ -316,8 +381,8 @@ class CacheToMongoDB:
         self.stdout_method = stdout_method
         self.stdout_fmt = stdout_fmt
 
-    def auto_cache(self, obj: dict, _id=None):
-        self.delete_old()
+    def cache_one(self, obj: dict, _id=None):
+        self.delete_over_range()
 
         obj['update_time'] = int(time.time())
         if _id is None:
@@ -330,7 +395,7 @@ class CacheToMongoDB:
         if self.verbose:
             self.stdout_method(self.stdout_fmt % _id)
 
-    def delete_old(self):
+    def delete_over_range(self):
         if not self.max_size:
             return
 
@@ -338,6 +403,18 @@ class CacheToMongoDB:
         if query.count() > self.max_size:
             x = query.sort({'update_time': 1}).limit(1)
             self.collection.delete_one(x)
+
+    def get_one(self, _id=None):
+        if _id is None:
+            return self.collection.find_one()
+        else:
+            return self.collection.find_one({'_id': _id})
+
+    def get_batch(self, _ids=None, size=None):
+        if _ids is None:
+            return [self.collection.find_one() for _ in range(size)]
+        else:
+            return [self.collection.find_one({'_id': _id}) for _id in _ids]
 
 
 class FakeIo:

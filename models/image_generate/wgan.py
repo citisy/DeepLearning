@@ -6,10 +6,12 @@ from utils.torch_utils import initialize_layers
 
 
 class Model(nn.ModuleList):
-    """refer to paper:
-    - [Towards Principled Methods for Training Generative Adversarial Networks](https://arxiv.org/pdf/1701.04862.pdf)
-    - [Wasserstein GAN](https://arxiv.org/pdf/1701.07875.pdf)
-    code: https://github.com/martinarjovsky/WassersteinGAN
+    """refer to
+    paper:
+        - [Towards Principled Methods for Training Generative Adversarial Networks](https://arxiv.org/pdf/1701.04862.pdf)
+        - [Wasserstein GAN](https://arxiv.org/pdf/1701.07875.pdf)
+    code:
+        - https://github.com/martinarjovsky/WassersteinGAN
     """
     def __init__(self, input_size, in_ch, hidden_ch, n_conv=0):
         super().__init__()

@@ -31,24 +31,32 @@ class MixUp:
 
     def __call__(self, image_list, bboxes_list=None, classes_list=None, **kwargs):
         """input image must have same shape"""
-        img1, img2 = image_list
-
-        r = np.random.beta(self.beta, self.beta)  # mixup ratio, default alpha=beta=32.0
-        image = (img1 * r + img2 * (1 - r)).astype(img1.dtype)
-
-        bboxes = None
-        if bboxes_list is not None:
-            bboxes = np.concatenate(bboxes_list, 0)
-
-        classes = None
-        if classes_list is not None:
-            classes = np.concatenate(classes_list, 0)
+        image = self.apply_image_list(image_list)
+        bboxes = self.apply_bboxes_list(bboxes_list)
+        classes = self.apply_classes_list(classes_list)
 
         return dict(
             image=image,
             bboxes=bboxes,
             classes=classes,
         )
+
+    def apply_image_list(self, image_list):
+        img1, img2 = image_list
+
+        r = np.random.beta(self.beta, self.beta)  # mixup ratio, default alpha=beta=32.0
+        image = (img1 * r + img2 * (1 - r)).astype(img1.dtype)
+        return image
+
+    def apply_bboxes_list(self, bboxes_list):
+        if bboxes_list is not None:
+            bboxes = np.concatenate(bboxes_list, 0)
+            return bboxes
+
+    def apply_classes_list(self, classes_list):
+        if classes_list is not None:
+            classes = np.concatenate(classes_list, 0)
+            return classes
 
 
 class CutMix:
@@ -89,14 +97,20 @@ class Mosaic:
         self.border = [img_size // 2, img_size // 2]
 
     def __call__(self, image_list, bboxes_list=None, classes_list=None, **kwargs):
-        assert len(image_list) == 4 or len(image_list) == 9, f'image_list must have 4 or 9 images, but have {len(image_list)}'
-
         if len(image_list) == 4:
-            return self.image4(image_list, bboxes_list, classes_list, **kwargs)
+            image, bboxes, classes = self.apply_image4(image_list, bboxes_list, classes_list, **kwargs)
         elif len(image_list) == 9:
-            return self.image9(image_list, bboxes_list, classes_list, **kwargs)
+            image, bboxes, classes = self.apply_image9(image_list, bboxes_list, classes_list, **kwargs)
+        else:
+            raise f'image_list must have 4 or 9 images, but have {len(image_list)}'
 
-    def image4(self, image_list, bboxes_list=None, classes_list=None, **kwargs):
+        return dict(
+            image=image,
+            bboxes=bboxes,
+            classes=classes
+        )
+
+    def apply_image4(self, image_list, bboxes_list=None, classes_list=None, **kwargs):
         s = self.img_size
         img4 = np.full((s * 2, s * 2, image_list[0].shape[2]), 114, dtype=np.uint8)  # base image with 4 tiles
         yc, xc = (int(np.random.uniform(x, 2 * s - x)) for x in self.border)  # center x, y of img4
@@ -132,13 +146,9 @@ class Mosaic:
         if classes_list is not None:
             classes = np.concatenate(classes_list)
 
-        return dict(
-            image=img4,
-            bboxes=bboxes4,
-            classes=classes
-        )
+        return img4, bboxes4, classes
 
-    def image9(self, image_list, bboxes_list=None, classes_list=None, **kwargs):
+    def apply_image9(self, image_list, bboxes_list=None, classes_list=None, **kwargs):
         s = self.img_size
         hp, wp = -1, -1  # height, width previous
 
@@ -193,8 +203,4 @@ class Mosaic:
         if classes_list is not None:
             classes = np.concatenate(classes_list)
 
-        return dict(
-            image=img9,
-            bboxes=bboxes9,
-            classes=classes
-        )
+        return img9, bboxes9, classes

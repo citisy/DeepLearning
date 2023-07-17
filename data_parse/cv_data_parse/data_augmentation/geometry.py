@@ -26,16 +26,22 @@ class HFlip:
 
     def __call__(self, image, bboxes=None, **kwargs):
         h, w = image.shape[:2]
-        image = cv2.flip(image, 1)
-
-        if bboxes is not None:
-            bboxes = np.array(bboxes)
-            bboxes[:, (0, 2)] = w - bboxes[:, (2, 0)]
+        image = self.apply_image(image)
+        bboxes = self.apply_bboxes(bboxes, w)
 
         return dict(
             image=image,
             bboxes=bboxes
         )
+
+    def apply_image(self, image):
+        return cv2.flip(image, 1)
+
+    def apply_bboxes(self, bboxes, w):
+        if bboxes is not None:
+            bboxes = np.array(bboxes)
+            bboxes[:, (0, 2)] = w - bboxes[:, (2, 0)]
+        return bboxes
 
     @staticmethod
     def restore(ret):
@@ -52,16 +58,23 @@ class VFlip:
 
     def __call__(self, image, bboxes=None, **kwargs):
         h, w = image.shape[:2]
-        image = cv2.flip(image, 0)
-
-        if bboxes is not None:
-            bboxes = np.array(bboxes)
-            bboxes[:, (1, 3)] = h - bboxes[:, (3, 1)]
+        image = self.apply_image(image)
+        bboxes = self.apply_bboxes(bboxes, h)
 
         return dict(
             image=image,
             bboxes=bboxes
         )
+
+    def apply_image(self, image):
+        return cv2.flip(image, 0)
+
+    def apply_bboxes(self, bboxes, h):
+        if bboxes is not None:
+            bboxes = np.array(bboxes)
+            bboxes[:, (1, 3)] = h - bboxes[:, (3, 1)]
+
+        return bboxes
 
     @staticmethod
     def restore(ret):
@@ -164,14 +177,29 @@ class SimpleRotate:
     def __init__(self, angle=90):
         self.angle = angle
 
-    def __call__(self, image, bboxes=None, **kwargs):
-        k = round(self.angle / 90) % 4
+    def get_params(self):
+        return round(self.angle / 90) % 4
 
+    def __call__(self, image, bboxes=None, **kwargs):
+        h, w = image.shape[:2]
+        k = self.get_params()
+        image = self.apply_image(image, k)
+        bboxes = self.apply_bboxes(bboxes, k, h, w)
+
+        return {
+            'image': image,
+            'bboxes': bboxes,
+            'geo.Rotate': dict(
+                k=k
+            )}
+
+    def apply_image(self, image, k):
         image = np.rot90(image, k)
         image = np.ascontiguousarray(image)
+        return image
 
+    def apply_bboxes(self, bboxes, k, h, w):
         if bboxes is not None:
-            h, w = image.shape[:2]
             if k == 1:
                 bboxes = bboxes[:, (1, 2, 3, 0)]
                 bboxes[:, 1::2] = h - bboxes[:, 1::2]
@@ -183,12 +211,7 @@ class SimpleRotate:
                 bboxes = bboxes[:, (3, 0, 1, 2)]
                 bboxes[:, 0::2] = w - bboxes[:, 0::2]
 
-        return {
-            'image': image,
-            'bboxes': bboxes,
-            'geo.Rotate': dict(
-                angle=k * 90,
-            )}
+        return bboxes
 
 
 class Rotate:
@@ -220,8 +243,12 @@ class Rotate:
         self.center = center
         self.fill = fill
 
-    def get_params(self):
-        return self.angle
+    def get_params(self, w, h):
+        angle = self.angle
+        center = self.center or (w / 2.0, h / 2.0)
+        M = cv2.getRotationMatrix2D(center, angle, 1)
+
+        return angle, center, M
 
     @staticmethod
     def transform(x, y, matrix):
@@ -229,12 +256,22 @@ class Rotate:
         return a * x + b * y + c, d * x + e * y + f
 
     def __call__(self, image, bboxes=None, **kwargs):
-        angle = self.get_params()
-
         h, w, c = image.shape
+        angle, center, M = self.get_params(w, h)
+        image = self.apply_image(image, angle, center, M)
+        bboxes = self.apply_bboxes(bboxes, M, w, h)
 
-        center = self.center or (w / 2.0, h / 2.0)
-        M = cv2.getRotationMatrix2D(center, angle, 1)
+        return {
+            'image': image,
+            'bboxes': bboxes,
+            'geo.Rotate': dict(
+                angle=angle,
+                center=center,
+                M=M
+            )}
+
+    def apply_image(self, image, angle, center, M):
+        h, w, c = image.shape
 
         if self.expand:
             # calculate output size
@@ -276,7 +313,9 @@ class Rotate:
             flags=self.interpolation,
             borderValue=self.fill
         )
+        return image
 
+    def apply_bboxes(self, bboxes, M, w, h):
         if bboxes is not None:
             n = len(bboxes)
             xy = np.ones((n * 4, 3))
@@ -295,24 +334,21 @@ class Rotate:
 
             bboxes = new
 
-        return {
-            'image': image,
-            'bboxes': bboxes,
-            'geo.Rotate': dict(
-                angle=angle,
-            )}
+        return bboxes
 
 
 class RandomRotate(Rotate):
     """See Also `torchvision.transforms.RandomRotation`"""
 
-    def get_params(self):
+    def get_params(self, w, h):
         if isinstance(self.angle, numbers.Number):
             angle = int(np.random.uniform(-self.angle, self.angle))
         else:
             angle = int(np.random.uniform(*self.angle))
 
-        return angle
+        center = self.center or (w / 2.0, h / 2.0)
+        M = cv2.getRotationMatrix2D(center, angle, 1)
+        return angle, center, M
 
 
 class Affine:
@@ -456,20 +492,33 @@ class Perspective:
         offset_h = self.distortion * h
         offset_w = self.distortion * w
 
-        return np.array([
+        start_points = np.array([(0, 0), (w - 1, 0), (w - 1, h - 1), (0, h - 1)], dtype=np.float32)
+        end_points = np.array([
             (0, 0),
             (w - 1, 0),
             (w - 1 - offset_w, h - 1 - offset_h),
             (offset_w, h - 1 - offset_h)
         ], dtype=np.float32)
+        M = cv2.getPerspectiveTransform(start_points, end_points)
+
+        return end_points, M
 
     def __call__(self, image, bboxes=None, **kwargs):
         h, w = image.shape[:2]
-        end_points = self.get_params(h, w)
-        start_points = np.array([(0, 0), (w - 1, 0), (w - 1, h - 1), (0, h - 1)], dtype=np.float32)
+        end_points, M = self.get_params(h, w)
+        image = self.apply_image(image, end_points, M)
+        bboxes = self.apply_bboxes(bboxes, M, w, h)
 
-        M = cv2.getPerspectiveTransform(start_points, end_points)
+        return {
+            'image': image,
+            'bboxes': bboxes,
+            'geo.Perspective': dict(
+                end_points=end_points,
+                M=M
+            )}
 
+    def apply_image(self, image, end_points, M):
+        h, w = image.shape[:2]
         image = cv2.warpPerspective(
             image,
             M, (w, h),
@@ -486,6 +535,9 @@ class Perspective:
             min_x, min_y = max(min_x, 0), max(min_y, 0)
             image = image[min_y:max_y, min_x:max_x]
 
+        return image
+
+    def apply_bboxes(self, bboxes, M, w, h):
         if bboxes is not None:
             n = len(bboxes)
             xy = np.ones((n * 4, 3))
@@ -503,13 +555,7 @@ class Perspective:
             new[:, [1, 3]] = new[:, [1, 3]].clip(0, h)
 
             bboxes = new
-
-        return {
-            'image': image,
-            'bboxes': bboxes,
-            'geo.Perspective': dict(
-                end_points=end_points
-            )}
+        return bboxes
 
 
 class RandomPerspective(Perspective):
@@ -527,9 +573,13 @@ class RandomPerspective(Perspective):
         offset_h = np.random.uniform(*_offset_h, size=4)
         offset_w = np.random.uniform(*_offset_w, size=4)
 
-        return np.array([
+        start_points = np.array([(0, 0), (w - 1, 0), (w - 1, h - 1), (0, h - 1)], dtype=np.float32)
+        end_points = np.array([
             (offset_w[0], offset_h[0]),
             (w - 1 - offset_w[1], offset_h[1]),
             (w - 1 - offset_w[2], h - 1 - offset_h[2]),
             (offset_w[3], h - 1 - offset_h[3])
         ], dtype=np.float32)
+        M = cv2.getPerspectiveTransform(start_points, end_points)
+
+        return end_points, M

@@ -11,8 +11,11 @@ class MinMax:
 
     def __call__(self, image, **kwargs):
         return dict(
-            image=image / 255
+            image=self.apply_image(image)
         )
+
+    def apply_image(self, image):
+        return image / 255.
 
 
 class GaussNoise:
@@ -28,13 +31,16 @@ class GaussNoise:
         self.sigma = sigma
 
     def __call__(self, image, **kwargs):
-        gauss = np.random.normal(self.mean, self.sigma, image.shape)
-        noisy_image = image + gauss
-        noisy_image = np.clip(noisy_image, a_min=0, a_max=255)
-
         return dict(
-            image=noisy_image
+            image=self.apply_image(image)
         )
+
+    def apply_image(self, image):
+        gauss = np.random.normal(self.mean, self.sigma, image.shape)
+        image = image + gauss
+        image = np.clip(image, a_min=0, a_max=255)
+
+        return image
 
 
 class SaltNoise:
@@ -50,43 +56,50 @@ class SaltNoise:
         self.amount = amount
 
     def __call__(self, image, **kwargs):
-        noisy_image = np.copy(image)
+        return dict(
+            image=self.apply_image(image)
+        )
+
+    def apply_image(self, image):
+        image = np.copy(image)
         num_salt = np.ceil(self.amount * image.size * self.s_vs_p)
         coords = tuple(np.random.randint(0, i - 1, int(num_salt)) for i in image.shape)
-        noisy_image[coords] = 255
+        image[coords] = 255
         num_pepper = np.ceil(self.amount * image.size * (1. - self.s_vs_p))
         coords = tuple(np.random.randint(0, i - 1, int(num_pepper)) for i in image.shape)
-        noisy_image[coords] = 0
-
-        return dict(
-            image=noisy_image
-        )
+        image[coords] = 0
+        return image
 
 
 class PoissonNoise:
     """添加泊松噪声"""
 
     def __call__(self, image, **kwargs):
+        return dict(
+            image=self.apply_image(image)
+        )
+
+    def apply_image(self, image):
         vals = len(np.unique(image))
         vals = 2 ** np.ceil(np.log2(vals))
-        noisy_image = np.random.poisson(image * vals) / float(vals)
+        image = np.random.poisson(image * vals) / float(vals)
 
-        return dict(
-            image=noisy_image
-        )
+        return image
 
 
 class SpeckleNoise:
     """添加斑点噪声"""
 
     def __call__(self, image, **kwargs):
+        return dict(
+            image=self.apply_image(image)
+        )
+
+    def apply_image(self, image):
         gauss = np.random.randn(*image.shape)
         noisy_image = image + image * gauss
-        noisy_image = np.clip(noisy_image, a_min=0, a_max=255)
-
-        return dict(
-            image=noisy_image
-        )
+        image = np.clip(noisy_image, a_min=0, a_max=255)
+        return image
 
 
 class Normalize:
@@ -106,7 +119,7 @@ class Normalize:
 
     def __call__(self, image, **kwargs):
         mean, std = self.get_params(image)
-        image = (image - mean) / std
+        image = self.apply_image(image, mean, std)
 
         return {
             'image': image,
@@ -114,6 +127,9 @@ class Normalize:
                 mean=mean,
                 std=std
             )}
+
+    def apply_image(self, image, mean, std):
+        return (image - mean) / std
 
     @staticmethod
     def restore(ret):
@@ -134,7 +150,11 @@ class Pca:
         self.eigen_values = eigen_values
 
     def __call__(self, image, **kwargs):
+        return dict(
+            image=self.apply_image(image)
+        )
 
+    def apply_image(self, image):
         a = np.random.normal(0, 0.1)
 
         noisy_image = np.array(image, dtype=float)
@@ -166,9 +186,7 @@ class Pca:
         for i in range(image.shape[-1]):
             noisy_image[:, :, i] = noisy_image[:, :, i] @ (self.eigenvectors[i].T * self.eigen_values[i] * a).T
 
-        return dict(
-            image=noisy_image
-        )
+        return noisy_image
 
 
 class AdjustHsv:
@@ -178,6 +196,11 @@ class AdjustHsv:
         self.vgain = vgain
 
     def __call__(self, image, **kwargs):
+        return dict(
+            image=self.apply_image(image)
+        )
+
+    def apply_image(self, image):
         r = np.random.uniform(-1, 1, 3) * [self.hgain, self.sgain, self.vgain] + 1  # random gains
         hue, sat, val = cv2.split(cv2.cvtColor(image, cv2.COLOR_BGR2HSV))
         dtype = image.dtype
@@ -189,10 +212,7 @@ class AdjustHsv:
 
         im_hsv = cv2.merge((cv2.LUT(hue, lut_hue), cv2.LUT(sat, lut_sat), cv2.LUT(val, lut_val)))
         image = cv2.cvtColor(im_hsv, cv2.COLOR_HSV2BGR)
-
-        return dict(
-            image=image
-        )
+        return image
 
 
 class AdjustBrightness:
@@ -210,13 +230,15 @@ class AdjustBrightness:
         self.offset = offset
 
     def __call__(self, image, **kwargs):
+        return dict(
+            image=self.apply_image(image)
+        )
+
+    def apply_image(self, image):
         factor = max(1 + self.offset, 0)
         table = np.array([i * factor for i in range(0, 256)]).clip(0, 255).astype('uint8')
         image = cv2.LUT(image, table)
-
-        return dict(
-            image=image
-        )
+        return image
 
 
 class AdjustContrast:
@@ -234,13 +256,15 @@ class AdjustContrast:
         self.offset = offset
 
     def __call__(self, image, **kwargs):
+        return dict(
+            image=self.apply_image(image)
+        )
+
+    def apply_image(self, image):
         factor = max(1 + self.offset, 0)
         table = np.array([(i - 74) * factor + 74 for i in range(0, 256)]).clip(0, 255).astype('uint8')
         image = cv2.LUT(image, table)
-
-        return dict(
-            image=image
-        )
+        return image
 
 
 class AdjustSaturation:
@@ -258,6 +282,11 @@ class AdjustSaturation:
         self.offset = offset
 
     def __call__(self, image, **kwargs):
+        return dict(
+            image=self.apply_image(image)
+        )
+
+    def apply_image(self, image):
         factor = 1 + self.offset
         dtype = image.dtype
         image = image.astype(np.float32)
@@ -266,10 +295,7 @@ class AdjustSaturation:
         gray_image = gray_image[..., np.newaxis]
         image = image * alpha + gray_image * (1 - alpha)
         image = image.clip(0, 255).astype(dtype)
-
-        return dict(
-            image=image
-        )
+        return image
 
 
 class AdjustHue:
@@ -300,6 +326,11 @@ class AdjustHue:
         self.offset = offset
 
     def __call__(self, image, **kwargs):
+        return dict(
+            image=self.apply_image(image)
+        )
+
+    def apply_image(self, image):
         factor = min(max(1 + self.offset, -0.5), 0.5)
 
         dtype = image.dtype
@@ -314,10 +345,7 @@ class AdjustHue:
             h += np.uint8(alpha * 255)
         hsv_image = cv2.merge([h, s, v])
         image = cv2.cvtColor(hsv_image, cv2.COLOR_HSV2BGR_FULL).astype(dtype)
-
-        return dict(
-            image=image
-        )
+        return image
 
 
 class Jitter:
@@ -349,18 +377,25 @@ class GaussianBlur:
         self.ksize = ksize
         self.sigma = sigma
 
-    def __call__(self, image, **kwargs):
-        h, w, c = image.shape
-
+    def get_params(self, w, h):
         ksize = self.ksize
         if not ksize:
             ksize = min(w, h) // 8
             ksize = (ksize * 2) + 1
 
+        return ksize
+
+    def __call__(self, image, **kwargs):
+        h, w, c = image.shape
+        ksize = self.get_params(w, h)
+
         return {
-            'image': cv2.GaussianBlur(image, ksize, sigmaX=self.sigma[0], sigmaY=self.sigma[1]),
+            'image': self.apply_image(image, ksize),
             'pixel.GaussianBlur': dict(ksize=ksize)
         }
+
+    def apply_image(self, image, ksize):
+        return cv2.GaussianBlur(image, ksize, sigmaX=self.sigma[0], sigmaY=self.sigma[1])
 
 
 class MotionBlur:
@@ -375,14 +410,7 @@ class MotionBlur:
 
     def __call__(self, image, degree=None, angle=None, **kwargs):
         degree, angle = self.get_params()
-
-        M = cv2.getRotationMatrix2D((degree // 2, degree // 2), angle, 1)
-        motion_blur_kernel = np.zeros((degree, degree))
-        motion_blur_kernel[degree // 2, :] = 1
-        motion_blur_kernel = cv2.warpAffine(motion_blur_kernel, M, (degree, degree))
-        motion_blur_kernel = motion_blur_kernel / degree
-        image = cv2.filter2D(image, -1, motion_blur_kernel)
-        image = np.clip(image, 0, 255).astype(np.uint8)
+        image = self.apply_image(image, degree, angle)
 
         return {
             'image': image,
@@ -390,6 +418,16 @@ class MotionBlur:
                 degree=degree,
                 angle=angle
             )}
+
+    def apply_image(self, image, degree, angle):
+        M = cv2.getRotationMatrix2D((degree // 2, degree // 2), angle, 1)
+        motion_blur_kernel = np.zeros((degree, degree))
+        motion_blur_kernel[degree // 2, :] = 1
+        motion_blur_kernel = cv2.warpAffine(motion_blur_kernel, M, (degree, degree))
+        motion_blur_kernel = motion_blur_kernel / degree
+        image = cv2.filter2D(image, -1, motion_blur_kernel)
+        image = np.clip(image, 0, 255).astype(np.uint8)
+        return image
 
 
 class RandomMotionBlur(MotionBlur):
@@ -412,15 +450,25 @@ class Erase:
         self.max_iter = max_iter
 
     def get_params(self):
-        return self.scale, self.ratio
+        scales = [self.scale for _ in range(self.max_iter)]
+        ratios = [self.ratio for _ in range(self.max_iter)]
+        return scales, ratios
 
     def __call__(self, image, **kwargs):
+        scales, ratios = self.get_params()
+        image = self.apply_image(image, scales, ratios)
+
+        return {
+            'image': image,
+            'pixel.Erase': dict(
+                scales=scales,
+                ratios=ratios
+            )}
+
+    def apply_image(self, image, scales, ratios):
         h, w, c = image.shape
         area = h * w
-        scale, ratio = None, None
-
-        for _ in range(self.max_iter):
-            scale, ratio = self.get_params()
+        for scale, ratio in zip(scales, ratios):
             erase_area = area * scale
 
             _h = int(round(np.sqrt(erase_area * ratio)))
@@ -434,12 +482,7 @@ class Erase:
 
                 break
 
-        return {
-            'image': image,
-            'pixel.Erase': dict(
-                scale=scale,
-                ratio=ratio
-            )}
+        return image
 
 
 class RandomErasing(Erase):
@@ -447,17 +490,21 @@ class RandomErasing(Erase):
     see also `torchvision.transforms.RandomErasing`"""
 
     def get_params(self):
-        if isinstance(self.scale, numbers.Number):
-            scale = np.random.uniform(self.scale - 0.05, self.scale + 0.05)
-        else:
-            scale = np.random.uniform(*self.scale)
+        scales, ratios = [], []
+        for _ in range(self.max_iter):
+            if isinstance(self.scale, numbers.Number):
+                scale = np.random.uniform(self.scale - 0.05, self.scale + 0.05)
+            else:
+                scale = np.random.uniform(*self.scale)
 
-        if isinstance(self.ratio, numbers.Number):
-            ratio = np.random.uniform(self.ratio - 0.5, self.ratio + 0.5)
-        else:
-            ratio = np.random.uniform(*self.ratio)
+            if isinstance(self.ratio, numbers.Number):
+                ratio = np.random.uniform(self.ratio - 0.5, self.ratio + 0.5)
+            else:
+                ratio = np.random.uniform(*self.ratio)
+            scales.append(scale)
+            ratios.append(ratio)
 
-        return scale, ratio
+        return scales, ratios
 
 
 class CutOut:
@@ -470,6 +517,15 @@ class CutOut:
         self.iou_thres = iou_thres
 
     def __call__(self, image, bboxes=None, classes=None, **kwargs):
+        image, bboxes, classes = self.apply_image_bboxes_classes(image, bboxes, classes)
+
+        return dict(
+            image=image,
+            bboxes=bboxes,
+            classes=classes,
+        )
+
+    def apply_image_bboxes_classes(self, image, bboxes, classes):
         h, w = image.shape[:2]
 
         mask_bboxes = []
@@ -499,8 +555,4 @@ class CutOut:
             if classes is not None:
                 classes = classes[idx]
 
-        return dict(
-            image=image,
-            bboxes=bboxes,
-            classes=classes,
-        )
+        return image, bboxes, classes

@@ -35,7 +35,14 @@ roi_config = dict(
 
 
 class Model(nn.Module):
-    """See Also `torchvision.models.detection.faster_rcnn`"""
+    """refer to
+    paper:
+        - [Faster R-CNN: Towards Real-Time Object Detection with Region Proposal Networks](https://arxiv.org/pdf/1506.01497.pdf)
+    code:
+        - https://github.com/rbgirshick/py-faster-rcnn
+
+    See Also `torchvision.models.detection.faster_rcnn`
+    """
 
     def __init__(
             self, n_classes,

@@ -116,7 +116,7 @@ class OutModule(nn.Module):
 class Conv(nn.Module):
     def __init__(self, in_ch, out_ch, k, s=1, p=None, bias=False,
                  is_act=True, act=None, is_norm=True, norm=None, mode='cna',
-                 conv_kwargs=dict()):
+                 **conv_kwargs):
         """
 
         Args:
@@ -159,7 +159,7 @@ class Conv(nn.Module):
 class ConvT(nn.Module):
     def __init__(self, in_ch, out_ch, k, s=1, p=None, bias=False,
                  is_act=True, act=None, is_norm=True, norm=None, mode='cna',
-                 conv_kwargs=dict()):
+                 **conv_kwargs):
         """
 
         Args:

@@ -12,6 +12,7 @@ unet256_config = (
 
 
 class Model(nn.Module):
+    """refer to [U-Net: Convolutional Networks for Biomedical Image Segmentation](https://arxiv.org/pdf/1505.04597.pdf)"""
     def __init__(self, in_ch, input_size, in_module=None, out_module=None, conv_config=unet256_config):
         super().__init__()
         in_ches, hidden_ches, out_ches = conv_config

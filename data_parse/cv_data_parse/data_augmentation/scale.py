@@ -40,20 +40,23 @@ class Proportion:
     def __call__(self, image, dst, bboxes=None, **kwargs):
         h, w, c = image.shape
         p = self.get_params(dst, w, h)
-        return self.apply(image, p, bboxes, **kwargs)
-
-    def apply(self, image, p, bboxes=None, **kwargs):
-        image = cv2.resize(image, None, fx=p, fy=p, interpolation=self.interpolation)
-
-        if bboxes is not None:
-            bboxes = np.array(bboxes, dtype=float) * p
-            bboxes = bboxes.astype(int)
+        image = self.apply_image(image, p)
+        bboxes = self.apply_bboxes(bboxes, p)
 
         return {
             'image': image,
             'bboxes': bboxes,
             'scale.Proportion': dict(p=p)
         }
+
+    def apply_image(self, image, p):
+        return cv2.resize(image, None, fx=p, fy=p, interpolation=self.interpolation)
+
+    def apply_bboxes(self, bboxes, p):
+        if bboxes is not None:
+            bboxes = np.array(bboxes, dtype=float) * p
+            bboxes = bboxes.astype(int)
+        return bboxes
 
     @staticmethod
     def restore(ret):
@@ -74,23 +77,30 @@ class Rectangle:
     def __init__(self, interpolation=0):
         self.interpolation = interpolation_mode[interpolation]
 
+    def get_params(self, dst, w, h):
+        return dst / w, dst / h
+
     def __call__(self, image, dst, bboxes=None, **kwargs):
         h, w, c = image.shape
-
-        image = cv2.resize(image, (dst, dst), interpolation=self.interpolation)
-
-        pw = dst / w
-        ph = dst / h
-
-        if bboxes is not None:
-            bboxes = np.array(bboxes, dtype=float) * np.array([pw, ph, pw, ph])
-            bboxes = bboxes.astype(int)
+        pw, ph = self.get_params(dst, w, h)
+        image = self.apply_image(image, dst)
+        bboxes = self.apply_bboxes(image, pw, ph)
 
         return {
             'image': image,
             'bboxes': bboxes,
             'scale.Rectangle': dict(pw=pw, ph=ph)
         }
+
+    def apply_image(self, image, dst):
+        return cv2.resize(image, (dst, dst), interpolation=self.interpolation)
+
+    def apply_bboxes(self, bboxes, pw, ph):
+        if bboxes is not None:
+            bboxes = np.array(bboxes, dtype=float) * np.array([pw, ph, pw, ph])
+            bboxes = bboxes.astype(int)
+
+        return bboxes
 
     @staticmethod
     def restore(ret):

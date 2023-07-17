@@ -52,16 +52,18 @@ class CspDarkNet(nn.Module):
 
 
 class C3(nn.Module):
-    # CSP Bottleneck with 3 convolutions
+    # note that, to distinguish C3 and ResBlock.
+    # C3 gives y = a(cat(x, f(x)))
+    # and ResBlock gives y = a(x + f(x))
     def __init__(self, in_ch, out_ch, n=1, shortcut=True, g=1, e=0.5):  # ch_in, ch_out, number, shortcut, groups, expansion
         super().__init__()
-        c_ = int(out_ch * e)  # hidden channels
+        hidden_ch = int(out_ch * e)
         self.seq1 = nn.Sequential(
-            Conv(in_ch, c_, 1, 1, act=nn.SiLU()),
-            *(Bottleneck(c_, c_, shortcut, g, e=1.0) for _ in range(n))
+            Conv(in_ch, hidden_ch, 1, 1, act=nn.SiLU()),
+            *(Bottleneck(hidden_ch, hidden_ch, shortcut, g, e=1.0) for _ in range(n))
         )
-        self.cv2 = Conv(in_ch, c_, 1, 1, act=nn.SiLU())
-        self.cv3 = Conv(c_ * 2, out_ch, 1, act=nn.SiLU())  # optional act=FReLU(c2)
+        self.cv2 = Conv(in_ch, hidden_ch, 1, 1, act=nn.SiLU())
+        self.cv3 = Conv(hidden_ch * 2, out_ch, 1, act=nn.SiLU())  # optional act=FReLU(c2)
 
     def forward(self, x):
         x1 = self.seq1(x)
@@ -71,7 +73,6 @@ class C3(nn.Module):
 
 
 class Bottleneck(nn.Module):
-    # Standard bottleneck
     def __init__(self, in_ch, out_ch, shortcut=True, g=1, e=0.5):  # ch_in, ch_out, shortcut, groups, expansion
         super().__init__()
         c_ = int(out_ch * e)  # hidden channels
