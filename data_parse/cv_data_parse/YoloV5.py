@@ -1,51 +1,10 @@
-import cv2
 import os
-import shutil
 import numpy as np
 from pathlib import Path
 from tqdm import tqdm
 from typing import Iterable
-from utils import os_lib, converter, visualize
-from .base import DataRegister, DataLoader, DataSaver, DataGenerator, get_image, save_image, DataVisualizer
-
-
-def filter_func(x: Path):
-    """example to filter,
-    filter picture which is in the filter list, and checkout them
-
-    Usage:
-
-        >>> loader = Loader()
-        >>> filter_list = list()
-        >>> visualizer = DataVisualizer()
-        >>> cls_alias = dict()
-        >>> loader.filter_func = filter_func
-    """
-    if x.stem in filter_list:
-        label_path = str(x).replace('images', 'labels').replace('.png', '.txt')
-        image = os_lib.loader.load_img(str(x))
-        labels = np.genfromtxt(label_path).reshape((-1, 5))
-        bboxes = labels[:, 1:]
-        bboxes = converter.CoordinateConvert.mid_xywh2top_xyxy(bboxes, wh=(image.shape[1], image.shape[0]), blow_up=True)
-        visualizer([{'_id': x.stem + '.png', 'image': image, 'bboxes': bboxes, 'classes': labels[:, 0]}], cls_alias=cls_alias)
-        return False
-
-    return True
-
-
-def convert_func(ret):
-    """example to convert
-    Usage:
-
-        >>> Loader().convert_func = convert_func
-    """
-    if isinstance(ret['image'], np.ndarray):
-        h, w, c = ret['image'].shape
-
-        # ref labels convert to abs labels
-        ret['bboxes'] = converter.CoordinateConvert.mid_xywh2top_xyxy(ret['bboxes'], wh=(w, h), blow_up=True)
-
-    return ret
+from utils import os_lib
+from .base import DataRegister, DataLoader, DataSaver, DatasetGenerator, get_image, save_image, DataVisualizer
 
 
 class Loader(DataLoader):
@@ -67,27 +26,52 @@ class Loader(DataLoader):
         .. code-block:: python
 
             # get data
-            from data_parse.cv_data_parse.YoloV5 import DataRegister, Loader
+            from data_parse.cv_data_parse.YoloV5 import DataRegister, Loader, DataVisualizer
+            from utils import converter
+
+            def convert_func(ret):
+                if isinstance(ret['image'], np.ndarray):
+                    h, w, c = ret['image'].shape
+                    ret['bboxes'] = converter.CoordinateConvert.mid_xywh2top_xyxy(ret['bboxes'], wh=(w, h), blow_up=True)
+
+                return ret
+
+            def filter_func(x: Path):
+                if x.stem in filter_list:
+                    label_path = str(x).replace('images', 'labels').replace('.png', '.txt')
+                    image = os_lib.loader.load_img(str(x))
+                    labels = np.genfromtxt(label_path).reshape((-1, 5))
+                    bboxes = labels[:, 1:]
+                    # bboxes = converter.CoordinateConvert.mid_xywh2top_xyxy(bboxes, wh=(image.shape[1], image.shape[0]), blow_up=True)
+                    checkout_visualizer([{'_id': x.stem + '.png', 'image': image, 'bboxes': bboxes, 'classes': labels[:, 0]}], cls_alias=cls_alias)
+                    return False
+
+                return True
 
             loader = Loader('data/Yolov5Data')
+
+            # as standard datasets, the bboxes type is abs top xyxy usually,
+            # but as yolov5 official, the bboxes ref center xywh,
+            # so can be use a convert function to change the bboxes
+            loader.convert_func = convert_func
+
+            # filter picture which is in the filter list, and checkout them
+            filter_list = list()
+            cls_alias = dict()
+            checkout_visualizer = DataVisualizer('data/Yolov5Data/visuals/filter_samples', verbose=False)
+            loader.filter_func = filter_func
+
             data = loader(set_type=DataRegister.ALL, generator=True, image_type=DataRegister.ARRAY)
-            r = next(data[0])
 
-            # visual
-            from utils.visualize import ImageVisualize
-
-            image = r['image']
-            bboxes = r['bboxes']
-            classes = r['classes']
-            classes = [loader.classes[_] for _ in classes]
-            image = ImageVisualize.label_box(image, bboxes, classes, line_thickness=2)
+            # visual train dataset
+            DataVisualizer('data/Yolov5Data/visuals', verbose=False)(data[0])
 
     """
 
     image_suffix = 'png'
 
     def _call(self, set_type, image_type, task='', set_task='', **kwargs):
-        """See Also `cv_data_parse.base.DataLoader._call`
+        """See Also `data_parse.cv_data_parse.base.DataLoader._call`
 
         Args:
             set_type:
@@ -113,7 +97,12 @@ class Loader(DataLoader):
             image_path = os.path.abspath(img_fp)
             img_fp = Path(image_path)
             image = get_image(image_path, image_type)
-            labels = np.genfromtxt(image_path.replace('images', 'labels').replace(f'.{self.image_suffix}', '.txt')).reshape((-1, 5))
+            label_path = image_path.replace('images', 'labels').replace(f'.{self.image_suffix}', '.txt')
+            if not os.path.exists(label_path):
+                if self.verbose:
+                    self.stdout_method(f'{label_path} not exist!')
+                continue
+            labels = np.genfromtxt(label_path).reshape((-1, 5))
 
             # (center x, center y, box w, box h) after norm
             # e.g. norm box w = real box w / real image w
@@ -208,6 +197,13 @@ class Saver(DataSaver):
     Usage:
         .. code-block:: python
 
+            def convert_func(ret):
+                if isinstance(ret['image'], np.ndarray):
+                    h, w, c = ret['image'].shape
+                    ret['bboxes'] = converter.CoordinateConvert.top_xyxy2mid_xywh(ret['bboxes'], wh=(w, h), blow_up=False)
+
+                return ret
+
             # convert voc to yolov5
             # load data from voc
             from data_parse.cv_data_parse.Voc import Loader
@@ -216,8 +212,14 @@ class Saver(DataSaver):
             data = loader(set_type=DataRegister.TRAIN)
 
             # save as yolov5 type
-            from cv_data_parse.YoloV5 import Saver
+            from data_parse.cv_data_parse.YoloV5 import Saver
             saver = Saver('data/Yolov5')
+
+            # as inputs, the bboxes of standard dataset type is abs top xyxy usually,
+            # but as outputs, the bboxes of official yolov5 type is ref center xywh,
+            # so can be use a convert function to change the bboxes
+            saver.convert_func = convert_func
+
             saver(data, set_type=DataRegister.TRAIN)
 
     """
@@ -232,7 +234,7 @@ class Saver(DataSaver):
 
         super().__call__(data, set_type, image_type, **kwargs)
 
-    def _call(self, iter_data, set_type, image_type, convert_func=None, **kwargs):
+    def _call(self, iter_data, set_type, image_type, **kwargs):
         """
 
         Args:
@@ -240,13 +242,7 @@ class Saver(DataSaver):
                 list of dict which has the key of _id, image, bboxes, classes
             set_type:
             image_type:
-            convert_func:
-                as inputs, the bboxes of standard dataset type is abs top xyxy usually,
-                but as outputs, the bboxes of office yolov5 type is ref center xywh,
-                so can be use a convert function to change the bboxes
             **kwargs:
-
-        Returns:
 
         """
         task = kwargs.get('task', '')
@@ -257,14 +253,13 @@ class Saver(DataSaver):
         else:
             f = open(f'{self.data_dir}/image_sets/{set_task}/{set_type.value}.txt', 'w', encoding='utf8')
 
-        for dic in tqdm(iter_data):
-            if image_type == DataRegister.ARRAY and convert_func:
-                dic = convert_func(dic)
+        for ret in tqdm(iter_data):
+            ret = self.convert_func(ret)
 
-            image = dic['image']
-            bboxes = np.array(dic['bboxes'])
-            classes = np.array(dic['classes'])
-            _id = dic['_id']
+            image = ret['image']
+            bboxes = np.array(ret['bboxes'])
+            classes = np.array(ret['classes'])
+            _id = ret['_id']
 
             image_path = f'{self.data_dir}/images/{task}/{_id}'
             label_path = f'{self.data_dir}/labels/{task}/{Path(_id).stem}.txt'
@@ -277,43 +272,43 @@ class Saver(DataSaver):
 
         f.close()
 
-    def save_full_labels(self, iter_data, sub_dir='full_labels', task='', convert_func=None):
+    def save_full_labels(self, iter_data, sub_dir='full_labels', task=''):
         """format of saved label txt like (class, x1, y1, x2, y2, conf, w, h)
 
         Args:
             iter_data (Iterable[dict]):
                 accept a dict like Loader().load_total() return
                 list of dict which has the key of _id, image(non-essential), bboxes, classes, confs
-            convert_func
+            sub_dir: labels dir
+            task: image dir
 
         """
         save_dir = f'{self.data_dir}/{sub_dir}/{task}'
         os_lib.mk_dir(save_dir)
 
-        for i, dic in enumerate(tqdm(iter_data)):
-            if convert_func:
-                dic = convert_func(dic)
+        for i, ret in enumerate(tqdm(iter_data)):
+            ret = self.convert_func(ret)
 
-            if 'image' in dic:
-                h, w, c = dic['image'].shape
+            if 'image' in ret:
+                h, w, c = ret['image'].shape
             else:
                 h, w = -1, -1
 
-            bboxes = dic['bboxes']
-            classes = dic['classes']
+            bboxes = ret['bboxes']
+            classes = ret['classes']
 
             labels = np.c_[
                 classes,
                 bboxes,
-                dic['confs'] if 'confs' in dic else [1] * len(classes),
+                ret['confs'] if 'confs' in ret else [1] * len(classes),
                 [w] * len(classes),
                 [h] * len(classes),
             ]
 
-            np.savetxt(f'{save_dir}/{Path(dic["_id"]).stem}.txt', labels, fmt='%.6f')
+            np.savetxt(f'{save_dir}/{Path(ret["_id"]).stem}.txt', labels, fmt='%.6f')
 
 
-class Generator(DataGenerator):
+class Generator(DatasetGenerator):
     image_suffix = 'png'
     label_suffix = 'txt'
 
@@ -347,19 +342,20 @@ class Generator(DataGenerator):
         Usage:
             .. code-block:: python
 
-                from cv_data_parse.PaddleOcr import Generator
+                from data_parse.cv_data_parse.YoloV5 import Generator
 
                 # single data dir
+                data_dir = 'data/yolov5'
                 gen = Generator(
-                    data_dir='data/yolov5',
-                    label_dir='data/yolov5/labels/1',
+                    data_dir=data_dir,
+                    label_dir=f'{data_dir}/labels/1',
                 )
                 gen.gen_sets(set_task='1')
 
                 # multi data dir
                 gen = Generator()
                 gen.gen_sets(
-                    label_files=('data/yolov5_0/labels', 'data/yolov5_1/labels'),
+                    label_dirs=('data/yolov5_0/labels', 'data/yolov5_1/labels'),
                     save_dir='data/yolov5_0_1/image_sets'
                 )
         """

@@ -177,6 +177,7 @@ class ImageVisualize:
         """
         img = img.copy()
         colors = colors or [cmap['Blue']['array']] * len(boxes)
+        boxes = np.array(boxes).astype(int)
 
         for i in range(len(boxes)):
             if visual_type == POLYGON:  # polygon: (-1, -1, 2)

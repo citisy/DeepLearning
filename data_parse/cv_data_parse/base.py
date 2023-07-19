@@ -59,8 +59,10 @@ class DataLoader:
     image_suffix = 'jpg'
     classes = []
 
-    def __init__(self, data_dir):
+    def __init__(self, data_dir, verbose=True, stdout_method=print):
         self.data_dir = data_dir
+        self.verbose = verbose
+        self.stdout_method = stdout_method
 
     def __call__(self, set_type=None, image_type=None, generator=True, **kwargs):
         """
@@ -138,9 +140,11 @@ class DataLoader:
 
 
 class DataSaver:
-    def __init__(self, data_dir):
+    def __init__(self, data_dir, verbose=True, stdout_method=print):
         self.data_dir = data_dir
         self.default_set_type = [DataRegister.TRAIN, DataRegister.TEST]
+        self.verbose = verbose
+        self.stdout_method = stdout_method
 
         os_lib.mk_dir(self.data_dir)
 
@@ -188,15 +192,23 @@ class DataSaver:
         with open(f'{save_dir}/{save_name}.pkl', 'wb') as f:
             pickle.dump(data, f)
 
+    def convert_func(self, ret):
+        return ret
 
-class DataGenerator:
+    def filter_func(self, ret):
+        return True
+
+
+class DatasetGenerator:
     """generate datasets for training, testing and valuating"""
     image_suffix = 'jpg'
 
-    def __init__(self, data_dir=None, image_dir=None, label_dir=None):
+    def __init__(self, data_dir=None, image_dir=None, label_dir=None, verbose=True, stdout_method=print):
         self.data_dir = data_dir
         self.image_dir = image_dir
         self.label_dir = label_dir
+        self.verbose = verbose
+        self.stdout_method = stdout_method
 
     def gen_sets(self, **kwargs):
         """please implement this function"""
@@ -280,9 +292,34 @@ class DataGenerator:
 
 
 class DataVisualizer:
-    def __init__(self, save_dir, **saver_kwargs):
+    """
+    Usage:
+        .. code-block:: python
+
+            def visual_one_image(r, **visual_kwargs):
+                image = r['image']
+
+                if 'bboxes' in r:
+                    bboxes = r['bboxes']
+                    classes = r['classes']
+                    colors = [visualize.get_color_array(int(cls)) for cls in classes]
+
+                    image = visualize.ImageVisualize.block(image, bboxes, colors=colors)
+
+                return image
+
+            visualizer = DataVisualizer('visuals', verbose=False)
+
+            # use special visual method
+            visualizer.visual_one_image = visual_one_image
+
+            visualizer([{'images': images, 'bboxes': bboxes, 'classes': classes}])
+    """
+    def __init__(self, save_dir, verbose=True, stdout_method=print, **saver_kwargs):
         self.save_dir = save_dir
-        self.saver = os_lib.Saver(**saver_kwargs)
+        self.saver = os_lib.Saver(verbose=verbose, stdout_method=stdout_method, **saver_kwargs)
+        self.verbose = verbose
+        self.stdout_method = stdout_method
         os_lib.mk_dir(save_dir)
 
     def __call__(self, *iter_data, **visual_kwargs):
@@ -313,7 +350,7 @@ class DataVisualizer:
     def visual_one_image(self, r, **visual_kwargs):
         image = r['image']
 
-        if 'bboxes' in r:
+        if 'bboxes' in r and r['bboxes'] is not None:
             bboxes = r['bboxes']
             classes = r['classes']
             colors = [visualize.get_color_array(int(cls)) for cls in classes]

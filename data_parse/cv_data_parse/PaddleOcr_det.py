@@ -1,10 +1,8 @@
 import os
 import json
-import cv2
-import shutil
 import numpy as np
 from utils import os_lib
-from .base import DataRegister, DataLoader, DataSaver, DataGenerator, get_image, save_image
+from .base import DataRegister, DataLoader, DataSaver, DatasetGenerator, get_image, save_image
 from tqdm import tqdm
 from pathlib import Path
 
@@ -183,7 +181,7 @@ class Saver(DataSaver):
         f.close()
 
 
-class Generator(DataGenerator):
+class Generator(DatasetGenerator):
     image_suffix = 'png'
     label_suffix = 'txt'
 

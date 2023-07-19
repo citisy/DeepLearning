@@ -5,7 +5,7 @@ import shutil
 import numpy as np
 from utils import os_lib
 from .base import DataRegister, DataLoader, DataSaver, get_image, save_image
-from .PaddleOcr_det import DataGenerator
+from .PaddleOcr_det import DatasetGenerator
 from tqdm import tqdm
 from pathlib import Path
 

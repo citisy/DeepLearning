@@ -23,6 +23,45 @@ class Model(nn.ModuleList):
 
         self.hidden_ch = hidden_ch
 
+    def loss_d(self, real_x):
+        self.net_d.requires_grad_(True)
+
+        # note that, weight clipping, if change to gradient penalty, it is WGAN-GP
+        # see also https://github.com/martinarjovsky/WassersteinGAN/issues/18
+        for p in self.net_d.parameters():
+            p.data.clamp_(-0.01, 0.01)
+
+        self.net_d.zero_grad()
+
+        # note that, pred output backward without loss function,
+        # see also https://github.com/martinarjovsky/WassersteinGAN/issues/9
+        # 1. real_x -> net_d -> pred_real -> loss_d_real -> gradient_descent
+        # loss_d_real = net_d(real_x)
+        pred_real = self.net_d(real_x)
+        loss_d_real = pred_real
+
+        # 2. noise -> net_g -> fake_x -> net_d -> pred_fake -> loss_d_fake -> gradient_ascent
+        # loss_d_fake = net_d(net_g(noise))
+        with torch.no_grad():
+            noise = torch.normal(mean=0., std=1., size=(len(real_x), self.hidden_ch, 1, 1), device=real_x.device)
+            fake_x = self.net_g(noise)
+
+        pred_fake = self.net_d(fake_x)
+        loss_d_fake = -pred_fake
+        loss_d = loss_d_real + loss_d_fake
+        return loss_d
+
+    def loss_g(self, real_x):
+        self.net_d.requires_grad_(False)
+        self.net_g.zero_grad()
+
+        # 1. noise -> net_g -> fake_x -> net_d -> pred_fake -> loss_g -> gradient_descent
+        # loss_g = net_d(net_g(noise))
+        noise = torch.normal(mean=0., std=1., size=(len(real_x), self.hidden_ch, 1, 1), device=real_x.device)
+        fake_x = self.net_g(noise)
+        loss_g = self.net_d(fake_x)
+        return loss_g
+
 
 class DcganD(nn.Module):
     def __init__(self, input_size, in_ch, n_conv=0):

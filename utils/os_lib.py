@@ -9,7 +9,7 @@ import numpy as np
 import pandas as pd
 from functools import wraps
 from pathlib import Path
-from typing import List
+from typing import List, Any
 
 
 def mk_dir(dir_path):
@@ -432,6 +432,22 @@ class FakeIo:
 
     def __call__(self, *args, **kwargs):
         pass
+
+
+class EasyDict(dict):
+    """Convenience class that behaves like a dict but allows access with the attribute syntax."""
+
+    def __getattr__(self, name: str) -> Any:
+        try:
+            return self[name]
+        except KeyError:
+            raise AttributeError(name)
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        self[name] = value
+
+    def __delattr__(self, name: str) -> None:
+        del self[name]
 
 
 class Retry:

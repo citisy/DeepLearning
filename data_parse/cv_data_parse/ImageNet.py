@@ -1,9 +1,6 @@
 import os
-import cv2
 import scipy
-import pickle
 from pathlib import Path
-from utils import os_lib
 from .base import DataRegister, DataLoader, DataSaver, get_image
 
 
@@ -106,11 +103,16 @@ class ImageNet2012Loader(DataLoader):
             image_path = os.path.abspath(img_fp)
             image = get_image(image_path, image_type)
 
-            yield dict(
+            ret = dict(
                 _id=img_fp.name,
                 image=image,
                 _class=_class,
             )
+
+            ret = self.convert_func(ret)
+
+            if self.filter_func(ret):
+                yield ret
 
     def load_val(self, image_type):
         with open(f'{self.data_dir}/ILSVRC2012_devkit_t12/data/ILSVRC2012_validation_ground_truth.txt', 'r') as f:
@@ -121,11 +123,16 @@ class ImageNet2012Loader(DataLoader):
             image_path = os.path.abspath(f'{self.data_dir}/ILSVRC2012_img_val/ILSVRC2012_val_{i + 1:08d}.{self.image_suffix}')
             image = get_image(image_path, image_type)
 
-            yield dict(
+            ret = dict(
                 _id=Path(image_path).name,
                 image=image,
                 _class=int(_class) - 1,
             )
+
+            ret = self.convert_func(ret)
+
+            if self.filter_func(ret):
+                yield ret
 
 
 class ImageNet2012Saver(DataSaver):
