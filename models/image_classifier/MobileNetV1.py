@@ -1,5 +1,5 @@
 from torch import nn
-from .. import Conv, Linear, ConvInModule, OutModule
+from ..layers import Conv, Linear, ConvInModule, OutModule
 
 # (conv_type, out_ch, k, s)
 # 0: conv 1: dw

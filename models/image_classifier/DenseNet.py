@@ -1,6 +1,6 @@
 import torch
 from torch import nn
-from .. import Conv, Linear, ConvInModule, OutModule
+from ..layers import Conv, Linear, ConvInModule, OutModule
 
 # refer to table 1
 # (n_conv, growth_rate)

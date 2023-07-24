@@ -4,11 +4,11 @@ import torch
 from torch import nn, optim
 from torch.utils.data import DataLoader
 from tqdm import tqdm
-from models import SimpleInModule
+from models.layers import SimpleInModule
 from utils.os_lib import MemoryInfo
 from metrics import classifier
 from data_parse.cv_data_parse.data_augmentation import crop, scale, geometry, RandomApply
-from data_parse.cv_data_parse.base import DataRegister
+from data_parse import DataRegister
 from .base import Process, BaseDataset
 
 

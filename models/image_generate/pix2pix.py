@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-from .. import Conv
+from ..layers import Conv
 from utils.torch_utils import initialize_layers
 from ..semantic_segmentation.Unet import Model as NetG, unet256_config
 

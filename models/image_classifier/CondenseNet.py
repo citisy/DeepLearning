@@ -1,6 +1,6 @@
 import torch
 from torch import nn
-from .. import Conv
+from ..layers import Conv
 from .DenseNet import DenseNet, Backbone
 from .ShuffleNetV1 import GConv
 

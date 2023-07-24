@@ -1,6 +1,6 @@
 import torch
 from torch import nn
-from .. import Conv, Linear, ConvInModule, OutModule
+from ..layers import Conv, Linear, ConvInModule, OutModule
 
 # from torchvision.models.inception.inception_v3
 # (1*1 out_ch, 3*3 in_ch, 3*3 out_ch, 5*5 in_ch, 5*5 out_ch, pool out_ch)

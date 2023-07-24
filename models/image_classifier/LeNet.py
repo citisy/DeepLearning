@@ -1,5 +1,5 @@
 from torch import nn
-from .. import Conv, Linear, ConvInModule, OutModule
+from ..layers import Conv, Linear, ConvInModule, OutModule
 
 
 class Model(nn.Module):

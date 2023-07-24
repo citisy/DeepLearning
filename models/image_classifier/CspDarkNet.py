@@ -1,6 +1,6 @@
 import torch
 from torch import nn
-from .. import Conv
+from ..layers import Conv
 
 # in_ch, (n_conv per C3 block,), (cache_block_idx, )
 darknet_config = (64, (3, 6, 9, 3), (1, 2))

@@ -3,7 +3,7 @@ import torch
 from torch import nn
 from ..loss import FocalLoss
 from utils.torch_utils import initialize_layers
-from .. import Conv, ConvInModule
+from ..layers import Conv, ConvInModule
 from . import cls_nms, bbox_iou
 from ..image_classifier.CspDarkNet import Backbone, Cache, C3, darknet_config
 

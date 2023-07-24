@@ -1,5 +1,5 @@
 from torch import nn
-from .. import Linear
+from ..layers import Linear
 from .InceptionV1 import Inception, InceptionA, Inception_config, Backbone as _Backbone
 from .ResNet import ResNet, Res18_config
 

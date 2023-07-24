@@ -1,5 +1,5 @@
 from torch import nn
-from .. import ConvInModule, OutModule
+from ..layers import ConvInModule, OutModule
 
 
 class ObjectDetectModelExample(nn.Module):

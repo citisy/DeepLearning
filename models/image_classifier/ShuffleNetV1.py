@@ -1,6 +1,6 @@
 import torch
 from torch import nn
-from .. import Conv, Linear, ConvInModule, OutModule
+from ..layers import Conv, Linear, ConvInModule, OutModule
 from .MobileNetV1 import DwConv
 
 # (groups, (out_ch, repeat))
