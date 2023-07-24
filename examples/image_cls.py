@@ -1,14 +1,13 @@
-import copy
 import cv2
 import numpy as np
 import torch
 from torch import nn, optim
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader
 from tqdm import tqdm
-from utils.layers import SimpleInModule
+from models import SimpleInModule
 from utils.os_lib import MemoryInfo
 from metrics import classifier
-from data_parse.cv_data_parse.data_augmentation import crop, scale, geometry, pixel_perturbation, RandomApply, Apply, channel
+from data_parse.cv_data_parse.data_augmentation import crop, scale, geometry, RandomApply
 from data_parse.cv_data_parse.base import DataRegister
 from .base import Process, BaseDataset
 
@@ -325,11 +324,11 @@ class Inception_ImageNet(ClsProcess):
 
     def __init__(self, model_version='InceptionV1'):
         if model_version == 'InceptionV1':
-            from models.image_classifier.Inception import Model
+            from models.image_classifier.InceptionV1 import Model
             input_size = 224
 
         elif model_version == 'InceptionV3':
-            from models.image_classifier.Inception import InceptionV3 as Model
+            from models.image_classifier.InceptionV3 import InceptionV3 as Model
             input_size = 299
 
         else:
@@ -428,7 +427,6 @@ class SENet_ImageNet(ClsProcess):
 
     def __init__(self):
         from models.image_classifier.SENet import Model
-        # from image_classifier.SENet import SEResNet as Model
 
         in_ch = 3
         input_size = 224
@@ -492,7 +490,7 @@ class MobileNet_ImageNet(ClsProcess):
     """
 
     def __init__(self):
-        from models.image_classifier.MobileNet import Model
+        from models.image_classifier.MobileNetV1 import Model
 
         in_ch = 3
         input_size = 224
@@ -524,7 +522,7 @@ class ShuffleNet_ImageNet(ClsProcess):
     """
 
     def __init__(self):
-        from models.image_classifier.ShuffleNet import Model
+        from models.image_classifier.ShuffleNetV1 import Model
 
         in_ch = 3
         input_size = 224
@@ -556,7 +554,7 @@ class IGC_cifar(ClsProcess):
     """
 
     def __init__(self):
-        from models.image_classifier.IGC import Model
+        from models.image_classifier.IGCV1 import Model
 
         in_ch = 3
         input_size = 32

@@ -1,18 +1,24 @@
 from torch import nn
-from utils.layers import Conv, Linear
-from .Inception import InceptionV1, InceptionA, InceptionV1_config
+from .. import Linear
+from .InceptionV1 import Inception, InceptionA, Inception_config, Backbone as _Backbone
 from .ResNet import ResNet, Res18_config
 
 
-class SEInception(InceptionV1):
+class SEInception(Inception):
     """[Squeeze-and-Excitation Networks](https://arxiv.org/pdf/1709.01507.pdf)"""
 
     def __init__(
             self,
             in_ch=None, input_size=None, output_size=None,
             in_module=None, out_module=None,
-            conv_config=InceptionV1_config, drop_prob=0.4):
-        super().__init__(in_ch, input_size, output_size, in_module, out_module, conv_config, drop_prob)
+            backbone_config=Inception_config, drop_prob=0.4):
+        super().__init__(in_ch, input_size, output_size, in_module, out_module, backbone=Backbone,
+                         backbone_config=backbone_config, drop_prob=drop_prob)
+
+
+class Backbone(_Backbone):
+    def __init__(self, backbone_config=Inception_config):
+        super().__init__(backbone_config=backbone_config)
 
         j = 1
         for i, module in list(self.conv_seq._modules.items()):

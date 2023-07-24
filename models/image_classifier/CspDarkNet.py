@@ -1,18 +1,18 @@
 import torch
 from torch import nn
-from utils.layers import Conv, Linear, ConvInModule, OutModule
+from .. import Conv
 
 # in_ch, (n_conv per C3 block,), (cache_block_idx, )
 darknet_config = (64, (3, 6, 9, 3), (1, 2))
 
 
-class CspDarkNet(nn.Module):
+class Backbone(nn.Module):
     """refer to https://github.com/ultralytics/yolov5"""
 
-    def __init__(self, in_ch=3, conv_config=darknet_config):
+    def __init__(self, in_ch=3, backbone_config=darknet_config):
         super().__init__()
 
-        out_ch, n_conv, cache_block_idx = conv_config
+        out_ch, n_conv, cache_block_idx = backbone_config
 
         layers = [
             Conv(in_ch, out_ch, 6, s=2, p=2, act=nn.SiLU())

@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-from utils.layers import Conv, ConvInModule, ConvT
+from .. import Conv, ConvInModule, ConvT
 
 # top(outer) -> bottom(inner)
 # in_ches, hidden_ches, out_ches

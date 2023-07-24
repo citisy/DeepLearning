@@ -1,6 +1,5 @@
-import torch
 from torch import nn
-from utils.layers import Conv, Linear, ConvInModule, OutModule
+from .. import Conv, Linear, ConvInModule, OutModule
 
 # refer to table 1
 # (n_res, out_ch, n_conv)
@@ -20,7 +19,7 @@ class ResNet(nn.Module):
             self,
             in_ch=None, input_size=None, output_size=None,
             in_module=None, out_module=None,
-            conv_config=Res18_config,
+            backbone_config=Res18_config,
             add_block: nn.Module = None, block_config=dict()):
         super().__init__()
         if in_module is None:
@@ -29,6 +28,30 @@ class ResNet(nn.Module):
         if out_module is None:
             out_module = OutModule(output_size, input_size=1000)
 
+        self.input = in_module
+        self.backbone = Backbone(backbone_config=backbone_config, add_block=add_block, **block_config)
+        self.flatten = nn.Sequential(
+            nn.AdaptiveAvgPool2d(1),
+            nn.Flatten()
+        )
+        self.fcn = nn.Sequential(
+            Linear(1 * 1 * self.backbone.out_channels, 1000),
+            out_module
+        )
+
+    def forward(self, x):
+        x = self.input(x)
+        x = self.backbone(x)
+        x = self.flatten(x)
+        x = self.fcn(x)
+
+        return x
+
+
+class Backbone(nn.Module):
+    def __init__(self, backbone_config=Res18_config, add_block: nn.Module = None, **block_config):
+        super().__init__()
+
         layers = [
             Conv(3, 64, 7, s=2),
             nn.MaxPool2d(3, stride=2, padding=1)
@@ -36,39 +59,25 @@ class ResNet(nn.Module):
 
         in_ch = 64
 
-        for i, (n_res, out_ch, n_conv) in enumerate(conv_config):
+        for i, (n_res, out_ch, n_conv) in enumerate(backbone_config):
             for j in range(n_res):
                 if i != 0 and j == 0:
-                    layers.append(ResBlock(in_ch, out_ch, n_conv, s=2, add_block=add_block, block_config=block_config))
+                    layers.append(ResBlock(in_ch, out_ch, n_conv, s=2, add_block=add_block, **block_config))
                 else:
-                    layers.append(ResBlock(in_ch, out_ch, n_conv, add_block=add_block, block_config=block_config))
+                    layers.append(ResBlock(in_ch, out_ch, n_conv, add_block=add_block, **block_config))
 
                 in_ch = out_ch
 
-        self.input = in_module
         self.conv_seq = nn.Sequential(*layers)
-        self.conv_seq.out_channels = in_ch
-        self.flatten = nn.Sequential(
-            nn.AdaptiveAvgPool2d(1),
-            nn.Flatten()
-        )
-        self.fcn = nn.Sequential(
-            Linear(1 * 1 * 512, 1000),
-            out_module
-        )
+        self.out_channels = in_ch
 
     def forward(self, x):
-        x = self.input(x)
-        x = self.conv_seq(x)
-        x = self.flatten(x)
-        x = self.fcn(x)
-
-        return x
+        return self.conv_seq(x)
 
 
 class ResBlock(nn.Module):
     def __init__(self, in_ch, out_ch, n_conv=2, s=1,
-                 add_block: nn.Module = None, block_config=dict()):
+                 add_block: nn.Module = None, **block_config):
         super().__init__()
         if n_conv == 2:
             self.conv_seq = nn.Sequential(

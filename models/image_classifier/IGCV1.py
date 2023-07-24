@@ -1,7 +1,6 @@
-import torch
 from torch import nn
-from utils.layers import Conv, Linear, ConvInModule, OutModule
-from .ShuffleNet import shuffle
+from .. import Conv, Linear, ConvInModule, OutModule
+from .ShuffleNetV1 import shuffle
 
 # (l, m, b)
 L4M8_config = (4, 8, 6)
@@ -16,7 +15,7 @@ class IGCV1(nn.Module):
             self,
             in_ch=None, input_size=None, output_size=None,
             in_module=None, out_module=None,
-            conv_config=L24M2_config
+            backbone_config=L24M2_config
     ):
         super().__init__()
 
@@ -26,12 +25,34 @@ class IGCV1(nn.Module):
         if out_module is None:
             out_module = OutModule(output_size, input_size=10)
 
+        self.input = in_module
+        self.backbone = Backbone(backbone_config=backbone_config)
+        self.flatten = nn.Sequential(
+            nn.AdaptiveAvgPool2d(1),
+            nn.Flatten()
+        )
+        self.fcn = nn.Sequential(
+            Linear(self.backbone.out_channels, 10),
+            out_module
+        )
+
+    def forward(self, x):
+        x = self.input(x)
+        x = self.backbone(x)
+        x = self.flatten(x)
+        x = self.fcn(x)
+
+        return x
+
+
+class Backbone(nn.Module):
+    def __init__(self, backbone_config=L24M2_config):
+        super().__init__()
+
         layers = []
 
-        in_ch = in_module.out_channels
-
-        l, m, b = conv_config
-
+        in_ch = 3
+        l, m, b = backbone_config
         out_ch = l * m
         layers.append(Conv(in_ch, out_ch, 3))
 
@@ -44,24 +65,11 @@ class IGCV1(nn.Module):
 
             out_ch *= 2
 
-        self.input = in_module
         self.conv_seq = nn.Sequential(*layers)
-        self.flatten = nn.Sequential(
-            nn.AdaptiveAvgPool2d(1),
-            nn.Flatten()
-        )
-        self.fcn = nn.Sequential(
-            Linear(in_ch, 10),
-            out_module
-        )
+        self.out_channels = in_ch
 
     def forward(self, x):
-        x = self.input(x)
-        x = self.conv_seq(x)
-        x = self.flatten(x)
-        x = self.fcn(x)
-
-        return x
+        return self.conv_seq(x)
 
 
 class IGCBlock(nn.Module):

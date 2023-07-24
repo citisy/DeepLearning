@@ -3,9 +3,9 @@ import torch
 from torch import nn
 from utils.loss import FocalLoss
 from utils.torch_utils import initialize_layers
-from utils.layers import Conv, ConvInModule
+from .. import Conv, ConvInModule
 from . import cls_nms, bbox_iou
-from ..image_classifier.DarkNet import CspDarkNet, Cache, C3, darknet_config
+from ..image_classifier.CspDarkNet import Backbone, Cache, C3, darknet_config
 
 in_module_config = dict(
     in_ch=3,
@@ -37,7 +37,7 @@ class Model(nn.Module):
         super().__init__()
         self.input = in_module(**in_module_config) if in_module else ConvInModule(**in_module_config)
         if backbone is None:
-            self.backbone = CspDarkNet(in_ch=self.input.out_channels, conv_config=backbone_config)
+            self.backbone = Backbone(in_ch=self.input.out_channels, backbone_config=backbone_config)
         else:
             self.backbone = backbone(**backbone_config)
         self.neck = neck(**neck_config) if neck else Neck(self.backbone.out_channels)

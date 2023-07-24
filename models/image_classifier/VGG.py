@@ -1,5 +1,5 @@
 from torch import nn
-from utils.layers import Conv, Linear, ConvInModule, OutModule
+from .. import Conv, Linear, ConvInModule, OutModule
 
 # refer to table 1
 # (n_conv, out_ch)
@@ -18,7 +18,7 @@ class VGG(nn.Module):
             self,
             in_ch=None, input_size=None, output_size=None,
             in_module=None, out_module=None,
-            conv_config=VGG11_config, drop_prob=0.5):
+            backbone_config=VGG11_config, drop_prob=0.5, **conv_config):
         super().__init__()
 
         if in_module is None:
@@ -27,19 +27,11 @@ class VGG(nn.Module):
         if out_module is None:
             out_module = OutModule(output_size, input_size=1000)
 
-        layers = []
-
-        in_ch, out_ch = 3, 3
-
-        for n_conv, out_ch in conv_config:
-            layers.append(VGGBlock(in_ch, out_ch, n_conv))
-            in_ch = out_ch
-
         self.input = in_module
-        self.conv_seq = nn.Sequential(*layers)
+        self.backbone = Backbone(backbone_config=backbone_config, **conv_config)
         self.flatten = nn.Flatten()
         self.fcn = nn.Sequential(
-            Linear(out_ch * 7 * 7, 4096, is_drop=True, drop_prob=drop_prob),  # 7 = 224/2^5
+            Linear(self.backbone.out_channels * 7 * 7, 4096, is_drop=True, drop_prob=drop_prob),  # 7 = 224/2^5
             Linear(4096, 4096, is_drop=True, drop_prob=drop_prob),
             Linear(4096, 1000),
             out_module
@@ -47,21 +39,38 @@ class VGG(nn.Module):
 
     def forward(self, x):
         x = self.input(x)
-        x = self.conv_seq(x)
+        x = self.backbone(x)
         x = self.flatten(x)
         x = self.fcn(x)
 
         return x
 
 
+class Backbone(nn.Module):
+    def __init__(self, backbone_config=VGG11_config, **conv_config):
+        super().__init__()
+        layers = []
+        in_ch, out_ch = 3, 3
+
+        for n_conv, out_ch in backbone_config:
+            layers.append(VGGBlock(in_ch, out_ch, n_conv, **conv_config))
+            in_ch = out_ch
+
+        self.conv_seq = nn.Sequential(*layers)
+        self.out_channels = in_ch
+
+    def forward(self, x):
+        return self.conv_seq(x)
+
+
 class VGGBlock(nn.Module):
-    def __init__(self, in_ch, out_ch, n_conv):
+    def __init__(self, in_ch, out_ch, n_conv, **conv_config):
         super().__init__()
 
         layers = []
 
         for _ in range(n_conv):
-            layers.append(Conv(in_ch, out_ch, 3))
+            layers.append(Conv(in_ch, out_ch, 3, **conv_config))
             in_ch = out_ch
 
         self.conv_block = nn.Sequential(*layers)

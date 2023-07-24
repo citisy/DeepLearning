@@ -1,5 +1,5 @@
 from torch import nn
-from utils.layers import Conv, Linear, ConvInModule, OutModule
+from .. import Conv, Linear, ConvInModule, OutModule
 
 
 class Model(nn.Module):
@@ -20,23 +20,35 @@ class Model(nn.Module):
             out_module = OutModule(output_size, input_size=84)
 
         self.input = in_module
-        self.conv_seq = nn.Sequential(
-            Conv(3, 6, 1),
-            Conv(6, 6, 3, s=2),
-            Conv(6, 16, 5, p=0),
-            Conv(16, 16, 3, s=2)
-        )
+        self.backbone = Backbone()
         self.flatten = nn.Flatten()
         self.fcn = nn.Sequential(
-            Linear(16 * 5 * 5, 120),
+            Linear(self.backbone.out_channels * 5 * 5, 120),
             Linear(120, 84),
             out_module
         )
 
     def forward(self, x):
         x = self.input(x)
-        x = self.conv_seq(x)
+        x = self.backbone(x)
         x = self.flatten(x)
         x = self.fcn(x)
 
         return x
+
+
+class Backbone(nn.Module):
+    def __init__(self):
+        super().__init__()
+
+        self.conv_seq = nn.Sequential(
+            Conv(3, 6, 1),
+            Conv(6, 6, 3, s=2),
+            Conv(6, 16, 5, p=0),
+            Conv(16, 16, 3, s=2)
+        )
+
+        self.out_channels = 16
+
+    def forward(self, x):
+        return self.conv_seq(x)

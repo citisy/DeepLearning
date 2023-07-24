@@ -1,8 +1,8 @@
 import torch
 import torch.nn as nn
-from utils.layers import Conv, ConvInModule, ConvT
+from .. import Conv
 from utils.torch_utils import initialize_layers
-from ..image_classifier.Unet import Model as NetG, unet256_config
+from ..semantic_segmentation.Unet import Model as NetG, unet256_config
 
 net_g_config = dict(
     conv_config=unet256_config

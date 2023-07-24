@@ -22,30 +22,18 @@ class GetBackbone:
         # backbone = ...   # todo
         # backbone.out_channels = 1280
 
-        from models.image_classifier.ResNet import Model, Res34_config
+        from ..image_classifier.ResNet import Backbone, Res34_config
 
-        default_config = default_config or dict(
-            in_module=nn.Module(),
-            out_module=nn.Module(),
-            conv_config=Res34_config
-        )
-
-        backbone = Model(**default_config).conv_seq
-
+        default_config = default_config or dict(backbone_config=Res34_config)
+        backbone = Backbone(**default_config)
         return backbone
 
     @staticmethod
     def get_mobilenet(default_config=dict()):
-        from models.image_classifier.MobileNet import Model, config
+        from ..image_classifier.MobileNetV1 import Backbone, default_config as config
 
-        default_config = default_config or dict(
-            in_module=nn.Module(),
-            out_module=nn.Module(),
-            conv_config=config
-        )
-
-        backbone = Model(**default_config).conv_seq
-
+        default_config = default_config or dict(backbone_config=config)
+        backbone = Backbone(**default_config)
         return backbone
 
     @staticmethod
@@ -54,21 +42,14 @@ class GetBackbone:
 
         backbone = Model(**default_config).features
         backbone.out_channels = 1280
-
         return backbone
 
     @staticmethod
     def get_vgg(default_config=dict()):
-        from models.image_classifier.VGG import Model, VGG19_config
+        from ..image_classifier.VGG import Backbone, VGG19_config
 
-        default_config = default_config or dict(
-            in_module=nn.Module(),
-            out_module=nn.Module(),
-            conv_config=VGG19_config
-        )
-
-        backbone = Model(**default_config).conv_seq
-
+        default_config = default_config or dict(backbone_config=VGG19_config)
+        backbone = Backbone(**default_config)
         return backbone
 
 
@@ -173,3 +154,15 @@ def bbox_iou(box1, box2, xywh=True, GIoU=False, DIoU=False, CIoU=False, eps=1e-7
         c_area = cw * ch + eps  # convex area
         return iou - (c_area - union) / c_area  # GIoU https://arxiv.org/pdf/1902.09630.pdf
     return iou  # IoU
+
+
+class ProjectionPooling(nn.Module):
+    def __init__(self, horizontal=True):
+        super().__init__()
+        self.horizontal = horizontal
+
+    def forward(self, x):
+        if self.horizontal:
+            return x.mean(-2).unsqueeze(-2).expand_as(x)
+        else:
+            return x.mean(-1).unsqueeze(-1).expand_as(x)

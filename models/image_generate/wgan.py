@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import numpy as np
-from utils.layers import Conv, ConvInModule, ConvT
+from .. import Conv, ConvT
 from utils.torch_utils import initialize_layers
 
 

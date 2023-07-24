@@ -3,7 +3,7 @@ import torchvision
 import torch
 from torch import nn, Tensor
 import torch.nn.functional as F
-from utils.layers import Conv, Linear, ConvInModule
+from .. import Conv, Linear, ConvInModule
 from . import GetBackbone, cls_nms
 from utils.torch_utils import initialize_layers
 

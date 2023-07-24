@@ -1,8 +1,8 @@
 import torch
 from torch import nn
-from utils.layers import Conv, Linear, ConvInModule, OutModule
-from .DenseNet import DenseBlock, Transition, DenseNet
-from .ShuffleNet import shuffle, GConv
+from .. import Conv
+from .DenseNet import DenseNet, Backbone
+from .ShuffleNetV1 import GConv
 
 # (n_conv, growth_rate)
 config = ((4, 8), (6, 16), (8, 32), (10, 64), (8, 128))
@@ -17,16 +17,13 @@ class CondenseNet(DenseNet):
             self,
             in_ch=None, input_size=None, output_size=None,
             in_module=None, out_module=None,
-            groups=4, conv_config=config, lgc_config=dict()
+            groups=4, backbone_config=config, lgc_config=dict()
     ):
-        super().__init__(in_ch, input_size, output_size, in_module, out_module, conv_config=conv_config)
+        block = lambda in_ch, growth_rate, n_conv: ConDenseBlock(in_ch, growth_rate, n_conv, g=groups, lgc_config=lgc_config)
+        backbone = lambda backbone_config: Backbone(backbone_config, block=block)
 
-        for i, module in enumerate(self.conv_seq):
-            if isinstance(module, DenseBlock):
-                self.conv_seq[i] = ConDenseBlock(
-                    module.in_channels, module.growth_rate, module.n_conv,
-                    g=groups, lgc_config=lgc_config
-                )
+        super().__init__(in_ch, input_size, output_size, in_module, out_module,
+                         backbone=backbone, backbone_config=backbone_config,)
 
 
 class ConDenseBlock(nn.Module):
