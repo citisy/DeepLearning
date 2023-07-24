@@ -194,7 +194,79 @@ def facade_data_aug(ret, input_size):
     return ret
 
 
-class Pix2pix_facade(IgProcess):
+class Pix2pix(IgProcess):
+    def data_augment(self, ret):
+        return facade_data_aug(ret, self.input_size)
+
+    def fit(self, dataset, max_epoch, batch_size, save_period=None, **dataloader_kwargs):
+        # sampler = distributed.DistributedSampler(dataset, shuffle=True)
+        dataloader = DataLoader(
+            dataset,
+            shuffle=True,
+            # sampler=sampler,
+            pin_memory=True,
+            batch_size=batch_size,
+            collate_fn=dataset.collate_fn,
+            **dataloader_kwargs
+        )
+
+        self.model.to(self.device)
+        optimizer_g = torch.optim.Adam(self.model.net_g.parameters(), lr=0.0002, betas=(0.5, 0.999))
+        optimizer_d = torch.optim.Adam(self.model.net_d.parameters(), lr=0.0002, betas=(0.5, 0.999))
+
+        gen_iter = 0
+        for i in range(max_epoch):
+            self.model.train()
+            pbar = tqdm(dataloader, desc=f'train {i}/{max_epoch}')
+
+            for rets in pbar:
+                images_a = [torch.from_numpy(ret.pop('image')).to(self.device, non_blocking=True, dtype=torch.float) for ret in rets]
+                images_a = torch.stack(images_a)
+
+                images_b = [torch.from_numpy(ret.pop('pix_image')).to(self.device, non_blocking=True, dtype=torch.float) for ret in rets]
+                images_b = torch.stack(images_b)
+
+                real_a = images_a.to(self.device)
+                real_b = images_b.to(self.device)
+                fake_b = self.model.net_g(real_a)
+                fake_ab = torch.cat((real_a, fake_b), 1)
+
+                optimizer_d.zero_grad()
+                loss_d = self.model.loss_d(real_a, real_b, fake_ab)
+                loss_d.backward()
+                optimizer_d.step()
+
+                optimizer_g.zero_grad()
+                loss_g = self.model.loss_g(real_b, fake_b, fake_ab)
+                loss_g.backward()
+                optimizer_g.step()
+
+                pbar.set_postfix({
+                    'gen_iter': gen_iter,
+                    'loss_g': f'{loss_g.item():.06}',
+                    'loss_d': f'{loss_d.item():.06}',
+                    # 'cpu_info': MemoryInfo.get_process_mem_info(),
+                    # 'gpu_info': MemoryInfo.get_gpu_mem_info()
+                })
+
+                gen_iter += 1
+                if gen_iter % save_period == 0:
+                    vis_image = dict(
+                        real_a=real_a,
+                        real_b=real_b,
+                        fake_b=fake_b
+                    )
+                    ret = []
+                    for name, images in vis_image.items():
+                        images = images.mul(255).clamp_(0, 255).permute(0, 2, 3, 1).to("cpu", torch.uint8).numpy()
+                        ret.append([{'image': image, '_id': f'{gen_iter}_{name}.png'} for image in images])
+
+                    ret = [r for r in zip(*ret)]
+                    DataVisualizer(f'cache_data/{self.model_version}/{self.dataset_version}', verbose=True, stdout_method=self.logger.info)(*ret)
+                    # self.save(f'{self.model_dir}/{self.dataset_version}/{gen_iter}.pth')
+
+
+class Pix2pix_facade(Pix2pix):
     """
     Usage:
         .. code-block:: python
@@ -228,75 +300,6 @@ class Pix2pix_facade(IgProcess):
         data = loader(set_type=DataRegister.TRAIN, image_type=DataRegister.ARRAY, generator=False)[0]
 
         return data
-
-    def data_augment(self, ret):
-        return facade_data_aug(ret, self.input_size)
-
-    def fit(self, dataset, max_epoch, batch_size, save_period=None, **dataloader_kwargs):
-        # sampler = distributed.DistributedSampler(dataset, shuffle=True)
-        dataloader = DataLoader(
-            dataset,
-            shuffle=True,
-            # sampler=sampler,
-            pin_memory=True,
-            batch_size=batch_size,
-            collate_fn=dataset.collate_fn,
-            **dataloader_kwargs
-        )
-
-        self.model.to(self.device)
-        optimizer_g = torch.optim.Adam(self.model.net_g.parameters(), lr=0.0002, betas=(0.5, 0.999))
-        optimizer_d = torch.optim.Adam(self.model.net_d.parameters(), lr=0.0002, betas=(0.5, 0.999))
-
-        j = 0
-        for i in range(max_epoch):
-            self.model.train()
-            pbar = tqdm(dataloader, desc=f'train {i}/{max_epoch}')
-
-            for rets in pbar:
-                images_a = [torch.from_numpy(ret.pop('image')).to(self.device, non_blocking=True, dtype=torch.float) for ret in rets]
-                images_a = torch.stack(images_a)
-
-                images_b = [torch.from_numpy(ret.pop('pix_image')).to(self.device, non_blocking=True, dtype=torch.float) for ret in rets]
-                images_b = torch.stack(images_b)
-
-                real_a = images_a.to(self.device)
-                real_b = images_b.to(self.device)
-                fake_b = self.model.net_g(real_a)
-                fake_ab = torch.cat((real_a, fake_b), 1)
-
-                optimizer_d.zero_grad()
-                loss_d = self.model.loss_d(real_a, real_b, fake_ab)
-                loss_d.backward()
-                optimizer_d.step()
-
-                optimizer_g.zero_grad()
-                loss_g = self.model.loss_g(real_b, fake_b, fake_ab)
-                loss_g.backward()
-                optimizer_g.step()
-
-                pbar.set_postfix({
-                    'gen_iter': j,
-                    'loss_g': f'{loss_g.item():.06}',
-                    'loss_d': f'{loss_d.item():06}',
-                    # 'cpu_info': MemoryInfo.get_process_mem_info(),
-                    # 'gpu_info': MemoryInfo.get_gpu_mem_info()
-                })
-
-                j += 1
-                if j % save_period == 0:
-                    vis_image = dict(
-                        real_a=real_a,
-                        real_b=real_b,
-                        fake_b=fake_b
-                    )
-                    ret = []
-                    for name, images in vis_image.items():
-                        images = images.mul(255).clamp_(0, 255).permute(0, 2, 3, 1).to("cpu", torch.uint8).numpy()
-                        ret.append([{'image': image, '_id': f'{j}_{name}.png'} for image in images])
-
-                    ret = [r for r in zip(*ret)]
-                    DataVisualizer(f'cache_data/{self.model_version}/{self.dataset_version}', verbose=True, stdout_method=self.logger.info)(*ret)
 
 
 class CycleGan_facade(IgProcess):
