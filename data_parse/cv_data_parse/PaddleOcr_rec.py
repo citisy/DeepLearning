@@ -178,7 +178,7 @@ class Saver(DataSaver):
             .. code-block:: python
 
                 loader = Loader('your load data dir')
-                data = loader(set_type=DataRegister.ALL, image_type=DataRegister.ARRAY, generator=True, set_task='det labels dir')
+                data = loader(set_type=DataRegister.FULL, image_type=DataRegister.ARRAY, generator=True, set_task='det labels dir')
 
                 saver = Saver('your save data dir')
                 for iter_data, set_type in zip(data, loader.default_set_type):

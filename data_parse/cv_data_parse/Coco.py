@@ -31,7 +31,7 @@ class Loader(DataLoader):
             from data_parse.cv_data_parse.Coco import DataRegister, Loader
 
             loader = Loader('data/coco2017')
-            data = loader(set_type=DataRegister.ALL, generator=True, image_type=DataRegister.ARRAY)
+            data = loader(set_type=DataRegister.FULL, generator=True, image_type=DataRegister.ARRAY)
             r = next(data[0])
 
             # visual

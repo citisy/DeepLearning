@@ -28,6 +28,7 @@ class Loader(DataLoader):
             # get data
             from data_parse.cv_data_parse.YoloV5 import DataRegister, Loader, DataVisualizer
             from utils import converter
+            from pathlib import Path
 
             def convert_func(ret):
                 if isinstance(ret['image'], np.ndarray):
@@ -36,7 +37,8 @@ class Loader(DataLoader):
 
                 return ret
 
-            def filter_func(x: Path):
+            def filter_func(ret):
+                x = Path(ret['image'])
                 if x.stem in filter_list:
                     label_path = str(x).replace('images', 'labels').replace('.png', '.txt')
                     image = os_lib.loader.load_img(str(x))
@@ -61,7 +63,7 @@ class Loader(DataLoader):
             checkout_visualizer = DataVisualizer('data/Yolov5Data/visuals/filter_samples', verbose=False)
             loader.filter_func = filter_func
 
-            data = loader(set_type=DataRegister.ALL, generator=True, image_type=DataRegister.ARRAY)
+            data = loader(set_type=DataRegister.FULL, generator=True, image_type=DataRegister.PATH)
 
             # visual train dataset
             DataVisualizer('data/Yolov5Data/visuals', verbose=False)(data[0])
@@ -87,12 +89,12 @@ class Loader(DataLoader):
                 classes: a list
         """
 
-        if set_type == DataRegister.place_holder:
-            return self.load_total(image_type, task, **kwargs)
+        if set_type == DataRegister.MIX:
+            return self.load_mix(image_type, task, **kwargs)
         else:
             return self.load_set(set_type, image_type, set_task, **kwargs)
 
-    def load_total(self, image_type, task='', **kwargs):
+    def load_mix(self, image_type, task='', **kwargs):
         for img_fp in Path(f'{self.data_dir}/images/{task}').glob(f'*.{self.image_suffix}'):
             image_path = os.path.abspath(img_fp)
             img_fp = Path(image_path)
@@ -223,18 +225,12 @@ class Saver(DataSaver):
             saver(data, set_type=DataRegister.TRAIN)
 
     """
-
-    def __call__(self, data, set_type=DataRegister.ALL, image_type=DataRegister.PATH, **kwargs):
-        task = kwargs.get('task', '')
-        set_task = kwargs.get('set_task', '')
-
+    def mkdirs(self, set_types, task='', set_task='', **kwargs):
         os_lib.mk_dir(f'{self.data_dir}/image_sets/{set_task}')
         os_lib.mk_dir(f'{self.data_dir}/images/{task}')
         os_lib.mk_dir(f'{self.data_dir}/labels/{task}')
 
-        super().__call__(data, set_type, image_type, **kwargs)
-
-    def _call(self, iter_data, set_type, image_type, **kwargs):
+    def _call(self, iter_data, set_type, image_type, task='', set_task='', **kwargs):
         """
 
         Args:
@@ -245,15 +241,16 @@ class Saver(DataSaver):
             **kwargs:
 
         """
-        task = kwargs.get('task', '')
-        set_task = kwargs.get('set_task', '')
-
-        if set_type == DataRegister.place_holder:
+        if set_type == DataRegister.MIX:
             f = os_lib.FakeIo()
         else:
             f = open(f'{self.data_dir}/image_sets/{set_task}/{set_type.value}.txt', 'w', encoding='utf8')
 
-        for ret in tqdm(iter_data):
+        pbar = iter_data
+        if self.verbose:
+            pbar = tqdm(pbar, desc=f'Save {set_type.value} dataset')
+
+        for ret in pbar:
             ret = self.convert_func(ret)
 
             image = ret['image']

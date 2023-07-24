@@ -3,27 +3,11 @@ import pickle
 import shutil
 import numpy as np
 from tqdm import tqdm
-from enum import Enum
 from pathlib import Path
 from collections import defaultdict
 from utils import os_lib, converter, visualize
 from typing import List
-
-
-class DataRegister(Enum):
-    place_holder = None
-
-    MIX = 'mix'
-    ALL = 'all'
-    TRAIN = 'train'
-    TEST = 'test'
-    VAL = 'val'
-    DEV = 'dev'
-    TRAIN_VAL = 'trainval'
-
-    PATH = 1
-    ARRAY = 2
-    BASE64 = 3
+from .. import DataRegister
 
 
 def get_image(obj: str, image_type):
@@ -54,9 +38,9 @@ def save_image(obj, save_path, image_type):
 
 class DataLoader:
     default_set_type = [DataRegister.TRAIN, DataRegister.TEST]
-    default_data_type = DataRegister.ALL
+    default_data_type = DataRegister.FULL
     default_image_type = DataRegister.PATH
-    image_suffix = 'jpg'
+    image_suffix = 'png'
     classes = []
 
     def __init__(self, data_dir, verbose=True, stdout_method=print):
@@ -68,8 +52,7 @@ class DataLoader:
         """
         Args:
             set_type(list or DataRegister): a DataRegister type or a list of them
-                Mix -> [DataRegister.place_holder]
-                ALL -> DataLoader.default_set_type
+                FULL -> DataLoader.default_set_type
                 other set_type -> [set_type]
             image_type(DataRegister): `DataRegister.PATH` or `DataRegister.ARRAY`
                 PATH -> a str of image abs path
@@ -86,9 +69,7 @@ class DataLoader:
         set_type = set_type or self.default_data_type
         image_type = image_type or self.default_image_type
 
-        if set_type == DataRegister.MIX:
-            set_types = [DataRegister.place_holder]
-        elif set_type == DataRegister.ALL:
+        if set_type == DataRegister.FULL:
             set_types = self.default_set_type
         elif isinstance(set_type, list):
             set_types = set_type
@@ -101,10 +82,14 @@ class DataLoader:
         for set_type in set_types:
             tmp = []
             if generator:
-                r.append(self._call(set_type, image_type, **kwargs))
+                r.append(self._call(set_type=set_type, image_type=image_type, **kwargs))
 
             else:
-                for _ in tqdm(self._call(set_type, image_type, **kwargs), desc=f'Load {set_type.value} dataset'):
+                pbar = self._call(set_type=set_type, image_type=image_type, **kwargs)
+                if self.verbose:
+                    pbar = tqdm(pbar, desc=f'Load {set_type.value} dataset')
+
+                for _ in pbar:
                     tmp.append(_)
 
                 r.append(tmp)
@@ -148,14 +133,13 @@ class DataSaver:
 
         os_lib.mk_dir(self.data_dir)
 
-    def __call__(self, data, set_type=DataRegister.ALL, image_type=DataRegister.PATH, **kwargs):
+    def __call__(self, data, set_type=DataRegister.FULL, image_type=DataRegister.PATH, **kwargs):
         """
 
         Args:
             data(list): a list apply for set_type
                 See Also return of `DataLoader.__call__`
             set_type(list or DataRegister): a DataRegister type or a list of them
-                Mix -> [DataRegister.place_holder]
                 ALL -> DataLoader.default_set_type
                 other set_type -> [set_type]
             image_type(DataRegister): `DataRegister.PATH` or `DataRegister.ARRAY`
@@ -163,9 +147,7 @@ class DataSaver:
                 IMAGE -> a np.ndarray of image, read from cv2, as (h, w, c)
 
         """
-        if set_type == DataRegister.MIX:
-            set_types = [DataRegister.place_holder]
-        elif set_type == DataRegister.ALL:
+        if set_type == DataRegister.FULL:
             set_types = self.default_set_type
         elif isinstance(set_type, list):
             set_types = set_type
@@ -177,7 +159,7 @@ class DataSaver:
         self.mkdirs(set_types, **kwargs)
 
         for i, iter_data in enumerate(data):
-            self._call(iter_data, set_types[i], image_type, **kwargs)
+            self._call(iter_data, set_type=set_types[i], image_type=image_type, **kwargs)
 
     def mkdirs(self, set_types, **kwargs):
         pass
@@ -298,14 +280,10 @@ class DataVisualizer:
 
             def visual_one_image(r, **visual_kwargs):
                 image = r['image']
-
-                if 'bboxes' in r:
-                    bboxes = r['bboxes']
-                    classes = r['classes']
-                    colors = [visualize.get_color_array(int(cls)) for cls in classes]
-
-                    image = visualize.ImageVisualize.block(image, bboxes, colors=colors)
-
+                bboxes = r['bboxes']
+                classes = r['classes']
+                colors = [visualize.get_color_array(int(cls)) for cls in classes]
+                image = visualize.ImageVisualize.block(image, bboxes, colors=colors)
                 return image
 
             visualizer = DataVisualizer('visuals', verbose=False)
@@ -315,6 +293,7 @@ class DataVisualizer:
 
             visualizer([{'images': images, 'bboxes': bboxes, 'classes': classes}])
     """
+
     def __init__(self, save_dir, verbose=True, stdout_method=print, **saver_kwargs):
         self.save_dir = save_dir
         self.saver = os_lib.Saver(verbose=verbose, stdout_method=stdout_method, **saver_kwargs)
@@ -327,22 +306,34 @@ class DataVisualizer:
 
         Args:
             *iter_data (List[dict]):
-                each dict must have the of 'image' and '_id' at lease
-                    - image (np.ndarray): must have the same shape
+                each dict must have the of '_id', 'image' and at lease
                     - _id (str): the name to save the image
+                    - image (np.ndarray): must have the same shape
+                    - pix_image:
+                    - bboxes:
+                    - classes:
+                    - confs:
+
             **visual_kwargs:
 
         Returns:
 
         """
-        for rets in tqdm(zip(*iter_data), desc='visual'):
+        pbar = zip(*iter_data)
+        if self.verbose:
+            pbar = tqdm(pbar, desc='visual')
+
+        for rets in pbar:
             images = []
-            _id = ''
+            _id = 'tmp.png'
             for r in rets:
                 images.append(self.visual_one_image(r, **visual_kwargs))
+
                 if 'pix_image' in r:
                     images.append(self.visual_one_image({'image': r['pix_image']}, **visual_kwargs))
-                _id = r['_id']
+
+                if '_id' in r:
+                    _id = r['_id']
 
             image = self.concat_images(images)
             self.saver.save_img(image, f'{self.save_dir}/{_id}')
@@ -352,17 +343,23 @@ class DataVisualizer:
 
         if 'bboxes' in r and r['bboxes'] is not None:
             bboxes = r['bboxes']
-            classes = r['classes']
-            colors = [visualize.get_color_array(int(cls)) for cls in classes]
 
-            if 'cls_alias' in visual_kwargs:
-                cls_alias = visual_kwargs['cls_alias']
-                classes = [cls_alias[_] for _ in classes]
+            if 'classes' in r:
+                classes = r['classes']
+                colors = [visualize.get_color_array(int(cls)) for cls in classes]
 
-            if 'confs' in r:
-                classes = [f'{cls} {conf:.6f}' for cls, conf in zip(classes, r['confs'])]
+                if 'cls_alias' in visual_kwargs:
+                    cls_alias = visual_kwargs['cls_alias']
+                    classes = [cls_alias[_] for _ in classes]
 
-            image = visualize.ImageVisualize.label_box(image, bboxes, classes, colors=colors)
+                if 'confs' in r:
+                    classes = [f'{cls} {conf:.6f}' for cls, conf in zip(classes, r['confs'])]
+
+                image = visualize.ImageVisualize.label_box(image, bboxes, classes, colors=colors)
+
+            else:
+                colors = [visualize.cmap['Black']['array'] for _ in bboxes]
+                image = visualize.ImageVisualize.box(image, bboxes, colors=colors)
 
         return image
 
@@ -373,8 +370,5 @@ class DataVisualizer:
 
         n_row = int(np.ceil(np.sqrt(n)))
         images += [np.zeros_like(images[0])] * (n_row * n_row - n)
-
         images = [np.concatenate(images[i: i + n_row], 1) for i in range(0, len(images), n_row)]
-
         return np.concatenate(images, 0)
-

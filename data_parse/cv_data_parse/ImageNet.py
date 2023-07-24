@@ -30,7 +30,7 @@ class ImageNet2012Loader(DataLoader):
             from data_parse.cv_data_parse.ImageNet import DataRegister, ImageNet2012Loader as Loader
 
             loader = Loader('data/ImageNet2012')
-            data = loader(set_type=DataRegister.ALL, generator=True, image_type=DataRegister.ARRAY)
+            data = loader(set_type=DataRegister.FULL, generator=True, image_type=DataRegister.ARRAY)
             r = next(data[0])
 
             # visual

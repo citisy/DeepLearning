@@ -25,7 +25,7 @@ class Loader(DataLoader):
 
             data_dir = 'data/cmp_facade'
             loader = Loader(data_dir)
-            data = loader(set_type=DataRegister.ALL, generator=True, image_type=DataRegister.ARRAY)
+            data = loader(set_type=DataRegister.FULL, generator=True, image_type=DataRegister.ARRAY)
 
             # visual train dataset
             DataVisualizer(f'{data_dir}/visuals', verbose=False)(data[0])

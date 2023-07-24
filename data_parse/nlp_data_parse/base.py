@@ -1,20 +1,5 @@
 from tqdm import tqdm
-from enum import Enum
-
-
-class DataRegister(Enum):
-    place_holder = None
-
-    MIX = 'mix'
-    ALL = 'all'
-    TRAIN = 'train'
-    TEST = 'test'
-    VAL = 'val'
-    DEV = 'dev'
-
-    PATH = 1
-    ARRAY = 2
-    BASE64 = 3
+from .. import DataRegister
 
 
 class DataLoader:
@@ -23,15 +8,13 @@ class DataLoader:
     def __init__(self, data_dir):
         self.data_dir = data_dir
 
-    def __call__(self, set_type=DataRegister.ALL, generator=True, **kwargs):
+    def __call__(self, set_type=DataRegister.FULL, generator=True, **kwargs):
         """
         Args:
             set_type: Register.ALL, Register.TRAIN, Register.TEST or list of them
             generator: would be returned that `True` for a generator or `False` for a list
         """
-        if set_type == DataRegister.MIX:
-            set_types = [DataRegister.place_holder]
-        elif set_type == DataRegister.ALL:
+        if set_type == DataRegister.FULL:
             set_types = self.default_set_type
         elif isinstance(set_type, list):
             set_types = [_ for _ in set_type]

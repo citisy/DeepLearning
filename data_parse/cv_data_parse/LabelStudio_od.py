@@ -19,11 +19,10 @@ class Loader(DataLoader):
 
     """
 
-    default_set_type = [DataRegister.place_holder]
     image_suffix = 'png'
     classes = []
 
-    def _call(self, set_type=DataRegister.place_holder, image_type=DataRegister.ARRAY, set_task='label_studio', **kwargs):
+    def _call(self, image_type=DataRegister.ARRAY, set_task='label_studio', **kwargs):
         with open(f'{self.data_dir}/{set_task}.json', 'r', encoding='utf8') as f:
             for js in json.load(f):
                 _id = js['file_upload'].split('-', 1)[-1]
@@ -57,7 +56,7 @@ class Loader(DataLoader):
 class Saver(DataSaver):
     classes = []
 
-    def __call__(self, data, set_type=DataRegister.ALL, image_type=DataRegister.PATH, **kwargs):
+    def __call__(self, data, set_type=DataRegister.FULL, image_type=DataRegister.PATH, **kwargs):
         os_lib.mk_dir(f'{self.data_dir}/images')
         super().__call__(data, set_type, image_type, **kwargs)
 

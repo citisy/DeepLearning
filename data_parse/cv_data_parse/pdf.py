@@ -21,7 +21,7 @@ class Loader(DataLoader):
             from data_parse.cv_data_parse.pdf import DataRegister, Loader
 
             loader = Loader('data/pdf')
-            data = loader(set_type=DataRegister.ALL, generator=True, image_type=DataRegister.ARRAY)
+            data = loader(set_type=DataRegister.FULL, generator=True, image_type=DataRegister.ARRAY)
             r = next(data[0])
 
             # visual
@@ -35,7 +35,6 @@ class Loader(DataLoader):
             vis_image = ImageVisualize.box(vis_image, segmentations)
             vis_image = ImageVisualize.text(vis_image, segmentations, transcriptions)
     """
-    default_set_type = [DataRegister.place_holder]
     image_suffix = 'png'
     pdf_suffix = 'pdf'
     loader = os_lib.Loader(verbose=False)
