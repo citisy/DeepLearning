@@ -19,6 +19,23 @@ def load_config_from_ini(path) -> configparser.ConfigParser:
     return config
 
 
+class ArgDict(dict):
+    """Convenience class that behaves like a dict but allows access with the attribute syntax.
+    so that it can be treated as `argparse.ArgumentParser().parse_args()`"""
+
+    def __getattr__(self, name: str):
+        try:
+            return self[name]
+        except KeyError:
+            raise AttributeError(name)
+
+    def __setattr__(self, name: str, value) -> None:
+        self[name] = value
+
+    def __delattr__(self, name: str) -> None:
+        del self[name]
+
+
 def expand_dict(d: dict):
     """expand dict while '.' in key or '=' in value
 
@@ -82,6 +99,33 @@ def merge_dict(d1: dict, d2: dict):
         return cur_dic
 
     return cur(copy.deepcopy(d1), copy.deepcopy(d2))
+
+
+def combine_obj(obj):
+    """
+
+    Example:
+        >>> kwargs = [{'a': [1], 'b': [2, 3]}, {'c': [4, 5, 6]}]
+        >>> combine_obj(kwargs)
+        [{'a': 1, 'b': 2}, {'a': 1, 'b': 3}, {'c': 4}, {'c': 5}, {'c': 6}]
+
+    """
+
+    def cur(cur_obj):
+        r = [{}]
+        for k, v in cur_obj.items():
+            r = [{**rr, k: vv} for rr in r for vv in v]
+
+        return r
+
+    ret = []
+    if isinstance(obj, dict):
+        ret += cur(obj)
+    else:
+        for o in obj:
+            ret += cur(o)
+
+    return ret
 
 
 class MultiProcessTimedRotatingFileHandler(TimedRotatingFileHandler):
@@ -225,7 +269,7 @@ def logger_init(config={}, log_dir=None):
         }
     }
 
-    if log_dir is not None:     # add file handles
+    if log_dir is not None:  # add file handles
         os_lib.mk_dir(log_dir)
         default_logging_config = merge_dict(default_logging_config, {
             'handlers': {

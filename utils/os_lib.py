@@ -285,6 +285,9 @@ class MemoryCacher:
             self.cache[key] = obj
 
     def delete_over_range(self):
+        if not self.max_size:
+            return
+
         if len(self.cache) >= self.max_size:
             key = min(self.cache.keys())
             self.cache.pop(key)
@@ -418,6 +421,7 @@ class MongoDBCacher:
 
 
 class FakeIo:
+    """empty io method to cheat some functions which must use an io method"""
     def write(self, *args, **kwargs):
         pass
 
@@ -432,22 +436,6 @@ class FakeIo:
 
     def __call__(self, *args, **kwargs):
         pass
-
-
-class EasyDict(dict):
-    """Convenience class that behaves like a dict but allows access with the attribute syntax."""
-
-    def __getattr__(self, name: str) -> Any:
-        try:
-            return self[name]
-        except KeyError:
-            raise AttributeError(name)
-
-    def __setattr__(self, name: str, value: Any) -> None:
-        self[name] = value
-
-    def __delattr__(self, name: str) -> None:
-        del self[name]
 
 
 class Retry:
