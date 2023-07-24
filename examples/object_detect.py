@@ -178,7 +178,7 @@ class OdProcess(Process):
                 })
 
             if save_period and i % save_period == save_period - 1:
-                self.save(f'{self.model_dir}/{self.dataset_version}_last.pth')
+                self.save(f'{self.model_dir}/{self.dataset_version}/last.pth')
 
                 val_data = self.get_val_data()
                 val_dataset = self.dataset(val_data, augment_func=self.val_data_augment)
@@ -187,7 +187,7 @@ class OdProcess(Process):
                 self.logger.info(f"epoch: {i}, score: {score}")
 
                 if score > max_score:
-                    self.save(f'{self.model_dir}/{self.dataset_version}_best.pth')
+                    self.save(f'{self.model_dir}/{self.dataset_version}/best.pth')
                     max_score = score
 
                 if stopper(epoch=i, fitness=score):
@@ -250,7 +250,7 @@ class OdProcess(Process):
 
     def metric(self, dataset, batch_size=128, **kwargs):
         gt_rets, det_rets = self.predict(dataset, batch_size, **kwargs)
-        df = object_detection.quick_metric(gt_rets, det_rets, save_path=f'{self.model_dir}/{self.dataset_version}.csv', verbose=False)
+        df = object_detection.quick_metric(gt_rets, det_rets, save_path=f'{self.model_dir}/{self.dataset_version}/result.csv', verbose=False)
 
         result = dict(
             per_class_result=df,
