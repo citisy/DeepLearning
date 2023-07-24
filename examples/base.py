@@ -78,7 +78,6 @@ class Process:
         self.save_result_dir = f'cache_data/{self.dataset_version}'
         self.input_size = input_size
         self.logger = logging.getLogger()
-        self.model_info()
 
     def model_info(self, depth=None):
         profile = ModuleInfo.profile_per_layer(self.model, depth=depth)
@@ -90,6 +89,7 @@ class Process:
         self.logger.info(s)
 
     def run(self, max_epoch=100, train_batch_size=16, predict_batch_size=None, save_period=None):
+        self.model_info()
         data = self.get_train_data()
 
         dataset = self.dataset(
@@ -114,6 +114,23 @@ class Process:
         for k, v in r.items():
             self.logger.info(k)
             self.logger.info(v)
+
+    def params_search(self, model, var_params, const_params=dict(), **run_kwargs):
+        def cur_run(**params):
+            sub_version = ''
+            for k, v in params.items():
+                sub_version += f'{k}={v}'
+
+            self.dataset_version = f'{self.dataset}/{sub_version}'
+            params = configs.merge_dict(params, const_params)
+            self.model_path = f'{self.model_dir}/{self.dataset_version}/final.pth'
+            self.save_result_dir = f'cache_data/{self.dataset_version}'
+            self.model = model(**params)
+            self.run(**run_kwargs)
+
+        var_params = configs.combine_obj(var_params)
+        for params in var_params:
+            cur_run(**params)
 
     def fit(self, *args, **kwargs):
         raise NotImplementedError
