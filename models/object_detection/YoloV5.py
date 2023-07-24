@@ -1,7 +1,7 @@
 import math
 import torch
 from torch import nn
-from utils.loss import FocalLoss
+from ..loss import FocalLoss
 from utils.torch_utils import initialize_layers
 from .. import Conv, ConvInModule
 from . import cls_nms, bbox_iou
