@@ -291,6 +291,28 @@ class FastererRCNN_Voc(OdProcess):
 
 
 class YoloV5(OdProcess):
+    def __init__(self,
+                 model_version='YoloV5',
+                 dataset_version='',
+                 device=0,
+                 input_size=640,
+                 in_ch=3,
+                 n_classes=20,
+                 **kwargs
+                 ):
+        from models.object_detection.YoloV5 import Model
+
+        super().__init__(
+            model=Model(
+                n_classes,
+                in_module_config=dict(in_ch=in_ch, input_size=input_size),
+            ),
+            model_version=model_version,
+            dataset_version=dataset_version,
+            input_size=input_size,
+            device=device
+        )
+
     def data_augment(self, ret):
         ret.update(RandomApply([geometry.HFlip()])(**ret))
         return ret
@@ -346,44 +368,16 @@ class YoloV5_Voc(YoloV5):
             Process().run(max_epoch=500)
             {'score': 0.3529}
     """
-
-    def __init__(self, device=1):
-        from models.object_detection.YoloV5 import Model
-
-        in_ch = 3
-        input_size = 640
-        n_classes = 20
-
-        super().__init__(
-            model=Model(
-                n_classes,
-                in_module_config=dict(in_ch=in_ch, input_size=input_size),
-            ),
-            model_version='YoloV5',
-            dataset_version='Voc2012',
-            input_size=input_size,
-            device=device
-        )
+    def __init__(self, dataset_version='Voc2012', **kwargs):
+        super().__init__(dataset_version=dataset_version, **kwargs)
 
 
 class YoloV5_yolov5(YoloV5):
-    def __init__(self, classes, device=1):
-        from models.object_detection.YoloV5 import Model
+    def __init__(self, classes=None, dataset_version='yolov5', **kwargs):
+        if 'n_classes' not in kwargs:
+            kwargs['n_classes'] = len(classes)
 
-        in_ch = 3
-        input_size = 640
-        n_classes = len(classes)
-
-        super().__init__(
-            model=Model(
-                n_classes,
-                in_module_config=dict(in_ch=in_ch, input_size=input_size),
-            ),
-            model_version='YoloV5',
-            dataset_version='yolov5',
-            input_size=input_size,
-            device=device
-        )
+        super().__init__(dataset_version=dataset_version, **kwargs)
 
     def get_train_data(self):
         from data_parse.cv_data_parse.YoloV5 import Loader, DataRegister

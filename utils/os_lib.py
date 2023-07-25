@@ -332,7 +332,7 @@ class FileCacher:
         if not self.max_size:
             return
 
-        caches = [str(_) for _ in self.cache_dir.glob(f'*.{suffix}')]
+        caches = [str(_) for _ in self.cache_dir.glob(f'*{suffix}')]
 
         if len(caches) > self.max_size:
             ctime = [os.path.getctime(fp) for fp in caches]

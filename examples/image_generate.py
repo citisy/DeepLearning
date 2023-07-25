@@ -132,7 +132,7 @@ class WGAN_Mnist(IgProcess):
                 optimizer_d.step()
 
                 # note that, to avoid G so strong, training G once while training D iter_gap times
-                if gen_iter < 25 or gen_iter % 500 == 0:
+                if gen_iter < (25 * batch_size) or gen_iter % (500 * batch_size) < batch_size:
                     iter_gap = 100
                 else:
                     iter_gap = 5
@@ -150,9 +150,9 @@ class WGAN_Mnist(IgProcess):
                         # 'gpu_info': MemoryInfo.get_gpu_mem_info()
                     })
 
-                    gen_iter += 1
+                    gen_iter += len(rets)
 
-                    if save_period and gen_iter % save_period == 0:
+                    if save_period and gen_iter % save_period < batch_size:
                         if flag:
                             images = images.mul(0.5).add(0.5).mul(255).add_(0.5).clamp_(0, 255).permute(0, 2, 3, 1).to("cpu", torch.uint8).numpy()
 
@@ -173,7 +173,7 @@ class WGAN_Mnist(IgProcess):
             DataVisualizer(f'cache_data/{self.dataset_version}', verbose=True, stdout_method=self.logger.info)(*ret)
 
 
-def facade_data_aug(ret, input_size):
+def data_aug_with_pix_image(ret, input_size):
     ret.update(dst=input_size)
     ret.update(Apply([
         scale.LetterBox(),
@@ -195,10 +195,31 @@ def facade_data_aug(ret, input_size):
 
 
 class Pix2pix(IgProcess):
-    def data_augment(self, ret):
-        return facade_data_aug(ret, self.input_size)
+    def __init__(self,
+                 model_version='Pix2pix',
+                 dataset_version='',
+                 device=0,
+                 input_size=256,
+                 in_ch=3,
+                 **kwargs
+                 ):
+        from models.image_generate.pix2pix import Model
 
-    def fit(self, dataset, max_epoch, batch_size, save_period=None, **dataloader_kwargs):
+        super().__init__(
+            model=Model(
+                in_ch=in_ch,
+                input_size=input_size
+            ),
+            model_version=model_version,
+            dataset_version=dataset_version,
+            input_size=input_size,
+            device=device
+        )
+
+    def data_augment(self, ret):
+        return data_aug_with_pix_image(ret, self.input_size)
+
+    def fit(self, dataset, max_epoch, batch_size, save_period=None, save_maxsize=None, **dataloader_kwargs):
         # sampler = distributed.DistributedSampler(dataset, shuffle=True)
         dataloader = DataLoader(
             dataset,
@@ -249,8 +270,8 @@ class Pix2pix(IgProcess):
                     # 'gpu_info': MemoryInfo.get_gpu_mem_info()
                 })
 
-                gen_iter += 1
-                if gen_iter % save_period == 0:
+                gen_iter += len(rets)
+                if gen_iter % save_period < batch_size:
                     vis_image = dict(
                         real_a=real_a,
                         real_b=real_b,
@@ -263,7 +284,8 @@ class Pix2pix(IgProcess):
 
                     ret = [r for r in zip(*ret)]
                     DataVisualizer(f'cache_data/{self.model_version}/{self.dataset_version}', verbose=True, stdout_method=self.logger.info)(*ret)
-                    # self.save(f'{self.model_dir}/{self.dataset_version}/{gen_iter}.pth')
+                    self.save(f'{self.model_dir}/{self.dataset_version}/{gen_iter}.pth')
+                    os_lib.FileCacher(f'{self.model_dir}/{self.dataset_version}/', max_size=save_maxsize).delete_over_range(suffix='pth')
 
 
 class Pix2pix_facade(Pix2pix):
@@ -276,22 +298,8 @@ class Pix2pix_facade(Pix2pix):
             Process().run(max_epoch=2000, train_batch_size=16, save_period=2000)
     """
 
-    def __init__(self, device=0):
-        from models.image_generate.pix2pix import Model
-
-        input_size = 256
-        in_ch = 3
-
-        super().__init__(
-            model=Model(
-                in_ch=in_ch,
-                input_size=input_size
-            ),
-            model_version='Pix2pix',
-            dataset_version='facade',
-            input_size=input_size,
-            device=device
-        )
+    def __init__(self, dataset_version='facade', **kwargs):
+        super().__init__(dataset_version=dataset_version, **kwargs)
 
     def get_train_data(self):
         from data_parse.cv_data_parse.cmp_facade import Loader
@@ -302,31 +310,26 @@ class Pix2pix_facade(Pix2pix):
         return data
 
 
-class CycleGan_facade(IgProcess):
-    """
-    Usage:
-        .. code-block:: python
-
-            from examples.image_generate import CycleGan_facade as Process
-
-            Process().run(max_epoch=1000, train_batch_size=8, save_period=500)
-    """
-
-    def __init__(self, device=0):
+class CycleGan(IgProcess):
+    def __init__(self,
+                 model_version='CycleGan',
+                 dataset_version='',
+                 device=0,
+                 input_size=256,
+                 in_ch=3,
+                 **kwargs
+                 ):
         from models.image_generate.CycleGan import Model
-
-        input_size = 256
-        in_ch = 3
 
         super().__init__(
             model=Model(
                 in_ch=in_ch,
                 input_size=input_size
             ),
-            model_version='CycleGan',
-            dataset_version='facade',
+            model_version=model_version,
+            dataset_version=dataset_version,
             input_size=input_size,
-            device=device
+            device=device,
         )
 
     def model_info(self, depth=None):
@@ -346,18 +349,10 @@ class CycleGan_facade(IgProcess):
 
             self.logger.info(s)
 
-    def get_train_data(self):
-        from data_parse.cv_data_parse.cmp_facade import Loader
-
-        loader = Loader(f'data/cmp_facade')
-        data = loader(set_type=DataRegister.TRAIN, image_type=DataRegister.ARRAY, generator=False)[0]
-
-        return data
-
     def data_augment(self, ret):
-        return facade_data_aug(ret, self.input_size)
+        return data_aug_with_pix_image(ret, self.input_size)
 
-    def fit(self, dataset, max_epoch, batch_size, save_period=None, **dataloader_kwargs):
+    def fit(self, dataset, max_epoch, batch_size, save_period=None, save_maxsize=None, **dataloader_kwargs):
         dataloader = DataLoader(
             dataset,
             shuffle=True,
@@ -384,7 +379,7 @@ class CycleGan_facade(IgProcess):
         lambda_a = 10
         lambda_b = 10
 
-        j = 0
+        gen_iter = 0
         for i in range(max_epoch):
             self.model.train()
             pbar = tqdm(dataloader, desc=f'train {i}/{max_epoch}')
@@ -414,15 +409,15 @@ class CycleGan_facade(IgProcess):
                 optimizer_d.step()
 
                 pbar.set_postfix({
-                    'gen_iter': j,
+                    'gen_iter': gen_iter,
                     'loss_g': f'{loss_g.item():.06}',
                     'loss_d': f'{loss_d.item():.06}',
                     # 'cpu_info': MemoryInfo.get_process_mem_info(),
                     # 'gpu_info': MemoryInfo.get_gpu_mem_info()
                 })
 
-                j += 1
-                if j % save_period == 0:
+                gen_iter += len(rets)
+                if gen_iter % save_period < batch_size:
                     vis_image = dict(
                         real_a=real_a,
                         fake_a=fake_a,
@@ -434,7 +429,31 @@ class CycleGan_facade(IgProcess):
                     ret = []
                     for name, images in vis_image.items():
                         images = images.mul(255).clamp_(0, 255).permute(0, 2, 3, 1).to("cpu", torch.uint8).numpy()
-                        ret.append([{'image': image, '_id': f'{j}_{name}.png'} for image in images])
+                        ret.append([{'image': image, '_id': f'{gen_iter}_{name}.png'} for image in images])
 
                     ret = [r for r in zip(*ret)]
                     DataVisualizer(f'cache_data/{self.model_version}/{self.dataset_version}', verbose=True, stdout_method=self.logger.info)(*ret)
+                    self.save(f'{self.model_dir}/{self.dataset_version}/{gen_iter}.pth')
+                    os_lib.FileCacher(f'{self.model_dir}/{self.dataset_version}/', max_size=save_maxsize).delete_over_range(suffix='pth')
+
+
+class CycleGan_facade(CycleGan):
+    """
+    Usage:
+        .. code-block:: python
+
+            from examples.image_generate import CycleGan_facade as Process
+
+            Process().run(max_epoch=1000, train_batch_size=8, save_period=500)
+    """
+
+    def __init__(self, dataset_version='facade', **kwargs):
+        super().__init__(dataset_version=dataset_version, **kwargs)
+
+    def get_train_data(self):
+        from data_parse.cv_data_parse.cmp_facade import Loader
+
+        loader = Loader(f'data/cmp_facade')
+        data = loader(set_type=DataRegister.TRAIN, image_type=DataRegister.ARRAY, generator=False)[0]
+
+        return data
