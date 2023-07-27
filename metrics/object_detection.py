@@ -154,7 +154,7 @@ class Iou:
         return inter / union
 
     @staticmethod
-    def siou(box1, box2):
+    def siou(box1, box2, inter=None):
         """single iou
         Area(box1 & box2) / Area(box2)
 
@@ -171,9 +171,33 @@ class Iou:
         [[0.44444444]]
         """
         area2 = Area.real_areas(box2)  # (M,)
-        inter = Area.intersection_areas(box1, box2)
+        if inter is None:
+            inter = Area.intersection_areas(box1, box2)
 
         return inter / (area2 + 1E-12)  # iou = inter / (area2)
+
+    @classmethod
+    def miou(cls, box1, box2, inter=None):
+        """mean iou
+        (siou(box1, box2) + siou(box2, box1).T) / 2
+
+        Args:
+            box1(np.array): shape=(N, 4), 4 means xyxy.
+            box2(np.array): shape=(M ,4), 4 means xyxy.
+
+        Returns:
+            iou_box(np.array): shape=(N, M)
+
+        """
+        box1, box2 = np.array(box1), np.array(box2)
+
+        if inter is None:
+            inter = Area.intersection_areas(box1, box2)
+
+        siou1 = cls.siou(box1, box2, inter=inter)
+        siou2 = cls.siou(box2, box1, inter=inter.T).T
+
+        return (siou1 + siou2) / 2
 
     @classmethod
     def giou(cls, box1, box2):
@@ -353,6 +377,7 @@ class ConfusionMatrix:
         if sort_idx is not None:
             sort_idx = np.argsort(sort_idx)
             tp = tp[sort_idx]
+            iou = iou[:, sort_idx]
 
         return dict(
             tp=tp,
@@ -816,7 +841,10 @@ def checkout_false_sample(gt_iter_data, det_iter_data, iou_thres=0.5, data_dir='
     det_classes = [v['det_classes'] for v in rets.values()]
     _ids = list(rets.keys())
 
-    ret = AP(return_more_info=True).mAP_thres(gt_boxes, det_boxes, confs, classes=[gt_classes, det_classes], iou_thres=iou_thres)
+    ret = AP(
+        return_more_info=True,
+        # iou_method=Iou.miou
+    ).mAP_thres(gt_boxes, det_boxes, confs, classes=[gt_classes, det_classes], iou_thres=iou_thres)
 
     cls_alias = cls_alias or {k: k for k in ret}
 
