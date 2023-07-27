@@ -192,11 +192,12 @@ class Loader:
         self.stdout(path)
         return obj
 
-    def load_img(self, path, channel_fixed_3=True) -> np.ndarray:
+    def load_img(self, path, channel_fixed_3=False) -> np.ndarray:
         # it will error with chinese path in low version of cv2
         # it has fixed in high version already
         # img = cv2.imdecode(np.fromfile(path, dtype=np.uint8), -1)
         img = cv2.imread(path)
+        assert img is not None
 
         if channel_fixed_3:
             if img.shape[2] == 3:
@@ -565,13 +566,7 @@ class AutoLog:
 
 
 class MemoryInfo:
-    @staticmethod
-    def pretty_str(v):
-        for suffix in ['b', 'kb', 'mb', 'gb', 'tb']:
-            if v > 1024:
-                v /= 1024.
-            else:
-                return f'{v:.2f} {suffix}'
+    from .visualize import TextVisualize
 
     @classmethod
     def get_process_mem_info(cls, pretty_output=True):
@@ -593,7 +588,7 @@ class MemoryInfo:
         if pretty_output:
             for k, v in info.items():
                 if k != 'pid':
-                    info[k] = cls.pretty_str(v)
+                    info[k] = cls.TextVisualize.human_readable_str(v)
 
         return info
 
@@ -610,7 +605,7 @@ class MemoryInfo:
         if pretty_output:
             for k, v in info.items():
                 if k != 'percent':
-                    info[k] = cls.pretty_str(v)
+                    info[k] = cls.TextVisualize.human_readable_str(v)
 
         return info
 
@@ -627,7 +622,7 @@ class MemoryInfo:
         )
         if pretty_output:
             for k, v in info.items():
-                info[k] = cls.pretty_str(v)
+                info[k] = cls.TextVisualize.human_readable_str(v)
 
         return info
 

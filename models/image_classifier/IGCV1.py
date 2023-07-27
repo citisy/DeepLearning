@@ -1,5 +1,5 @@
 from torch import nn
-from ..layers import Conv, Linear, ConvInModule, OutModule
+from ..layers import Conv, Linear, ConvInModule, OutModule, BaseImgClsModel
 from .ShuffleNetV1 import shuffle
 
 # (l, m, b)
@@ -8,44 +8,28 @@ L24M2_config = (24, 2, 6)
 L32M26_config = (32, 26, 6)
 
 
-class IGCV1(nn.Module):
+class Model(BaseImgClsModel):
     """[Interleaved Group Convolutions for Deep Neural Networks](https://arxiv.org/pdf/1707.02725.pdf)"""
 
     def __init__(
             self,
-            in_ch=None, input_size=None, output_size=None,
-            in_module=None, out_module=None,
-            backbone_config=L24M2_config
+            in_ch=None, input_size=None, out_features=None,
+            backbone_config=L24M2_config, **kwargs
     ):
-        super().__init__()
+        backbone = Backbone(backbone_config=backbone_config)
 
-        if in_module is None:
-            in_module = ConvInModule(in_ch, input_size, out_ch=3, output_size=32)
-
-        if out_module is None:
-            out_module = OutModule(output_size, input_size=10)
-
-        self.input = in_module
-        self.backbone = Backbone(backbone_config=backbone_config)
-        self.flatten = nn.Sequential(
-            nn.AdaptiveAvgPool2d(1),
-            nn.Flatten()
-        )
-        self.fcn = nn.Sequential(
-            Linear(self.backbone.out_channels, 10),
-            out_module
+        super().__init__(
+            in_ch=in_ch,
+            input_size=input_size,
+            out_features=out_features,
+            backbone=backbone,
+            backbone_input_size=32,
+            head_hidden_features=10,
+            **kwargs
         )
 
-    def forward(self, x):
-        x = self.input(x)
-        x = self.backbone(x)
-        x = self.flatten(x)
-        x = self.fcn(x)
 
-        return x
-
-
-class Backbone(nn.Module):
+class Backbone(nn.Sequential):
     def __init__(self, backbone_config=L24M2_config):
         super().__init__()
 
@@ -68,9 +52,6 @@ class Backbone(nn.Module):
         self.conv_seq = nn.Sequential(*layers)
         self.out_channels = in_ch
 
-    def forward(self, x):
-        return self.conv_seq(x)
-
 
 class IGCBlock(nn.Module):
     def __init__(self, in_ch, out_ch, l, m=None, s=1):
@@ -87,6 +68,3 @@ class IGCBlock(nn.Module):
         x = self.c1(x)
         x = shuffle(x, self.m)
         return x
-
-
-Model = IGCV1

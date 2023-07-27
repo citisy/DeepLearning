@@ -124,7 +124,7 @@ class Loader(DataLoader):
             if self.filter_func(ret):
                 yield ret
 
-    def load_set(self, set_type, image_type, set_task='', sub_dir='image_sets', **kwargs):
+    def load_set(self, set_type=DataRegister.TRAIN, image_type=DataRegister.PATH, set_task='', sub_dir='image_sets', **kwargs):
         with open(f'{self.data_dir}/{sub_dir}/{set_task}/{set_type.value}.txt', 'r', encoding='utf8') as f:
             for line in f.read().strip().split('\n'):
                 image_path = os.path.abspath(line)
@@ -154,7 +154,7 @@ class Loader(DataLoader):
         """format of saved label txt like (class, x1, y1, x2, y2, conf, w, h)
         only return labels but no images. can use _id to load images"""
         for fp in Path(f'{self.data_dir}/{sub_dir}/{task}').glob('*.txt'):
-            img_fp = Path(fp.name.replace('.txt', '.png'))
+            img_fp = Path(str(fp).replace('.txt', '.png').replace(sub_dir, 'images'))
 
             # (class, x1, y1, x2, y2, conf, w, h)
             labels = np.genfromtxt(fp)
@@ -163,7 +163,6 @@ class Loader(DataLoader):
 
             ret = dict(
                 _id=img_fp.name,
-                image_dir=str(img_fp.parent),
                 task=task,
                 classes=labels[:, 0],
                 bboxes=labels[:, 1:5],
@@ -208,8 +207,7 @@ class Saver(DataSaver):
 
             # convert voc to yolov5
             # load data from voc
-            from data_parse.cv_data_parse.Voc import Loader
-            from utils.register import DataRegister
+            from data_parse.cv_data_parse.Voc import Loader, DataRegister
             loader = Loader('data/VOC2012')
             data = loader(set_type=DataRegister.TRAIN)
 

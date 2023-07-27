@@ -1,5 +1,5 @@
 from torch import nn
-from ..layers import Conv, Linear, ConvInModule, OutModule
+from ..layers import Conv, Linear, ConvInModule, OutModule, BaseImgClsModel
 
 # refer to table 1
 # (n_res, out_ch, n_conv)
@@ -10,45 +10,28 @@ Res101_config = ((3, 256, 3), (4, 512, 3), (23, 1024, 3), (3, 2048, 3))
 Res152_config = ((3, 256, 3), (8, 512, 3), (36, 1024, 3), (3, 2048, 3))
 
 
-class ResNet(nn.Module):
+class Model(BaseImgClsModel):
     """[Deep Residual Learning for Image Recognition](https://arxiv.org/pdf/1512.03385.pdf)
     See Also `torchvision.models.resnet`
     """
 
     def __init__(
             self,
-            in_ch=None, input_size=None, output_size=None,
-            in_module=None, out_module=None,
-            backbone_config=Res18_config,
-            add_block: nn.Module = None, block_config=dict()):
-        super().__init__()
-        if in_module is None:
-            in_module = ConvInModule(in_ch, input_size, out_ch=3, output_size=224)
+            in_ch=None, input_size=None, out_features=None,
+            backbone_config=Res18_config, add_block: nn.Module = None, block_config=dict(), **kwargs
+    ):
+        backbone = Backbone(backbone_config=backbone_config, add_block=add_block, **block_config)
 
-        if out_module is None:
-            out_module = OutModule(output_size, input_size=1000)
-
-        self.input = in_module
-        self.backbone = Backbone(backbone_config=backbone_config, add_block=add_block, **block_config)
-        self.flatten = nn.Sequential(
-            nn.AdaptiveAvgPool2d(1),
-            nn.Flatten()
-        )
-        self.fcn = nn.Sequential(
-            Linear(1 * 1 * self.backbone.out_channels, 1000),
-            out_module
+        super().__init__(
+            in_ch=in_ch,
+            input_size=input_size,
+            out_features=out_features,
+            backbone=backbone,
+            **kwargs
         )
 
-    def forward(self, x):
-        x = self.input(x)
-        x = self.backbone(x)
-        x = self.flatten(x)
-        x = self.fcn(x)
 
-        return x
-
-
-class Backbone(nn.Module):
+class Backbone(nn.Sequential):
     def __init__(self, backbone_config=Res18_config, add_block: nn.Module = None, **block_config):
         super().__init__()
 
@@ -70,9 +53,6 @@ class Backbone(nn.Module):
 
         self.conv_seq = nn.Sequential(*layers)
         self.out_channels = in_ch
-
-    def forward(self, x):
-        return self.conv_seq(x)
 
 
 class ResBlock(nn.Module):
@@ -112,5 +92,3 @@ class ResBlock(nn.Module):
         x = self.act(x1 + x2)
         return x
 
-
-Model = ResNet

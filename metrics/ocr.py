@@ -84,12 +84,10 @@ def rec_quick_metrics(gt_iter_data, det_iter_data, save_path=None, verbose=True,
 
     r = {}
     for ret in tqdm(gt_iter_data):
-        transcription = ret['transcription']
-        r.setdefault(ret['_id'], {})['true'] = transcription
+        r.setdefault(ret['_id'], {})['true'] = ret['transcription']
 
     for ret in tqdm(det_iter_data):
-        transcription = ret['transcription']
-        r.setdefault(ret['_id'], {})['pred'] = transcription
+        r.setdefault(ret['_id'], {})['pred'] = ret['transcription']
 
     det_text = [ret['pred'] for ret in r.values()]
     gt_text = [ret['true'] for ret in r.values()]
@@ -132,26 +130,27 @@ def det_checkout_false_sample(gt_iter_data, det_iter_data, data_dir='checkout_da
     import numpy as np
     from utils import os_lib, visualize
 
-    r = {}
+    image_dir = image_dir if image_dir is not None else f'{data_dir}/images'
+    save_res_dir = save_res_dir if save_res_dir is not None else f'{data_dir}/visuals/false_samples'
+    rets = {}
 
     for ret in tqdm(gt_iter_data):
-        r.setdefault(ret['_id'], {})['gt_boxes'] = ret['bboxes']
-        r.setdefault(ret['_id'], {})['_id'] = ret['_id']
+        dic = rets.setdefault(ret['_id'], {})
+        dic['gt_boxes'] = ret['bboxes']
+        dic['image_dir'] = ret['image_dir'] if 'image_dir' in ret else image_dir
 
     for ret in tqdm(det_iter_data):
-        r.setdefault(ret['_id'], {})['det_boxes'] = ret['bboxes']
-        r.setdefault(ret['_id'], {})['confs'] = [1] * len(ret['bboxes'])
+        dic = rets[ret['_id']]
+        dic['det_boxes'] = ret['bboxes']
+        dic['confs'] = [1] * len(ret['bboxes'])
 
-    gt_boxes = [v['gt_boxes'] for v in r.values()]
-    det_boxes = [v['det_boxes'] for v in r.values()]
-    confs = [v['confs'] for v in r.values()]
-    _ids = [v['_id'] for v in r.values()]
+    gt_boxes = [v['gt_boxes'] for v in rets.values()]
+    det_boxes = [v['det_boxes'] for v in rets.values()]
+    confs = [v['confs'] for v in rets.values()]
+    _ids = list(rets.keys())
 
     ret = object_detection.AP(return_more_info=True).mAP_thres(gt_boxes, det_boxes, confs)
     r = ret['']
-
-    image_dir = image_dir if image_dir is not None else f'{data_dir}/images'
-    save_res_dir = save_res_dir if save_res_dir is not None else f'{data_dir}/visuals/false_samples'
     tp = r['tp']
     det_obj_idx = r['det_obj_idx']
     target_obj_idx = det_obj_idx[~tp]
@@ -164,7 +163,7 @@ def det_checkout_false_sample(gt_iter_data, det_iter_data, data_dir='checkout_da
         gt_box = gt_boxes[i]
         det_box = det_boxes[i]
         _id = _ids[i]
-        image = os_lib.loader.load_img(f'{image_dir}/{_id}')
+        image = os_lib.loader.load_img(f'{rets[_id]["image_dir"]}/{_id}')
 
         false_obj_idx = np.where(~_tp)[0]
 
@@ -185,28 +184,27 @@ def det_checkout_false_sample(gt_iter_data, det_iter_data, data_dir='checkout_da
 def rec_checkout_false_sample(gt_iter_data, det_iter_data, data_dir='checkout_data', image_dir=None, save_res_dir=None):
     from utils import nlp_utils, os_lib, visualize
 
-    r = {}
+    image_dir = image_dir if image_dir is not None else f'{data_dir}/images'
+    save_res_dir = save_res_dir if save_res_dir is not None else f'{data_dir}/visuals/false_samples'
+    rets = {}
     for ret in tqdm(gt_iter_data):
-        transcription = ret['transcription']
-        r.setdefault(ret['_id'], {})['true'] = transcription
-        r.setdefault(ret['_id'], {})['_id'] = ret['_id']
+        dic = rets.setdefault(ret['_id'], {})
+        dic['true'] = ret['transcription']
+        dic['image_dir'] = ret['image_dir'] if 'image_dir' in ret else image_dir
 
     for ret in tqdm(det_iter_data):
-        transcription = ret['transcription']
-        r.setdefault(ret['_id'], {})['pred'] = transcription
-        r.setdefault(ret['_id'], {})['_id'] = ret['_id']
+        dic = rets[ret['_id']]
+        dic['pred'] = ret['transcription']
 
-    det_text = [v['pred'] for v in r.values()]
-    gt_text = [v['true'] for v in r.values()]
-    _ids = [v['_id'] for v in r.values()]
+    det_text = [v['pred'] for v in rets.values()]
+    gt_text = [v['true'] for v in rets.values()]
+    _ids = list(rets.keys())
 
     cm = text_generation.LineConfusionMatrix()
 
     tp = np.array(cm.tp(det_text, gt_text)['tp'])
     cp = np.array(cm.cp(gt_text)['cp'])
     idx = np.where(tp != cp)[0]
-    image_dir = image_dir if image_dir is not None else f'{data_dir}/images'
-    save_res_dir = save_res_dir if save_res_dir is not None else f'{data_dir}/visuals/false_samples'
 
     for i in idx:
         _id = _ids[i]

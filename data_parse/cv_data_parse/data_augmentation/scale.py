@@ -149,7 +149,7 @@ class Jitter:
 
     def __call__(self, image, dst, bboxes=None, **kwargs):
         size_range = self.get_params(dst)
-        s = np.random.randint(size_range)
+        s = np.random.randint(*size_range)
         ret = {'scale.Jitter': dict(dst=s)}
         ret.update(self.resize(image, s, bboxes=bboxes))
         ret.update(self.crop(ret['image'], dst, bboxes=ret['bboxes']))

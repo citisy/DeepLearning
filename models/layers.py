@@ -1,5 +1,7 @@
 import torch
 from torch import nn
+import torch.nn.functional as F
+from utils.torch_utils import initialize_layers
 
 
 class BaseImgClsModel(nn.Module):
@@ -7,37 +9,43 @@ class BaseImgClsModel(nn.Module):
 
     def __init__(
             self,
-            in_ch=None, input_size=None, output_size=None,
-            in_module=None, out_module=None, backbone=None,
-            backbone_config=None):
+            in_ch=3, input_size=None, out_features=None,
+            in_module=None, backbone=None, neck=None, head=None, out_module=None,
+            backbone_in_ch=3, backbone_input_size=224, head_hidden_features=1000, drop_prob=0.4
+    ):
         super().__init__()
-        if in_module is None:
-            in_module = ConvInModule(in_ch, input_size, out_ch=3, output_size=224)
 
-        if out_module is None:
-            out_module = OutModule(output_size, input_size=1000)
-
-        self.input = in_module
-        self.backbone = backbone(backbone_config=backbone_config)
-        self.flatten = nn.Sequential(
+        # `bool(nn.Sequential()) = False`, so do not ues `input = in_module or ConvInModule()`
+        self.input = in_module if in_module is not None else ConvInModule(in_ch, input_size, out_ch=backbone_in_ch, output_size=backbone_input_size)
+        self.backbone = backbone
+        self.neck = neck if neck is not None else nn.Sequential(
             nn.AdaptiveAvgPool2d(1),
             nn.Flatten()
         )
-        self.fcn = nn.Sequential(
-            Linear(1 * 1 * self.backbone.out_channels, 1000),
-            out_module
+        self.head = head if head is not None else nn.Sequential(
+            Linear(self.backbone.out_channels, head_hidden_features, is_drop=True, drop_prob=drop_prob),
+            out_module or OutModule(out_features, in_features=head_hidden_features)
         )
 
-    def forward(self, x):
+        initialize_layers(self)
+
+    def forward(self, x, true_label=None):
         x = self.input(x)
         x = self.backbone(x)
-        x = self.flatten(x)
-        x = self.fcn(x)
+        x = self.neck(x)
+        x = self.head(x)
 
-        return x
+        loss = None
+        if self.training:
+            loss = self.loss(pred_label=x, true_label=true_label)
+
+        return {'pred': x, 'loss': loss}
+
+    def loss(self, pred_label, true_label):
+        return F.cross_entropy(pred_label, true_label)
 
 
-class BaseObjectDetectionModel(nn.Module):
+class BaseObjectDetectionModel(nn.Sequential):
     """a template to make a object detection model by yourself"""
 
     def __init__(
@@ -53,14 +61,6 @@ class BaseObjectDetectionModel(nn.Module):
         self.neck = neck(**neck_config)
         self.head = head(**head_config)
 
-    def forward(self, x):
-        x = self.input(x)
-        x = self.backbone(x)
-        x = self.neck(x)
-        x = self.head(x)
-
-        return x
-
 
 class SimpleInModule(nn.Sequential):
     def __init__(self, **kwargs):
@@ -69,7 +69,7 @@ class SimpleInModule(nn.Sequential):
             setattr(self, k, v)
 
 
-class ConvInModule(nn.Module):
+class ConvInModule(nn.Sequential):
     def __init__(self, in_ch=3, input_size=224, out_ch=None, output_size=None):
         super().__init__()
 
@@ -87,23 +87,15 @@ class ConvInModule(nn.Module):
         # input_size -> min_input_size
         self.layer = Conv(in_ch, out_ch, (input_size - output_size) + 1, p=0, is_norm=False)
 
-    def forward(self, x):
-        return self.layer(x)
 
-
-class OutModule(nn.Module):
-    def __init__(self, output_size, input_size=1000):
+class OutModule(nn.Sequential):
+    def __init__(self, out_features, in_features=1000):
         super().__init__()
-
-        assert output_size <= input_size, f'output size must not be greater than {input_size}'
-
-        self.layer = nn.Linear(input_size, output_size)
-
-    def forward(self, x):
-        return self.layer(x)
+        assert out_features <= in_features, f'output features must not be greater than {in_features}'
+        self.layer = nn.Linear(in_features, out_features)
 
 
-class Conv(nn.Module):
+class Conv(nn.Sequential):
     def __init__(self, in_ch, out_ch, k, s=1, p=None, bias=False,
                  is_act=True, act=None, is_norm=True, norm=None, mode='cna',
                  **conv_kwargs):
@@ -142,11 +134,8 @@ class Conv(nn.Module):
 
         self.seq = nn.Sequential(*layers)
 
-    def forward(self, x):
-        return self.seq(x)
 
-
-class ConvT(nn.Module):
+class ConvT(nn.Sequential):
     def __init__(self, in_ch, out_ch, k, s=1, p=None, bias=False,
                  is_act=True, act=None, is_norm=True, norm=None, mode='cna',
                  **conv_kwargs):
@@ -185,28 +174,74 @@ class ConvT(nn.Module):
 
         self.seq = nn.Sequential(*layers)
 
-    def forward(self, x):
-        return self.seq(x)
 
-
-class Linear(nn.Module):
-    def __init__(self, in_size, out_size,
-                 is_act=True, act=None, is_bn=True, bn=None, is_drop=False, drop_prob=0.7):
+class Linear(nn.Sequential):
+    def __init__(self, in_features, out_features,
+                 is_act=True, act=None, is_norm=True, bn=None, is_drop=False, drop_prob=0.7):
         super().__init__()
         self.is_act = is_act
-        self.is_bn = is_bn
+        self.is_norm = is_norm
         self.is_drop = is_drop
 
-        layers = [nn.Linear(in_size, out_size)]
+        layers = []
 
-        if self.is_bn:
-            layers.append(bn or nn.BatchNorm1d(out_size))
         if self.is_drop:
             layers.append(nn.Dropout(drop_prob))
+
+        layers.append(nn.Linear(in_features, out_features))
+
+        if self.is_norm:
+            layers.append(bn or nn.BatchNorm1d(out_features))
+
         if self.is_act:
             layers.append(act or nn.Sigmoid())
 
         self.seq = nn.Sequential(*layers)
+        self.out_features = out_features
 
-    def forward(self, x):
-        return self.seq(x)
+
+class Cache(nn.Module):
+    def __init__(self, idx=None, replace=False):
+        super().__init__()
+        self.idx = idx
+        self.replace = replace
+
+    def forward(self, x, features: list):
+        if self.idx is not None:
+            if self.replace:
+                features[self.idx] = x
+            else:
+                features.insert(self.idx, x)
+        else:
+            features.append(x)
+        return x, features
+
+
+class Concat(nn.Module):
+    def __init__(self, idx, replace=False):
+        super().__init__()
+        self.idx = idx
+        self.replace = replace
+
+    def forward(self, x, features):
+        x = torch.cat([x, features[self.idx]], 1)
+
+        if self.replace:
+            features[self.idx] = x
+
+        return x, features
+
+
+class Add(nn.Module):
+    def __init__(self, idx, replace=False):
+        super().__init__()
+        self.idx = idx
+        self.replace = replace
+
+    def forward(self, x, features):
+        x += features[self.idx]
+
+        if self.replace:
+            features[self.idx] = x
+
+        return x, features

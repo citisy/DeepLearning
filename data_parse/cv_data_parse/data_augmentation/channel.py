@@ -15,6 +15,18 @@ class HWC2CHW:
         return image
 
 
+class CHW2HWC:
+    def __call__(self, image, **kwargs):
+        return dict(
+            image=self.apply_image(image)
+        )
+
+    def apply_image(self, image):
+        image = np.transpose(image, (1, 2, 0))
+        image = np.ascontiguousarray(image)
+        return image
+
+
 class BGR2RGB:
     def __call__(self, image, **kwargs):
         return dict(

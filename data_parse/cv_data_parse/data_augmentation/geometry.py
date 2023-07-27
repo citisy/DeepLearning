@@ -35,7 +35,7 @@ class HFlip:
         )
 
     def apply_image(self, image):
-        return cv2.flip(image, 1)
+        return cv2.flip(image, 1, dst=image)
 
     def apply_bboxes(self, bboxes, w):
         if bboxes is not None:
@@ -67,7 +67,7 @@ class VFlip:
         )
 
     def apply_image(self, image):
-        return cv2.flip(image, 0)
+        return cv2.flip(image, 0, dst=image)
 
     def apply_bboxes(self, bboxes, h):
         if bboxes is not None:

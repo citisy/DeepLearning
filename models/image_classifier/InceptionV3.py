@@ -1,6 +1,6 @@
 import torch
 from torch import nn
-from ..layers import Conv, Linear, ConvInModule, OutModule
+from ..layers import Conv, Linear, ConvInModule, OutModule, BaseImgClsModel
 
 # from torchvision.models.inception.inception_v3
 # (1*1 out_ch, 3*3 in_ch, 3*3 out_ch, 5*5 in_ch, 5*5 out_ch, pool out_ch)
@@ -20,48 +20,28 @@ InceptionV3_config = (
 )
 
 
-class InceptionV3(nn.Module):
+class InceptionV3(BaseImgClsModel):
     """[Rethinking the Inception Architecture for Computer Vision](https://arxiv.org/pdf/1512.00567.pdf)
     See Also `torchvision.models.inception.inception_v3`
     """
 
     def __init__(
-            self, in_ch=None, input_size=None, output_size=None,
-            in_module=None, out_module=None,
-            backbone_config=InceptionV3_config, drop_prob=0.4
+            self, in_ch=None, input_size=None, out_features=None,
+            backbone_config=InceptionV3_config, **kwargs
     ):
-        super().__init__()
-
-        if in_module is None:
-            in_module = ConvInModule(in_ch, input_size, out_ch=3, output_size=299)
-
-        if out_module is None:
-            out_module = OutModule(output_size, input_size=1000)
-
         assert len(backbone_config) == 10, f'Must have 9 Inception blocks, but have {len(backbone_config)} Inception blocks now'
-
-        self.input = in_module
-        self.backbone = Backbone(backbone_config=backbone_config)
-        self.flatten = nn.Sequential(
-            nn.AdaptiveAvgPool2d(1),
-            nn.Flatten()
-        )
-        self.fcn = nn.Sequential(
-            nn.Dropout(drop_prob),
-            Linear(self.backbone.out_channels, 1000),
-            out_module,
+        backbone = Backbone(backbone_config=backbone_config)
+        super().__init__(
+            in_ch=in_ch,
+            input_size=input_size,
+            out_features=out_features,
+            backbone=backbone,
+            backbone_input_size=299,
+            **kwargs
         )
 
-    def forward(self, x):
-        x = self.input(x)
-        x = self.backbone(x)
-        x = self.flatten(x)
-        x = self.fcn(x)
 
-        return x
-
-
-class Backbone(nn.Module):
+class Backbone(nn.Sequential):
     def __init__(self, backbone_config=InceptionV3_config):
         super().__init__()
 
@@ -95,9 +75,6 @@ class Backbone(nn.Module):
 
         self.conv_seq = nn.Sequential(*layers)
         self.out_channels = in_ch
-
-    def forward(self, x):
-        return self.conv_seq(x)
 
 
 class InceptionB(nn.Module):

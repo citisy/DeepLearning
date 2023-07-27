@@ -1,6 +1,6 @@
 import torch
 from torch import nn
-from ..layers import Conv, Linear, ConvInModule, OutModule
+from ..layers import Conv, Linear, ConvInModule, OutModule, BaseImgClsModel
 
 # (sq_ch, ex1_ch, ex3_ch)
 default_config = (
@@ -10,44 +10,27 @@ default_config = (
 )
 
 
-class SqueezeNet(nn.Module):
+class Model(BaseImgClsModel):
     """[Squeezenet: Alexnet-level accuracy with 50x fewer parameters and< 0.5 mb model size](https://arxiv.org/pdf/1602.07360.pdf)
     See Also `torchvision.models.squeezenet`
     """
 
     def __init__(
             self,
-            in_ch=None, input_size=None, output_size=None,
-            in_module=None, out_module=None,
-            backbone_config=default_config):
-        super().__init__()
-        if in_module is None:
-            in_module = ConvInModule(in_ch, input_size, out_ch=3, output_size=224)
+            in_ch=None, input_size=None, out_features=None,
+            backbone_config=default_config, **kwargs):
+        backbone = Backbone(backbone_config=backbone_config)
 
-        if out_module is None:
-            out_module = OutModule(output_size, input_size=1000)
-
-        self.input = in_module
-        self.backbone = Backbone(backbone_config=backbone_config)
-        self.flatten = nn.Sequential(
-            nn.AdaptiveAvgPool2d(1),
-            nn.Flatten()
-        )
-        self.fcn = nn.Sequential(
-            Linear(1 * 1 * self.backbone.out_channels, 1000),
-            out_module
+        super().__init__(
+            in_ch=in_ch,
+            input_size=input_size,
+            out_features=out_features,
+            backbone=backbone,
+            **kwargs
         )
 
-    def forward(self, x):
-        x = self.input(x)
-        x = self.backbone(x)
-        x = self.flatten(x)
-        x = self.fcn(x)
 
-        return x
-
-
-class Backbone(nn.Module):
+class Backbone(nn.Sequential):
     def __init__(self, backbone_config=default_config):
         super().__init__()
 
@@ -68,9 +51,6 @@ class Backbone(nn.Module):
         self.conv_seq = nn.Sequential(*layers)
         self.out_channels = 1000
 
-    def forward(self, x):
-        return self.conv_seq(x)
-
 
 class Fire(nn.Module):
     def __init__(self, in_ch, *out_ches):
@@ -86,6 +66,3 @@ class Fire(nn.Module):
         x3 = self.ex3(x)
         x = torch.cat([x1, x3], dim=1)
         return x
-
-
-Model = SqueezeNet

@@ -310,3 +310,11 @@ class TextVisualize:
         s += text[tmp:]
 
         return s
+
+    @staticmethod
+    def human_readable_str(num: int):
+        for suffix in ['b', 'K', 'M', 'G', 'T']:
+            if num > 1024:
+                num /= 1024.
+            else:
+                return f'{num:.2f} {suffix}'

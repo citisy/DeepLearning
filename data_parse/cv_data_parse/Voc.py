@@ -5,6 +5,10 @@ import xml.etree.ElementTree as ET
 import numpy as np
 from .base import DataRegister, DataLoader, DataSaver, get_image
 
+DET = 1
+SEG_CLS = 2
+SEG_OBJ = 3
+
 
 class Loader(DataLoader):
     """http://host.robots.ox.ac.uk/pascal/VOC/
@@ -20,9 +24,9 @@ class Loader(DataLoader):
         │   │     ├── *val.txt        # 5823 items
         │   │     └── *trainval.txt   # 11540 items
         │   └── Segmentation          # segmentation sets
-        │         ├── *train.txt      # 1464 items, per image file stem per line
-        │         ├── *val.txt        # 1449 items
-        │         └── *trainval.txt   # 2913 items
+        │         ├── train.txt       # 1464 items, per image file stem per line
+        │         ├── val.txt         # 1449 items
+        │         └── trainval.txt    # 2913 items
         ├── JPEGImages                # original images, 17125 items
         ├── SegmentationClass         # images after segmentation base on class
         └── SegmentationObject        # images after segmentation base on object
@@ -35,16 +39,9 @@ class Loader(DataLoader):
 
             loader = Loader('data/VOC2012')
             data = loader(set_type=DataRegister.FULL, generator=True, image_type=DataRegister.ARRAY)
-            r = next(data[0])
 
-            # visual
-            from utils.visualize import ImageVisualize
-
-            image = r['image']
-            bboxes = r['bboxes']
-            classes = r['classes']
-            classes = [loader.classes[_] for _ in classes]
-            image = ImageVisualize.label_box(image, bboxes, classes, line_thickness=2)
+            # visual train dataset
+            DataVisualizer('data/VOC2012/visuals', verbose=False)(data[0])
 
     """
     default_set_type = [DataRegister.TRAIN_VAL]
@@ -53,14 +50,23 @@ class Loader(DataLoader):
                "cow", "diningtable", "dog", "horse", "motorbike", "person", "pottedplant",
                "sheep", "sofa", "train", "tvmonitor"]
 
-    def _call(self, set_type, image_type, task=None, **kwargs):
+    image_suffix = 'jpg'
+
+    def _call(self, set_type, image_type, set_task=DET, task=None, **kwargs):
         """See Also `cv_data_parse.base.DataLoader._call`
 
         Args:
             set_type:
             image_type:
-            task(None or str): task from ImageSets dir
+
+            set_task(int): 1,2,3
+                1, data from JPEGImages for object detection task
+                2, data from JPEGImages and SegmentationClass for image segmentation task
+                3, data from JPEGImages and SegmentationObject for image segmentation task
+
+            task(None or str): task to output
                 None, use Annotations
+                str, task from ImageSets.Main, see also `self.classes`
 
         Returns:
             a dict had keys of
@@ -71,22 +77,48 @@ class Loader(DataLoader):
                 classes: list
                 difficult: bool
         """
-        if task is None:
-            return self.load_total(image_type, **kwargs)
+        if set_task == DET:
+            if task is None:
+                return self.load_det_total(image_type, **kwargs)
+            else:
+                return self.load_det_task(set_type, image_type, task, **kwargs)
         else:
-            return self.load_task(set_type, image_type, task, **kwargs)
+            if set_task == SEG_CLS:
+                return self.load_seg_task(set_type, image_type, task='SegmentationClass')
+            elif set_task == SEG_OBJ:
+                return self.load_seg_task(set_type, image_type, task='SegmentationObject')
 
-    def load_total(self, image_type, **kwargs):
+    def load_det_total(self, image_type, **kwargs):
         for xml_file in Path(f'{self.data_dir}/Annotations').glob('*.xml'):
-            yield self.parse_xml(xml_file.stem, image_type)
+            ret = self.parse_xml(xml_file.stem, image_type)
+            ret = self.convert_func(ret)
+            if self.filter_func(ret):
+                yield ret
 
-    def load_task(self, set_type, image_type, task='', **kwargs):
+    def load_det_task(self, set_type, image_type, task='', **kwargs):
         if task:
             task += '_'
 
         with open(f'{self.data_dir}/ImageSets/Main/{task}{set_type.value}.txt', 'r', encoding='utf8') as f:
             for _id in f.read().strip().split('\n'):
-                yield self.parse_xml(_id, image_type)
+                ret = self.parse_xml(_id, image_type)
+                ret = self.convert_func(ret)
+                if self.filter_func(ret):
+                    yield ret
+
+    def load_seg_task(self, set_type, image_type, task='SegmentationClass', **kwargs):
+        with open(f'{self.data_dir}/ImageSets/Segmentation/{set_type.value}.txt', 'r', encoding='utf8') as f:
+            for _id in f.read().strip().split('\n'):
+                ret = self.parse_xml(_id, image_type)
+
+                pix_image_path = os.path.abspath(f'{self.data_dir}/{task}/{_id}.png')
+                pix_image = get_image(pix_image_path, image_type)
+
+                ret['pix_image'] = pix_image
+
+                ret = self.convert_func(ret)
+                if self.filter_func(ret):
+                    yield ret
 
     def parse_xml(self, _id, image_type):
         xml_file = Path(f'{self.data_dir}/Annotations/{_id}.xml')

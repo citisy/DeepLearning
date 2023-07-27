@@ -1,6 +1,6 @@
 import torch
 from torch import nn
-from ..layers import Conv
+from ..layers import Conv, Cache
 
 # in_ch, (n_conv per C3 block,), (cache_block_idx, )
 darknet_config = (64, (3, 6, 9, 3), (1, 2))
@@ -99,15 +99,3 @@ class SPPF(nn.Module):
         y2 = self.m(y1)
         return self.cv2(torch.cat((x, y1, y2, self.m(y2)), 1))
 
-
-class Cache(nn.Module):
-    def __init__(self, idx=None):
-        super().__init__()
-        self.idx = idx
-
-    def forward(self, x, features):
-        if self.idx is not None:
-            features[self.idx] = x
-        else:
-            features.append(x)
-        return x, features

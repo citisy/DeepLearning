@@ -1,5 +1,5 @@
 from torch import nn
-from ..layers import Conv, Linear, ConvInModule, OutModule
+from ..layers import Conv, Linear, ConvInModule, OutModule, BaseImgClsModel
 
 # refer to table 1
 # (n_conv, out_ch)
@@ -9,44 +9,37 @@ VGGD_config = VGG16_config = ((2, 64), (2, 128), (3, 256), (3, 512), (3, 512))
 VGGE_config = VGG19_config = ((2, 64), (2, 128), (4, 256), (4, 512), (4, 512))
 
 
-class VGG(nn.Module):
+class Model(BaseImgClsModel):
     """[Very Deep Convolutional Networks for Large-Scale Image Recognition](https://arxiv.org/pdf/1409.1556.pdf)
     See Also `torchvision.models.vgg`
     """
 
     def __init__(
             self,
-            in_ch=None, input_size=None, output_size=None,
-            in_module=None, out_module=None,
-            backbone_config=VGG11_config, drop_prob=0.5, **conv_config):
-        super().__init__()
-
-        if in_module is None:
-            in_module = ConvInModule(in_ch, input_size, out_ch=3, output_size=224)
-
-        if out_module is None:
-            out_module = OutModule(output_size, input_size=1000)
-
-        self.input = in_module
-        self.backbone = Backbone(backbone_config=backbone_config, **conv_config)
-        self.flatten = nn.Flatten()
-        self.fcn = nn.Sequential(
-            Linear(self.backbone.out_channels * 7 * 7, 4096, is_drop=True, drop_prob=drop_prob),  # 7 = 224/2^5
+            in_ch=None, input_size=None, out_features=None,
+            out_module=None,
+            backbone_config=VGG11_config, drop_prob=0.5, conv_config=dict(), **kwargs
+    ):
+        backbone = Backbone(backbone_config=backbone_config, **conv_config)
+        neck = nn.Flatten()
+        head = nn.Sequential(
+            Linear(backbone.out_channels * 7 * 7, 4096, is_drop=True, drop_prob=drop_prob),  # 7 = 224/2^5
             Linear(4096, 4096, is_drop=True, drop_prob=drop_prob),
             Linear(4096, 1000),
-            out_module
+            out_module or OutModule(out_features, in_features=1000)
         )
 
-    def forward(self, x):
-        x = self.input(x)
-        x = self.backbone(x)
-        x = self.flatten(x)
-        x = self.fcn(x)
+        super().__init__(
+            in_ch=in_ch,
+            input_size=input_size,
+            backbone=backbone,
+            neck=neck,
+            head=head,
+            **kwargs
+        )
 
-        return x
 
-
-class Backbone(nn.Module):
+class Backbone(nn.Sequential):
     def __init__(self, backbone_config=VGG11_config, **conv_config):
         super().__init__()
         layers = []
@@ -59,11 +52,8 @@ class Backbone(nn.Module):
         self.conv_seq = nn.Sequential(*layers)
         self.out_channels = in_ch
 
-    def forward(self, x):
-        return self.conv_seq(x)
 
-
-class VGGBlock(nn.Module):
+class VGGBlock(nn.Sequential):
     def __init__(self, in_ch, out_ch, n_conv, **conv_config):
         super().__init__()
 
@@ -75,11 +65,3 @@ class VGGBlock(nn.Module):
 
         self.conv_block = nn.Sequential(*layers)
         self.pool = nn.MaxPool2d(2)
-
-    def forward(self, x):
-        x = self.conv_block(x)
-        x = self.pool(x)
-        return x
-
-
-Model = VGG

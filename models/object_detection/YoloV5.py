@@ -3,9 +3,9 @@ import torch
 from torch import nn
 from ..loss import FocalLoss
 from utils.torch_utils import initialize_layers
-from ..layers import Conv, ConvInModule
+from ..layers import Conv, ConvInModule, Cache, Concat
 from . import cls_nms, bbox_iou
-from ..image_classifier.CspDarkNet import Backbone, Cache, C3, darknet_config
+from ..image_classifier.CspDarkNet import Backbone, C3, darknet_config
 
 in_module_config = dict(
     in_ch=3,
@@ -194,21 +194,6 @@ class Neck(nn.Module):
                 x = m(x)
 
         return features
-
-
-class Concat(nn.Module):
-    def __init__(self, idx, replace=False):
-        super().__init__()
-        self.idx = idx
-        self.replace = replace
-
-    def forward(self, x, features):
-        x = torch.cat([x, features[self.idx]], 1)
-
-        if self.replace:
-            features[self.idx] = x
-
-        return x, features
 
 
 class Head(nn.Module):

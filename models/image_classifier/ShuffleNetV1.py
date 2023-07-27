@@ -1,6 +1,6 @@
 import torch
 from torch import nn
-from ..layers import Conv, Linear, ConvInModule, OutModule
+from ..layers import Conv, Linear, ConvInModule, OutModule, BaseImgClsModel
 from .MobileNetV1 import DwConv
 
 # (groups, (out_ch, repeat))
@@ -11,45 +11,27 @@ g4_config = (4, ((272, 4), (544, 8), (1088, 4)))
 g8_config = (8, ((384, 4), (768, 8), (1536, 4)))
 
 
-class ShuffleNetV1(nn.Module):
+class Model(BaseImgClsModel):
     """[ShuffleNet: An Extremely Efficient Convolutional Neural Network for Mobile Devices](https://arxiv.org/pdf/1707.01083.pdf)
     See Also `torchvision.models.shufflenetv2`
     """
 
     def __init__(
             self,
-            in_ch=None, input_size=None, output_size=None,
-            in_module=None, out_module=None,
-            backbone_config=g3_config
+            in_ch=None, input_size=None, out_features=None,
+            backbone_config=g3_config, **kwargs
     ):
-        super().__init__()
-        if in_module is None:
-            in_module = ConvInModule(in_ch, input_size, out_ch=3, output_size=224)
-
-        if out_module is None:
-            out_module = OutModule(output_size, input_size=1000)
-
-        self.input = in_module
-        self.backbone = Backbone(backbone_config=backbone_config)
-        self.flatten = nn.Sequential(
-            nn.AdaptiveAvgPool2d(1),
-            nn.Flatten()
-        )
-        self.fcn = nn.Sequential(
-            Linear(1 * 1 * self.backbone.out_channels, 1000),
-            out_module
+        backbone = Backbone(backbone_config=backbone_config)
+        super().__init__(
+            in_ch=in_ch,
+            input_size=input_size,
+            out_features=out_features,
+            backbone=backbone,
+            **kwargs
         )
 
-    def forward(self, x):
-        x = self.input(x)
-        x = self.backbone(x)
-        x = self.flatten(x)
-        x = self.fcn(x)
 
-        return x
-
-
-class Backbone(nn.Module):
+class Backbone(nn.Sequential):
     def __init__(self, backbone_config=g3_config):
         super().__init__()
 
@@ -57,7 +39,7 @@ class Backbone(nn.Module):
 
         groups, config = backbone_config
 
-        layers.append(GConv(3, 24, 3, s=2, g=groups))
+        layers.append(Conv(3, 24, 3, s=2, groups=groups))
         layers.append(nn.MaxPool2d(3, 2))
 
         in_ch = 24
@@ -74,16 +56,6 @@ class Backbone(nn.Module):
         self.conv_seq = nn.Sequential(*layers)
         self.out_channels = in_ch
 
-    def forward(self, x):
-        return self.conv_seq(x)
-
-
-class GConv(Conv):
-    def __init__(self, *args, g=1, **kwargs):
-        conv_kwargs = kwargs.setdefault('conv_kwargs', {})
-        conv_kwargs.update(groups=g)
-        super().__init__(*args, **kwargs)
-
 
 class ShuffleBlock(nn.Module):
     def __init__(self, in_ch, out_ch, s=1, g=1, is_concat=False):
@@ -92,9 +64,9 @@ class ShuffleBlock(nn.Module):
         self.g = g
         mid_ch = out_ch // 4
 
-        self.conv1 = GConv(in_ch, mid_ch, 1, g=g)
+        self.conv1 = Conv(in_ch, mid_ch, 1, groups=g)
         self.conv2 = DwConv(mid_ch, mid_ch, 3, s=s)
-        self.conv3 = GConv(mid_ch, out_ch, 1, g=g)
+        self.conv3 = Conv(mid_ch, out_ch, 1, groups=g)
 
         self.is_concat = is_concat
 
@@ -130,6 +102,3 @@ def shuffle(x, g):
     x = x.view(_, -1, h, w)
 
     return x
-
-
-Model = ShuffleNetV1

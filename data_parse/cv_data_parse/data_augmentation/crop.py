@@ -122,7 +122,7 @@ class Pad:
         return cv2.copyMakeBorder(
             image, t, d, l, r,
             borderType=fill_mode[self.fill_type],
-            value=self.fill
+            value=self.fill,
         )
 
     def apply_bboxes(self, bboxes, t=0, l=0, **kwargs):

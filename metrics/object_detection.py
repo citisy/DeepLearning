@@ -575,6 +575,9 @@ class AP:
         Usage:
             See Also `quick_metric()` or `shortlist_false_sample()`
         """
+        assert len(gt_boxes)
+        assert len(det_boxes)
+
         _results, _ = self.pr.get_pr(gt_boxes, det_boxes, confs, classes, iou_thres=iou_thres)
         return self.ap_thres(_results, confs)
 
@@ -677,7 +680,7 @@ class AP:
         return results
 
 
-def quick_metric(gt_iter_data, det_iter_data, cls_alias=None, is_mAP=True, save_path=None, verbose=True, stdout_method=print):
+def quick_metric(gt_iter_data, det_iter_data, iou_thres=0.5, cls_alias=None, is_mAP=True, save_path=None, verbose=True, stdout_method=print):
     """
 
     Args:
@@ -724,9 +727,9 @@ def quick_metric(gt_iter_data, det_iter_data, cls_alias=None, is_mAP=True, save_
     det_classes = [v['det_classes'] for v in r.values()]
 
     if is_mAP:
-        ret = ap.mAP_thres(gt_boxes, det_boxes, confs, classes=[gt_classes, det_classes])
+        ret = ap.mAP_thres(gt_boxes, det_boxes, confs, classes=[gt_classes, det_classes], iou_thres=iou_thres)
     else:
-        ret = ap.mAP_thres_range(gt_boxes, det_boxes, confs, classes=[gt_classes, det_classes])
+        ret = ap.mAP_thres_range(gt_boxes, det_boxes, confs, classes=[gt_classes, det_classes], thres_range=np.arange(iou_thres, 1, 0.05))
 
     pd.set_option('display.max_columns', None)
     pd.set_option('display.width', None)
@@ -751,7 +754,7 @@ def quick_metric(gt_iter_data, det_iter_data, cls_alias=None, is_mAP=True, save_
     return df
 
 
-def checkout_false_sample(gt_iter_data, det_iter_data, data_dir='checkout_data', image_dir=None, save_res_dir=None, alias=None):
+def checkout_false_sample(gt_iter_data, det_iter_data, iou_thres=0.5, data_dir='checkout_data', image_dir=None, save_res_dir=None, cls_alias=None):
     """
 
     Args:
@@ -759,14 +762,19 @@ def checkout_false_sample(gt_iter_data, det_iter_data, data_dir='checkout_data',
         det_iter_data (Iterable):
         data_dir (str):
         image_dir (str):
+            which dir can get the image, `image_path = f'{image_dir}/{_id}'`
+            if gt_iter_data set the key of image_dir, use the value
+            else, if image_dir is set, use it, else use f'{data_dir}/images'
+
         save_res_dir:
-        alias (list or dict):
+        cls_alias (list or dict):
 
     Usage:
         .. code-block:: python
 
             # use yolov5 type data result to metric
-            from cv_data_parse.YoloV5 import Loader
+            from cv_data_parse.cv_data_parse.YoloV5 import Loader
+
             data_dir = 'your data dir'
             sub_dir = 'model version, e.g. backbone, etc.'
             task = 'strategy version, e.g. dataset, train time, apply params, etc.'
@@ -785,32 +793,35 @@ def checkout_false_sample(gt_iter_data, det_iter_data, data_dir='checkout_data',
     from utils import os_lib, visualize
     from tqdm import tqdm
 
-    r = {}
-    for ret in tqdm(gt_iter_data, desc='load gt data'):
-        r.setdefault(ret['_id'], {})['gt_boxes'] = ret['bboxes']
-        r.setdefault(ret['_id'], {})['gt_classes'] = ret['classes']
-        r.setdefault(ret['_id'], {})['_id'] = ret['_id']
-
-    for ret in tqdm(det_iter_data, desc='load det data'):
-        r.setdefault(ret['_id'], {})['det_boxes'] = ret['bboxes']
-        r.setdefault(ret['_id'], {})['det_classes'] = ret['classes']
-        r.setdefault(ret['_id'], {})['confs'] = ret['confs']
-
-    gt_boxes = [v['gt_boxes'] for v in r.values()]
-    det_boxes = [v['det_boxes'] for v in r.values()]
-    confs = [v['confs'] for v in r.values()]
-    gt_classes = [v['gt_classes'] for v in r.values()]
-    det_classes = [v['det_classes'] for v in r.values()]
-    _ids = [v['_id'] for v in r.values()]
-
-    ret = AP(return_more_info=True).mAP_thres(gt_boxes, det_boxes, confs, classes=[gt_classes, det_classes])
-
-    alias = alias or {k: k for k in ret}
     image_dir = image_dir if image_dir is not None else f'{data_dir}/images'
     save_res_dir = save_res_dir if save_res_dir is not None else f'{data_dir}/visuals/false_samples'
 
+    rets = {}
+    for ret in tqdm(gt_iter_data, desc='load gt data'):
+        dic = rets.setdefault(ret['_id'], {})
+        dic['gt_boxes'] = ret['bboxes']
+        dic['gt_classes'] = ret['classes']
+        dic['image_dir'] = ret['image_dir'] if 'image_dir' in ret else image_dir
+
+    for ret in tqdm(det_iter_data, desc='load det data'):
+        dic = rets[ret['_id']]
+        dic['det_boxes'] = ret['bboxes']
+        dic['det_classes'] = ret['classes']
+        dic['confs'] = ret['confs']
+
+    gt_boxes = [v['gt_boxes'] for v in rets.values()]
+    det_boxes = [v['det_boxes'] for v in rets.values()]
+    confs = [v['confs'] for v in rets.values()]
+    gt_classes = [v['gt_classes'] for v in rets.values()]
+    det_classes = [v['det_classes'] for v in rets.values()]
+    _ids = list(rets.keys())
+
+    ret = AP(return_more_info=True).mAP_thres(gt_boxes, det_boxes, confs, classes=[gt_classes, det_classes], iou_thres=iou_thres)
+
+    cls_alias = cls_alias or {k: k for k in ret}
+
     for cls, r in ret.items():
-        save_dir = f'{save_res_dir}/{alias[cls]}'
+        save_dir = f'{save_res_dir}/{cls_alias[cls]}'
         tp = r['tp']
         det_obj_idx = r['det_obj_idx']
         target_obj_idx = det_obj_idx[~tp]
@@ -826,7 +837,8 @@ def checkout_false_sample(gt_iter_data, det_iter_data, data_dir='checkout_data',
             det_class = det_classes[i]
             det_box = det_boxes[i]
             _id = _ids[i]
-            image = os_lib.loader.load_img(f'{image_dir}/{_id}')
+
+            image = os_lib.loader.load_img(f'{rets[_id]["image_dir"]}/{_id}')
 
             false_obj_idx = np.where(det_class == cls)[0]
             false_obj_idx = false_obj_idx[~_tp]
@@ -839,8 +851,9 @@ def checkout_false_sample(gt_iter_data, det_iter_data, data_dir='checkout_data',
             for _ in false_obj_idx:
                 det_colors[_] = visualize.get_color_array(len(ret) + 1)
 
-            gt_class = [alias[c] for c in gt_class]
-            det_class = [f'{alias[cls]} {c:.6f}' for cls, c in zip(det_class, conf)]
+            if cls_alias:
+                gt_class = [cls_alias[c] for c in gt_class]
+                det_class = [f'{cls_alias[cls]} {c:.6f}' for cls, c in zip(det_class, conf)]
 
             gt_image = visualize.ImageVisualize.label_box(image, gt_box, gt_class, colors=gt_colors)
             det_image = visualize.ImageVisualize.label_box(image, det_box, det_class, colors=det_colors)

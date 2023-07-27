@@ -1,5 +1,5 @@
 from torch import nn
-from ..layers import Conv, Linear, ConvInModule, OutModule
+from ..layers import Conv, Linear, ConvInModule, OutModule, BaseImgClsModel
 
 # (conv_type, out_ch, k, s)
 # 0: conv 1: dw
@@ -12,45 +12,28 @@ default_config = (
 )
 
 
-class MobileNetV1(nn.Module):
+class Model(BaseImgClsModel):
     """[MobileNets: Efficient Convolutional Neural Networks for Mobile Vision Applications](https://arxiv.org/pdf/1704.04861.pdf)
     See Also `torchvision.models.mobilenet`
     """
 
     def __init__(
             self,
-            in_ch=None, input_size=None, output_size=None,
-            in_module=None, out_module=None,
-            backbone_config=default_config, **conv_config
+            in_ch=None, input_size=None, out_features=None,
+            backbone_config=default_config, conv_config=dict(), **kwargs
     ):
-        super().__init__()
-        if in_module is None:
-            in_module = ConvInModule(in_ch, input_size, out_ch=3, output_size=224)
+        backbone = Backbone(backbone_config=backbone_config, **conv_config)
 
-        if out_module is None:
-            out_module = OutModule(output_size, input_size=1000)
-
-        self.input = in_module
-        self.backbone = Backbone(backbone_config=backbone_config, **conv_config)
-        self.flatten = nn.Sequential(
-            nn.AdaptiveAvgPool2d(1),
-            nn.Flatten()
-        )
-        self.fcn = nn.Sequential(
-            Linear(1 * 1 * self.backbone.out_channels, 1000),
-            out_module
+        super().__init__(
+            in_ch=in_ch,
+            input_size=input_size,
+            out_features=out_features,
+            backbone=backbone,
+            **kwargs
         )
 
-    def forward(self, x):
-        x = self.input(x)
-        x = self.backbone(x)
-        x = self.flatten(x)
-        x = self.fcn(x)
 
-        return x
-
-
-class Backbone(nn.Module):
+class Backbone(nn.Sequential):
     def __init__(self, backbone_config=default_config, **conv_config):
         super().__init__()
         layers = []
@@ -69,21 +52,12 @@ class Backbone(nn.Module):
         self.conv_seq = nn.Sequential(*layers)
         self.out_channels = in_ch
 
-    def forward(self, x):
-        return self.conv_seq(x)
 
-
-class DwConv(nn.Module):
-    def __init__(self, in_ch, out_ch, k=3, s=1, act=nn.ReLU6):
+class DwConv(nn.Sequential):
+    def __init__(self, in_ch, out_ch, k=3, s=1, act=None):
         super().__init__()
 
         self.conv_seq = nn.Sequential(
-            Conv(in_ch, in_ch, k, s, conv_kwargs=dict(groups=in_ch), act=act),
-            Conv(in_ch, out_ch, 1, act=act)
+            Conv(in_ch, in_ch, k, s, groups=in_ch, act=act or nn.ReLU6(True)),
+            Conv(in_ch, out_ch, 1, act=act or nn.ReLU6(True))
         )
-
-    def forward(self, x):
-        return self.conv_seq(x)
-
-
-Model = MobileNetV1

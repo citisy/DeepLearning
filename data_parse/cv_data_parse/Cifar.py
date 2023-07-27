@@ -1,6 +1,9 @@
 import pickle
 import numpy as np
 from .base import DataLoader, DataRegister
+from .data_augmentation.channel import CHW2HWC
+
+chw2hwc = CHW2HWC()
 
 
 class Cifar10Loader(DataLoader):
@@ -73,7 +76,7 @@ class Cifar10Loader(DataLoader):
             image = np.reshape(image, [3, 32, 32])
 
             # (c, h, w) -> (h, w, c)
-            image = np.transpose(image, (1, 2, 0))
+            image = chw2hwc.apply_image(image)
 
             yield dict(
                 _id=_id,

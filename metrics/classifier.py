@@ -124,7 +124,7 @@ class PR:
             acc_op = r.pop('acc_op')
 
         ret = dict(
-            ppv=acc_tp / acc_op,
+            ppv=acc_tp / (acc_op + 1e-6),
             acc_tp=acc_tp,
             acc_op=acc_op
         )

@@ -15,7 +15,7 @@ class ObjectDetectModelExample(nn.Module):
             in_module = ConvInModule(in_ch, input_size, out_ch=3, output_size=224)
 
         if out_module is None:
-            out_module = OutModule(output_size, input_size=1000)
+            out_module = OutModule(output_size, in_features=1000)
 
         self.input = nn.Module()
         self.backbone = nn.Module()

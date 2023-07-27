@@ -1,8 +1,8 @@
 import torch
 from torch import nn
+import torch.nn.functional as F
 from ..layers import Conv
-from .DenseNet import DenseNet, Backbone
-from .ShuffleNetV1 import GConv
+from .DenseNet import Model as DenseNet, Backbone, Dense121_config
 
 # (n_conv, growth_rate)
 config = ((4, 8), (6, 16), (8, 32), (10, 64), (8, 128))
@@ -10,20 +10,30 @@ config = ((4, 8), (6, 16), (8, 32), (10, 64), (8, 128))
 progress = 0
 
 
-class CondenseNet(DenseNet):
+class Model(DenseNet):
     """[CondenseNet: An Efficient DenseNet using Learned Group Convolutions](https://arxiv.org/pdf/1711.09224.pdf)"""
 
     def __init__(
             self,
-            in_ch=None, input_size=None, output_size=None,
-            in_module=None, out_module=None,
-            groups=4, backbone_config=config, lgc_config=dict()
+            in_ch=None, input_size=None, out_features=None,
+            groups=4, backbone_config=config, lgc_config=dict(), group_lasso_lambda=0.1, **kwargs
     ):
         block = lambda in_ch, growth_rate, n_conv: ConDenseBlock(in_ch, growth_rate, n_conv, g=groups, lgc_config=lgc_config)
-        backbone = lambda backbone_config: Backbone(backbone_config, block=block)
+        backbone = Backbone(backbone_config, block=block)
+        self.group_lasso_lambda = group_lasso_lambda
 
-        super().__init__(in_ch, input_size, output_size, in_module, out_module,
-                         backbone=backbone, backbone_config=backbone_config,)
+        super().__init__(in_ch, input_size, out_features,
+                         backbone=backbone, backbone_config=backbone_config, **kwargs)
+
+    def loss(self, pred_label, true_label):
+        loss = F.cross_entropy(pred_label, true_label)
+        lasso_loss = 0
+        for m in self.modules():
+            if isinstance(m, LGConv):
+                lasso_loss = lasso_loss + m.loss()
+
+        loss += self.group_lasso_lambda * lasso_loss
+        return loss
 
 
 class ConDenseBlock(nn.Module):
@@ -38,11 +48,12 @@ class ConDenseBlock(nn.Module):
         for _ in range(n_conv):
             layers.append(nn.Sequential(
                 LGConv(in_ch, 4 * growth_rate, k=1, g=g, **lgc_config),
-                GConv(4 * growth_rate, growth_rate, k=3, g=g)
+                Conv(4 * growth_rate, growth_rate, k=3, groups=g)
             ))
             in_ch += growth_rate
 
         self.layers = nn.Sequential(*layers)
+        self.out_channels = in_ch
 
     def forward(self, x):
         for conv in self.layers:
@@ -53,9 +64,9 @@ class ConDenseBlock(nn.Module):
 
 
 class LGConv(nn.Module):
-    def __init__(self, in_ch, out_ch, k, s=1, p=None, g=1, act=nn.ReLU,
+    def __init__(self, in_ch, out_ch, k, s=1, p=None, g=1, act=None,
                  condense_factor=4, drop_prob=0.5, max_epochs=100,
-                 is_norm=True, conv_kwargs=dict(),
+                 is_norm=True, **conv_kwargs,
                  ):
         super().__init__()
         self.condense_factor = condense_factor
@@ -64,15 +75,16 @@ class LGConv(nn.Module):
         self.max_epochs = max_epochs
 
         self.conv = Conv(
-            in_ch, out_ch, k, s=s, p=p, act=act,
+            in_ch, out_ch, k, s=s, p=p, act=act or nn.ReLU(),
             is_norm=is_norm,
-            conv_kwargs=conv_kwargs
+            **conv_kwargs
         )
         self.norm = nn.BatchNorm2d(out_ch)
         self.act = nn.ReLU(True)
         self.drop = nn.Dropout(drop_prob)
 
-        self.register_buffer('mask', torch.ones(self.conv.conv.weight.size()))
+        self.register_buffer('mask', torch.ones(self.conv.seq[0].weight.size()))
+
         self.c = 0
         self.filter_num = in_ch // condense_factor
 
@@ -85,7 +97,7 @@ class LGConv(nn.Module):
             self.stage = stage
             self.mask_weight()
 
-        self.conv.conv.weight.data *= self.mask
+        self.conv.seq[0].weight.data *= self.mask
         x = self.conv(x)
         x = self.norm(x)
         x = self.act(x)
@@ -94,7 +106,7 @@ class LGConv(nn.Module):
         return x
 
     def mask_weight(self):
-        weight = self.conv.conv.weight.data
+        weight = self.conv.seq[0].weight.data
         weight *= self.mask
         weight = weight.abs()
         weight = shuffle_weight(weight, self.g)
@@ -116,12 +128,11 @@ class LGConv(nn.Module):
 
         self.c += self.filter_num
 
-    @property
-    def lasso_loss(self):
+    def loss(self):
         if self.stage >= self.g - 1:
             return 0
 
-        weight = self.conv.conv.weight.data * self.mask
+        weight = self.conv.seq[0].weight.data * self.mask
 
         o, i, k1, k2 = weight.size()
 
@@ -142,6 +153,3 @@ def shuffle_weight(weight, g):
     weight = weight.view(o, i, k1, k2)
 
     return weight
-
-
-Model = CondenseNet

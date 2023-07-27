@@ -5,7 +5,7 @@ import torch
 import numpy as np
 from pathlib import Path
 from torch.utils.data import Dataset, DataLoader
-from utils import os_lib, converter, configs
+from utils import os_lib, converter, configs, visualize
 from utils.torch_utils import EarlyStopping, ModuleInfo, Export
 from data_parse.cv_data_parse.data_augmentation import crop, scale, geometry, pixel_perturbation, RandomApply, Apply, channel
 
@@ -35,6 +35,7 @@ class BaseDataset(Dataset):
         self.data = data
         self.augment_func = augment_func
         self.complex_augment_func = complex_augment_func
+        self.loader = os_lib.Loader(verbose=False)
 
     def __getitem__(self, idx):
         if self.complex_augment_func:
@@ -45,7 +46,7 @@ class BaseDataset(Dataset):
         ret = copy.deepcopy(self.data[idx])
         if isinstance(ret['image'], str):
             ret['image_path'] = ret['image']
-            ret['image'] = cv2.imread(ret['image'])
+            ret['image'] = self.loader.load_img(ret['image'])
 
         ret['ori_image'] = ret['image']
         ret['idx'] = idx
@@ -74,17 +75,30 @@ class Process:
         self.dataset_version = dataset_version
         self.model_dir = f'model_data/{self.model_version}'
         os_lib.mk_dir(self.model_dir)
-        self.model_path = f'{self.model_dir}/{self.dataset_version}.pth'
+        self.model_path = f'{self.model_dir}/{self.dataset_version}/weight.pth'
         self.save_result_dir = f'cache_data/{self.dataset_version}'
         self.input_size = input_size
         self.logger = logging.getLogger()
 
-    def model_info(self, depth=None):
+    def model_info(self, depth=None, human_readable=True):
         profile = ModuleInfo.profile_per_layer(self.model, depth=depth)
         s = f'module info: \n{"name":<20}{"module":<40}{"params":>10}{"grads":>10}\n'
 
         for p in profile:
-            s += f'{p[0]:<20}{p[1]:<40}{p[2]["params"]:>10}{p[2]["grads"]:>10}\n'
+            params = p[2]["params"]
+            grads = p[2]["grads"]
+            if human_readable:
+                params = visualize.TextVisualize.human_readable_str(params)
+                grads = visualize.TextVisualize.human_readable_str(grads)
+            s += f'{p[0]:<20}{p[1]:<40}{params:>10}{grads:>10}\n'
+
+        params = sum([p[2]["params"] for p in profile])
+        grads = sum([p[2]["grads"] for p in profile])
+        if human_readable:
+            params = visualize.TextVisualize.human_readable_str(params)
+            grads = visualize.TextVisualize.human_readable_str(grads)
+
+        s += f'{"sum":<20}{"":<40}{params:>10}{grads:>10}\n'
 
         self.logger.info(s)
 
@@ -112,8 +126,7 @@ class Process:
             num_workers=16
         )
         for k, v in r.items():
-            self.logger.info(k)
-            self.logger.info(v)
+            self.logger.info({k: v})
 
     def params_search(self, model, var_params, const_params=dict(), **run_kwargs):
         def cur_run(**params):
@@ -143,14 +156,14 @@ class Process:
 
     def data_augment(self, ret):
         ret.update(Apply([
-            pixel_perturbation.MinMax(),
+            # pixel_perturbation.MinMax(),
             channel.HWC2CHW()
         ])(**ret))
         return ret
 
     def val_data_augment(self, ret):
         ret.update(Apply([
-            pixel_perturbation.MinMax(),
+            # pixel_perturbation.MinMax(),
             channel.HWC2CHW()
         ])(**ret))
         return ret

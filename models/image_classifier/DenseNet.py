@@ -1,6 +1,6 @@
 import torch
 from torch import nn
-from ..layers import Conv, Linear, ConvInModule, OutModule
+from ..layers import Conv, Linear, ConvInModule, OutModule, BaseImgClsModel
 
 # refer to table 1
 # (n_conv, growth_rate)
@@ -10,45 +10,28 @@ Res201_config = ((6, 32), (12, 32), (48, 32), (32, 32))
 Res264_config = ((6, 32), (12, 32), (64, 32), (48, 32))
 
 
-class DenseNet(nn.Module):
+class Model(BaseImgClsModel):
     """[Densely Connected Convolutional Networks](https://arxiv.org/pdf/1608.06993.pdf)
     See Also `torchvision.models.densenet`
     """
 
     def __init__(
             self,
-            in_ch=None, input_size=None, output_size=None,
-            in_module=None, out_module=None, backbone=None,
-            backbone_config=Dense121_config, block=None
+            in_ch=None, input_size=None, out_features=None,
+            backbone=None, backbone_config=Dense121_config, block=None, **kwargs
     ):
-        super().__init__()
-        if in_module is None:
-            in_module = ConvInModule(in_ch, input_size, out_ch=3, output_size=224)
+        backbone = backbone or Backbone(backbone_config=backbone_config, block=block)
 
-        if out_module is None:
-            out_module = OutModule(output_size, input_size=1000)
-
-        self.input = in_module
-        self.backbone = backbone or Backbone(backbone_config=backbone_config)
-        self.flatten = nn.Sequential(
-            nn.AdaptiveAvgPool2d(1),
-            nn.Flatten()
-        )
-        self.fcn = nn.Sequential(
-            Linear(self.backbone.out_channels, 1000),
-            out_module
+        super().__init__(
+            in_ch=in_ch,
+            input_size=input_size,
+            out_features=out_features,
+            backbone=backbone,
+            **kwargs
         )
 
-    def forward(self, x):
-        x = self.input(x)
-        x = self.backbone(x)
-        x = self.flatten(x)
-        x = self.fcn(x)
 
-        return x
-
-
-class Backbone(nn.Module):
+class Backbone(nn.Sequential):
     def __init__(self, backbone_config=Dense121_config, block=None):
         super().__init__()
         block = block or DenseBlock
@@ -73,9 +56,6 @@ class Backbone(nn.Module):
         self.conv_seq = nn.Sequential(*layers)
         self.out_channels = in_ch
 
-    def forward(self, x):
-        return self.conv_seq(x)
-
 
 class DenseBlock(nn.Module):
     def __init__(self, in_ch, growth_rate, n_conv=2):
@@ -94,7 +74,7 @@ class DenseBlock(nn.Module):
             ))
             in_ch += growth_rate
 
-        self.layers = nn.Sequential(*layers)
+        self.layers = nn.ModuleList(layers)
 
     def forward(self, x):
         for conv in self.layers:
@@ -104,7 +84,7 @@ class DenseBlock(nn.Module):
         return x
 
 
-class Transition(nn.Module):
+class Transition(nn.Sequential):
     def __init__(self, in_ch, out_ch):
         super().__init__()
 
@@ -112,9 +92,3 @@ class Transition(nn.Module):
             Conv(in_ch, out_ch, 1),
             nn.AvgPool2d(2, 2)
         )
-
-    def forward(self, x):
-        return self.block(x)
-
-
-Model = DenseNet
