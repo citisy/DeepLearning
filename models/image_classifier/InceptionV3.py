@@ -43,7 +43,6 @@ class InceptionV3(BaseImgClsModel):
 
 class Backbone(nn.Sequential):
     def __init__(self, backbone_config=InceptionV3_config):
-        super().__init__()
 
         layers = [
             Conv(3, 32, 3, s=2, p=0),
@@ -73,8 +72,8 @@ class Backbone(nn.Sequential):
             layers.append(InceptionD(in_ch, *out_ch))
             in_ch = out_ch[0] + out_ch[2] * 2 + out_ch[4] * 2 + out_ch[5]
 
-        self.conv_seq = nn.Sequential(*layers)
         self.out_channels = in_ch
+        super().__init__(*layers)
 
 
 class InceptionB(nn.Module):

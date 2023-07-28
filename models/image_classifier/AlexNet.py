@@ -33,8 +33,7 @@ class Model(BaseImgClsModel):
 
 class Backbone(nn.Sequential):
     def __init__(self, **conv_config):
-        super().__init__()
-        self.conv_seq = nn.Sequential(
+        super().__init__(
             Conv(3, 48 * 2, 11, s=4, p=2, **conv_config),
             nn.MaxPool2d(3, stride=2),
 
@@ -47,5 +46,4 @@ class Backbone(nn.Sequential):
             Conv(192 * 2, 128 * 2, 3, **conv_config),
             nn.MaxPool2d(3, stride=2),
         )
-
         self.out_channels = 128 * 2

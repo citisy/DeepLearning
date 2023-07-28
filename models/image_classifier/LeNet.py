@@ -33,9 +33,7 @@ class Model(BaseImgClsModel):
 
 class Backbone(nn.Sequential):
     def __init__(self):
-        super().__init__()
-
-        self.conv_seq = nn.Sequential(
+        super().__init__(
             Conv(3, 6, 1, is_norm=False),
             Conv(6, 6, 3, s=2, is_norm=False),
             Conv(6, 16, 5, p=0, is_norm=False),

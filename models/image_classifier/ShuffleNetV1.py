@@ -33,8 +33,6 @@ class Model(BaseImgClsModel):
 
 class Backbone(nn.Sequential):
     def __init__(self, backbone_config=g3_config):
-        super().__init__()
-
         layers = []
 
         groups, config = backbone_config
@@ -53,8 +51,8 @@ class Backbone(nn.Sequential):
 
                 in_ch = out_ch
 
-        self.conv_seq = nn.Sequential(*layers)
         self.out_channels = in_ch
+        super().__init__(*layers)
 
 
 class ShuffleBlock(nn.Module):

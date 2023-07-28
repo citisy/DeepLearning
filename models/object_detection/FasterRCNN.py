@@ -56,7 +56,7 @@ class Model(nn.Module):
         self.score_thres = score_thres
         self.nms_thres = nms_thres
 
-        self.input = in_module(**in_module_config) if in_module else ConvInModule(**in_module_config)
+        self.input = in_module(**in_module_config) if in_module is not None else ConvInModule(**in_module_config)
 
         if backbone is None:
             # note that, if use `torch.cuda.amp.autocast(True)`, it would become slower
@@ -67,8 +67,8 @@ class Model(nn.Module):
         else:
             self.backbone = backbone
 
-        self.neck = neck(**neck_config) if neck else RPN(self.backbone.out_channels, **neck_config)
-        self.head = head(**head_config) if head else RoIHead(self.backbone.out_channels, n_classes, **roi_config)
+        self.neck = neck(**neck_config) if neck is not None else RPN(self.backbone.out_channels, **neck_config)
+        self.head = head(**head_config) if head is not None else RoIHead(self.backbone.out_channels, n_classes, **roi_config)
 
         initialize_layers(self)
 

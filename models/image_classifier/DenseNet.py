@@ -33,7 +33,6 @@ class Model(BaseImgClsModel):
 
 class Backbone(nn.Sequential):
     def __init__(self, backbone_config=Dense121_config, block=None):
-        super().__init__()
         block = block or DenseBlock
 
         layers = [
@@ -53,8 +52,8 @@ class Backbone(nn.Sequential):
                 layers.append(Transition(in_ch, out_ch))
                 in_ch = out_ch
 
-        self.conv_seq = nn.Sequential(*layers)
         self.out_channels = in_ch
+        super().__init__(*layers)
 
 
 class DenseBlock(nn.Module):
@@ -86,9 +85,7 @@ class DenseBlock(nn.Module):
 
 class Transition(nn.Sequential):
     def __init__(self, in_ch, out_ch):
-        super().__init__()
-
-        self.block = nn.Sequential(
+        super().__init__(
             Conv(in_ch, out_ch, 1),
             nn.AvgPool2d(2, 2)
         )

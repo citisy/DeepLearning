@@ -35,7 +35,6 @@ class Model(BaseImgClsModel):
 
 class Backbone(nn.Sequential):
     def __init__(self, backbone_config=default_config, **conv_config):
-        super().__init__()
         layers = []
 
         in_ch = 3
@@ -49,15 +48,13 @@ class Backbone(nn.Sequential):
                 raise TypeError(f'Dont support {conv_type = }')
             in_ch = out_ch
 
-        self.conv_seq = nn.Sequential(*layers)
         self.out_channels = in_ch
+        super().__init__(*layers)
 
 
 class DwConv(nn.Sequential):
     def __init__(self, in_ch, out_ch, k=3, s=1, act=None):
-        super().__init__()
-
-        self.conv_seq = nn.Sequential(
+        super().__init__(
             Conv(in_ch, in_ch, k, s, groups=in_ch, act=act or nn.ReLU6(True)),
             Conv(in_ch, out_ch, 1, act=act or nn.ReLU6(True))
         )

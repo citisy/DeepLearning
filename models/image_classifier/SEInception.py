@@ -23,7 +23,7 @@ class Backbone(_Backbone):
 
         # 'Sequential' object has no attribute 'insert' where torch.version < 1.12.x
         j = 1
-        for i, module in list(self.conv_seq._modules.items()):
+        for i, module in list(self.conv_seq.named_children()):
             if isinstance(module, InceptionA):
                 self.conv_seq.insert(int(i) + j, SEBlock(module.out_ch))
                 j += 1

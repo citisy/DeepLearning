@@ -31,7 +31,6 @@ class Model(BaseImgClsModel):
 
 class Backbone(nn.Sequential):
     def __init__(self, backbone_config=L24M2_config):
-        super().__init__()
 
         layers = []
 
@@ -49,8 +48,8 @@ class Backbone(nn.Sequential):
 
             out_ch *= 2
 
-        self.conv_seq = nn.Sequential(*layers)
         self.out_channels = in_ch
+        super().__init__(*layers)
 
 
 class IGCBlock(nn.Module):

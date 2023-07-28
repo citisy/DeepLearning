@@ -32,8 +32,6 @@ class Model(BaseImgClsModel):
 
 class Backbone(nn.Sequential):
     def __init__(self, backbone_config=default_config):
-        super().__init__()
-
         layers = [
             Conv(3, 96, 7, s=2),
         ]
@@ -48,8 +46,8 @@ class Backbone(nn.Sequential):
 
         layers.append(Conv(in_ch, 1000, 1))
 
-        self.conv_seq = nn.Sequential(*layers)
         self.out_channels = 1000
+        super().__init__(*layers)
 
 
 class Fire(nn.Module):

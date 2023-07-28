@@ -33,7 +33,6 @@ class Model(BaseImgClsModel):
 
 class Backbone(nn.Sequential):
     def __init__(self, backbone_config=Res18_config, add_block: nn.Module = None, **block_config):
-        super().__init__()
 
         layers = [
             Conv(3, 64, 7, s=2),
@@ -51,8 +50,8 @@ class Backbone(nn.Sequential):
 
                 in_ch = out_ch
 
-        self.conv_seq = nn.Sequential(*layers)
         self.out_channels = in_ch
+        super().__init__(*layers)
 
 
 class ResBlock(nn.Module):

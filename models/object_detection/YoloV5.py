@@ -35,13 +35,13 @@ class Model(nn.Module):
             conf_thres=0.001, nms_thres=0.6, max_det=300
     ):
         super().__init__()
-        self.input = in_module(**in_module_config) if in_module else ConvInModule(**in_module_config)
+        self.input = in_module(**in_module_config) if in_module is not None else ConvInModule(**in_module_config)
         if backbone is None:
             self.backbone = Backbone(in_ch=self.input.out_channels, backbone_config=backbone_config)
         else:
             self.backbone = backbone(**backbone_config)
-        self.neck = neck(**neck_config) if neck else Neck(self.backbone.out_channels)
-        self.head = head(**head_config) if head else Head(n_classes, self.neck.out_channels, **head_config)
+        self.neck = neck(**neck_config) if neck is not None else Neck(self.backbone.out_channels)
+        self.head = head(**head_config) if head is not None else Head(n_classes, self.neck.out_channels, **head_config)
 
         self.conf_thres = conf_thres
         self.nms_thres = nms_thres

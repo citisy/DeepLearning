@@ -71,8 +71,6 @@ class SimpleInModule(nn.Sequential):
 
 class ConvInModule(nn.Sequential):
     def __init__(self, in_ch=3, input_size=224, out_ch=None, output_size=None):
-        super().__init__()
-
         out_ch = out_ch or in_ch
         output_size = output_size or input_size
 
@@ -85,14 +83,17 @@ class ConvInModule(nn.Sequential):
 
         # in_ch -> min_in_ch
         # input_size -> min_input_size
-        self.layer = Conv(in_ch, out_ch, (input_size - output_size) + 1, p=0, is_norm=False)
+        super().__init__(
+            Conv(in_ch, out_ch, (input_size - output_size) + 1, p=0, is_norm=False)
+        )
 
 
 class OutModule(nn.Sequential):
     def __init__(self, out_features, in_features=1000):
-        super().__init__()
         assert out_features <= in_features, f'output features must not be greater than {in_features}'
-        self.layer = nn.Linear(in_features, out_features)
+        super().__init__(
+            nn.Linear(in_features, out_features)
+        )
 
 
 class Conv(nn.Sequential):
@@ -113,7 +114,6 @@ class Conv(nn.Sequential):
                 e.g. 'cna' gives conv - norm - act
 
         """
-        super().__init__()
         self.is_act = is_act
         self.is_norm = is_norm
         self.in_channels = in_ch
@@ -132,7 +132,7 @@ class Conv(nn.Sequential):
             elif m == 'a' and is_act:
                 layers.append(act or nn.ReLU(True))
 
-        self.seq = nn.Sequential(*layers)
+        super().__init__(*layers)
 
 
 class ConvT(nn.Sequential):
@@ -153,7 +153,6 @@ class ConvT(nn.Sequential):
                 e.g. 'cna' gives conv - norm - act
 
         """
-        super().__init__()
         self.is_act = is_act
         self.is_norm = is_norm
         self.in_channels = in_ch
@@ -172,13 +171,12 @@ class ConvT(nn.Sequential):
             elif m == 'a' and is_act:
                 layers.append(act or nn.ReLU(True))
 
-        self.seq = nn.Sequential(*layers)
+        super().__init__(*layers)
 
 
 class Linear(nn.Sequential):
     def __init__(self, in_features, out_features,
                  is_act=True, act=None, is_norm=True, bn=None, is_drop=False, drop_prob=0.7):
-        super().__init__()
         self.is_act = is_act
         self.is_norm = is_norm
         self.is_drop = is_drop
@@ -196,8 +194,8 @@ class Linear(nn.Sequential):
         if self.is_act:
             layers.append(act or nn.Sigmoid())
 
-        self.seq = nn.Sequential(*layers)
         self.out_features = out_features
+        super().__init__(*layers)
 
 
 class Cache(nn.Module):
