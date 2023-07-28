@@ -5,10 +5,14 @@ from typing import List
 from .excluded.cmap import cmap, terminal_cmap
 
 cmap_list = list(cmap.keys())
-get_color_array = lambda idx: cmap[cmap_list[idx]]['array']
-
 POLYGON = 1
 RECTANGLE = 2
+
+
+def get_color_array(idx):
+    color_array = list(cmap[cmap_list[idx]]['array'])
+    color_array[0], color_array[2] = color_array[2], color_array[0]     # rgb to bgr
+    return tuple(color_array)
 
 
 class ImageVisualize:
