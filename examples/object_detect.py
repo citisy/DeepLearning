@@ -250,7 +250,7 @@ class OdProcess(Process):
 
     def metric(self, dataset, batch_size=128, **kwargs):
         gt_rets, det_rets = self.predict(dataset, batch_size, **kwargs)
-        df = object_detection.quick_metric(gt_rets, det_rets, save_path=f'{self.model_dir}/{self.dataset_version}/result.csv', verbose=False)
+        df = object_detection.easy_metric.quick_metric(gt_rets, det_rets, save_path=f'{self.model_dir}/{self.dataset_version}/result.csv', verbose=False)
 
         result = dict(
             per_class_result=df,

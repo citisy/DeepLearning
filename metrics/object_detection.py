@@ -1,6 +1,7 @@
 import time
 import numpy as np
 from typing import List, Iterable, Iterator
+from tqdm import tqdm
 
 
 class Area:
@@ -705,193 +706,300 @@ class AP:
         return results
 
 
-def quick_metric(gt_iter_data, det_iter_data, iou_thres=0.5, cls_alias=None, is_mAP=True, save_path=None, verbose=True, stdout_method=print):
-    """
+class EasyMetric:
+    def __init__(self, iou_thres=0.5, cls_alias=None, verbose=True, stdout_method=print, **ap_kwargs):
+        self.iou_thres = iou_thres
+        self.verbose = verbose
+        self.stdout_method = stdout_method
+        self.ap = AP(**ap_kwargs)
 
-    Args:
-        gt_iter_data (Iterable):
-        det_iter_data (Iterable):
-        is_mAP (bool):
-        save_path (str):
-        verbose:
-        stdout_method:
+        if isinstance(cls_alias, list):
+            cls_alias = {i: c for i, c in enumerate(cls_alias)}
 
-    Usage:
-        .. code-block:: python
+        self.cls_alias = cls_alias
 
-            # use yolov5 type data result to metric
-            from cv_data_parse.YoloV5 import Loader
-            data_dir = 'your data dir'
-            sub_dir = 'model version, e.g. backbone, etc.'
-            task = 'strategy version, e.g. dataset, train datetime, apply params, etc.'
+    def get_rets(self, gt_iter_data, det_iter_data, image_dir=None):
+        rets = {}
+        for ret in tqdm(gt_iter_data, desc='load gt data'):
+            dic = rets.setdefault(ret['_id'], {})
+            dic['gt_boxes'] = ret['bboxes']
+            dic['gt_classes'] = ret['classes']
+            dic['image_dir'] = ret['image_dir'] if 'image_dir' in ret else image_dir
+            if 'confs' in ret:
+                dic['gt_confs'] = ret['confs']
 
-            loader = Loader(data_dir)
-            gt_iter_data = loader.load_full_labels(sub_dir='true_abs_xyxy')
-            det_iter_data = loader.load_full_labels(sub_dir=sub_dir, task=task)
+        for ret in tqdm(det_iter_data, desc='load det data'):
+            dic = rets[ret['_id']]
+            dic['det_boxes'] = ret['bboxes']
+            dic['det_classes'] = ret['classes']
+            dic['confs'] = ret['confs']
 
-            quick_metric(gt_iter_data, det_iter_data)
+        gt_boxes = [v['gt_boxes'] for v in rets.values()]
+        det_boxes = [v['det_boxes'] for v in rets.values()]
+        confs = [v['confs'] for v in rets.values()]
+        gt_classes = [v['gt_classes'] for v in rets.values()]
+        det_classes = [v['det_classes'] for v in rets.values()]
+        _ids = list(rets.keys())
 
-    """
-    import pandas as pd
-    from tqdm import tqdm
+        return rets, _ids, gt_boxes, det_boxes, gt_classes, det_classes, confs
 
-    r = {}
-    for ret in tqdm(gt_iter_data, desc='load gt data'):
-        r.setdefault(ret['_id'], {})['gt_boxes'] = ret['bboxes']
-        r.setdefault(ret['_id'], {})['gt_classes'] = ret['classes']
+    def quick_metric(self, gt_iter_data, det_iter_data, is_mAP=True, save_path=None):
+        """
 
-    for ret in tqdm(det_iter_data, desc='load det data'):
-        r.setdefault(ret['_id'], {})['det_boxes'] = ret['bboxes']
-        r.setdefault(ret['_id'], {})['det_classes'] = ret['classes']
-        r.setdefault(ret['_id'], {})['confs'] = ret['confs']
+        Args:
+            gt_iter_data (Iterable):
+            det_iter_data (Iterable):
+            is_mAP (bool):
+            save_path (str):
 
-    gt_boxes = [v['gt_boxes'] for v in r.values()]
-    det_boxes = [v['det_boxes'] for v in r.values()]
-    confs = [v['confs'] for v in r.values()]
-    gt_classes = [v['gt_classes'] for v in r.values()]
-    det_classes = [v['det_classes'] for v in r.values()]
+        Usage:
+            .. code-block:: python
 
-    if is_mAP:
-        ret = ap.mAP_thres(gt_boxes, det_boxes, confs, classes=[gt_classes, det_classes], iou_thres=iou_thres)
-    else:
-        ret = ap.mAP_thres_range(gt_boxes, det_boxes, confs, classes=[gt_classes, det_classes], thres_range=np.arange(iou_thres, 1, 0.05))
+                # use yolov5 type data result to metric
+                from cv_data_parse.YoloV5 import Loader
+                data_dir = 'your data dir'
+                sub_dir = 'model version, e.g. backbone, etc.'
+                task = 'strategy version, e.g. dataset, train datetime, apply params, etc.'
 
-    pd.set_option('display.max_columns', None)
-    pd.set_option('display.width', None)
-    df = pd.DataFrame(ret).T
+                loader = Loader(data_dir)
+                gt_iter_data = loader.load_full_labels(sub_dir='true_abs_xyxy')
+                det_iter_data = loader.load_full_labels(sub_dir=sub_dir, task=task)
 
-    if cls_alias:
+                EasyMetric().quick_metric(gt_iter_data, det_iter_data)
+
+        """
+        import pandas as pd
+
+        rets, _ids, gt_boxes, det_boxes, gt_classes, det_classes, confs = self.get_rets(gt_iter_data, det_iter_data)
+
+        if is_mAP:
+            ret = self.ap.mAP_thres(gt_boxes, det_boxes, confs, classes=[gt_classes, det_classes], iou_thres=self.iou_thres)
+        else:
+            ret = self.ap.mAP_thres_range(gt_boxes, det_boxes, confs, classes=[gt_classes, det_classes], thres_range=np.arange(self.iou_thres, 1, 0.05))
+
+        cls_alias = self.cls_alias or {k: k for k in ret}
+        pd.set_option('display.max_columns', None)
+        pd.set_option('display.width', None)
+        df = pd.DataFrame(ret).T
         df.index = [cls_alias[i] for i in df.index]
 
-    s = df.sum(axis=0)
-    m = df.mean(axis=0)
-    df.loc['sum'] = s
-    df.loc['mean'] = m
-    df = df.round(6)
+        s = df.sum(axis=0)
+        m = df.mean(axis=0)
+        df.loc['sum'] = s
+        df.loc['mean'] = m
+        df = df.round(6)
 
-    if verbose:
-        stdout_method(df)
+        if self.verbose:
+            self.stdout_method(df)
 
-    if save_path:
-        from utils import os_lib
-        os_lib.Saver(verbose=verbose, stdout_method=stdout_method).auto_save(df, save_path)
+        if save_path:
+            from utils import os_lib
+            os_lib.Saver(verbose=self.verbose, stdout_method=self.stdout_method).auto_save(df, save_path)
 
-    return df
+        return df
 
+    def checkout_false_sample(self, gt_iter_data, det_iter_data, data_dir='checkout_data', image_dir=None, save_res_dir=None):
+        """
 
-def checkout_false_sample(gt_iter_data, det_iter_data, iou_thres=0.5, data_dir='checkout_data', image_dir=None, save_res_dir=None, cls_alias=None):
-    """
+        Args:
+            gt_iter_data (Iterable):
+            det_iter_data (Iterable):
+            data_dir (str):
+            image_dir (str):
+                which dir can get the image, `image_path = f'{image_dir}/{_id}'`
+                if gt_iter_data set the key of image_dir, use the value
+                else, if image_dir is set, use it, else use f'{data_dir}/images'
 
-    Args:
-        gt_iter_data (Iterable):
-        det_iter_data (Iterable):
-        data_dir (str):
-        image_dir (str):
-            which dir can get the image, `image_path = f'{image_dir}/{_id}'`
-            if gt_iter_data set the key of image_dir, use the value
-            else, if image_dir is set, use it, else use f'{data_dir}/images'
+            save_res_dir:
 
-        save_res_dir:
-        cls_alias (list or dict):
+        Usage:
+            .. code-block:: python
 
-    Usage:
-        .. code-block:: python
+                # use yolov5 type data result to metric
+                from cv_data_parse.cv_data_parse.YoloV5 import Loader
 
-            # use yolov5 type data result to metric
-            from cv_data_parse.cv_data_parse.YoloV5 import Loader
+                data_dir = 'your data dir'
+                sub_dir = 'model version, e.g. backbone, etc.'
+                task = 'strategy version, e.g. dataset, train time, apply params, etc.'
+                set_task = f'{sub_dir}/{task}'
+                image_dir = f'{data_dir}/images/{task}'
+                save_res_dir = f'{data_dir}/visuals/false_samples/{set_task}'
 
-            data_dir = 'your data dir'
-            sub_dir = 'model version, e.g. backbone, etc.'
-            task = 'strategy version, e.g. dataset, train time, apply params, etc.'
-            set_task = f'{sub_dir}/{task}'
-            image_dir = f'{data_dir}/images/{task}'
-            save_res_dir = f'{data_dir}/visuals/false_samples/{set_task}'
+                loader = Loader(data_dir)
+                gt_iter_data = loader.load_full_labels(sub_dir='true_abs_xyxy')
+                det_iter_data = loader.load_full_labels(sub_dir=sub_dir, task=task)
+                cls_alias = {}  # set if you want to convert class name
 
-            loader = Loader(data_dir)
-            gt_iter_data = loader.load_full_labels(sub_dir='true_abs_xyxy')
-            det_iter_data = loader.load_full_labels(sub_dir=sub_dir, task=task)
-            alias = {}  # set if you want to convert class name
+                EasyMetric(cls_alias=cls_alias).checkout_false_sample(gt_iter_data, det_iter_data, data_dir=data_dir, image_dir=image_dir, save_res_dir=save_res_dir)
 
-            shortlist_false_sample(gt_iter_data, det_iter_data, data_dir=data_dir, image_dir=image_dir, save_res_dir=save_res_dir, alias=alias)
+        """
+        from utils import os_lib, visualize
+        from data_parse.cv_data_parse.base import DataVisualizer
 
-    """
-    from utils import os_lib, visualize
-    from tqdm import tqdm
+        image_dir = image_dir if image_dir is not None else f'{data_dir}/images'
+        save_res_dir = save_res_dir if save_res_dir is not None else f'{data_dir}/visuals/false_samples'
 
-    image_dir = image_dir if image_dir is not None else f'{data_dir}/images'
-    save_res_dir = save_res_dir if save_res_dir is not None else f'{data_dir}/visuals/false_samples'
+        rets, _ids, gt_boxes, det_boxes, gt_classes, det_classes, confs = self.get_rets(gt_iter_data, det_iter_data, image_dir=image_dir)
+        self.ap.return_more_info = True
+        ret = self.ap.mAP_thres(gt_boxes, det_boxes, confs, classes=[gt_classes, det_classes], iou_thres=self.iou_thres)
 
-    rets = {}
-    for ret in tqdm(gt_iter_data, desc='load gt data'):
-        dic = rets.setdefault(ret['_id'], {})
-        dic['gt_boxes'] = ret['bboxes']
-        dic['gt_classes'] = ret['classes']
-        dic['image_dir'] = ret['image_dir'] if 'image_dir' in ret else image_dir
+        cls_alias = self.cls_alias or {k: k for k in ret}
 
-    for ret in tqdm(det_iter_data, desc='load det data'):
-        dic = rets[ret['_id']]
-        dic['det_boxes'] = ret['bboxes']
-        dic['det_classes'] = ret['classes']
-        dic['confs'] = ret['confs']
+        for cls, r in ret.items():
+            save_dir = f'{save_res_dir}/{cls_alias[cls]}'
+            tp = r['tp']
+            det_obj_idx = r['det_obj_idx']
+            target_obj_idx = det_obj_idx[~tp]
 
-    gt_boxes = [v['gt_boxes'] for v in rets.values()]
-    det_boxes = [v['det_boxes'] for v in rets.values()]
-    confs = [v['confs'] for v in rets.values()]
-    gt_classes = [v['gt_classes'] for v in rets.values()]
-    det_classes = [v['det_classes'] for v in rets.values()]
-    _ids = list(rets.keys())
+            idx = np.unique(target_obj_idx)
+            for i in idx:
+                target_idx = det_obj_idx == i
+                _tp = tp[target_idx]
 
-    ret = AP(
-        return_more_info=True,
-        # iou_method=Iou.miou
-    ).mAP_thres(gt_boxes, det_boxes, confs, classes=[gt_classes, det_classes], iou_thres=iou_thres)
+                gt_class = gt_classes[i]
+                gt_box = gt_boxes[i]
+                conf = confs[i]
+                det_class = det_classes[i]
+                det_box = det_boxes[i]
+                _id = _ids[i]
 
-    cls_alias = cls_alias or {k: k for k in ret}
+                image = os_lib.loader.load_img(f'{rets[_id]["image_dir"]}/{_id}')
 
-    for cls, r in ret.items():
-        save_dir = f'{save_res_dir}/{cls_alias[cls]}'
-        tp = r['tp']
-        det_obj_idx = r['det_obj_idx']
-        target_obj_idx = det_obj_idx[~tp]
+                false_obj_idx = np.where(det_class == cls)[0]
+                false_obj_idx = false_obj_idx[~_tp]
 
-        idx = np.unique(target_obj_idx)
-        for i in idx:
-            target_idx = det_obj_idx == i
-            _tp = tp[target_idx]
+                gt_class = [int(c) for c in gt_class]
+                det_class = [int(c) for c in det_class]
 
+                cls_alias[-1] = cls_alias[cls]
+
+                for _ in false_obj_idx:
+                    det_class[_] = -1
+
+                tmp_gt = [dict(_id=_id, image=image, bboxes=gt_box, classes=gt_class)]
+                tmp_det = [dict(image=image, bboxes=det_box, classes=det_class, confs=conf)]
+                visualizer = DataVisualizer(save_dir, verbose=self.verbose, stdout_method=self.stdout_method)
+                visualizer(tmp_gt, tmp_det, cls_alias=cls_alias)
+
+        return ret
+
+    def checkout_diff_sample(self, gt_iter_data, det_iter_data, data_dir='checkout_data', image_dir=None, save_res_dir=None):
+        """
+
+        Args:
+            gt_iter_data (Iterable):
+            det_iter_data (Iterable):
+            data_dir (str):
+            image_dir (str):
+                which dir can get the image, `image_path = f'{image_dir}/{_id}'`
+                if gt_iter_data set the key of image_dir, use the value
+                else, if image_dir is set, use it, else use f'{data_dir}/images'
+
+            save_res_dir:
+
+        Usage:
+            .. code-block:: python
+
+                # use yolov5 type data result to metric
+                from cv_data_parse.cv_data_parse.YoloV5 import Loader
+
+                data_dir = 'your data dir'
+                sub_dir = 'model version, e.g. backbone, etc.'
+                task = 'strategy version, e.g. dataset, train time, apply params, etc.'
+                set_task = f'{sub_dir}/{task}'
+                image_dir = f'{data_dir}/images/{task}'
+                save_res_dir = f'{data_dir}/visuals/diff_samples/{set_task}'
+
+                loader = Loader(data_dir)
+                gt_iter_data = loader.load_full_labels(sub_dir='true_abs_xyxy')
+                det_iter_data = loader.load_full_labels(sub_dir=sub_dir, task=task)
+                cls_alias = {}  # set if you want to convert class name
+
+                EasyMetric(cls_alias=cls_alias).checkout_diff_sample(gt_iter_data, det_iter_data, data_dir=data_dir, image_dir=image_dir, save_res_dir=save_res_dir)
+
+        """
+
+        from utils import os_lib, visualize
+        from data_parse.cv_data_parse.base import DataVisualizer
+
+        image_dir = image_dir if image_dir is not None else f'{data_dir}/images'
+        save_res_dir = save_res_dir if save_res_dir is not None else f'{data_dir}/visuals/diff_samples'
+
+        rets, _ids, gt_boxes, det_boxes, gt_classes, det_classes, confs = self.get_rets(gt_iter_data, det_iter_data, image_dir=image_dir)
+        gt_confs = [v['gt_confs'] for v in rets.values()]
+        self.ap.return_more_info = True
+        ret1 = self.ap.mAP_thres(gt_boxes, det_boxes, confs, classes=[gt_classes, det_classes], iou_thres=self.iou_thres)
+        ret2 = self.ap.mAP_thres(det_boxes, gt_boxes, gt_confs, classes=[det_classes, gt_classes], iou_thres=self.iou_thres)
+
+        cls_alias = self.cls_alias or {k: k for k in ret1}
+
+        tmp_ret = {}
+
+        for cls, r in ret1.items():
+            tp = r['tp']
+            det_obj_idx = r['det_obj_idx']
+            target_obj_idx = det_obj_idx[~tp]
+
+            idx = np.unique(target_obj_idx)
+            for i in idx:
+                target_idx = det_obj_idx == i
+                _id = _ids[i]
+                _tp = tp[target_idx]
+
+                tmp_ret.setdefault((_id, cls, i), {})['det_tp'] = _tp
+
+        for cls, r in ret2.items():
+            tp = r['tp']
+            det_obj_idx = r['det_obj_idx']
+            target_obj_idx = det_obj_idx[~tp]
+
+            idx = np.unique(target_obj_idx)
+            for i in idx:
+                target_idx = det_obj_idx == i
+                _id = _ids[i]
+                _tp = tp[target_idx]
+
+                tmp_ret.setdefault((_id, cls, i), {})['gt_tp'] = _tp
+
+        for (_id, cls, i), dic in tmp_ret.items():
+            save_dir = f'{save_res_dir}/{cls_alias[cls]}'
             gt_class = gt_classes[i]
             gt_box = gt_boxes[i]
-            conf = confs[i]
+            gt_conf = gt_confs[i]
+            det_conf = confs[i]
             det_class = det_classes[i]
             det_box = det_boxes[i]
-            _id = _ids[i]
 
             image = os_lib.loader.load_img(f'{rets[_id]["image_dir"]}/{_id}')
-
-            false_obj_idx = np.where(det_class == cls)[0]
-            false_obj_idx = false_obj_idx[~_tp]
 
             gt_class = [int(c) for c in gt_class]
             det_class = [int(c) for c in det_class]
 
-            gt_colors = [visualize.get_color_array(c) for c in gt_class]
-            det_colors = [visualize.get_color_array(c) for c in det_class]
-            for _ in false_obj_idx:
-                det_colors[_] = visualize.get_color_array(len(ret) + 1)
+            cls_alias[-1] = cls_alias[cls]
 
-            if cls_alias:
-                gt_class = [cls_alias[c] for c in gt_class]
-                det_class = [f'{cls_alias[cls]} {c:.6f}' for cls, c in zip(det_class, conf)]
+            if 'det_tp' in dic:
+                _tp = dic['det_tp']
+                false_obj_idx = np.where(det_class == cls)[0]
+                false_obj_idx = false_obj_idx[~_tp]
+                for _ in false_obj_idx:
+                    det_class[_] = -1
 
-            gt_image = visualize.ImageVisualize.label_box(image, gt_box, gt_class, colors=gt_colors)
-            det_image = visualize.ImageVisualize.label_box(image, det_box, det_class, colors=det_colors)
+            if 'gt_tp' in dic:
+                _tp = dic['gt_tp']
+                false_obj_idx = np.where(gt_class == cls)[0]
+                false_obj_idx = false_obj_idx[~_tp]
+                for _ in false_obj_idx:
+                    gt_class[_] = -1
 
-            image = np.concatenate([gt_image, det_image], axis=1)
-            os_lib.saver.auto_save(image, f'{save_dir}/{_id}')
+            tmp_gt = [dict(_id=_id, image=image, bboxes=gt_box, classes=gt_class, confs=gt_conf)]
+            tmp_det = [dict(image=image, bboxes=det_box, classes=det_class, confs=det_conf)]
+            visualizer = DataVisualizer(save_dir, verbose=self.verbose, stdout_method=self.stdout_method)
+            visualizer(tmp_gt, tmp_det, cls_alias=cls_alias)
 
-    return ret
+        return ret1, ret2
 
 
 confusion_matrix = ConfusionMatrix()
 pr = PR()
 ap = AP()
+easy_metric = EasyMetric()
