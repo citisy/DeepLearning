@@ -313,8 +313,10 @@ class DataVisualizer:
                     - bboxes:
                     - classes:
                     - confs:
+                    - colors:
 
             **visual_kwargs:
+                cls_alias:
 
         Returns:
 
@@ -346,7 +348,11 @@ class DataVisualizer:
 
             if 'classes' in r:
                 classes = r['classes']
-                colors = [visualize.get_color_array(int(cls)) for cls in classes]
+
+                if 'colors' in r:
+                    colors = r['colors']
+                else:
+                    colors = [visualize.get_color_array(int(cls)) for cls in classes]
 
                 if 'cls_alias' in visual_kwargs:
                     cls_alias = visual_kwargs['cls_alias']
@@ -358,7 +364,11 @@ class DataVisualizer:
                 image = visualize.ImageVisualize.label_box(image, bboxes, classes, colors=colors)
 
             else:
-                colors = [visualize.cmap['Black']['array'] for _ in bboxes]
+                if 'colors' in r:
+                    colors = r['colors']
+                else:
+                    colors = [visualize.cmap['Black']['array'] for _ in bboxes]
+
                 image = visualize.ImageVisualize.box(image, bboxes, colors=colors)
 
         return image
