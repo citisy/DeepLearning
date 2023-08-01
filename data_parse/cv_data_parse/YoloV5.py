@@ -40,12 +40,9 @@ class Loader(DataLoader):
             def filter_func(ret):
                 x = Path(ret['image'])
                 if x.stem in filter_list:
-                    label_path = str(x).replace('images', 'labels').replace('.png', '.txt')
                     image = os_lib.loader.load_img(str(x))
-                    labels = np.genfromtxt(label_path).reshape((-1, 5))
-                    bboxes = labels[:, 1:]
-                    # bboxes = converter.CoordinateConvert.mid_xywh2top_xyxy(bboxes, wh=(image.shape[1], image.shape[0]), blow_up=True)
-                    checkout_visualizer([{'_id': x.stem + '.png', 'image': image, 'bboxes': bboxes, 'classes': labels[:, 0]}], cls_alias=cls_alias)
+                    # ret['bboxes'] = converter.CoordinateConvert.mid_xywh2top_xyxy(ret['bboxes'], wh=(image.shape[1], image.shape[0]), blow_up=True)
+                    checkout_visualizer([ret], cls_alias=cls_alias)
                     return False
 
                 return True
@@ -90,11 +87,11 @@ class Loader(DataLoader):
         """
 
         if set_type == DataRegister.MIX:
-            return self.load_mix(image_type, task, **kwargs)
+            return self.load_full(image_type, task, **kwargs)
         else:
             return self.load_set(set_type, image_type, set_task, **kwargs)
 
-    def load_mix(self, image_type, task='', **kwargs):
+    def load_full(self, image_type, task='', **kwargs):
         for img_fp in Path(f'{self.data_dir}/images/{task}').glob(f'*.{self.image_suffix}'):
             image_path = os.path.abspath(img_fp)
             img_fp = Path(image_path)
@@ -158,6 +155,9 @@ class Loader(DataLoader):
 
             # (class, x1, y1, x2, y2, conf, w, h)
             labels = np.genfromtxt(fp)
+            if not labels.size:
+                labels = labels.reshape((-1, 8))
+
             if len(labels.shape) == 1:
                 labels = labels[None, :]
 

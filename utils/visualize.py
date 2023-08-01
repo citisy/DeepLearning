@@ -11,7 +11,7 @@ RECTANGLE = 2
 
 def get_color_array(idx):
     color_array = list(cmap[cmap_list[idx]]['array'])
-    color_array[0], color_array[2] = color_array[2], color_array[0]     # rgb to bgr
+    color_array[0], color_array[2] = color_array[2], color_array[0]  # rgb to bgr
     return tuple(color_array)
 
 
@@ -316,9 +316,14 @@ class TextVisualize:
         return s
 
     @staticmethod
-    def human_readable_str(num: int):
+    def num_to_human_readable_str(num: int):
         for suffix in ['b', 'K', 'M', 'G', 'T']:
-            if num > 1024:
+            if num >= 1024:
                 num /= 1024.
             else:
                 return f'{num:.2f} {suffix}'
+
+    @staticmethod
+    def dict_to_str(dic: dict):
+        tmp = [f'{k}={v}' for k, v in dic.items()]
+        return ','.join(tmp)

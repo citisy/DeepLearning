@@ -37,35 +37,48 @@ class Proportion:
 
         return p
 
+    def get_add_params(self, p):
+        return {'scale.Proportion': dict(p=p)}
+
+    def parse_add_params(self, ret):
+        return ret['scale.Proportion']['p']
+
     def __call__(self, image, dst, bboxes=None, **kwargs):
         h, w, c = image.shape
         p = self.get_params(dst, w, h)
-        image = self.apply_image(image, p)
-        bboxes = self.apply_bboxes(bboxes, p)
+        add_params = self.get_add_params(p)
+        image = self.apply_image(image, add_params)
+        bboxes = self.apply_bboxes(bboxes, add_params)
 
         return {
             'image': image,
             'bboxes': bboxes,
-            'scale.Proportion': dict(p=p)
+            **add_params
         }
 
-    def apply_image(self, image, p):
+    def apply_image(self, image, ret):
+        p = self.parse_add_params(ret)
         return cv2.resize(image, None, fx=p, fy=p, interpolation=self.interpolation)
 
-    def apply_bboxes(self, bboxes, p):
+    def apply_bboxes(self, bboxes, ret):
+        p = self.parse_add_params(ret)
         if bboxes is not None:
             bboxes = np.array(bboxes, dtype=float) * p
             bboxes = bboxes.astype(int)
         return bboxes
 
-    @staticmethod
-    def restore(ret):
-        params = ret.get('scale.Proportion')
-        bboxes = ret['bboxes']
-        p = params['p']
-        bboxes = np.array(bboxes, dtype=float) / p
-        bboxes = bboxes.astype(int)
-        ret['bboxes'] = bboxes
+    def restore(self, ret):
+        p = self.parse_add_params(ret)
+        if 'image' in ret and ret['image'] is not None:
+            image = ret['image']
+            image = cv2.resize(image, None, fx=1/p, fy=1/p, interpolation=self.interpolation)
+            ret['image'] = image
+
+        if 'bboxes' in ret and ret['bboxes'] is not None:
+            bboxes = ret['bboxes']
+            bboxes = np.array(bboxes, dtype=float) / p
+            bboxes = bboxes.astype(int)
+            ret['bboxes'] = bboxes
 
         return ret
 
@@ -117,9 +130,9 @@ class Rectangle:
 class LetterBox:
     """resize, crop, and pad"""
 
-    def __init__(self, interpolation=0, ):
+    def __init__(self, interpolation=0, **pad_kwargs):
         self.resize = Proportion(choice_edge=2, interpolation=interpolation)  # scale to longest edge
-        self.crop = crop.Center(is_pad=True, pad_type=2)
+        self.crop = crop.Center(is_pad=True, pad_type=2, **pad_kwargs)
 
     def __call__(self, image, dst, bboxes=None, **kwargs):
         ret = dict(image=image, bboxes=bboxes, dst=dst, **kwargs)
@@ -127,6 +140,11 @@ class LetterBox:
         ret.update(self.crop(**ret))
 
         return ret
+
+    def apply_image(self, image, ret):
+        image = self.resize.apply_image(image, ret)
+        image = self.crop.apply_image(image, ret)
+        return image
 
     def restore(self, ret):
         ret = self.crop.restore(ret)
@@ -192,4 +210,3 @@ class BatchLetterBox:
             rets.append(ret)
 
         return rets
-

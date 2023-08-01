@@ -2,8 +2,6 @@ cmap = {
     'Black': {'alias': '纯黑', 'code': '#000000', 'array': (0, 0, 0)},
     'Green': {'alias': '纯绿', 'code': '#008000', 'array': (0, 128, 0)},
     'Blue': {'alias': '纯蓝', 'code': '#0000FF', 'array': (0, 0, 255)},
-    'Red': {'alias': '纯红', 'code': '#FF0000', 'array': (255, 0, 0)},
-    'Yellow': {'alias': '纯黄', 'code': '#FFFF00', 'array': (255, 255, 0)},
     'Purple': {'alias': '紫色', 'code': '#800080', 'array': (128, 0, 128)},
     'Fuchsia': {'alias': '紫红(灯笼海棠)', 'code': '#FF00FF', 'array': (255, 0, 255)},
     'Lime': {'alias': '闪光绿', 'code': '#00FF00', 'array': (0, 255, 0)},
@@ -19,6 +17,7 @@ cmap = {
     'MediumVioletRed': {'alias': '中紫罗兰红', 'code': '#C71585', 'array': (199, 21, 133)},
     'Orchid': {'alias': '暗紫色(兰花紫)', 'code': '#DA70D6', 'array': (218, 112, 214)},
     'Thistle': {'alias': '蓟色', 'code': '#D8BFD8', 'array': (216, 191, 216)},
+    'Yellow': {'alias': '纯黄', 'code': '#FFFF00', 'array': (255, 255, 0)},
     'Plum': {'alias': '洋李色(李子紫)', 'code': '#DDA0DD', 'array': (221, 160, 221)},
     'Violet': {'alias': '紫罗兰', 'code': '#EE82EE', 'array': (238, 130, 238)},
     'Magenta': {'alias': '洋红(玫瑰红)', 'code': '#FF00FF', 'array': (255, 0, 255)},
@@ -139,6 +138,7 @@ cmap = {
     'DarkGray': {'alias': '深灰色', 'code': '#A9A9A9', 'array': (169, 169, 169)},
     'Gray': {'alias': '灰色', 'code': '#808080', 'array': (128, 128, 128)},
     'DimGray': {'alias': '暗淡的灰色', 'code': '#696969', 'array': (105, 105, 105)},
+    'Red': {'alias': '纯红', 'code': '#FF0000', 'array': (255, 0, 0)},
 }
 
 # refer to https://en.wikipedia.org/wiki/ANSI_escape_code

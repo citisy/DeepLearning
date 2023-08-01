@@ -11,7 +11,7 @@ class ModuleInfo:
 
         def cur(current_m, dep):
             for name, m in current_m._modules.items():
-                if dep == 1 or len(m._modules) == 0:
+                if dep <= 1 or len(m._modules) == 0:
                     profiles.append((name, str(type(m))[8:-2], cls.profile(m)))
                 else:
                     cur(m, dep - 1)
@@ -25,6 +25,7 @@ class ModuleInfo:
         return dict(
             params=cls.profile_params(module),
             grads=cls.profile_grads(module),
+            args=cls.profile_args(module)
         )
 
     @staticmethod
@@ -34,6 +35,39 @@ class ModuleInfo:
     @staticmethod
     def profile_grads(module):
         return sum(x.numel() for x in module.parameters() if x.requires_grad)
+
+    @staticmethod
+    def profile_args(module):
+        args = {}
+        if hasattr(module, 'in_channels'):
+            args['i_ch'] = module.in_channels
+        if hasattr(module, 'out_channels'):
+            args['o_ch'] = module.out_channels
+        if hasattr(module, 'in_features'):
+            args['i_f'] = module.in_features
+        if hasattr(module, 'out_features'):
+            args['o_f'] = module.out_features
+        if hasattr(module, 'input_size'):
+            args['i_size'] = module.input_size
+        if hasattr(module, 'output_size'):
+            args['o_size'] = module.output_size
+        if hasattr(module, 'kernel_size'):
+            k = module.kernel_size
+            if isinstance(k, (list, tuple)):
+                k = k[0]
+            args['k'] = k
+        if hasattr(module, 'stride'):
+            s = module.stride
+            if isinstance(s, (list, tuple)):
+                s = s[0]
+            args['s'] = s
+        if hasattr(module, 'padding'):
+            p = module.padding
+            if isinstance(p, (list, tuple)):
+                p = p[0]
+            args['p'] = p
+
+        return args
 
     @staticmethod
     def profile_flops(module, input_size, *test_args):
@@ -90,7 +124,7 @@ def initialize_layers(module, init_gain=0.02, init_type='normal'):
         elif t in [nn.Hardswish, nn.LeakyReLU, nn.ReLU, nn.ReLU6, nn.SiLU]:
             m.inplace = True
 
-        elif t in [nn.Conv2d, nn.ConvTranspose2d, nn.Linear]:
+        elif t in [nn.Conv2d, nn.Linear]:
             if init_type == 'normal':
                 nn.init.normal_(m.weight.data, 0.0, init_gain)
             elif init_type == 'xavier':
@@ -102,6 +136,22 @@ def initialize_layers(module, init_gain=0.02, init_type='normal'):
 
             if hasattr(m, 'bias') and m.bias is not None:
                 nn.init.constant_(m.bias.data, 0.0)
+
+        elif t in [nn.ConvTranspose2d]:
+            m.weight.data.copy_(bilinear_kernel(m.in_channels, m.out_channels, m.kernel_size[0]))
+
+
+def bilinear_kernel(in_channels, out_channels, kernel_size):
+    factor = (kernel_size + 1) // 2
+    if kernel_size % 2 == 1:
+        center = factor - 1
+    else:
+        center = factor - 0.5
+    og = (torch.arange(kernel_size).reshape(-1, 1), torch.arange(kernel_size).reshape(1, -1))
+    f = (1 - torch.abs(og[0] - center) / factor) * (1 - torch.abs(og[1] - center) / factor)
+    weight = torch.zeros((in_channels, out_channels, kernel_size, kernel_size))
+    weight[range(in_channels), range(out_channels), :, :] = f
+    return weight
 
 
 class Export:

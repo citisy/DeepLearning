@@ -13,26 +13,20 @@ unet256_config = (
 
 class Model(nn.Module):
     """refer to [U-Net: Convolutional Networks for Biomedical Image Segmentation](https://arxiv.org/pdf/1505.04597.pdf)"""
-    def __init__(self, in_ch, input_size, in_module=None, out_module=None, conv_config=unet256_config):
+    def __init__(self, in_ch, input_size, in_module=None, conv_config=unet256_config):
         super().__init__()
         in_ches, hidden_ches, out_ches = conv_config
 
         if in_module is None:
             in_module = ConvInModule(in_ch, input_size, out_ch=in_ches[0])
 
-        if out_module is None:
-            out_module = nn.Sequential()
-
         self.input = in_module
-
         # top(outer) -> bottom(inner)
-        self.conv_seq = CurBlock(in_ches, hidden_ches, out_ches, is_top_block=True)
-        self.output = out_module
+        self.backbone = CurBlock(in_ches, hidden_ches, out_ches, is_top_block=True)
 
     def forward(self, x):
         x = self.input(x)
-        x = self.conv_seq(x)
-        x = self.output(x)
+        x = self.backbone(x)
         return x
 
 

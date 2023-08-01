@@ -195,7 +195,7 @@ class OdProcess(Process):
 
         scheduler.step()
 
-    def predict(self, dataset, batch_size=128, visualize=False, save_ret_func=None, **dataloader_kwargs):
+    def predict(self, dataset, batch_size=128, visualize=False, max_vis_num=None, save_ret_func=None, **dataloader_kwargs):
         dataloader = DataLoader(
             dataset,
             batch_size=batch_size,
@@ -205,6 +205,8 @@ class OdProcess(Process):
 
         self.model.to(self.device)
         gt_rets, det_rets = [], []
+        max_vis_num = max_vis_num or float('inf')
+        vis_num = 0
 
         with torch.no_grad():
             self.model.eval()
@@ -238,10 +240,14 @@ class OdProcess(Process):
                     ))
 
                 if visualize:
-                    for ret, output in zip(rets, output):
+                    for ret, output in zip(rets, outputs):
                         ret['image'] = ret['ori_image']
                         output['image'] = ret['ori_image']
-                    DataVisualizer(self.save_result_dir)(rets, outputs)
+
+                    n = min(batch_size, max_vis_num - vis_num)
+                    if n > 0:
+                        DataVisualizer(self.save_result_dir)(rets[:n], outputs[:n])
+                        vis_num += n
 
         if save_ret_func:
             save_ret_func(det_rets)
@@ -368,6 +374,7 @@ class YoloV5_Voc(YoloV5):
             Process().run(max_epoch=500)
             {'score': 0.3529}
     """
+
     def __init__(self, dataset_version='Voc2012', **kwargs):
         super().__init__(dataset_version=dataset_version, **kwargs)
 

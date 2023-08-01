@@ -588,7 +588,7 @@ class MemoryInfo:
         if pretty_output:
             for k, v in info.items():
                 if k != 'pid':
-                    info[k] = cls.TextVisualize.human_readable_str(v)
+                    info[k] = cls.TextVisualize.num_to_human_readable_str(v)
 
         return info
 
@@ -605,7 +605,7 @@ class MemoryInfo:
         if pretty_output:
             for k, v in info.items():
                 if k != 'percent':
-                    info[k] = cls.TextVisualize.human_readable_str(v)
+                    info[k] = cls.TextVisualize.num_to_human_readable_str(v)
 
         return info
 
@@ -622,7 +622,7 @@ class MemoryInfo:
         )
         if pretty_output:
             for k, v in info.items():
-                info[k] = cls.TextVisualize.human_readable_str(v)
+                info[k] = cls.TextVisualize.num_to_human_readable_str(v)
 
         return info
 

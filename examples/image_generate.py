@@ -185,7 +185,7 @@ def data_aug_with_pix_image(ret, input_size):
     pix_image = ret['pix_image']
     pix_image = scale.Proportion().apply_image(pix_image, **ret['scale.Proportion'])
     pix_image = crop.Pad().apply_image(pix_image, **ret['crop.Pad'])
-    pix_image = crop.Crop().apply_image(pix_image, **ret['crop.Crop'])
+    pix_image = crop.PadCrop().apply_image(pix_image, **ret['crop.Crop'])
     pix_image = pixel_perturbation.MinMax().apply_image(pix_image)
     pix_image = channel.HWC2CHW().apply_image(pix_image)
 
@@ -197,8 +197,6 @@ def data_aug_with_pix_image(ret, input_size):
 class Pix2pix(IgProcess):
     def __init__(self,
                  model_version='Pix2pix',
-                 dataset_version='',
-                 device=0,
                  input_size=256,
                  in_ch=3,
                  **kwargs
@@ -211,9 +209,8 @@ class Pix2pix(IgProcess):
                 input_size=input_size
             ),
             model_version=model_version,
-            dataset_version=dataset_version,
             input_size=input_size,
-            device=device
+            **kwargs
         )
 
     def data_augment(self, ret):
@@ -247,8 +244,8 @@ class Pix2pix(IgProcess):
                 images_b = [torch.from_numpy(ret.pop('pix_image')).to(self.device, non_blocking=True, dtype=torch.float) for ret in rets]
                 images_b = torch.stack(images_b)
 
-                real_a = images_a.to(self.device)
-                real_b = images_b.to(self.device)
+                real_a = images_a
+                real_b = images_b
                 fake_b = self.model.net_g(real_a)
                 fake_ab = torch.cat((real_a, fake_b), 1)
 
@@ -313,8 +310,6 @@ class Pix2pix_facade(Pix2pix):
 class CycleGan(IgProcess):
     def __init__(self,
                  model_version='CycleGan',
-                 dataset_version='',
-                 device=0,
                  input_size=256,
                  in_ch=3,
                  **kwargs
@@ -327,9 +322,8 @@ class CycleGan(IgProcess):
                 input_size=input_size
             ),
             model_version=model_version,
-            dataset_version=dataset_version,
             input_size=input_size,
-            device=device,
+            **kwargs
         )
 
     def model_info(self, depth=None):

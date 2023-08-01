@@ -42,6 +42,11 @@ class Apply:
 
         return ret
 
+    def apply_image(self, image, ret):
+        for func in self.funcs:
+            image = func.apply_image(image, ret)
+        return image
+
     def restore(self, ret):
         if self.full_result:
             _ret = []

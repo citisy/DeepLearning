@@ -356,9 +356,9 @@ def parse_params_example() -> dict:
         import argparse
 
         parser = argparse.ArgumentParser()
-        parser.add_argument('key1', type=str, default='value1', help='note of key1')
-        parser.add_argument('key2', action='store_true', help='note of key2')
-        parser.add_argument('key3', nargs='+', default=[], help='note of key3')  # return a list
+        parser.add_argument('--key1', type=str, default='value1', help='note of key1')
+        parser.add_argument('--key2', action='store_true', help='note of key2')
+        parser.add_argument('--key3', nargs='+', default=[], type=str, help='note of key3')  # return a list
         ...
 
         args = parser.parse_args()

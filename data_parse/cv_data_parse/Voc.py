@@ -3,7 +3,7 @@ import cv2
 from pathlib import Path
 import xml.etree.ElementTree as ET
 import numpy as np
-from .base import DataRegister, DataLoader, DataSaver, get_image
+from .base import DataRegister, DataLoader, DataSaver, get_image, DataVisualizer
 
 DET = 1
 SEG_CLS = 2

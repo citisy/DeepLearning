@@ -33,9 +33,10 @@ class Model(BaseImgClsModel):
 
 class Backbone(nn.Sequential):
     def __init__(self, backbone_config=Res18_config, add_block: nn.Module = None, **block_config):
-
+        in_ch = 3
+        self.in_channels = in_ch
         layers = [
-            Conv(3, 64, 7, s=2),
+            Conv(in_ch, 64, 7, s=2),
             nn.MaxPool2d(3, stride=2, padding=1)
         ]
 
@@ -58,17 +59,18 @@ class ResBlock(nn.Module):
     def __init__(self, in_ch, out_ch, n_conv=2, s=1,
                  add_block: nn.Module = None, **block_config):
         super().__init__()
+        self.in_channels = in_ch
         if n_conv == 2:
             self.conv_seq = nn.Sequential(
                 Conv(in_ch, out_ch, k=3, s=s),
-                Conv(out_ch, out_ch, k=3, s=1, p=1, is_act=False),
+                Conv(out_ch, out_ch, k=1, s=1, is_act=False),
             )
         elif n_conv == 3:  # use bottleneck
             hidden_ch = out_ch // 4
             self.conv_seq = nn.Sequential(
                 Conv(in_ch, hidden_ch, k=1, s=s),
                 Conv(hidden_ch, hidden_ch, k=3),
-                Conv(hidden_ch, out_ch, k=3, s=1, p=1, is_act=False),
+                Conv(hidden_ch, out_ch, k=1, s=1, is_act=False),
             )
 
         else:
@@ -84,6 +86,7 @@ class ResBlock(nn.Module):
             self.conv_x = nn.Sequential()
 
         self.act = nn.ReLU()
+        self.out_channels = out_ch
 
     def forward(self, x):
         x1 = self.conv_seq(x)

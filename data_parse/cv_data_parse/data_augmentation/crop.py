@@ -22,8 +22,7 @@ class Pad:
     """See Also `torchvision.transforms.Pad` or `albumentations.PadIfNeeded`
 
     Args:
-        direction (int): {1, 2, 3}
-        pad_type (int): {0, 1, 2, 3}
+        pad_type (int or tuple): {0, 1, 2, 3}
             if direction is w, 0 give left, 1 give right, 2 give left and right averagely, 3 give left and right randomly
             if direction is h, 0 give up, 1 give down, 2 give up and down averagely, 3 give up and down randomly
         fill_type: {0, 1, 2, 3, 4}
@@ -39,41 +38,37 @@ class Pad:
 
     """
 
-    def __init__(self, direction=WH, pad_type=CENTER, fill_type=0, fill=(114, 114, 114)):
-        self.direction = direction
+    def __init__(self, pad_type=CENTER, fill_type=0, fill=(114, 114, 114)):
+        if isinstance(pad_type, int):
+            pad_type = (pad_type, pad_type)
         self.pad_type = pad_type
         self.fill_type = fill_type
         self.fill = fill
 
     def get_params(self, dst, w, h):
-        if self.direction == W:
-            pad_info = self.get_lr_params(dst, w)
-
-        elif self.direction == H:
-            pad_info = self.get_td_params(dst, h)
-
-        elif self.direction == WH:
-            pad_info = self.get_lr_params(dst, w)
-            pad_info.update(self.get_td_params(dst, h))
-
-        else:
-            raise ValueError(f'dont support {self.direction = }')
-
+        if isinstance(dst, int):
+            dst = (dst, dst)
+        pad_info = {}
+        if dst[0] > w:
+            pad_info.update(self.get_lr_params(dst[0], w))
+        if dst[1] > h:
+            pad_info.update(self.get_td_params(dst[1], h))
         return pad_info
 
     def get_lr_params(self, dst, w):
-        if self.pad_type == LEFT:
+        pad_type = self.pad_type[0]
+        if pad_type == LEFT:
             pad_left, pad_right = dst - w, 0
-        elif self.pad_type == RIGHT:
+        elif pad_type == RIGHT:
             pad_left, pad_right = 0, dst - w
-        elif self.pad_type == CENTER:
+        elif pad_type == CENTER:
             pad_left = (dst - w) // 2
             pad_right = dst - w - pad_left
-        elif self.pad_type == RANDOM:
+        elif pad_type == RANDOM:
             pad_left = np.random.randint(dst - w)
             pad_right = dst - w - pad_left
         else:
-            raise ValueError(f'dont support {self.pad_type = }')
+            raise ValueError(f'dont support {pad_type = }')
 
         return dict(
             l=pad_left,
@@ -81,23 +76,35 @@ class Pad:
         )
 
     def get_td_params(self, dst, h):
-        if self.pad_type == TOP:
+        pad_type = self.pad_type[1]
+        if pad_type == TOP:
             pad_top, pad_down = dst - h, 0
-        elif self.pad_type == DOWN:
+        elif pad_type == DOWN:
             pad_top, pad_down = 0, dst - h
-        elif self.pad_type == CENTER:
+        elif pad_type == CENTER:
             pad_top = (dst - h) // 2
             pad_down = dst - h - pad_top
-        elif self.pad_type == RANDOM:
+        elif pad_type == RANDOM:
             pad_top = np.random.randint(dst - h)
             pad_down = dst - h - pad_top
         else:
-            raise ValueError(f'dont support {self.pad_type = }')
+            raise ValueError(f'dont support {pad_type = }')
 
         return dict(
             t=pad_top,
             d=pad_down
         )
+
+    def get_add_params(self, dst, w, h):
+        return {'crop.Pad': self.get_params(dst, w, h)}
+
+    def parse_add_params(self, ret):
+        pad_info = ret['crop.Pad']
+        t = pad_info.get('t', 0)
+        d = pad_info.get('d', 0)
+        l = pad_info.get('l', 0)
+        r = pad_info.get('r', 0)
+        return t, d, l, r
 
     def __call__(self, image, dst, bboxes=None, **kwargs):
         """
@@ -108,92 +115,95 @@ class Pad:
 
         """
         h, w, c = image.shape
-        pad_info = self.get_params(dst, w, h)
-        image = self.apply_image(image, **pad_info)
-        bboxes = self.apply_bboxes(bboxes, **pad_info)
+        add_params = self.get_add_params(dst, w, h)
+        image = self.apply_image(image, add_params)
+        bboxes = self.apply_bboxes(bboxes, add_params)
 
         return {
             'image': image,
             'bboxes': bboxes,
-            'crop.Pad': pad_info
+            **add_params
         }
 
-    def apply_image(self, image, t=0, d=0, l=0, r=0):
-        return cv2.copyMakeBorder(
-            image, t, d, l, r,
-            borderType=fill_mode[self.fill_type],
-            value=self.fill,
-        )
+    def apply_image(self, image, ret):
+        if 'crop.Pad' in ret:
+            t, d, l, r = self.parse_add_params(ret)
+            return cv2.copyMakeBorder(
+                image, t, d, l, r,
+                borderType=fill_mode[self.fill_type],
+                value=self.fill,
+            )
+        else:
+            return image
 
-    def apply_bboxes(self, bboxes, t=0, l=0, **kwargs):
-        if bboxes is not None:
+    def apply_bboxes(self, bboxes, ret):
+        if bboxes is not None and 'crop.Pad' in ret:
+            t, d, l, r = self.parse_add_params(ret)
             bboxes = np.array(bboxes)
             shift = np.array([l, t, l, t])
             bboxes += shift
 
         return bboxes
 
-    @staticmethod
-    def restore(ret):
-        params = ret.get('crop.Pad')
-        bboxes = ret['bboxes']
+    def restore(self, ret):
+        if 'crop.Pad' in ret:
+            t, d, l, r = self.parse_add_params(ret)
 
-        if not params:
-            return ret
+            if 'image' in ret and ret['image'] is not None:
+                image = ret['image']
+                h, w = image.shape[:2]
+                y1 = t
+                y2 = h - d
+                x1 = l
+                x2 = w - r
+                image = image[y1:y2, x1: x2]
+                ret['image'] = image
 
-        pad_left = params.get('l', 0)
-        pad_top = params.get('t', 0)
-
-        bboxes = np.array(bboxes)
-        shift = np.array([pad_left, pad_top, pad_left, pad_top])
-        bboxes -= shift
-
-        ret['bboxes'] = bboxes
+            if 'bboxes' in ret and ret['bboxes'] is not None:
+                bboxes = ret['bboxes']
+                bboxes = np.array(bboxes)
+                shift = np.array([l, t, l, t])
+                bboxes -= shift
+                ret['bboxes'] = bboxes
 
         return ret
 
 
 class Crop:
-    def __init__(self, is_pad=True, **pad_kwargs):
-        self.is_pad = is_pad
-        self.w_pad = Pad(direction=W, **pad_kwargs)
-        self.h_pad = Pad(direction=H, **pad_kwargs)
+    def get_add_params(self, dst_coor, w, h):
+        x1, x2, y1, y2 = dst_coor
+        return {'crop.Crop': dict(x1=x1, x2=x2, y1=y1, y2=y2, w=w, h=h)}
+
+    def parse_add_params(self, ret):
+        info = ret['crop.Crop']
+        x1 = info.get('x1', 0)
+        x2 = info.get('x2', 0)
+        y1 = info.get('y1', 0)
+        y2 = info.get('y2', 0)
+        w = info.get('w', 0)
+        h = info.get('h', 0)
+        return x1, x2, y1, y2, w, h
 
     def __call__(self, image, dst_coor, bboxes=None, classes=None, **kwargs):
-        x1, x2, y1, y2 = dst_coor
         h, w, c = image.shape
+        add_params = self.get_add_params(dst_coor, w, h)
+        image = self.apply_image(image, add_params)
+        bboxes, classes = self.apply_bboxes_classes(bboxes, classes, add_params)
 
-        assert x1 >= 0 and y1 >= 0, ValueError(f'{x1 = } and {y1 = } must not be smaller than 0')
-
-        ret = dict(image=image, bboxes=bboxes)
-
-        if x2 > w or y2 > h:
-            if self.is_pad:
-                if x2 > w:
-                    ret = merge_dict(ret, self.w_pad(dst=x2, **ret))
-                if y2 > h:
-                    ret = merge_dict(ret, self.h_pad(dst=y2, **ret))
-
-            else:
-                raise ValueError(f'image width = {w} and height = {h} must be greater than {x2 = } and {y2 = } or set pad=True')
-
-        image = self.apply_image(ret['image'], x1, x2, y1, y2)
-        bboxes, classes = self.apply_bboxes_classes(ret['bboxes'], classes, x1, x2, y1, y2)
-
-        ret.update({
+        return {
             'image': image,
             'bboxes': bboxes,
             'classes': classes,
-            'crop.Crop': dict(x1=x1, x2=x2, y1=y1, y2=y2),
-        })
+            **add_params
+        }
 
-        return ret
-
-    def apply_image(self, image, x1, x2, y1, y2):
+    def apply_image(self, image, ret):
+        x1, x2, y1, y2, w, h = self.parse_add_params(ret)
         return image[y1:y2, x1: x2]
 
-    def apply_bboxes_classes(self, bboxes, classes, x1, x2, y1, y2, ):
+    def apply_bboxes_classes(self, bboxes, classes, ret):
         if bboxes is not None:
+            x1, x2, y1, y2, w, h = self.parse_add_params(ret)
             bboxes = bboxes
             shift = np.array([x1, y1, x1, y1])
             bboxes -= shift
@@ -211,25 +221,61 @@ class Crop:
         return bboxes, classes
 
     def restore(self, ret):
-        params = ret.get('crop.Crop')
-        bboxes = ret['bboxes']
+        x1, x2, y1, y2, w, h = self.parse_add_params(ret)
 
-        x1 = params['x1']
-        y1 = params['y1']
+        if 'image' in ret and ret['image'] is not None:
+            # irreversible restore
+            image = ret['image']
+            image = Pad().apply_image(image, {'crop.Pad': dict(t=y1, d=h - y2, l=x1, r=w - x2)})
+            ret['image'] = image
 
-        shift = np.array([x1, y1, x1, y1])
-        bboxes += shift
+        if 'bboxes' in ret and ret['bboxes'] is not None:
+            bboxes = ret['bboxes']
+            shift = np.array([x1, y1, x1, y1])
+            bboxes += shift
+            ret['bboxes'] = bboxes
 
-        ret['bboxes'] = bboxes
-
-        return self.h_pad.restore(ret)
+        return ret
 
 
-class Random:
-    """See Also `torchvision.transforms.RandomCrop` or `albumentations.RandomCrop`"""
-
+class PadCrop:
     def __init__(self, is_pad=True, **pad_kwargs):
-        self.crop = Crop(is_pad=is_pad, **pad_kwargs)
+        self.is_pad = is_pad
+        self.pad = Pad(**pad_kwargs)
+        self.crop = Crop()
+
+    def __call__(self, image, dst_coor, bboxes=None, classes=None, **kwargs):
+        x1, x2, y1, y2 = dst_coor
+        h, w, c = image.shape
+
+        assert x1 >= 0 and y1 >= 0, ValueError(f'{x1 = } and {y1 = } must not be smaller than 0')
+
+        ret = dict(image=image, bboxes=bboxes)
+
+        if x2 > w or y2 > h:
+            if self.is_pad:
+                ret.update(self.pad(dst=(x2, y2), **ret))
+
+            else:
+                raise ValueError(f'image width = {w} and height = {h} must be greater than {x2 = } and {y2 = } or set pad=True')
+
+        ret.update(self.crop(**ret, dst_coor=dst_coor))
+        return ret
+
+    def apply_image(self, image, ret):
+        image = self.pad.apply_image(image, ret)
+        return self.crop.apply_image(image, ret)
+
+    def apply_bboxes_classes(self, bboxes, classes, ret):
+        return self.apply_bboxes_classes(bboxes, classes, ret)
+
+    def restore(self, ret):
+        ret = self.crop.restore(ret)
+        return self.pad.restore(ret)
+
+
+class Random(PadCrop):
+    """See Also `torchvision.transforms.RandomCrop` or `albumentations.RandomCrop`"""
 
     def __call__(self, image, dst, **kwargs):
         """(w, h) -> (dst, dst)"""
@@ -238,16 +284,13 @@ class Random:
         w_ = np.random.randint(w - dst) if w > dst else 0
         h_ = np.random.randint(h - dst) if h > dst else 0
 
-        return self.crop(image, (w_, w_ + dst, h_, h_ + dst), **kwargs)
-
-    def restore(self, ret):
-        return self.crop.restore(ret)
+        return super().__call__(image, (w_, w_ + dst, h_, h_ + dst), **kwargs)
 
 
-class Corner:
+class Corner(PadCrop):
     def __init__(self, pos=(LEFT, TOP), is_pad=True, **pad_kwargs):
         self.pos = pos
-        self.crop = Crop(is_pad=is_pad, **pad_kwargs)
+        super().__init__(is_pad=is_pad, **pad_kwargs)
 
     def __call__(self, image, dst, **kwargs):
         h, w, c = image.shape
@@ -263,10 +306,7 @@ class Corner:
         else:
             raise ValueError(f'dont support {self.pos = }')
 
-        return self.crop(image, (w_, w_ + dst, h_, h_ + dst), **kwargs)
-
-    def restore(self, ret):
-        return self.crop.restore(ret)
+        return super().__call__(image, (w_, w_ + dst, h_, h_ + dst), **kwargs)
 
 
 class FiveCrop:
@@ -309,11 +349,8 @@ class TenCrop:
         return rets
 
 
-class Center:
+class Center(PadCrop):
     """See Also `torchvision.transforms.CenterCrop` or `albumentations.CenterCrop`"""
-
-    def __init__(self, is_pad=True, **pad_kwargs):
-        self.crop = Crop(is_pad=is_pad, **pad_kwargs)
 
     def __call__(self, image, dst, **kwargs):
         h, w, c = image.shape
@@ -321,7 +358,4 @@ class Center:
         w_ = max(w - dst, 0) // 2
         h_ = max(h - dst, 0) // 2
 
-        return self.crop(image, (w_, w_ + dst, h_, h_ + dst), **kwargs)
-
-    def restore(self, ret):
-        return self.crop.restore(ret)
+        return super().__call__(image, (w_, w_ + dst, h_, h_ + dst), **kwargs)

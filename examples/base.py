@@ -68,7 +68,7 @@ class Process:
     dataset = BaseDataset
     setup_seed()
 
-    def __init__(self, model=None, model_version=None, dataset_version='ImageNet2012', device='1', input_size=224):
+    def __init__(self, model=None, model_version=None, dataset_version='ImageNet2012', device='1', input_size=224, out_features=None):
         self.device = torch.device(f"cuda:{device}" if torch.cuda.is_available() else "cpu") if device is not None else 'cpu'
         self.model = model
         self.model_version = model_version
@@ -78,25 +78,29 @@ class Process:
         self.model_path = f'{self.model_dir}/{self.dataset_version}/weight.pth'
         self.save_result_dir = f'cache_data/{self.dataset_version}'
         self.input_size = input_size
+        self.out_features = out_features
         self.logger = logging.getLogger()
 
     def model_info(self, depth=None, human_readable=True):
         profile = ModuleInfo.profile_per_layer(self.model, depth=depth)
-        s = f'module info: \n{"name":<20}{"module":<40}{"params":>10}{"grads":>10}\n'
+        s = f'module info: \n{"name":<20}{"module":<40}{"params":>10}{"grads":>10}  {"args"}\n'
 
         for p in profile:
             params = p[2]["params"]
             grads = p[2]["grads"]
+            args = p[2]["args"]
             if human_readable:
-                params = visualize.TextVisualize.human_readable_str(params)
-                grads = visualize.TextVisualize.human_readable_str(grads)
-            s += f'{p[0]:<20}{p[1]:<40}{params:>10}{grads:>10}\n'
+                params = visualize.TextVisualize.num_to_human_readable_str(params)
+                grads = visualize.TextVisualize.num_to_human_readable_str(grads)
+                args = visualize.TextVisualize.dict_to_str(args)
+                args = args or '-'
+            s += f'{p[0]:<20}{p[1]:<40}{params:>10}{grads:>10}  {args}\n'
 
         params = sum([p[2]["params"] for p in profile])
         grads = sum([p[2]["grads"] for p in profile])
         if human_readable:
-            params = visualize.TextVisualize.human_readable_str(params)
-            grads = visualize.TextVisualize.human_readable_str(grads)
+            params = visualize.TextVisualize.num_to_human_readable_str(params)
+            grads = visualize.TextVisualize.num_to_human_readable_str(grads)
 
         s += f'{"sum":<20}{"":<40}{params:>10}{grads:>10}\n'
 

@@ -16,7 +16,7 @@ from .base import Process, BaseDataset
 class ClsProcess(Process):
     dataset = BaseDataset
 
-    def fit(self, dataset, max_epoch, batch_size, save_period=None, dataloader_kwargs=dict()):
+    def fit(self, dataset, max_epoch, batch_size, save_period=None, **dataloader_kwargs):
         dataloader = DataLoader(
             dataset,
             shuffle=True,
@@ -407,14 +407,16 @@ class ResNet_ImageNet(ClsProcess):
     """
 
     def __init__(self):
-        from models.image_classifier.ResNet import Model
+        from models.image_classifier.ResNet import Model, Res50_config
+        # from torchvision.models.resnet import resnet50
 
         in_ch = 3
         input_size = 224
         out_features = 2
 
         super().__init__(
-            model=Model(in_ch, input_size, out_features),
+            model=Model(in_ch, input_size, out_features, backbone_config=Res50_config),
+            # model=resnet50(pretrained=False, ),
             model_version='ResNet',
             input_size=input_size
         )

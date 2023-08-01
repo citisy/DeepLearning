@@ -2,6 +2,7 @@ import torch
 from torch import nn
 import torch.nn.functional as F
 from utils.torch_utils import initialize_layers
+import numpy as np
 
 
 class BaseImgClsModel(nn.Module):
@@ -81,10 +82,10 @@ class ConvInModule(nn.Sequential):
         self.out_channels = out_ch
         self.input_size = input_size
 
-        # in_ch -> min_in_ch
-        # input_size -> min_input_size
+        # in_ch -> out_ch
+        # input_size -> output_size
         super().__init__(
-            Conv(in_ch, out_ch, (input_size - output_size) + 1, p=0, is_norm=False)
+            nn.Conv2d(in_ch, out_ch, (input_size - output_size) + 1)
         )
 
 
@@ -114,13 +115,16 @@ class Conv(nn.Sequential):
                 e.g. 'cna' gives conv - norm - act
 
         """
+        if p is None:
+            p = self.auto_p(k, s) if isinstance(k, int) else [self.auto_p(x, s) for x in k]
+
         self.is_act = is_act
         self.is_norm = is_norm
         self.in_channels = in_ch
         self.out_channels = out_ch
-
-        if p is None:
-            p = k // 2 if isinstance(k, int) else [x // 2 for x in k]
+        self.kernel_size = k
+        self.stride = s
+        self.padding = p
 
         layers = []
 
@@ -133,6 +137,15 @@ class Conv(nn.Sequential):
                 layers.append(act or nn.ReLU(True))
 
         super().__init__(*layers)
+
+    @staticmethod
+    def auto_p(k, s):
+        """auto pad to divisible totally
+        o=i/s+(2p-k)/s+1 -> p=(k-s)/2
+        e.g.
+            input_size=224, k=3, s=2 if output_size=224/s=112, p=(k-s)/2=0.5 -> 1
+        """
+        return int(np.ceil((k - s) / 2)) if k > s else 0
 
 
 class ConvT(nn.Sequential):
@@ -153,13 +166,16 @@ class ConvT(nn.Sequential):
                 e.g. 'cna' gives conv - norm - act
 
         """
+        if p is None:
+            p = self.auto_p(k, s) if isinstance(k, int) else [self.auto_p(x, s) for x in k]
+
         self.is_act = is_act
         self.is_norm = is_norm
         self.in_channels = in_ch
         self.out_channels = out_ch
-
-        if p is None:
-            p = k // 2 if isinstance(k, int) else [x // 2 for x in k]
+        self.kernel_size = k
+        self.stride = s
+        self.padding = p
 
         layers = []
 
@@ -172,6 +188,15 @@ class ConvT(nn.Sequential):
                 layers.append(act or nn.ReLU(True))
 
         super().__init__(*layers)
+
+    @staticmethod
+    def auto_p(k, s):
+        """auto pad to divisible totally
+        o=si+k-s-2p -> p=(k-s)/2
+        e.g.
+            input_size=224, k=4, s=2 if output_size=224*s=448, p=(k-s)/2=1
+        """
+        return int(np.ceil((k - s) / 2)) if k > s else 0
 
 
 class Linear(nn.Sequential):

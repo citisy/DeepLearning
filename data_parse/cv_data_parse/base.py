@@ -7,6 +7,7 @@ from pathlib import Path
 from collections import defaultdict
 from utils import os_lib, converter, visualize
 from typing import List
+from numbers import Number
 from .. import DataRegister
 
 
@@ -34,6 +35,46 @@ def save_image(obj, save_path, image_type):
         cv2.imwrite(save_path, obj)
     else:
         raise ValueError(f'Unknown input {image_type = }')
+
+
+class ImgClsDict:
+    # image file name, e.g. 'xxx.png'
+    _id: str = ''
+
+    # if `image_type = DataRegister.PATH`,, return a string
+    # if `image_type = DataRegister.ARRAY`,, return a np.ndarray from cv2.read()
+    image: str or np.ndarray = None
+
+    # usually an int number giving the pic class
+    _class: Number = None
+
+
+class ObjDetDict:
+    # image file name, e.g. 'xxx.png'
+    _id: str = ''
+
+    # if `image_type = DataRegister.PATH`,, return a string
+    # if `image_type = DataRegister.ARRAY`,, return a np.ndarray from cv2.read()
+    image: str or np.ndarray = None
+
+    # a np.ndarray with shape of (n_obj, 4), 4 gives [top_left_x, top_left_y, right_down_x, right_down_y] usually
+    bboxes: np.ndarray = None
+
+    # a np.ndarray with shape of (n_obj, )
+    classes: np.ndarray = None
+
+
+class ImgSegDict:
+    # image file name, e.g. 'xxx.png'
+    _id: str = ''
+
+    # if `image_type = DataRegister.PATH`,, return a string
+    # if `image_type = DataRegister.ARRAY`,, return a np.ndarray from cv2.read()
+    image: str or np.ndarray = None
+
+    # if `image_type = DataRegister.PATH`,, return a string
+    # if `image_type = DataRegister.ARRAY`,, return a np.ndarray from cv2.read()
+    pix_image: str or np.ndarray = None
 
 
 class DataLoader:
@@ -294,14 +335,14 @@ class DataVisualizer:
             visualizer([{'images': images, 'bboxes': bboxes, 'classes': classes}])
     """
 
-    def __init__(self, save_dir, verbose=True, stdout_method=print, **saver_kwargs):
+    def __init__(self, save_dir, pbar=True, **saver_kwargs):
         self.save_dir = save_dir
-        self.saver = os_lib.Saver(verbose=verbose, stdout_method=stdout_method, **saver_kwargs)
-        self.verbose = verbose
-        self.stdout_method = stdout_method
+        saver_kwargs.setdefault('verbose', not pbar)
+        self.saver = os_lib.Saver(**saver_kwargs)
+        self.pbar = pbar
         os_lib.mk_dir(save_dir)
 
-    def __call__(self, *iter_data, **visual_kwargs):
+    def __call__(self, *iter_data, max_vis_num=None, **visual_kwargs):
         """
 
         Args:
@@ -322,10 +363,15 @@ class DataVisualizer:
 
         """
         pbar = zip(*iter_data)
-        if self.verbose:
+        if self.pbar:
             pbar = tqdm(pbar, desc='visual')
 
+        vis_num = 0
+        max_vis_num = max_vis_num or float('inf')
         for rets in pbar:
+            if vis_num >= max_vis_num:
+                return
+
             images = []
             _id = 'tmp.png'
             for r in rets:
@@ -339,6 +385,7 @@ class DataVisualizer:
 
             image = self.concat_images(images)
             self.saver.save_img(image, f'{self.save_dir}/{_id}')
+            vis_num += 1
 
     def visual_one_image(self, r, **visual_kwargs):
         image = r['image']
@@ -346,7 +393,7 @@ class DataVisualizer:
         if 'bboxes' in r and r['bboxes'] is not None:
             bboxes = r['bboxes']
 
-            if 'classes' in r:
+            if 'classes' in r and r['classes'] is not None:
                 classes = r['classes']
 
                 if 'colors' in r:
