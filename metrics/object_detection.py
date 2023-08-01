@@ -152,7 +152,7 @@ class Iou:
         if union is None:
             union = Area.union_areas(box1, box2, inter)
 
-        return inter / union
+        return inter / (union + 1E-12)
 
     @staticmethod
     def siou(box1, box2, inter=None):
@@ -343,7 +343,6 @@ class ConfusionMatrix:
             iou: (N, M)
 
         """
-
         sort_idx = None
         if conf is not None:
             conf = np.array(conf)
@@ -355,9 +354,11 @@ class ConfusionMatrix:
                 true_class, pred_class = _class
                 if sort_idx is not None:
                     pred_class = pred_class[sort_idx]
-                offset = np.max(np.concatenate([gt_box, det_box], 0))
-                gt_box = gt_box + (true_class * offset)[:, None]
-                det_box = det_box + (pred_class * offset)[:, None]
+                tmp = np.concatenate([gt_box, det_box], 0)
+                if tmp.size:
+                    offset = np.max(tmp)
+                    gt_box = gt_box + (true_class * offset)[:, None]
+                    det_box = det_box + (pred_class * offset)[:, None]
 
             iou = self.iou_method(gt_box, det_box, **self.iou_method_kwarg)
 
@@ -435,8 +436,8 @@ class PR:
         op = np.concatenate(rs['op'])
         gt_idx = np.arange(len(cp), dtype=int)
         det_idx = np.arange(len(op), dtype=int)
-        gt_obj_idx = np.concatenate(gt_obj_idx)
-        det_obj_idx = np.concatenate(det_obj_idx)
+        gt_obj_idx = np.concatenate(gt_obj_idx).astype(np.int64)
+        det_obj_idx = np.concatenate(det_obj_idx).astype(np.int64)
 
         results = {}
         if classes is None:
@@ -876,10 +877,11 @@ class EasyMetric:
                 for _ in false_obj_idx:
                     det_class[_] = -1
 
-                tmp_gt = [dict(_id=_id, image=image, bboxes=gt_box, classes=gt_class)]
+                tmp_ori = [dict(_id=_id, image=image)]
+                tmp_gt = [dict(image=image, bboxes=gt_box, classes=gt_class)]
                 tmp_det = [dict(image=image, bboxes=det_box, classes=det_class, confs=conf)]
                 visualizer = DataVisualizer(save_dir, verbose=self.verbose, stdout_method=self.stdout_method)
-                visualizer(tmp_gt, tmp_det, cls_alias=cls_alias)
+                visualizer(tmp_ori, tmp_gt, tmp_det, cls_alias=cls_alias)
 
         return ret
 
@@ -970,7 +972,7 @@ class EasyMetric:
             det_class = det_classes[i]
             det_box = det_boxes[i]
 
-            image = os_lib.loader.load_img(f'{rets[_id]["image_dir"]}/{_id}')
+            image = os_lib.Loader(verbose=self.verbose).load_img(f'{rets[_id]["image_dir"]}/{_id}')
 
             gt_class = [int(c) for c in gt_class]
             det_class = [int(c) for c in det_class]
@@ -991,10 +993,11 @@ class EasyMetric:
                 for _ in false_obj_idx:
                     gt_class[_] = -1
 
-            tmp_gt = [dict(_id=_id, image=image, bboxes=gt_box, classes=gt_class, confs=gt_conf)]
+            tmp_ori = [dict(_id=_id, image=image)]
+            tmp_gt = [dict(image=image, bboxes=gt_box, classes=gt_class, confs=gt_conf)]
             tmp_det = [dict(image=image, bboxes=det_box, classes=det_class, confs=det_conf)]
-            visualizer = DataVisualizer(save_dir, verbose=self.verbose, stdout_method=self.stdout_method)
-            visualizer(tmp_gt, tmp_det, cls_alias=cls_alias)
+            visualizer = DataVisualizer(save_dir, pbar=False, verbose=self.verbose, stdout_method=self.stdout_method)
+            visualizer(tmp_ori, tmp_gt, tmp_det, cls_alias=cls_alias)
 
         return ret1, ret2
 
