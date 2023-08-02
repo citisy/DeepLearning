@@ -34,55 +34,6 @@ class OdDataset(BaseDataset):
 
 
 class OdProcess(Process):
-    dataset = OdDataset
-
-    def get_train_data(self):
-        """example"""
-        from data_parse.cv_data_parse.Voc import Loader
-
-        loader = Loader(f'data/VOC2012')
-        data = loader(set_type=DataRegister.TRAIN, image_type=DataRegister.PATH, generator=False, task='')[0]
-
-        return data
-
-    def data_augment(self, ret):
-        ret.update(RandomApply([geometry.HFlip()])(**ret))
-        ret.update(dst=self.input_size)
-        ret.update(Apply([
-            scale.LetterBox(),
-            # pixel_perturbation.MinMax(),
-            # pixel_perturbation.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-            channel.HWC2CHW()
-        ])(**ret))
-        return ret
-
-    def complex_data_augment(self, idx, data, base_process):
-        return base_process(idx)
-
-    def val_data_augment(self, ret):
-        ret.update(dst=self.input_size)
-        ret.update(Apply([
-            scale.LetterBox(),
-            # pixel_perturbation.MinMax(),
-            # pixel_perturbation.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-            channel.HWC2CHW()
-        ])(**ret))
-        return ret
-
-    def val_data_restore(self, ret):
-        ret = scale.LetterBox().restore(ret)
-        return ret
-
-    def get_val_data(self):
-        """example"""
-        from data_parse.cv_data_parse.Voc import Loader
-
-        loader = Loader(f'data/VOC2012')
-        data = loader(set_type=DataRegister.VAL, image_type=DataRegister.PATH, generator=False, task='')[0]
-        # data = data[:20]
-
-        return data
-
     def fit(self, dataset, max_epoch, batch_size, save_period=None, **dataloader_kwargs):
         # sampler = distributed.DistributedSampler(dataset, shuffle=True)
         dataloader = DataLoader(
@@ -266,7 +217,58 @@ class OdProcess(Process):
         return result
 
 
-class FastererRCNN_Voc(OdProcess):
+class Voc(Process):
+    dataset = OdDataset
+
+    def get_train_data(self):
+        """example"""
+        from data_parse.cv_data_parse.Voc import Loader
+
+        loader = Loader(f'data/VOC2012')
+        data = loader(set_type=DataRegister.TRAIN, image_type=DataRegister.PATH, generator=False, task='')[0]
+
+        return data
+
+    def data_augment(self, ret):
+        ret.update(RandomApply([geometry.HFlip()])(**ret))
+        ret.update(dst=self.input_size)
+        ret.update(Apply([
+            scale.LetterBox(),
+            # pixel_perturbation.MinMax(),
+            # pixel_perturbation.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+            channel.HWC2CHW()
+        ])(**ret))
+        return ret
+
+    def complex_data_augment(self, idx, data, base_process):
+        return base_process(idx)
+
+    def val_data_augment(self, ret):
+        ret.update(dst=self.input_size)
+        ret.update(Apply([
+            scale.LetterBox(),
+            # pixel_perturbation.MinMax(),
+            # pixel_perturbation.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+            channel.HWC2CHW()
+        ])(**ret))
+        return ret
+
+    def val_data_restore(self, ret):
+        ret = scale.LetterBox().restore(ret)
+        return ret
+
+    def get_val_data(self):
+        """example"""
+        from data_parse.cv_data_parse.Voc import Loader
+
+        loader = Loader(f'data/VOC2012')
+        data = loader(set_type=DataRegister.VAL, image_type=DataRegister.PATH, generator=False, task='')[0]
+        # data = data[:20]
+
+        return data
+
+
+class FastererRCNN_Voc(OdProcess, Voc):
     """
     Usage:
         .. code-block:: python
@@ -353,18 +355,8 @@ class YoloV5(OdProcess):
 
         return ret
 
-    def val_data_augment(self, ret):
-        ret.update(dst=self.input_size)
-        ret.update(Apply([
-            scale.LetterBox(),
-            # pixel_perturbation.MinMax(),
-            # pixel_perturbation.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-            channel.HWC2CHW()
-        ])(**ret))
-        return ret
 
-
-class YoloV5_Voc(YoloV5):
+class YoloV5_Voc(YoloV5, Voc):
     """
     Usage:
         .. code-block:: python
@@ -379,36 +371,42 @@ class YoloV5_Voc(YoloV5):
         super().__init__(dataset_version=dataset_version, **kwargs)
 
 
-class YoloV5_yolov5(YoloV5):
-    def __init__(self, classes=None, dataset_version='yolov5', **kwargs):
-        if 'n_classes' not in kwargs:
-            kwargs['n_classes'] = len(classes)
-
-        super().__init__(dataset_version=dataset_version, **kwargs)
-
+class Yolov5Dataset(Process):
     def get_train_data(self):
         from data_parse.cv_data_parse.YoloV5 import Loader, DataRegister
 
+        convert_func = lambda ret: converter.CoordinateConvert.mid_xywh2top_xyxy(
+            ret['bboxes'],
+            wh=(ret['image'].shape[1], ret['image'].shape[0]),
+            blow_up=True
+        )
+
         loader = Loader('yolov5/data_mapping')
+        loader.convert_func = convert_func
         data = loader(set_type=DataRegister.TRAIN, image_type=DataRegister.PATH, generator=False, sub_dir='')[0]
 
         return data
 
-    def data_augment(self, ret):
-        image = ret['image']
-        ret['bboxes'] = converter.CoordinateConvert.mid_xywh2top_xyxy(ret['bboxes'], wh=(image.shape[1], image.shape[0]), blow_up=True)
-        return super().data_augment(ret)
-
     def get_val_data(self):
         from data_parse.cv_data_parse.YoloV5 import Loader, DataRegister
 
+        convert_func = lambda ret: converter.CoordinateConvert.mid_xywh2top_xyxy(
+            ret['bboxes'],
+            wh=(ret['image'].shape[1], ret['image'].shape[0]),
+            blow_up=True
+        )
+
         loader = Loader('yolov5/data_mapping')
+        loader.convert_func = convert_func
         data = loader(set_type=DataRegister.VAL, image_type=DataRegister.PATH, generator=False, sub_dir='')[0]
         # data = data[:20]
 
         return data
 
-    def val_data_augment(self, ret):
-        image = ret['image']
-        ret['bboxes'] = converter.CoordinateConvert.mid_xywh2top_xyxy(ret['bboxes'], wh=(image.shape[1], image.shape[0]), blow_up=True)
-        return super().val_data_augment(ret)
+
+class YoloV5_yolov5(YoloV5, Yolov5Dataset):
+    def __init__(self, classes=None, dataset_version='yolov5', **kwargs):
+        if 'n_classes' not in kwargs:
+            kwargs['n_classes'] = len(classes)
+
+        super().__init__(dataset_version=dataset_version, **kwargs)

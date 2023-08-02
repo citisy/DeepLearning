@@ -224,7 +224,7 @@ class Linear(nn.Sequential):
 
 
 class Cache(nn.Module):
-    def __init__(self, idx=None, replace=False):
+    def __init__(self, idx=None, replace=True):
         super().__init__()
         self.idx = idx
         self.replace = replace

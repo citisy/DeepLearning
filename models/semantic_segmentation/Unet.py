@@ -5,14 +5,15 @@ from ..layers import Conv, ConvInModule, ConvT
 # top(outer) -> bottom(inner)
 # in_ches, hidden_ches, out_ches
 unet256_config = (
-    [3, 64, 64 * 2, 64 * 4, *[64 * 8] * 3, 64 * 8],     # in_ches
-    [64, 64*2, 64 * 4, 64 * 8, *[64 * 8] * 3, 64 * 8],  # hidden_ches
-    [3, 64, 64 * 2, 64 * 4, *[64 * 8] * 3, 64 * 8],     # out_ches
+    [3, 64, 64 * 2, 64 * 4, *[64 * 8] * 3, 64 * 8],  # in_ches
+    [64, 64 * 2, 64 * 4, 64 * 8, *[64 * 8] * 3, 64 * 8],  # hidden_ches
+    [3, 64, 64 * 2, 64 * 4, *[64 * 8] * 3, 64 * 8],  # out_ches
 )
 
 
 class Model(nn.Module):
     """refer to [U-Net: Convolutional Networks for Biomedical Image Segmentation](https://arxiv.org/pdf/1505.04597.pdf)"""
+
     def __init__(self, in_ch, input_size, in_module=None, conv_config=unet256_config):
         super().__init__()
         in_ches, hidden_ches, out_ches = conv_config
@@ -28,6 +29,12 @@ class Model(nn.Module):
         x = self.input(x)
         x = self.backbone(x)
         return x
+
+
+class PureModel(nn.Sequential):
+    def __init__(self, conv_config=unet256_config):
+        in_ches, hidden_ches, out_ches = conv_config
+        super().__init__(CurBlock(in_ches, hidden_ches, out_ches, is_top_block=True))
 
 
 class CurBlock(nn.Module):

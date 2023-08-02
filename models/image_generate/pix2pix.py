@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 from ..layers import Conv
 from utils.torch_utils import initialize_layers
-from ..semantic_segmentation.Unet import Model as NetG, unet256_config
+from ..semantic_segmentation.Unet import PureModel as NetG, unet256_config
 
 net_g_config = dict(
     conv_config=unet256_config
@@ -23,12 +23,12 @@ class Model(nn.ModuleList):
         - https://github.com/junyanz/pytorch-CycleGAN-and-pix2pix
     """
 
-    def __init__(self, in_ch, input_size, net_g_config=net_g_config, net_d_config=net_d_config,
+    def __init__(self, in_ch, net_g_config=net_g_config, net_d_config=net_d_config,
                  lambda_l1=100.0, real_label=1., fake_label=0.,
                  **kwargs):
         super().__init__()
 
-        self.net_g = NetG(in_ch, input_size, **net_g_config)
+        self.net_g = NetG(**net_g_config)
         self.net_d = NetD(in_ch * 2, **net_d_config)
 
         initialize_layers(self.net_g)

@@ -19,7 +19,7 @@ class Model(nn.ModuleList):
         - https://github.com/junyanz/pytorch-CycleGAN-and-pix2pix
     """
 
-    def __init__(self, in_ch, input_size, net_g_config=net_g_config, net_d_config=net_d_config,
+    def __init__(self, in_ch, net_g_config=net_g_config, net_d_config=net_d_config,
                  lambda_identity=0.5, real_label=1., fake_label=0.,
                  **kwargs):
         super().__init__()

@@ -68,7 +68,7 @@ class Process:
     dataset = BaseDataset
     setup_seed()
 
-    def __init__(self, model=None, model_version=None, dataset_version='ImageNet2012', device='1', input_size=224, out_features=None):
+    def __init__(self, model=None, model_version='', dataset_version='', device=0, input_size=224, out_features=None):
         self.device = torch.device(f"cuda:{device}" if torch.cuda.is_available() else "cpu") if device is not None else 'cpu'
         self.model = model
         self.model_version = model_version

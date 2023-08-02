@@ -80,10 +80,10 @@ class SegProcess(Process):
                 optimizer.zero_grad()
 
                 # with torch.cuda.amp.autocast(True):
-                output = self.model(images, pix_images)
-                loss = output['loss']
-                # output = self.model(images)
-                # loss = F.cross_entropy(output['out'], pix_images, ignore_index=255)
+                # output = self.model(images, pix_images)
+                # loss = output['loss']
+                output = self.model(images)
+                loss = F.cross_entropy(output['out'], pix_images, ignore_index=255)
 
                 loss.backward()
                 optimizer.step()
@@ -118,6 +118,7 @@ class SegProcess(Process):
             **dataloader_kwargs
         )
 
+        self.model.to(self.device)
         pred = []
         true = []
         max_vis_num = max_vis_num or float('inf')
@@ -130,8 +131,8 @@ class SegProcess(Process):
                 images = torch.stack(images)
                 images = images / 255
 
-                pred_images = self.model(images).cpu().detach().numpy().astype(np.uint8)
-                # pred_images = self.model(images)['out'].argmax(1).cpu().detach().numpy().astype(np.uint8)
+                # pred_images = self.model(images).cpu().detach().numpy().astype(np.uint8)
+                pred_images = self.model(images)['out'].argmax(1).cpu().detach().numpy().astype(np.uint8)
                 pred.append(pred_images)
                 true.append([ret.pop('pix_image') for ret in rets])
 
@@ -178,6 +179,8 @@ class SegProcess(Process):
 
         return result
 
+
+class Voc(Process):
     def data_augment(self, ret):
         ret.update(dst=self.input_size)
         ret.update(Apply([
@@ -225,18 +228,21 @@ class SegProcess(Process):
         return loader(set_type=DataRegister.VAL, generator=False, image_type=DataRegister.PATH, set_task=SEG_CLS)[0]
 
 
-class FCN_Voc(SegProcess):
+class FCN_Voc(SegProcess, Voc):
     def __init__(self, model_version='FCN', dataset_version='Voc',
                  input_size=512, in_ch=3, out_features=20, **kwargs):
-        from models.semantic_segmentation.FCN import Model
-        # from torchvision.models.segmentation.fcn import fcn_resnet50
+        # from models.semantic_segmentation.FCN import Model
+        from torchvision.models.segmentation.fcn import fcn_resnet50
         super().__init__(
-            model=Model(
-                in_ch=in_ch,
-                input_size=input_size,
-                out_features=out_features
+            # model=Model(
+            #     in_ch=in_ch,
+            #     input_size=input_size,
+            #     out_features=out_features
+            # ),
+            model=fcn_resnet50(
+                num_classes=21, aux_loss=False,
+                # pretrained=False, pretrained_backbone=False
             ),
-            # model=fcn_resnet50(num_classes=21, aux_loss=False, pretrained=False, pretrained_backbone=False),
             model_version=model_version,
             dataset_version=dataset_version,
             input_size=input_size,

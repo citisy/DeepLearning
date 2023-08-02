@@ -90,9 +90,7 @@ class ClsProcess(Process):
                 images = torch.stack(images)
                 images = images / 255
 
-                p = self.model(images)['pred'].cpu().detach().numpy()
-                p = np.argmax(p, axis=1)
-
+                p = self.model(images)['pred'].argmax(1).cpu().detach().numpy()
                 pred.extend(p.tolist())
                 true.extend([ret['_class'] for ret in rets])
 
@@ -112,7 +110,55 @@ class ClsProcess(Process):
 
         return result
 
+
+class Mnist(Process):
+    def get_train_data(self):
+        from data_parse.cv_data_parse.Mnist import Loader
+
+        loader = Loader('data/mnist')
+        return loader(set_type=DataRegister.TRAIN, image_type=DataRegister.ARRAY, generator=False)[0]
+
+    def get_val_data(self):
+        from data_parse.cv_data_parse.Mnist import Loader
+
+        loader = Loader('data/mnist')
+        return loader(set_type=DataRegister.TEST, image_type=DataRegister.ARRAY, generator=False)[0]
+
     def data_augment(self, ret):
+        ret.update(RandomApply([
+            geometry.HFlip(),
+            geometry.VFlip(),
+        ])(**ret))
+        ret.update(Apply([
+            channel.HWC2CHW()
+        ])(**ret))
+        return ret
+
+    def val_data_augment(self, ret):
+        ret.update(Apply([
+            channel.HWC2CHW()
+        ])(**ret))
+        return ret
+
+
+class Cifar(Process):
+    def get_train_data(self):
+        from data_parse.cv_data_parse.Cifar import Loader
+
+        loader = Loader('data/cifar-10-batches-py')
+        return loader(set_type=DataRegister.TRAIN, image_type=DataRegister.ARRAY, generator=False)[0]
+
+    def get_val_data(self):
+        from data_parse.cv_data_parse.Cifar import Loader
+
+        loader = Loader('data/cifar-10-batches-py')
+        return loader(set_type=DataRegister.TEST, image_type=DataRegister.ARRAY, generator=False)[0]
+
+
+class ImageNet(Process):
+    def data_augment(self, ret):
+        ret.update(dst=256)
+        ret.update(scale.Proportion()(**ret))
         ret.update(dst=self.input_size)
         ret.update(crop.Random()(**ret))
         ret.update(RandomApply([
@@ -126,7 +172,6 @@ class ClsProcess(Process):
         return ret
 
     def get_train_data(self):
-        """example"""
         from data_parse.cv_data_parse.ImageNet import Loader
 
         convert_class = {7: 0, 40: 1}
@@ -156,7 +201,6 @@ class ClsProcess(Process):
         return ret
 
     def get_val_data(self):
-        """example"""
         from data_parse.cv_data_parse.ImageNet import Loader
 
         convert_class = {7: 0, 40: 1}
@@ -179,7 +223,7 @@ class ClsProcess(Process):
         return data
 
 
-class LeNet_mnist(ClsProcess):
+class LeNet_mnist(ClsProcess, Mnist):
     """
     Usage:
         .. code-block:: python
@@ -190,49 +234,25 @@ class LeNet_mnist(ClsProcess):
             {'score': 0.9899}
     """
 
-    def __init__(self):
+    def __init__(self,
+                 in_ch=1,
+                 input_size=28,
+                 out_features=10,
+                 model_version='LeNet',
+                 dataset_version='mnist',
+                 **kwargs
+                 ):
         from models.image_classifier.LeNet import Model
-
-        in_ch = 1
-        input_size = 28
-        out_features = 10
 
         super().__init__(
             model=Model(in_ch, input_size, out_features),
-            model_version='LeNet',
-            dataset_version='mnist'
+            model_version=model_version,
+            dataset_version=dataset_version,
+            **kwargs
         )
 
-    def get_train_data(self):
-        from data_parse.cv_data_parse.Mnist import Loader
 
-        loader = Loader('data/mnist')
-        return loader(set_type=DataRegister.TRAIN, image_type=DataRegister.ARRAY, generator=False)[0]
-
-    def get_val_data(self):
-        from data_parse.cv_data_parse.Mnist import Loader
-
-        loader = Loader('data/mnist')
-        return loader(set_type=DataRegister.TEST, image_type=DataRegister.ARRAY, generator=False)[0]
-
-    def data_augment(self, ret):
-        ret.update(RandomApply([
-            geometry.HFlip(),
-            geometry.VFlip(),
-        ])(**ret))
-        ret.update(Apply([
-            channel.HWC2CHW()
-        ])(**ret))
-        return ret
-
-    def val_data_augment(self, ret):
-        ret.update(Apply([
-            channel.HWC2CHW()
-        ])(**ret))
-        return ret
-
-
-class LeNet_cifar(ClsProcess):
+class LeNet_cifar(ClsProcess, Cifar):
     """
     Usage:
         .. code-block:: python
@@ -243,34 +263,26 @@ class LeNet_cifar(ClsProcess):
             {'score': 0.6082}
     """
 
-    def __init__(self):
+    def __init__(self,
+                 in_ch=3,
+                 input_size=32,
+                 out_features=10,
+                 model_version='LeNet',
+                 dataset_version='cifar-10-batches-py',
+                 **kwargs
+                 ):
         from models.image_classifier.LeNet import Model
-
-        in_ch = 3
-        input_size = 32
-        out_features = 10
 
         super().__init__(
             model=Model(in_ch, input_size, out_features),
-            model_version='LeNet',
-            dataset_version='cifar-10-batches-py',
-            input_size=input_size
+            model_version=model_version,
+            dataset_version=dataset_version,
+            input_size=input_size,
+            **kwargs
         )
 
-    def get_train_data(self):
-        from data_parse.cv_data_parse.Cifar import Loader
 
-        loader = Loader('data/cifar-10-batches-py')
-        return loader(set_type=DataRegister.TRAIN, image_type=DataRegister.ARRAY, generator=False)[0]
-
-    def get_val_data(self):
-        from data_parse.cv_data_parse.Cifar import Loader
-
-        loader = Loader('data/cifar-10-batches-py')
-        return loader(set_type=DataRegister.TEST, image_type=DataRegister.ARRAY, generator=False)[0]
-
-
-class AlexNet_ImageNet(ClsProcess):
+class AlexNet_ImageNet(ClsProcess, ImageNet):
     """
     Usage:
         .. code-block:: python
@@ -281,26 +293,26 @@ class AlexNet_ImageNet(ClsProcess):
             {'p': 0.8461538461538461, 'r': 0.88, 'f': 0.8627450980392156}
     """
 
-    def __init__(self):
+    def __init__(self,
+                 in_ch=3,
+                 input_size=224,
+                 out_features=2,
+                 model_version='AlexNet',
+                 dataset_version='ImageNet2012',
+                 **kwargs
+                 ):
         from models.image_classifier.AlexNet import Model
-
-        in_ch = 3
-        input_size = 224
-        out_features = 2
 
         super().__init__(
             model=Model(in_ch, input_size, out_features),
-            model_version='AlexNet',
-            input_size=input_size
+            model_version=model_version,
+            dataset_version=dataset_version,
+            input_size=input_size,
+            **kwargs
         )
 
-    def data_augment(self, ret):
-        ret.update(dst=256)
-        ret.update(scale.Proportion()(**ret))
-        return super().data_augment(ret)
 
-
-class Vgg_ImageNet(ClsProcess):
+class Vgg_ImageNet(ClsProcess, ImageNet):
     """
     Usage:
         .. code-block:: python
@@ -311,17 +323,22 @@ class Vgg_ImageNet(ClsProcess):
             {'p': 0.9230769230769231, 'r': 0.96, 'f': 0.9411764705882353, 'score': 0.9411764705882353}
     """
 
-    def __init__(self):
+    def __init__(self,
+                 in_ch=3,
+                 input_size=224,
+                 out_features=2,
+                 model_version='Vgg',
+                 dataset_version='ImageNet2012',
+                 **kwargs
+                 ):
         from models.image_classifier.VGG import Model
-
-        in_ch = 3
-        input_size = 224
-        out_features = 2
 
         super().__init__(
             model=Model(in_ch, input_size, out_features),
-            model_version='Vgg',
-            input_size=input_size
+            model_version=model_version,
+            dataset_version=dataset_version,
+            input_size=input_size,
+            **kwargs
         )
 
     def data_augment(self, ret):
@@ -335,7 +352,7 @@ class Vgg_ImageNet(ClsProcess):
         return ret
 
 
-class InceptionV1_ImageNet(ClsProcess):
+class InceptionV1_ImageNet(ClsProcess, ImageNet):
     """
     Usage:
         .. code-block:: python
@@ -346,26 +363,26 @@ class InceptionV1_ImageNet(ClsProcess):
             {'p': 0.8363636363636363, 'r': 0.92, 'f': 0.8761904761904761, 'score': 0.8761904761904761}
     """
 
-    def __init__(self):
+    def __init__(self,
+                 in_ch=3,
+                 input_size=224,
+                 out_features=2,
+                 model_version='InceptionV1',
+                 dataset_version='ImageNet2012',
+                 **kwargs
+                 ):
         from models.image_classifier.InceptionV1 import Model
-        input_size = 224
-
-        in_ch = 3
-        out_features = 2
 
         super().__init__(
             model=Model(in_ch, input_size, out_features),
-            model_version='InceptionV1',
-            input_size=input_size
+            model_version=model_version,
+            dataset_version=dataset_version,
+            input_size=input_size,
+            **kwargs
         )
 
-    def data_augment(self, ret):
-        ret.update(dst=256)
-        ret.update(scale.Proportion()(**ret))
-        return super().data_augment(ret)
 
-
-class InceptionV3_ImageNet(ClsProcess):
+class InceptionV3_ImageNet(ClsProcess, ImageNet):
     """
     Usage:
         .. code-block:: python
@@ -376,26 +393,26 @@ class InceptionV3_ImageNet(ClsProcess):
             {'p': 0.98, 'r': 0.98, 'f': 0.98, 'score': 0.98}
     """
 
-    def __init__(self):
+    def __init__(self,
+                 in_ch=3,
+                 input_size=299,
+                 out_features=2,
+                 model_version='InceptionV3',
+                 dataset_version='ImageNet2012',
+                 **kwargs
+                 ):
         from models.image_classifier.InceptionV3 import InceptionV3 as Model
-        input_size = 299
-
-        in_ch = 3
-        out_features = 2
 
         super().__init__(
             model=Model(in_ch, input_size, out_features),
-            model_version='InceptionV3',
-            input_size=input_size
+            model_version=model_version,
+            dataset_version=dataset_version,
+            input_size=input_size,
+            **kwargs
         )
 
-    def data_augment(self, ret):
-        ret.update(dst=256)
-        ret.update(scale.Proportion()(**ret))
-        return super().data_augment(ret)
 
-
-class ResNet_ImageNet(ClsProcess):
+class ResNet_ImageNet(ClsProcess, ImageNet):
     """
     Usage:
         .. code-block:: python
@@ -406,19 +423,22 @@ class ResNet_ImageNet(ClsProcess):
             {'p': 0.9230769230769231, 'r': 0.96, 'f': 0.9411764705882353, 'score': 0.9411764705882353}
     """
 
-    def __init__(self):
+    def __init__(self,
+                 in_ch=3,
+                 input_size=224,
+                 out_features=2,
+                 model_version='ResNet',
+                 dataset_version='ImageNet2012',
+                 **kwargs
+                 ):
         from models.image_classifier.ResNet import Model, Res50_config
-        # from torchvision.models.resnet import resnet50
-
-        in_ch = 3
-        input_size = 224
-        out_features = 2
 
         super().__init__(
-            model=Model(in_ch, input_size, out_features, backbone_config=Res50_config),
-            # model=resnet50(pretrained=False, ),
-            model_version='ResNet',
-            input_size=input_size
+            model=Model(in_ch, input_size, out_features),
+            model_version=model_version,
+            dataset_version=dataset_version,
+            input_size=input_size,
+            **kwargs
         )
 
     def data_augment(self, ret):
@@ -432,7 +452,7 @@ class ResNet_ImageNet(ClsProcess):
         return ret
 
 
-class DenseNet_ImageNet(ClsProcess):
+class DenseNet_ImageNet(ClsProcess, ImageNet):
     """
     Usage:
         .. code-block:: python
@@ -443,26 +463,26 @@ class DenseNet_ImageNet(ClsProcess):
             {'p': 0.819672131147541, 'r': 1.0, 'f': 0.9009009009009009, 'score': 0.9009009009009009}
     """
 
-    def __init__(self):
+    def __init__(self,
+                 in_ch=3,
+                 input_size=224,
+                 out_features=2,
+                 model_version='DenseNet',
+                 dataset_version='ImageNet2012',
+                 **kwargs
+                 ):
         from models.image_classifier.DenseNet import Model
-
-        in_ch = 3
-        input_size = 224
-        out_features = 2
 
         super().__init__(
             model=Model(in_ch, input_size, out_features),
-            model_version='DenseNet',
-            input_size=input_size
+            model_version=model_version,
+            dataset_version=dataset_version,
+            input_size=input_size,
+            **kwargs
         )
 
-    def data_augment(self, ret):
-        ret.update(dst=256)
-        ret.update(scale.Proportion()(**ret))
-        return super().data_augment(ret)
 
-
-class SENet_ImageNet(ClsProcess):
+class SENet_ImageNet(ClsProcess, ImageNet):
     """
     Usage:
         .. code-block:: python
@@ -473,26 +493,26 @@ class SENet_ImageNet(ClsProcess):
             {'p': 0.847457627118644, 'r': 1.0, 'f': 0.9174311926605504, 'score': 0.9174311926605504}
     """
 
-    def __init__(self):
+    def __init__(self,
+                 in_ch=3,
+                 input_size=224,
+                 out_features=2,
+                 model_version='SENet',
+                 dataset_version='ImageNet2012',
+                 **kwargs
+                 ):
         from models.image_classifier.SEInception import Model
-
-        in_ch = 3
-        input_size = 224
-        out_features = 2
 
         super().__init__(
             model=Model(in_ch, input_size, out_features),
-            model_version='SENet',
-            input_size=input_size
+            model_version=model_version,
+            dataset_version=dataset_version,
+            input_size=input_size,
+            **kwargs
         )
 
-    def data_augment(self, ret):
-        ret.update(dst=256)
-        ret.update(scale.Proportion()(**ret))
-        return super().data_augment(ret)
 
-
-class SqueezeNet_ImageNet(ClsProcess):
+class SqueezeNet_ImageNet(ClsProcess, ImageNet):
     """
     Usage:
         .. code-block:: python
@@ -503,26 +523,26 @@ class SqueezeNet_ImageNet(ClsProcess):
             {'p': 0.7538461538461538, 'r': 0.98, 'f': 0.8521739130434782, 'score': 0.8521739130434782}
     """
 
-    def __init__(self):
+    def __init__(self,
+                 in_ch=3,
+                 input_size=224,
+                 out_features=2,
+                 model_version='SqueezeNet',
+                 dataset_version='ImageNet2012',
+                 **kwargs
+                 ):
         from models.image_classifier.SqueezeNet import Model
-
-        in_ch = 3
-        input_size = 224
-        out_features = 2
 
         super().__init__(
             model=Model(in_ch, input_size, out_features),
-            model_version='SqueezeNet',
-            input_size=input_size
+            model_version=model_version,
+            dataset_version=dataset_version,
+            input_size=input_size,
+            **kwargs
         )
 
-    def data_augment(self, ret):
-        ret.update(dst=256)
-        ret.update(scale.Proportion()(**ret))
-        return super().data_augment(ret)
 
-
-class MobileNetV1_ImageNet(ClsProcess):
+class MobileNetV1_ImageNet(ClsProcess, ImageNet):
     """
     Usage:
         .. code-block:: python
@@ -533,26 +553,26 @@ class MobileNetV1_ImageNet(ClsProcess):
             {'p': 0.9795918367346939, 'r': 0.96, 'f': 0.9696969696969697, 'score': 0.9696969696969697}
     """
 
-    def __init__(self):
+    def __init__(self,
+                 in_ch=3,
+                 input_size=224,
+                 out_features=2,
+                 model_version='MobileNetV1',
+                 dataset_version='ImageNet2012',
+                 **kwargs
+                 ):
         from models.image_classifier.MobileNetV1 import Model
-
-        in_ch = 3
-        input_size = 224
-        out_features = 2
 
         super().__init__(
             model=Model(in_ch, input_size, out_features),
-            model_version='MobileNetV1',
-            input_size=input_size
+            model_version=model_version,
+            dataset_version=dataset_version,
+            input_size=input_size,
+            **kwargs
         )
 
-    def data_augment(self, ret):
-        ret.update(dst=256)
-        ret.update(scale.Proportion()(**ret))
-        return super().data_augment(ret)
 
-
-class ShuffleNetV1_ImageNet(ClsProcess):
+class ShuffleNetV1_ImageNet(ClsProcess, ImageNet):
     """
     Usage:
         .. code-block:: python
@@ -563,26 +583,26 @@ class ShuffleNetV1_ImageNet(ClsProcess):
             {'p': 0.8679245283018868, 'r': 0.92, 'f': 0.8932038834951457, 'score': 0.8932038834951457}
     """
 
-    def __init__(self):
+    def __init__(self,
+                 in_ch=3,
+                 input_size=224,
+                 out_features=2,
+                 model_version='ShuffleNet',
+                 dataset_version='ImageNet2012',
+                 **kwargs
+                 ):
         from models.image_classifier.ShuffleNetV1 import Model
-
-        in_ch = 3
-        input_size = 224
-        out_features = 2
 
         super().__init__(
             model=Model(in_ch, input_size, out_features),
-            model_version='ShuffleNet',
-            input_size=input_size
+            model_version=model_version,
+            dataset_version=dataset_version,
+            input_size=input_size,
+            **kwargs
         )
 
-    def data_augment(self, ret):
-        ret.update(dst=256)
-        ret.update(scale.Proportion()(**ret))
-        return super().data_augment(ret)
 
-
-class IGC_cifar(ClsProcess):
+class IGC_cifar(ClsProcess, ImageNet):
     """
     Usage:
         .. code-block:: python
@@ -593,18 +613,22 @@ class IGC_cifar(ClsProcess):
             {'score': 0.8058}
     """
 
-    def __init__(self):
+    def __init__(self,
+                 in_ch=3,
+                 input_size=32,
+                 out_features=10,
+                 model_version='IGC',
+                 dataset_version='cifar-10-batches-py',
+                 **kwargs
+                 ):
         from models.image_classifier.IGCV1 import Model
-
-        in_ch = 3
-        input_size = 32
-        out_features = 10
 
         super().__init__(
             model=Model(in_module=SimpleInModule(out_channels=in_ch), out_features=out_features),
-            model_version='IGC',
-            dataset_version='cifar-10-batches-py',
-            input_size=input_size
+            model_version=model_version,
+            dataset_version=dataset_version,
+            input_size=input_size,
+            **kwargs
         )
 
         self.input_size = input_size
@@ -622,7 +646,7 @@ class IGC_cifar(ClsProcess):
         return loader(set_type=DataRegister.TEST, image_type=DataRegister.ARRAY, generator=False)[0]
 
 
-class CondenseNet_ImageNet(ClsProcess):
+class CondenseNet_ImageNet(ClsProcess, ImageNet):
     """
     Usage:
         .. code-block:: python
@@ -633,20 +657,20 @@ class CondenseNet_ImageNet(ClsProcess):
             {'p': 0.9333333333333333, 'r': 0.84, 'f': 0.8842105263157894, 'score': 0.8842105263157894}
     """
 
-    def __init__(self):
+    def __init__(self,
+                 in_ch=3,
+                 input_size=224,
+                 out_features=2,
+                 model_version='CondenseNet',
+                 dataset_version='ImageNet2012',
+                 **kwargs
+                 ):
         from models.image_classifier.CondenseNet import Model
-
-        in_ch = 3
-        input_size = 224
-        out_features = 2
 
         super().__init__(
             model=Model(in_ch, input_size, out_features),
-            model_version='CondenseNet',
-            input_size=input_size
+            model_version=model_version,
+            dataset_version=dataset_version,
+            input_size=input_size,
+            **kwargs
         )
-
-    def data_augment(self, ret):
-        ret.update(dst=self.input_size)
-        ret.update(scale.Proportion()(**ret))
-        return super().data_augment(ret)

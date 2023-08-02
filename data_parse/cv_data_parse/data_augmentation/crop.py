@@ -250,7 +250,7 @@ class PadCrop:
 
         assert x1 >= 0 and y1 >= 0, ValueError(f'{x1 = } and {y1 = } must not be smaller than 0')
 
-        ret = dict(image=image, bboxes=bboxes)
+        ret = dict(image=image, bboxes=bboxes, classes=classes)
 
         if x2 > w or y2 > h:
             if self.is_pad:

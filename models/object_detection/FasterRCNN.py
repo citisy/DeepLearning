@@ -292,7 +292,7 @@ class AnchorGenerator(nn.Module):
     ):
         super().__init__()
 
-        self.window_anchors = nn.ParameterList([self.gen_window_anchors(size, ratio) for size, ratio in zip(sizes, ratios)])
+        self.window_anchors = nn.ParameterList([nn.Parameter(self.gen_window_anchors(size, ratio)) for size, ratio in zip(sizes, ratios)])
         self.window_anchors.requires_grad_(requires_grad=False)
 
         self.box_min_len = box_min_len

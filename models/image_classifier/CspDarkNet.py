@@ -77,7 +77,7 @@ class Bottleneck(nn.Module):
         super().__init__()
         c_ = int(out_ch * e)  # hidden channels
         self.cv1 = Conv(in_ch, c_, 1, 1, act=nn.SiLU())
-        self.cv2 = Conv(c_, out_ch, 3, 1,  act=nn.SiLU(), conv_kwargs=dict(groups=g))
+        self.cv2 = Conv(c_, out_ch, 3, 1,  act=nn.SiLU(), groups=g)
         self.add = shortcut and in_ch == out_ch
 
     def forward(self, x):

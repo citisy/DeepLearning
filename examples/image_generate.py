@@ -14,7 +14,7 @@ from data_parse.cv_data_parse.data_augmentation import crop, scale, geometry, pi
 class IgProcess(Process):
     dataset = BaseDataset
 
-    def model_info(self, depth=None):
+    def model_info(self, depth=None, **kwargs):
         modules = dict(
             d=self.model.net_d,
             g=self.model.net_g,
@@ -46,7 +46,30 @@ class IgProcess(Process):
         self.save(self.model_path)
 
 
-class WGAN_Mnist(IgProcess):
+class Mnist(Process):
+    def get_train_data(self):
+        from data_parse.cv_data_parse.Mnist import Loader
+
+        # loader = Loader(f'data/mnist')
+        loader = Loader(f'data/fashion')
+        data = loader(set_type=DataRegister.TRAIN, image_type=DataRegister.ARRAY, generator=False)[0]
+
+        return data
+
+    def data_augment(self, ret):
+        ret.update(dst=self.input_size)
+        ret.update(Apply([
+            channel.Gray2BGR(),
+            scale.Proportion(),
+            pixel_perturbation.MinMax(),
+            pixel_perturbation.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]),
+            channel.HWC2CHW()
+        ])(**ret))
+
+        return ret
+
+
+class WGAN_Mnist(IgProcess, Mnist):
     """
     Usage:
         .. code-block:: python
@@ -75,27 +98,6 @@ class WGAN_Mnist(IgProcess):
             input_size=input_size,
             device=device
         )
-
-    def get_train_data(self):
-        from data_parse.cv_data_parse.Mnist import Loader
-
-        # loader = Loader(f'data/mnist')
-        loader = Loader(f'data/fashion')
-        data = loader(set_type=DataRegister.TRAIN, image_type=DataRegister.ARRAY, generator=False)[0]
-
-        return data
-
-    def data_augment(self, ret):
-        ret.update(dst=self.input_size)
-        ret.update(Apply([
-            channel.Gray2BGR(),
-            scale.Proportion(),
-            pixel_perturbation.MinMax(),
-            pixel_perturbation.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]),
-            channel.HWC2CHW()
-        ])(**ret))
-
-        return ret
 
     def fit(self, dataset, max_epoch, batch_size, save_period=None, **dataloader_kwargs):
         # sampler = distributed.DistributedSampler(dataset, shuffle=True)
@@ -173,25 +175,34 @@ class WGAN_Mnist(IgProcess):
             DataVisualizer(f'cache_data/{self.dataset_version}', verbose=True, stdout_method=self.logger.info)(*ret)
 
 
-def data_aug_with_pix_image(ret, input_size):
-    ret.update(dst=input_size)
-    ret.update(Apply([
-        scale.LetterBox(),
-        pixel_perturbation.MinMax(),
-        # pixel_perturbation.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]),
-        channel.HWC2CHW()
-    ])(**ret))
+class Facade(Process):
+    def get_train_data(self):
+        from data_parse.cv_data_parse.cmp_facade import Loader
 
-    pix_image = ret['pix_image']
-    pix_image = scale.Proportion().apply_image(pix_image, **ret['scale.Proportion'])
-    pix_image = crop.Pad().apply_image(pix_image, **ret['crop.Pad'])
-    pix_image = crop.PadCrop().apply_image(pix_image, **ret['crop.Crop'])
-    pix_image = pixel_perturbation.MinMax().apply_image(pix_image)
-    pix_image = channel.HWC2CHW().apply_image(pix_image)
+        loader = Loader(f'data/cmp_facade')
+        data = loader(set_type=DataRegister.TRAIN, image_type=DataRegister.ARRAY, generator=False)[0]
 
-    ret['pix_image'] = pix_image
+        return data
 
-    return ret
+    def data_augment(self, ret):
+        ret.update(dst=self.input_size)
+        ret.update(Apply([
+            scale.LetterBox(),
+            pixel_perturbation.MinMax(),
+            # pixel_perturbation.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]),
+            channel.HWC2CHW()
+        ])(**ret))
+
+        pix_image = ret['pix_image']
+        pix_image = scale.Proportion().apply_image(pix_image, **ret['scale.Proportion'])
+        pix_image = crop.Pad().apply_image(pix_image, **ret['crop.Pad'])
+        pix_image = crop.PadCrop().apply_image(pix_image, **ret['crop.Crop'])
+        pix_image = pixel_perturbation.MinMax().apply_image(pix_image)
+        pix_image = channel.HWC2CHW().apply_image(pix_image)
+
+        ret['pix_image'] = pix_image
+
+        return ret
 
 
 class Pix2pix(IgProcess):
@@ -212,9 +223,6 @@ class Pix2pix(IgProcess):
             input_size=input_size,
             **kwargs
         )
-
-    def data_augment(self, ret):
-        return data_aug_with_pix_image(ret, self.input_size)
 
     def fit(self, dataset, max_epoch, batch_size, save_period=None, save_maxsize=None, **dataloader_kwargs):
         # sampler = distributed.DistributedSampler(dataset, shuffle=True)
@@ -285,7 +293,7 @@ class Pix2pix(IgProcess):
                     os_lib.FileCacher(f'{self.model_dir}/{self.dataset_version}/', max_size=save_maxsize).delete_over_range(suffix='pth')
 
 
-class Pix2pix_facade(Pix2pix):
+class Pix2pix_facade(Pix2pix, Facade):
     """
     Usage:
         .. code-block:: python
@@ -297,14 +305,6 @@ class Pix2pix_facade(Pix2pix):
 
     def __init__(self, dataset_version='facade', **kwargs):
         super().__init__(dataset_version=dataset_version, **kwargs)
-
-    def get_train_data(self):
-        from data_parse.cv_data_parse.cmp_facade import Loader
-
-        loader = Loader(f'data/cmp_facade')
-        data = loader(set_type=DataRegister.TRAIN, image_type=DataRegister.ARRAY, generator=False)[0]
-
-        return data
 
 
 class CycleGan(IgProcess):
@@ -326,7 +326,7 @@ class CycleGan(IgProcess):
             **kwargs
         )
 
-    def model_info(self, depth=None):
+    def model_info(self, depth=None, **kwargs):
         modules = dict(
             d_a=self.model.net_d_a,
             d_b=self.model.net_d_b,
@@ -342,9 +342,6 @@ class CycleGan(IgProcess):
                 s += f'{p[0]:<20}{p[1]:<40}{p[2]["params"]:>10}{p[2]["grads"]:>10}\n'
 
             self.logger.info(s)
-
-    def data_augment(self, ret):
-        return data_aug_with_pix_image(ret, self.input_size)
 
     def fit(self, dataset, max_epoch, batch_size, save_period=None, save_maxsize=None, **dataloader_kwargs):
         dataloader = DataLoader(
@@ -431,7 +428,7 @@ class CycleGan(IgProcess):
                     os_lib.FileCacher(f'{self.model_dir}/{self.dataset_version}/', max_size=save_maxsize).delete_over_range(suffix='pth')
 
 
-class CycleGan_facade(CycleGan):
+class CycleGan_facade(CycleGan, Facade):
     """
     Usage:
         .. code-block:: python
@@ -443,11 +440,3 @@ class CycleGan_facade(CycleGan):
 
     def __init__(self, dataset_version='facade', **kwargs):
         super().__init__(dataset_version=dataset_version, **kwargs)
-
-    def get_train_data(self):
-        from data_parse.cv_data_parse.cmp_facade import Loader
-
-        loader = Loader(f'data/cmp_facade')
-        data = loader(set_type=DataRegister.TRAIN, image_type=DataRegister.ARRAY, generator=False)[0]
-
-        return data
