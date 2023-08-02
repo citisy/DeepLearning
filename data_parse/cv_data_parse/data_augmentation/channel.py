@@ -9,7 +9,7 @@ class HWC2CHW:
             image=self.apply_image(image)
         )
 
-    def apply_image(self, image):
+    def apply_image(self, image, *args):
         image = np.transpose(image, (2, 0, 1))
         image = np.ascontiguousarray(image)
         return image
@@ -21,7 +21,7 @@ class CHW2HWC:
             image=self.apply_image(image)
         )
 
-    def apply_image(self, image):
+    def apply_image(self, image, *args):
         image = np.transpose(image, (1, 2, 0))
         image = np.ascontiguousarray(image)
         return image
@@ -33,7 +33,7 @@ class BGR2RGB:
             image=self.apply_image(image)
         )
 
-    def apply_image(self, image):
+    def apply_image(self, image, *args):
         image = image.copy()
         image[(0, 1, 2)] = image[(2, 1, 0)]
         return image
@@ -45,6 +45,6 @@ class Gray2BGR:
             image=self.apply_image(image)
         )
 
-    def apply_image(self, image):
+    def apply_image(self, image, *args):
         image = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
         return image

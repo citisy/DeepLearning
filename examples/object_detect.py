@@ -229,15 +229,17 @@ class Voc(Process):
 
         return data
 
-    def data_augment(self, ret):
-        ret.update(RandomApply([geometry.HFlip()])(**ret))
-        ret.update(dst=self.input_size)
-        ret.update(Apply([
+    aug = Apply([
             scale.LetterBox(),
             # pixel_perturbation.MinMax(),
             # pixel_perturbation.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
             channel.HWC2CHW()
-        ])(**ret))
+        ])
+
+    def data_augment(self, ret):
+        ret.update(RandomApply([geometry.HFlip()])(**ret))
+        ret.update(dst=self.input_size)
+        ret.update(self.aug(**ret))
         return ret
 
     def complex_data_augment(self, idx, data, base_process):
@@ -245,12 +247,7 @@ class Voc(Process):
 
     def val_data_augment(self, ret):
         ret.update(dst=self.input_size)
-        ret.update(Apply([
-            scale.LetterBox(),
-            # pixel_perturbation.MinMax(),
-            # pixel_perturbation.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-            channel.HWC2CHW()
-        ])(**ret))
+        ret.update(self.aug(**ret))
         return ret
 
     def val_data_restore(self, ret):

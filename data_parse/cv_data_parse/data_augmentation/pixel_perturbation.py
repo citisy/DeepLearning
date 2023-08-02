@@ -14,7 +14,7 @@ class MinMax:
             image=self.apply_image(image)
         )
 
-    def apply_image(self, image):
+    def apply_image(self, image, *args):
         return image / 255.
 
 
@@ -35,7 +35,7 @@ class GaussNoise:
             image=self.apply_image(image)
         )
 
-    def apply_image(self, image):
+    def apply_image(self, image, *args):
         gauss = np.random.normal(self.mean, self.sigma, image.shape)
         image = image + gauss
         image = np.clip(image, a_min=0, a_max=255)
@@ -60,7 +60,7 @@ class SaltNoise:
             image=self.apply_image(image)
         )
 
-    def apply_image(self, image):
+    def apply_image(self, image, *args):
         image = np.copy(image)
         num_salt = np.ceil(self.amount * image.size * self.s_vs_p)
         coords = tuple(np.random.randint(0, i - 1, int(num_salt)) for i in image.shape)
@@ -79,7 +79,7 @@ class PoissonNoise:
             image=self.apply_image(image)
         )
 
-    def apply_image(self, image):
+    def apply_image(self, image, *args):
         vals = len(np.unique(image))
         vals = 2 ** np.ceil(np.log2(vals))
         image = np.random.poisson(image * vals) / float(vals)
@@ -95,7 +95,7 @@ class SpeckleNoise:
             image=self.apply_image(image)
         )
 
-    def apply_image(self, image):
+    def apply_image(self, image, *args):
         gauss = np.random.randn(*image.shape)
         noisy_image = image + image * gauss
         image = np.clip(noisy_image, a_min=0, a_max=255)
@@ -154,7 +154,7 @@ class Pca:
             image=self.apply_image(image)
         )
 
-    def apply_image(self, image):
+    def apply_image(self, image, *args):
         a = np.random.normal(0, 0.1)
 
         noisy_image = np.array(image, dtype=float)
@@ -200,7 +200,7 @@ class AdjustHsv:
             image=self.apply_image(image)
         )
 
-    def apply_image(self, image):
+    def apply_image(self, image, *args):
         r = np.random.uniform(-1, 1, 3) * [self.hgain, self.sgain, self.vgain] + 1  # random gains
         hue, sat, val = cv2.split(cv2.cvtColor(image, cv2.COLOR_BGR2HSV))
         dtype = image.dtype
@@ -234,7 +234,7 @@ class AdjustBrightness:
             image=self.apply_image(image)
         )
 
-    def apply_image(self, image):
+    def apply_image(self, image, *args):
         factor = max(1 + self.offset, 0)
         table = np.array([i * factor for i in range(0, 256)]).clip(0, 255).astype('uint8')
         image = cv2.LUT(image, table)
@@ -260,7 +260,7 @@ class AdjustContrast:
             image=self.apply_image(image)
         )
 
-    def apply_image(self, image):
+    def apply_image(self, image, *args):
         factor = max(1 + self.offset, 0)
         table = np.array([(i - 74) * factor + 74 for i in range(0, 256)]).clip(0, 255).astype('uint8')
         image = cv2.LUT(image, table)
@@ -286,7 +286,7 @@ class AdjustSaturation:
             image=self.apply_image(image)
         )
 
-    def apply_image(self, image):
+    def apply_image(self, image, *args):
         factor = 1 + self.offset
         dtype = image.dtype
         image = image.astype(np.float32)
@@ -330,7 +330,7 @@ class AdjustHue:
             image=self.apply_image(image)
         )
 
-    def apply_image(self, image):
+    def apply_image(self, image, *args):
         factor = min(max(1 + self.offset, -0.5), 0.5)
 
         dtype = image.dtype

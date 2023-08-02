@@ -56,15 +56,17 @@ class Mnist(Process):
 
         return data
 
+    aug = Apply([
+        channel.Gray2BGR(),
+        scale.Proportion(),
+        pixel_perturbation.MinMax(),
+        pixel_perturbation.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]),
+        channel.HWC2CHW()
+    ])
+
     def data_augment(self, ret):
         ret.update(dst=self.input_size)
-        ret.update(Apply([
-            channel.Gray2BGR(),
-            scale.Proportion(),
-            pixel_perturbation.MinMax(),
-            pixel_perturbation.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]),
-            channel.HWC2CHW()
-        ])(**ret))
+        ret.update(self.aug(**ret))
 
         return ret
 
@@ -184,22 +186,18 @@ class Facade(Process):
 
         return data
 
+    aug = Apply([
+        scale.LetterBox(),
+        pixel_perturbation.MinMax(),
+        # pixel_perturbation.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]),
+        channel.HWC2CHW()
+    ])
+
     def data_augment(self, ret):
         ret.update(dst=self.input_size)
-        ret.update(Apply([
-            scale.LetterBox(),
-            pixel_perturbation.MinMax(),
-            # pixel_perturbation.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]),
-            channel.HWC2CHW()
-        ])(**ret))
-
+        ret.update()(self.aug(**ret))
         pix_image = ret['pix_image']
-        pix_image = scale.Proportion().apply_image(pix_image, **ret['scale.Proportion'])
-        pix_image = crop.Pad().apply_image(pix_image, **ret['crop.Pad'])
-        pix_image = crop.PadCrop().apply_image(pix_image, **ret['crop.Crop'])
-        pix_image = pixel_perturbation.MinMax().apply_image(pix_image)
-        pix_image = channel.HWC2CHW().apply_image(pix_image)
-
+        pix_image = self.aug.apply_image(pix_image, ret)
         ret['pix_image'] = pix_image
 
         return ret

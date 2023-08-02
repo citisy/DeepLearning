@@ -181,13 +181,15 @@ class SegProcess(Process):
 
 
 class Voc(Process):
+    aug = Apply([
+        scale.LetterBox(),
+        # pixel_perturbation.MinMax(),
+        channel.HWC2CHW()
+    ])
+
     def data_augment(self, ret):
         ret.update(dst=self.input_size)
-        ret.update(Apply([
-            scale.LetterBox(),
-            # pixel_perturbation.MinMax(),
-            channel.HWC2CHW()
-        ])(**ret))
+        ret.update(self.aug(**ret))
         # ret.update(RandomApply([
         #     geometry.HFlip(),
         #     geometry.VFlip(),
@@ -207,11 +209,7 @@ class Voc(Process):
 
     def val_data_augment(self, ret):
         ret.update(dst=self.input_size)
-        ret.update(Apply([
-            scale.LetterBox(),
-            # pixel_perturbation.MinMax(),
-            channel.HWC2CHW()
-        ])(**ret))
+        ret.update(self.aug(**ret))
         pix_image = ret['pix_image']
         pix_image = scale.LetterBox(interpolation=1, fill=255).apply_image(pix_image, ret)
         ret['pix_image'] = pix_image

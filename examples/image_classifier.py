@@ -125,11 +125,11 @@ class Mnist(Process):
         return loader(set_type=DataRegister.TEST, image_type=DataRegister.ARRAY, generator=False)[0]
 
     def data_augment(self, ret):
-        ret.update(RandomApply([
-            geometry.HFlip(),
-            geometry.VFlip(),
-        ])(**ret))
         ret.update(Apply([
+            RandomApply([
+                geometry.HFlip(),
+                geometry.VFlip(),
+            ]),
             channel.HWC2CHW()
         ])(**ret))
         return ret
@@ -157,15 +157,14 @@ class Cifar(Process):
 
 class ImageNet(Process):
     def data_augment(self, ret):
-        ret.update(dst=256)
-        ret.update(scale.Proportion()(**ret))
+        ret.update(scale.Proportion()(**ret, dst=256))
         ret.update(dst=self.input_size)
-        ret.update(crop.Random()(**ret))
-        ret.update(RandomApply([
-            geometry.HFlip(),
-            geometry.VFlip(),
-        ])(**ret))
         ret.update(Apply([
+            crop.Random(),
+            RandomApply([
+                geometry.HFlip(),
+                geometry.VFlip(),
+            ]),
             # pixel_perturbation.MinMax(),
             channel.HWC2CHW()
         ])(**ret))
