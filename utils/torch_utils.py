@@ -81,33 +81,33 @@ class ModuleInfo:
 
 
 class EarlyStopping:
-    def __init__(self, thres=0.005, patience=30, verbose=True, stdout_method=print):
+    def __init__(self, thres=0.005, patience=30, min_epoch=None, verbose=True, stdout_method=print):
         self.thres = thres
         self.best_fitness = 0.0
         self.best_epoch = 0
         self.acc_epoch = 0
-        self.last_epoch = 0
+        self.min_epoch = min_epoch or 0
+        self.last_epoch = self.min_epoch
         self.patience = patience or float('inf')
         self.verbose = verbose
         self.stdout_method = stdout_method
 
-    def __call__(self, epoch, fitness, ):
-        if fitness >= self.best_fitness:
+    def __call__(self, epoch, fitness):
+        if epoch < self.min_epoch:
+            return False
+
+        if fitness - self.best_fitness > self.thres:
             self.best_epoch = epoch
             self.best_fitness = fitness
             self.acc_epoch = 0
 
-        elif self.best_fitness - fitness < self.thres:
+        elif abs(self.best_fitness - fitness) <= self.thres:
             self.acc_epoch += epoch - self.last_epoch
 
         self.last_epoch = epoch
         stop = self.acc_epoch >= self.patience
         if stop and self.verbose:
-            self.stdout_method(
-                f'Stopping training early as no improvement observed in last {self.patience} epochs. '
-                f'Best results observed at epoch {self.best_epoch}, best model saved as best.pt.\n'
-                f'To update EarlyStopping(patience={self.patience}) pass a new patience value'
-            )
+            self.stdout_method(f'Early Stopping training. Best results observed at epoch {self.best_epoch}, and best fitness is {self.best_fitness}')
         return stop
 
 
@@ -150,7 +150,8 @@ def bilinear_kernel(in_channels, out_channels, kernel_size):
     og = (torch.arange(kernel_size).reshape(-1, 1), torch.arange(kernel_size).reshape(1, -1))
     f = (1 - torch.abs(og[0] - center) / factor) * (1 - torch.abs(og[1] - center) / factor)
     weight = torch.zeros((in_channels, out_channels, kernel_size, kernel_size))
-    weight[range(in_channels), range(out_channels), :, :] = f
+    ch = min(in_channels, out_channels)
+    weight[range(ch), range(ch), :, :] = f
     return weight
 
 

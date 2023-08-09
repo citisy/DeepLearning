@@ -101,12 +101,13 @@ def merge_dict(d1: dict, d2: dict):
     return cur(copy.deepcopy(d1), copy.deepcopy(d2))
 
 
-def combine_obj(obj):
+def permute_obj(obj):
     """
 
     Example:
+        
         >>> kwargs = [{'a': [1], 'b': [2, 3]}, {'c': [4, 5, 6]}]
-        >>> combine_obj(kwargs)
+        >>> permute_obj(kwargs)
         [{'a': 1, 'b': 2}, {'a': 1, 'b': 3}, {'c': 4}, {'c': 5}, {'c': 6}]
 
     """
@@ -215,6 +216,7 @@ def logger_init(config={}, log_dir=None):
 
     Examples
         .. code-block:: python
+
             import logging
             from utils.configs import logger_init
 

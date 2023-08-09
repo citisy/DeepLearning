@@ -6,6 +6,10 @@ class Apply:
 
     Args:
         funcs(list):
+        full_result: whether returning total ret from each funcs or not
+            if true, return a list
+            if false, return a dict
+        replace: whether replacing the request used last func return
 
     Examples
         .. code-block:: python
@@ -70,6 +74,10 @@ class RandomApply:
     Args:
         funcs(list):
         probs(list): running prob of each funcs, default 0.5 to each func
+        full_result: whether returning total ret from each funcs or not
+            if true, return a list
+            if false, return a dict
+        replace: whether replacing the request used last func return
 
     Examples
         .. code-block:: python
@@ -94,13 +102,13 @@ class RandomApply:
         probs = self.probs or [0.5] * len(funcs)
         ret = kwargs
         full_result = []
-
+        apply_func_idx = []
         for i, (func, probs) in enumerate(zip(funcs, probs)):
-            r = {'RandomApply': []}
+            r = {}
 
             if np.random.random() < probs:
                 r.update(func(**ret))
-                r['RandomApply'].append(i)
+                apply_func_idx.append(i)
 
             if self.full_result:
                 full_result.append(r)
@@ -108,10 +116,16 @@ class RandomApply:
             if self.replace:
                 ret.update(r)
 
-        if full_result:
+        if self.full_result:
             ret = full_result
-
+        ret['RandomApply'] = apply_func_idx
         return ret
+
+    def apply_image(self, image, ret):
+        apply_func_idx = ret['RandomApply']
+        for idx in apply_func_idx:
+            image = self.funcs[idx].apply_image(image, ret)
+        return image
 
     def restore(self, ret):
         if self.full_result:
@@ -138,6 +152,10 @@ class RandomChoice:
     Args:
         funcs(list):
         probs(list): choice prob of each funcs, default 0.5 to each func
+        full_result: whether returning total ret from each funcs or not
+            if true, return a list
+            if false, return a dict
+        replace: whether replacing the request used last func return
 
     Examples
         .. code-block:: python

@@ -4,7 +4,7 @@ from pathlib import Path
 from .base import DataRegister, DataLoader, DataSaver, get_image
 
 
-class ImageNet2012Loader(DataLoader):
+class Loader(DataLoader):
     """https://www.image-net.org/
 
     Data structure:
@@ -135,7 +135,7 @@ class ImageNet2012Loader(DataLoader):
                 yield ret
 
 
-class ImageNet2012Saver(DataSaver):
+class Saver(DataSaver):
     """https://www.image-net.org/
 
     Data structure:
@@ -155,7 +155,3 @@ class ImageNet2012Saver(DataSaver):
         └── ILSVRC2012_img_val          # val images, 50000 items
 
     """
-
-
-Loader = ImageNet2012Loader
-Saver = ImageNet2012Saver

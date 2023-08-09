@@ -1,6 +1,8 @@
 import torch
 import torch.nn as nn
-from ..layers import Conv, ConvInModule, ConvT
+from torch.nn import functional as F
+from ..layers import Conv, ConvInModule, ConvT, BaseSemanticSegmentationModel
+from utils.torch_utils import initialize_layers
 
 # top(outer) -> bottom(inner)
 # in_ches, hidden_ches, out_ches
@@ -11,30 +13,33 @@ unet256_config = (
 )
 
 
-class Model(nn.Module):
+class Model(BaseSemanticSegmentationModel):
     """refer to [U-Net: Convolutional Networks for Biomedical Image Segmentation](https://arxiv.org/pdf/1505.04597.pdf)"""
 
-    def __init__(self, in_ch, input_size, in_module=None, conv_config=unet256_config):
+    def __init__(self, in_ch, out_features, conv_config=unet256_config, **kwargs):
         super().__init__()
         in_ches, hidden_ches, out_ches = conv_config
 
-        if in_module is None:
-            in_module = ConvInModule(in_ch, input_size, out_ch=in_ches[0])
-
-        self.input = in_module
+        self.out_features = out_features + 1
+        in_ches[0] = in_ch
+        out_ches[0] = self.out_features
         # top(outer) -> bottom(inner)
         self.backbone = CurBlock(in_ches, hidden_ches, out_ches, is_top_block=True)
+        initialize_layers(self)
 
-    def forward(self, x):
-        x = self.input(x)
+    def forward(self, x, pix_images=None):
         x = self.backbone(x)
-        return x
+        return super().forward(x, pix_images)
 
 
 class PureModel(nn.Sequential):
     def __init__(self, conv_config=unet256_config):
         in_ches, hidden_ches, out_ches = conv_config
-        super().__init__(CurBlock(in_ches, hidden_ches, out_ches, is_top_block=True))
+        super().__init__(
+            CurBlock(in_ches, hidden_ches, out_ches, is_top_block=True),
+            nn.Tanh()
+        )
+        initialize_layers(self)
 
 
 class CurBlock(nn.Module):
@@ -62,8 +67,7 @@ class CurBlock(nn.Module):
 
         # up
         if is_top_block:
-            layers.append(ConvT(hidden_ch * 2, out_ch, k=4, s=2, p=1, bias=True, is_norm=False, mode='acn'))
-            layers.append(nn.Tanh())
+            layers.append(ConvT(hidden_ch * 2, out_ch, k=4, s=2, p=1, is_norm=False, mode='acn'))
         elif is_bottom_block:
             layers.append(ConvT(hidden_ch, out_ch, k=4, s=2, p=1, mode='acn'))
         else:

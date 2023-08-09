@@ -2,6 +2,7 @@ import logging
 import copy
 import cv2
 import torch
+from torch import nn, optim
 import numpy as np
 from pathlib import Path
 from torch.utils.data import Dataset, DataLoader
@@ -68,9 +69,10 @@ class Process:
     dataset = BaseDataset
     setup_seed()
 
-    def __init__(self, model=None, model_version='', dataset_version='', device=0, input_size=224, out_features=None):
+    def __init__(self, model=None, optimizer=None, model_version='', dataset_version='', device=0, input_size=224, out_features=None):
         self.device = torch.device(f"cuda:{device}" if torch.cuda.is_available() else "cpu") if device is not None else 'cpu'
         self.model = model
+        self.optimizer = optimizer or optim.Adam(self.model.parameters())
         self.model_version = model_version
         self.dataset_version = dataset_version
         self.model_dir = f'model_data/{self.model_version}'
@@ -139,13 +141,17 @@ class Process:
                 sub_version += f'{k}={v}'
 
             self.dataset_version = f'{self.dataset}/{sub_version}'
+            self.logger = logging.getLogger()
+            self.logger.info(f'{self.dataset_version = }')
+
             params = configs.merge_dict(params, const_params)
+            configs.logger_init(log_dir=f'{self.model_dir}/{self.dataset_version}')
             self.model_path = f'{self.model_dir}/{self.dataset_version}/final.pth'
             self.save_result_dir = f'cache_data/{self.dataset_version}'
             self.model = model(**params)
             self.run(**run_kwargs)
 
-        var_params = configs.combine_obj(var_params)
+        var_params = configs.permute_obj(var_params)
         for params in var_params:
             cur_run(**params)
 

@@ -1,13 +1,13 @@
 import torch
 from torch import nn
 from torch.nn import functional as F
-from ..layers import Conv, Linear, ConvInModule, OutModule, ConvT
+from ..layers import Conv, Linear, ConvInModule, OutModule, ConvT, BaseSemanticSegmentationModel
 # from ..image_classifier.VGG import Backbone, VGG16_config
 from ..image_classifier.ResNet import Backbone, Res50_config, Res101_config
 from utils.torch_utils import initialize_layers
 
 
-class Model(nn.Module):
+class Model(BaseSemanticSegmentationModel):
     """
     see also `torchvision.models.segmentation.fcn.fcn_resnet50`
     """
@@ -44,27 +44,7 @@ class Model(nn.Module):
         x = self.backbone(x)
         x, features = self.neck(x)
         x = self.head(x, features)
-
-        if self.training and pix_images is not None:
-            return dict(
-                preds=x,
-                loss=self.loss(x, pix_images)
-            )
-        else:
-            return self.post_process(x)
-
-    def loss(self, preds, pix_images):
-        """
-        Args:
-            preds: [b, out_features + 1, h, w]
-            pix_images: [b, h, w]
-
-        """
-        # value=255 is the padding or edge areas
-        return F.cross_entropy(preds, pix_images, ignore_index=255)
-
-    def post_process(self, preds):
-        return preds.argmax(1)
+        return super().forward(x, pix_images)
 
 
 class Neck(nn.Module):
@@ -99,7 +79,8 @@ class Head(nn.Module):
             if n < n_layers - 1:
                 conv = ConvT(out_features, out_features, k, s=2, bias=False, is_norm=False, is_act=False)
             else:
-                conv = ConvT(out_features, out_features, upsample_ratio, s=upsample_ratio, bias=False, is_norm=False, is_act=False)
+                # note that, k must be 2 times of s
+                conv = ConvT(out_features, out_features, upsample_ratio * 2, s=upsample_ratio, bias=False, is_norm=False, is_act=False)
             layers.append(conv)
             k *= 2
 

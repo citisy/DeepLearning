@@ -48,34 +48,13 @@ class OdProcess(Process):
 
         self.model.to(self.device)
 
-        # optimizer = optim.Adam(self.model.parameters())
-        # optimizer = optim.SGD(self.model.parameters(), lr=0.01)
-
-        g = [], [], []  # optimizer parameter groups
-        bn = tuple(v for k, v in nn.__dict__.items() if 'Norm' in k)  # normalization layers, i.e. BatchNorm2d()
-        for v in self.model.modules():
-            if hasattr(v, 'bias') and isinstance(v.bias, nn.Parameter):  # bias
-                g[2].append(v.bias)
-            if isinstance(v, bn):  # weight (no decay)
-                g[1].append(v.weight)
-            elif hasattr(v, 'weight') and isinstance(v.weight, nn.Parameter):  # weight (with decay)
-                g[0].append(v.weight)
-
-        weight_decay = 0.0005
-        optimizer = optim.SGD(g[2], lr=0.01, momentum=0.937, nesterov=True)
-        optimizer.add_param_group({'params': g[0], 'weight_decay': weight_decay})  # add g0 with weight_decay
-        optimizer.add_param_group({'params': g[1]})  # add g1 (BatchNorm2d weights)
-
-        del g
-
         lrf = 0.01
 
         # lf = lambda x: (1 - x / max_epoch) * (1.0 - lrf) + lrf
-
         # cos_lr
         lf = lambda x: ((1 - math.cos(x * math.pi / max_epoch)) / 2) * (lrf - 1) + 1
 
-        scheduler = optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lf)
+        scheduler = optim.lr_scheduler.LambdaLR(self.optimizer, lr_lambda=lf)
         scheduler.last_epoch = -1
 
         scaler = torch.cuda.amp.GradScaler(enabled=True)
@@ -110,11 +89,11 @@ class OdProcess(Process):
 
                 scaler.scale(loss).backward()
                 if j % accumulate == 0:
-                    scaler.unscale_(optimizer)  # unscale gradients
+                    scaler.unscale_(self.optimizer)  # unscale gradients
                     torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=10.0)  # clip gradients
-                    scaler.step(optimizer)  # optimizer.step
+                    scaler.step(self.optimizer)  # optimizer.step
                     scaler.update()
-                    optimizer.zero_grad()
+                    self.optimizer.zero_grad()
 
                 j += 1
 
@@ -230,11 +209,11 @@ class Voc(Process):
         return data
 
     aug = Apply([
-            scale.LetterBox(),
-            # pixel_perturbation.MinMax(),
-            # pixel_perturbation.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-            channel.HWC2CHW()
-        ])
+        scale.LetterBox(),
+        # pixel_perturbation.MinMax(),
+        # pixel_perturbation.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+        channel.HWC2CHW()
+    ])
 
     def data_augment(self, ret):
         ret.update(RandomApply([geometry.HFlip()])(**ret))
@@ -306,12 +285,32 @@ class YoloV5(OdProcess):
                  **kwargs
                  ):
         from models.object_detection.YoloV5 import Model
+        model = Model(
+            n_classes,
+            in_module_config=dict(in_ch=in_ch, input_size=input_size),
+        )
+
+        g = [], [], []  # optimizer parameter groups
+        bn = tuple(v for k, v in nn.__dict__.items() if 'Norm' in k)  # normalization layers, i.e. BatchNorm2d()
+        for v in self.model.modules():
+            if hasattr(v, 'bias') and isinstance(v.bias, nn.Parameter):  # bias
+                g[2].append(v.bias)
+            if isinstance(v, bn):  # weight (no decay)
+                g[1].append(v.weight)
+            elif hasattr(v, 'weight') and isinstance(v.weight, nn.Parameter):  # weight (with decay)
+                g[0].append(v.weight)
+
+        weight_decay = 0.0005
+
+        optimizer = optim.SGD(g[2], lr=0.01, momentum=0.937, nesterov=True)
+        optimizer.add_param_group({'params': g[0], 'weight_decay': weight_decay})  # add g0 with weight_decay
+        optimizer.add_param_group({'params': g[1]})  # add g1 (BatchNorm2d weights)
+
+        del g
 
         super().__init__(
-            model=Model(
-                n_classes,
-                in_module_config=dict(in_ch=in_ch, input_size=input_size),
-            ),
+            model=model,
+            optimizer=optimizer,
             model_version=model_version,
             dataset_version=dataset_version,
             input_size=input_size,
@@ -334,7 +333,7 @@ class YoloV5(OdProcess):
             bboxes_list = [ret['bboxes'] for ret in rets]
             classes_list = [ret['classes'] for ret in rets]
             img_size = np.max([img.shape[:2] for img in image_list])
-            ret = complex.Mosaic(img_size=img_size)(
+            ret = complex.Mosaic4(img_size=img_size)(
                 image_list=image_list,
                 bboxes_list=bboxes_list,
                 classes_list=classes_list

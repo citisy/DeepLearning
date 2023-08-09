@@ -5,7 +5,6 @@ import torch
 from torch import nn, optim
 from torch.utils.data import DataLoader
 from tqdm import tqdm
-from models.layers import SimpleInModule
 from utils.os_lib import MemoryInfo
 from utils.torch_utils import EarlyStopping
 from utils.visualize import get_color_array
@@ -16,6 +15,7 @@ from data_parse.cv_data_parse.base import DataVisualizer
 from .base import Process, BaseDataset
 from torch.nn import functional as F
 from PIL import Image
+import math
 
 
 class SegDataset(BaseDataset):
@@ -53,20 +53,26 @@ class SegProcess(Process):
         )
 
         self.model.to(self.device)
+        lrf = 0.01
 
-        # optimizer = optim.Adam(self.model.parameters())
+        # lf = lambda x: (1 - x / max_epoch) * (1.0 - lrf) + lrf
+        # cos_lr
+        lf = lambda x: ((1 - math.cos(x * math.pi / max_epoch)) / 2) * (lrf - 1) + 1
 
-        optimizer = torch.optim.SGD(
-            [{"params": [p for p in self.model.parameters() if p.requires_grad]}],
-            lr=0.0001, momentum=0.9, weight_decay=1e-4
-        )
+        scheduler = optim.lr_scheduler.LambdaLR(self.optimizer, lr_lambda=lf)
+        scheduler.last_epoch = -1
 
-        stopper = EarlyStopping(patience=10, stdout_method=self.logger.info)
+        scaler = torch.cuda.amp.GradScaler(enabled=True)
+        stopper = EarlyStopping(patience=10, min_epoch=10, stdout_method=self.logger.info)
         max_score = -1
+        accumulate = 64 / batch_size
+        j = 0
 
         for i in range(max_epoch):
             self.model.train()
             pbar = tqdm(dataloader, desc=f'train {i}/{max_epoch}')
+            total_loss = 0
+            total_batch = 0
 
             for rets in pbar:
                 images = [torch.from_numpy(ret.pop('image')).to(self.device, non_blocking=True, dtype=torch.float) for ret in rets]
@@ -77,19 +83,25 @@ class SegProcess(Process):
 
                 images = images / 255
 
-                optimizer.zero_grad()
+                with torch.cuda.amp.autocast(True):
+                    output = self.model(images, pix_images)
+                loss = output['loss']
 
-                # with torch.cuda.amp.autocast(True):
-                # output = self.model(images, pix_images)
-                # loss = output['loss']
-                output = self.model(images)
-                loss = F.cross_entropy(output['out'], pix_images, ignore_index=255)
+                scaler.scale(loss).backward()
+                if j % accumulate == 0:
+                    scaler.unscale_(self.optimizer)  # unscale gradients
+                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=10.0)  # clip gradients
+                    scaler.step(self.optimizer)  # optimizer.step
+                    scaler.update()
+                    self.optimizer.zero_grad()
 
-                loss.backward()
-                optimizer.step()
+                j += 1
+                total_loss += loss.item()
+                total_batch += len(rets)
 
                 pbar.set_postfix({
                     'loss': f'{loss.item():.06}',
+                    'mean_loss': f'{total_loss / total_batch:.06}',
                     # 'cpu_info': MemoryInfo.get_process_mem_info(),
                     # 'gpu_info': MemoryInfo.get_gpu_mem_info()
                 })
@@ -107,7 +119,7 @@ class SegProcess(Process):
                     self.save(f'{self.model_dir}/{self.dataset_version}/best.pth')
                     max_score = score
 
-                if stopper(epoch=i, fitness=max_score):
+                if stopper(epoch=i, fitness=score):
                     break
 
     def predict(self, dataset, batch_size=16, visualize=False, max_vis_num=None, save_ret_func=None, **dataloader_kwargs):
@@ -131,8 +143,7 @@ class SegProcess(Process):
                 images = torch.stack(images)
                 images = images / 255
 
-                # pred_images = self.model(images).cpu().detach().numpy().astype(np.uint8)
-                pred_images = self.model(images)['out'].argmax(1).cpu().detach().numpy().astype(np.uint8)
+                pred_images = self.model(images).cpu().detach().numpy().astype(np.uint8)
                 pred.append(pred_images)
                 true.append([ret.pop('pix_image') for ret in rets])
 
@@ -144,9 +155,10 @@ class SegProcess(Process):
                         ori_pix_image = ret['ori_pix_image']
                         pred_image = np.zeros((*output.shape, 3), dtype=output.dtype) + 255
                         true_image = np.zeros((*ori_pix_image.shape, 3), dtype=output.dtype) + 255
-                        for i in range(self.out_features):
+                        for i in range(self.out_features + 1):
                             pred_image[output == i] = get_color_array(i)
                             true_image[ori_pix_image == i] = get_color_array(i)
+                            # print(i, get_color_array(i))
 
                         det_ret = {'image': pred_image, **ret}
                         det_ret = self.val_data_restore(det_ret)
@@ -167,11 +179,11 @@ class SegProcess(Process):
 
     def metric(self, dataset, batch_size=16, **kwargs):
         true, pred = self.predict(dataset, batch_size, **kwargs)
-        pred = np.concatenate(pred).flatten()
-        true = np.concatenate(true).flatten()
+        # ignore background
+        pred = np.concatenate(pred).flatten() - 1
+        true = np.concatenate(true).flatten() - 1
 
-        # result = classifier.top_metric.f_measure(true, pred)
-        result = mulit_classifier.TopMetric(n_class=self.out_features).f1(true, pred)
+        result = mulit_classifier.TopMetric(n_class=self.out_features, ignore_class=(-1, 254)).f1(true, pred)
 
         result.update(
             score=result['f']
@@ -181,23 +193,28 @@ class SegProcess(Process):
 
 
 class Voc(Process):
-    aug = Apply([
-        scale.LetterBox(),
-        # pixel_perturbation.MinMax(),
-        channel.HWC2CHW()
-    ])
-
     def data_augment(self, ret):
+        aug = Apply([
+            # scale.LetterBox(),
+            scale.Jitter(),
+            # pixel_perturbation.MinMax(),
+            channel.HWC2CHW()
+        ])
+
+        random_aug = RandomApply([
+            geometry.HFlip(),
+            geometry.VFlip(),
+        ])
+
         ret.update(dst=self.input_size)
-        ret.update(self.aug(**ret))
-        # ret.update(RandomApply([
-        #     geometry.HFlip(),
-        #     geometry.VFlip(),
-        # ])(**ret))
+        ret.update(aug(**ret))
+        ret.update(random_aug(**ret))
 
         pix_image = ret['pix_image']
         # note that, use cv2.INTER_NEAREST mode to resize
-        pix_image = scale.LetterBox(interpolation=1, fill=255).apply_image(pix_image, ret)
+        # pix_image = scale.LetterBox(interpolation=1, fill=255).apply_image(pix_image, ret)
+        pix_image = scale.Jitter(interpolation=1, fill=255).apply_image(pix_image, ret)
+        pix_image = random_aug.apply_image(pix_image, ret)
         ret['pix_image'] = pix_image
         return ret
 
@@ -208,8 +225,14 @@ class Voc(Process):
         return loader(set_type=DataRegister.TRAIN, generator=False, image_type=DataRegister.PATH, set_task=SEG_CLS)[0]
 
     def val_data_augment(self, ret):
+        aug = Apply([
+            scale.LetterBox(),
+            # scale.Jitter(self.input_size),
+            # pixel_perturbation.MinMax(),
+            channel.HWC2CHW()
+        ])
         ret.update(dst=self.input_size)
-        ret.update(self.aug(**ret))
+        ret.update(aug(**ret))
         pix_image = ret['pix_image']
         pix_image = scale.LetterBox(interpolation=1, fill=255).apply_image(pix_image, ret)
         ret['pix_image'] = pix_image
@@ -224,23 +247,61 @@ class Voc(Process):
 
         loader = Loader('data/VOC2012')
         return loader(set_type=DataRegister.VAL, generator=False, image_type=DataRegister.PATH, set_task=SEG_CLS)[0]
+        # return loader(set_type=DataRegister.TRAIN, generator=False, image_type=DataRegister.PATH, set_task=SEG_CLS)[0]
 
 
 class FCN_Voc(SegProcess, Voc):
+    """
+    Usage:
+        .. code-block:: python
+
+            from examples.semantic_segment import FCN_Voc as Process
+
+            Process().run(max_epoch=1000)
+            {'score': 0.1429}
+    """
+
     def __init__(self, model_version='FCN', dataset_version='Voc',
                  input_size=512, in_ch=3, out_features=20, **kwargs):
-        # from models.semantic_segmentation.FCN import Model
-        from torchvision.models.segmentation.fcn import fcn_resnet50
+        from models.semantic_segmentation.FCN import Model
+        model = Model(
+            in_ch=in_ch,
+            input_size=input_size,
+            out_features=out_features
+        )
         super().__init__(
-            # model=Model(
-            #     in_ch=in_ch,
-            #     input_size=input_size,
-            #     out_features=out_features
-            # ),
-            model=fcn_resnet50(
-                num_classes=21, aux_loss=False,
-                # pretrained=False, pretrained_backbone=False
-            ),
+            model=model,
+            optimizer=optim.SGD(model.parameters(), lr=0.001, momentum=0.9, weight_decay=1e-4),
+            model_version=model_version,
+            dataset_version=dataset_version,
+            input_size=input_size,
+            out_features=out_features,
+            **kwargs
+        )
+
+
+class Unet_Voc(SegProcess, Voc):
+    """
+    Usage:
+        .. code-block:: python
+
+            from examples.semantic_segment import Unet_Voc as Process
+
+            Process().run(max_epoch=1000)
+            {'score': 0.1973}
+    """
+
+    def __init__(self, model_version='Unet', dataset_version='Voc',
+                 input_size=512, in_ch=3, out_features=20, **kwargs):
+        from models.semantic_segmentation.Unet import Model
+        model = Model(
+            in_ch=in_ch,
+            input_size=input_size,
+            out_features=out_features
+        )
+        super().__init__(
+            model=model,
+            optimizer=optim.SGD(model.parameters(), lr=0.1, momentum=0.9, weight_decay=1e-4),
             model_version=model_version,
             dataset_version=dataset_version,
             input_size=input_size,

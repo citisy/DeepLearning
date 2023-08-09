@@ -81,19 +81,25 @@ class WGAN_Mnist(IgProcess, Mnist):
             Process().run(max_epoch=2000, train_batch_size=64, save_period=2000)
     """
 
-    def __init__(self, device=0):
+    def __init__(self,
+                 input_size=64,
+                 in_ch=3,
+                 hidden_ch=100,
+                 device=0):
         from models.image_generate.wgan import Model
 
-        input_size = 64
-        in_ch = 3
-        hidden_ch = 100
+        model = Model(
+            input_size=input_size,
+            in_ch=in_ch,
+            hidden_ch=hidden_ch,
+        )
+
+        optimizer_d = optim.Adam(model.net_d.parameters(), lr=0.00005, betas=(0.5, 0.999))
+        optimizer_g = optim.Adam(model.net_g.parameters(), lr=0.00005, betas=(0.5, 0.999))
 
         super().__init__(
-            model=Model(
-                input_size=input_size,
-                in_ch=in_ch,
-                hidden_ch=hidden_ch,
-            ),
+            model=model,
+            optimizer=(optimizer_d, optimizer_g),
             model_version='WGAN',
             # dataset_version='mnist',
             dataset_version='fashion',
@@ -114,9 +120,7 @@ class WGAN_Mnist(IgProcess, Mnist):
         )
 
         self.model.to(self.device)
-
-        optimizer_d = optim.Adam(self.model.net_d.parameters(), lr=0.00005, betas=(0.5, 0.999))
-        optimizer_g = optim.Adam(self.model.net_g.parameters(), lr=0.00005, betas=(0.5, 0.999))
+        optimizer_d, optimizer_g = self.optimizer
 
         val_noise = torch.normal(mean=0., std=1., size=(batch_size, self.model.hidden_ch, 1, 1), device=self.device)
         flag = True
@@ -212,11 +216,17 @@ class Pix2pix(IgProcess):
                  ):
         from models.image_generate.pix2pix import Model
 
+        model = Model(
+            in_ch=in_ch,
+            input_size=input_size
+        )
+
+        optimizer_g = optim.Adam(model.net_g.parameters(), lr=0.0002, betas=(0.5, 0.999))
+        optimizer_d = optim.Adam(model.net_d.parameters(), lr=0.0002, betas=(0.5, 0.999))
+
         super().__init__(
-            model=Model(
-                in_ch=in_ch,
-                input_size=input_size
-            ),
+            model=model,
+            optimizer=(optimizer_d, optimizer_g),
             model_version=model_version,
             input_size=input_size,
             **kwargs
@@ -235,8 +245,7 @@ class Pix2pix(IgProcess):
         )
 
         self.model.to(self.device)
-        optimizer_g = torch.optim.Adam(self.model.net_g.parameters(), lr=0.0002, betas=(0.5, 0.999))
-        optimizer_d = torch.optim.Adam(self.model.net_d.parameters(), lr=0.0002, betas=(0.5, 0.999))
+        optimizer_d, optimizer_g = self.optimizer
 
         gen_iter = 0
         for i in range(max_epoch):
@@ -313,12 +322,17 @@ class CycleGan(IgProcess):
                  **kwargs
                  ):
         from models.image_generate.CycleGan import Model
+        model = Model(
+            in_ch=in_ch,
+            input_size=input_size
+        )
+
+        optimizer_g = optim.Adam(itertools.chain(model.net_g_a.parameters(), model.net_g_b.parameters()), lr=0.00005, betas=(0.5, 0.999))
+        optimizer_d = optim.Adam(itertools.chain(model.net_d_a.parameters(), model.net_d_b.parameters()), lr=0.00005, betas=(0.5, 0.999))
 
         super().__init__(
-            model=Model(
-                in_ch=in_ch,
-                input_size=input_size
-            ),
+            model=model,
+            optimizer=(optimizer_d, optimizer_g),
             model_version=model_version,
             input_size=input_size,
             **kwargs
@@ -353,14 +367,12 @@ class CycleGan(IgProcess):
         )
 
         self.model.to(self.device)
+        optimizer_d, optimizer_g = self.optimizer
 
         net_g_a = self.model.net_g_a
         net_g_b = self.model.net_g_b
         net_d_a = self.model.net_d_a
         net_d_b = self.model.net_d_b
-
-        optimizer_g = torch.optim.Adam(itertools.chain(net_g_a.parameters(), net_g_b.parameters()), lr=0.00005, betas=(0.5, 0.999))
-        optimizer_d = torch.optim.Adam(itertools.chain(net_d_a.parameters(), net_d_b.parameters()), lr=0.00005, betas=(0.5, 0.999))
 
         fake_a_cacher = os_lib.MemoryCacher(max_size=50)
         fake_b_cacher = os_lib.MemoryCacher(max_size=50)

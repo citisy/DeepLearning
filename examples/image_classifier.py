@@ -29,7 +29,6 @@ class ClsProcess(Process):
 
         self.model.to(self.device)
 
-        optimizer = optim.Adam(self.model.parameters())
         stopper = EarlyStopping(patience=10, stdout_method=self.logger.info)
         max_score = -1
 
@@ -44,12 +43,12 @@ class ClsProcess(Process):
                 _class = torch.stack(_class)
                 images = images / 255
 
-                optimizer.zero_grad()
+                self.optimizer.zero_grad()
 
                 output = self.model(images, _class)
                 loss = output['loss']
                 loss.backward()
-                optimizer.step()
+                self.optimizer.step()
 
                 pbar.set_postfix({
                     'loss': f'{loss.item():.06}',
@@ -70,7 +69,7 @@ class ClsProcess(Process):
                     self.save(f'{self.model_dir}/{self.dataset_version}/best.pth')
                     max_score = score
 
-                if stopper(epoch=i, fitness=max_score):
+                if stopper(epoch=i, fitness=score):
                     break
 
     def predict(self, dataset, batch_size=128, **dataloader_kwargs):
@@ -601,7 +600,7 @@ class ShuffleNetV1_ImageNet(ClsProcess, ImageNet):
         )
 
 
-class IGC_cifar(ClsProcess, ImageNet):
+class IGC_cifar(ClsProcess, Cifar):
     """
     Usage:
         .. code-block:: python
@@ -631,18 +630,6 @@ class IGC_cifar(ClsProcess, ImageNet):
         )
 
         self.input_size = input_size
-
-    def get_train_data(self):
-        from data_parse.cv_data_parse.Cifar import Loader
-
-        loader = Loader('data/cifar-10-batches-py')
-        return loader(set_type=DataRegister.TRAIN, image_type=DataRegister.ARRAY, generator=False)[0]
-
-    def get_val_data(self):
-        from data_parse.cv_data_parse.Cifar import Loader
-
-        loader = Loader('data/cifar-10-batches-py')
-        return loader(set_type=DataRegister.TEST, image_type=DataRegister.ARRAY, generator=False)[0]
 
 
 class CondenseNet_ImageNet(ClsProcess, ImageNet):
