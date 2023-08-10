@@ -23,7 +23,7 @@ class Model(BaseSemanticSegmentationModel):
         # self.backbone = Backbone(VGG16_config)
         if backbone is None:
             config = Res50_config[:3]
-            self.backbone = Backbone(config)
+            self.backbone = Backbone(self.input.out_channels, backbone_config=config)
         else:
             self.backbone = backbone
 

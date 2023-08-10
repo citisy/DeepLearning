@@ -9,7 +9,7 @@ from utils.os_lib import MemoryInfo
 from utils.torch_utils import EarlyStopping
 from utils.visualize import get_color_array
 from metrics import classifier, mulit_classifier
-from data_parse.cv_data_parse.data_augmentation import crop, scale, geometry, channel, RandomApply, Apply
+from data_parse.cv_data_parse.data_augmentation import crop, scale, geometry, channel, pixel_perturbation, RandomApply, Apply
 from data_parse import DataRegister
 from data_parse.cv_data_parse.base import DataVisualizer
 from .base import Process, BaseDataset
@@ -26,7 +26,7 @@ class SegDataset(BaseDataset):
             ret['image'] = cv2.imread(ret['image'])
             ret['pix_image_path'] = ret['pix_image']
             # note that, use PIL.Image to get the label image
-            ret['pix_image'] = np.array(Image.open(ret['pix_image']))
+            ret['pix_image'] = np.asarray(Image.open(ret['pix_image']))
 
         ret['ori_image'] = ret['image']
         ret['ori_pix_image'] = ret['pix_image']
@@ -56,8 +56,7 @@ class SegProcess(Process):
         lrf = 0.01
 
         # lf = lambda x: (1 - x / max_epoch) * (1.0 - lrf) + lrf
-        # cos_lr
-        lf = lambda x: ((1 - math.cos(x * math.pi / max_epoch)) / 2) * (lrf - 1) + 1
+        lf = lambda x: ((1 - math.cos(x * math.pi / max_epoch)) / 2) * (lrf - 1) + 1    # cos_lr
 
         scheduler = optim.lr_scheduler.LambdaLR(self.optimizer, lr_lambda=lf)
         scheduler.last_epoch = -1
@@ -158,7 +157,6 @@ class SegProcess(Process):
                         for i in range(self.out_features + 1):
                             pred_image[output == i] = get_color_array(i)
                             true_image[ori_pix_image == i] = get_color_array(i)
-                            # print(i, get_color_array(i))
 
                         det_ret = {'image': pred_image, **ret}
                         det_ret = self.val_data_restore(det_ret)
@@ -209,6 +207,7 @@ class Voc(Process):
         ret.update(dst=self.input_size)
         ret.update(aug(**ret))
         ret.update(random_aug(**ret))
+        ret.update(RandomApply([pixel_perturbation.Jitter()])(**ret))
 
         pix_image = ret['pix_image']
         # note that, use cv2.INTER_NEAREST mode to resize
@@ -302,6 +301,36 @@ class Unet_Voc(SegProcess, Voc):
         super().__init__(
             model=model,
             optimizer=optim.SGD(model.parameters(), lr=0.1, momentum=0.9, weight_decay=1e-4),
+            model_version=model_version,
+            dataset_version=dataset_version,
+            input_size=input_size,
+            out_features=out_features,
+            **kwargs
+        )
+
+
+class DeeplabV3_Voc(SegProcess, Voc):
+    """
+    Usage:
+        .. code-block:: python
+
+            from examples.semantic_segment import DeeplabV3_Voc as Process
+
+            Process().run(max_epoch=1000)
+            {'score': 0.1962}
+    """
+
+    def __init__(self, model_version='DeeplabV3', dataset_version='Voc',
+                 input_size=512, in_ch=3, out_features=20, **kwargs):
+        from models.semantic_segmentation.DeeplabV3 import Model
+        model = Model(
+            in_ch=in_ch,
+            input_size=input_size,
+            out_features=out_features
+        )
+        super().__init__(
+            model=model,
+            optimizer=optim.SGD(model.parameters(), lr=0.001, momentum=0.9, weight_decay=1e-4),
             model_version=model_version,
             dataset_version=dataset_version,
             input_size=input_size,

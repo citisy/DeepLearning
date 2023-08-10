@@ -174,7 +174,7 @@ class Conv(nn.Sequential):
 
 class ConvT(nn.Sequential):
     def __init__(self, in_ch, out_ch, k, s=1, p=None, bias=False,
-                 is_act=True, act=None, is_norm=True, norm=None, mode='cna',
+                 is_act=True, act=None, is_norm=True, norm=None, mode='cna', only_upsample=False,
                  **conv_kwargs):
         """
 
@@ -190,26 +190,33 @@ class ConvT(nn.Sequential):
                 e.g. 'cna' gives conv - norm - act
 
         """
-        if p is None:
-            p = self.auto_p(k, s) if isinstance(k, int) else [self.auto_p(x, s) for x in k]
-
-        self.is_act = is_act
-        self.is_norm = is_norm
         self.in_channels = in_ch
         self.out_channels = out_ch
-        self.kernel_size = k
         self.stride = s
-        self.padding = p
 
-        layers = []
+        if only_upsample:
+            # only upsample, no weight, can not be trained, but is smaller and quicker
+            assert in_ch == out_ch, f'if {only_upsample = }, {in_ch = } must be equal to {out_ch = }'
+            layers = [nn.Upsample(scale_factor=s, mode='bilinear', align_corners=False)]
 
-        for m in mode:
-            if m == 'c':
-                layers.append(nn.ConvTranspose2d(in_ch, out_ch, k, s, p, bias=bias, **conv_kwargs))
-            elif m == 'n' and is_norm:
-                layers.append(norm or nn.BatchNorm2d(out_ch))
-            elif m == 'a' and is_act:
-                layers.append(act or nn.ReLU(True))
+        else:
+            if p is None:
+                p = self.auto_p(k, s) if isinstance(k, int) else [self.auto_p(x, s) for x in k]
+
+            self.is_act = is_act
+            self.is_norm = is_norm
+            self.kernel_size = k
+            self.padding = p
+
+            layers = []
+
+            for m in mode:
+                if m == 'c':
+                    layers.append(nn.ConvTranspose2d(in_ch, out_ch, k, s, p, bias=bias, **conv_kwargs))
+                elif m == 'n' and is_norm:
+                    layers.append(norm or nn.BatchNorm2d(out_ch))
+                elif m == 'a' and is_act:
+                    layers.append(act or nn.ReLU(True))
 
         super().__init__(*layers)
 
