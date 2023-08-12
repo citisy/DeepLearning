@@ -14,6 +14,9 @@ ASPP_config = dict(
 
 
 class Model(BaseSemanticSegmentationModel):
+    """
+    see also `torchvision.models.segmentation.deeplabv3.deeplabv3_resnet50`
+    """
     def __init__(
             self,
             in_ch=None, input_size=None, out_features=None, in_module=None, backbone=None,

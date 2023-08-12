@@ -160,3 +160,104 @@ class PixBox:
                 pix_image[y2 + 1 if y2 < h else y2, x1:x2] = 255
 
         return pix_image
+
+
+def fragment_image(image: np.ndarray,
+                   max_size=None, grid=None,
+                   overlap_size=None, overlap_ratio=None,
+                   over_size=None, over_ratio=None
+                   ):
+    """
+
+    Args:
+        image:
+        max_size:
+        grid:
+        overlap_size:
+        overlap_ratio:
+        over_size:
+        over_ratio:
+
+    Returns:
+
+    Usage:
+
+        >>> image = np.zeros((2000, 3000, 3))
+        >>> images, coors = fragment_image(image, max_size=1000, overlap_size=100, over_ratio=0.5)
+        >>> coors
+        [(0, 0, 1000, 1000), (0, 900, 1000, 2000), (900, 0, 1900, 1000), (900, 900, 1900, 2000), (1800, 0, 3000, 1000), (1800, 900, 3000, 2000)]
+        >>> [img.shape for img in images]
+        [(1000, 1000, 3), (1100, 1000, 3), (1000, 1000, 3), (1100, 1000, 3), (1000, 1200, 3), (1100, 1200, 3)]
+    """
+    h, w = image.shape[:2]
+
+    if max_size:
+        size = (max_size, max_size) if isinstance(max_size, int) else max_size
+    elif grid:
+        # would be something wrong when overlap_size or overlap_ratio is not None
+        size = (int(np.ceil(h / grid)), int(np.ceil(w / grid)))
+    else:
+        raise f'must be set max_size or grid, can not be None all of them'
+
+    if overlap_size:
+        overlap_size = (overlap_size, overlap_size) if isinstance(overlap_size, int) else overlap_size
+    elif overlap_ratio:
+        overlap_ratio = (overlap_ratio, overlap_ratio) if isinstance(overlap_ratio, float) else overlap_ratio
+        overlap_size = (int(size[0] * overlap_ratio[0]), int(size[1] * overlap_ratio[1]))
+    else:
+        overlap_size = (0, 0)
+
+    if over_size:
+        over_size = (over_size, over_size) if isinstance(over_size, int) else over_size
+    elif over_ratio:
+        over_ratio = (over_ratio, over_ratio) if isinstance(over_ratio, float) else over_ratio
+        over_size = (int(size[0] * over_ratio[0]), int(size[1] * over_ratio[1]))
+    else:
+        over_size = (0, 0)
+
+    images = []
+    coors = []
+    if max_size:
+        for i in range(0, w, size[0] - overlap_size[0]):
+            for j in range(0, h, size[1] - overlap_size[1]):
+                x1, y1, x2, y2 = i, j, min(i + size[0], w), min(j + size[1], h)
+
+                if w - x1 < over_size[0] or h - y1 < over_size[1]:
+                    continue
+
+                remain = (w - x2, h - y2)
+                if remain[0] < over_size[0]:
+                    x2 = w
+                if remain[1] < over_size[1]:
+                    y2 = h
+
+                coors.append((x1, y1, x2, y2))
+                images.append(image[y1:y2, x1:x2])
+
+    return images, coors
+
+
+def non_max_suppression(boxes, conf, iou_method, threshold=0.6):
+    """
+
+    Args:
+        boxes: np.ndarray(n_samples， 4), x1,y1,x2,y2
+        conf: np.ndarray(n_samples, )
+        iou_method:
+        threshold: IOU threshold
+
+    Returns:
+        keep: 1-dim array, index of dects to keep
+    """
+    index = conf.argsort()[::-1]
+    keep = []
+
+    while index.size > 0:
+        i = index[0]
+        keep.append(i)
+
+        ious = iou_method(boxes[i:i + 1], boxes[index[1:]])[0]
+        inds = np.where(ious <= threshold)[0]
+        index = index[inds + 1]
+
+    return keep

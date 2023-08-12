@@ -121,6 +121,10 @@ def initialize_layers(module, init_gain=0.02, init_type='normal'):
             m.weight.data.normal_(1.0, init_gain)
             m.bias.data.fill_(0.)
 
+        elif t is nn.LayerNorm:
+            nn.init.constant_(m.bias, 0)
+            nn.init.constant_(m.weight, 1.0)
+
         elif t in [nn.Hardswish, nn.LeakyReLU, nn.ReLU, nn.ReLU6, nn.SiLU]:
             m.inplace = True
 

@@ -24,12 +24,13 @@ class Model(nn.ModuleList):
     """
 
     def __init__(self, in_ch, net_g_config=net_g_config, net_d_config=net_d_config,
+                 net_g=None, net_d=None,
                  lambda_l1=100.0, real_label=1., fake_label=0.,
                  **kwargs):
         super().__init__()
 
-        self.net_g = NetG(**net_g_config)
-        self.net_d = NetD(in_ch * 2, **net_d_config)
+        self.net_g = net_g if net_g is not None else NetG(**net_g_config)
+        self.net_d = net_d if net_d is not None else NetD(in_ch * 2, **net_d_config)
 
         initialize_layers(self.net_g)
         initialize_layers(self.net_d)

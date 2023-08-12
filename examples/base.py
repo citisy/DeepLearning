@@ -9,6 +9,7 @@ from torch.utils.data import Dataset, DataLoader
 from utils import os_lib, converter, configs, visualize
 from utils.torch_utils import EarlyStopping, ModuleInfo, Export
 from data_parse.cv_data_parse.data_augmentation import crop, scale, geometry, pixel_perturbation, RandomApply, Apply, channel
+from typing import List
 
 configs.logger_init()
 
@@ -118,7 +119,10 @@ class Process:
             complex_augment_func=self.complex_data_augment if hasattr(self, 'complex_data_augment') else None
         )
 
-        self.fit(dataset, max_epoch, train_batch_size, save_period)
+        self.fit(
+            dataset, max_epoch, train_batch_size, save_period,
+            num_workers=train_batch_size
+        )
         self.save(self.model_path)
 
         # self.load(self.model_path)
@@ -129,7 +133,7 @@ class Process:
         dataset = self.dataset(data, augment_func=self.val_data_augment)
         r = self.metric(
             dataset, predict_batch_size or train_batch_size,
-            num_workers=16
+            num_workers=predict_batch_size or train_batch_size
         )
         for k, v in r.items():
             self.logger.info({k: v})
@@ -164,21 +168,31 @@ class Process:
     def metric(self, *args, **kwargs):
         raise NotImplementedError
 
-    def data_augment(self, ret):
+    def single_predict(self, image: np.ndarray, **kwargs):
+        raise NotImplementedError
+
+    def batch_predict(self, images: List[np.ndarray], batch_size=16, **kwargs):
+        raise NotImplementedError
+
+    def fragment_predict(self, image: np.ndarray, **kwargs):
+        """predict large image. Tear picture to pieces to predict, and then merge the results"""
+        raise NotImplementedError
+
+    def data_augment(self, ret) -> dict:
         ret.update(Apply([
             # pixel_perturbation.MinMax(),
             channel.HWC2CHW()
         ])(**ret))
         return ret
 
-    def val_data_augment(self, ret):
+    def val_data_augment(self, ret) -> dict:
         ret.update(Apply([
             # pixel_perturbation.MinMax(),
             channel.HWC2CHW()
         ])(**ret))
         return ret
 
-    def val_data_restore(self, ret):
+    def val_data_restore(self, ret) -> dict:
         return ret
 
     def get_train_data(self, *args, **kwargs):

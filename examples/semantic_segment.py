@@ -56,13 +56,13 @@ class SegProcess(Process):
         lrf = 0.01
 
         # lf = lambda x: (1 - x / max_epoch) * (1.0 - lrf) + lrf
-        lf = lambda x: ((1 - math.cos(x * math.pi / max_epoch)) / 2) * (lrf - 1) + 1    # cos_lr
+        lf = lambda x: ((1 - math.cos(x * math.pi / max_epoch)) / 2) * (lrf - 1) + 1  # cos_lr
 
         scheduler = optim.lr_scheduler.LambdaLR(self.optimizer, lr_lambda=lf)
         scheduler.last_epoch = -1
 
         scaler = torch.cuda.amp.GradScaler(enabled=True)
-        stopper = EarlyStopping(patience=10, min_epoch=10, stdout_method=self.logger.info)
+        stopper = EarlyStopping(patience=10, min_epoch=50, stdout_method=self.logger.info)
         max_score = -1
         accumulate = 64 / batch_size
         j = 0
@@ -109,6 +109,7 @@ class SegProcess(Process):
                 self.save(f'{self.model_dir}/{self.dataset_version}/last.pth')
 
                 val_data = self.get_val_data()
+                # val_data = self.get_train_data()
                 val_dataset = self.dataset(val_data, augment_func=self.val_data_augment)
                 result = self.metric(val_dataset, batch_size)
                 score = result['score']
@@ -192,6 +193,11 @@ class SegProcess(Process):
 
 class Voc(Process):
     def data_augment(self, ret):
+        random_aug = RandomApply([
+            geometry.HFlip(),
+            geometry.VFlip(),
+        ])
+
         aug = Apply([
             # scale.LetterBox(),
             scale.Jitter(),
@@ -199,21 +205,16 @@ class Voc(Process):
             channel.HWC2CHW()
         ])
 
-        random_aug = RandomApply([
-            geometry.HFlip(),
-            geometry.VFlip(),
-        ])
-
-        ret.update(dst=self.input_size)
-        ret.update(aug(**ret))
         ret.update(random_aug(**ret))
         ret.update(RandomApply([pixel_perturbation.Jitter()])(**ret))
+        ret.update(dst=self.input_size)
+        ret.update(aug(**ret))
 
         pix_image = ret['pix_image']
         # note that, use cv2.INTER_NEAREST mode to resize
         # pix_image = scale.LetterBox(interpolation=1, fill=255).apply_image(pix_image, ret)
-        pix_image = scale.Jitter(interpolation=1, fill=255).apply_image(pix_image, ret)
         pix_image = random_aug.apply_image(pix_image, ret)
+        pix_image = scale.Jitter(interpolation=1, fill=255).apply_image(pix_image, ret)
         ret['pix_image'] = pix_image
         return ret
 
@@ -226,7 +227,6 @@ class Voc(Process):
     def val_data_augment(self, ret):
         aug = Apply([
             scale.LetterBox(),
-            # scale.Jitter(self.input_size),
             # pixel_perturbation.MinMax(),
             channel.HWC2CHW()
         ])
@@ -246,7 +246,6 @@ class Voc(Process):
 
         loader = Loader('data/VOC2012')
         return loader(set_type=DataRegister.VAL, generator=False, image_type=DataRegister.PATH, set_task=SEG_CLS)[0]
-        # return loader(set_type=DataRegister.TRAIN, generator=False, image_type=DataRegister.PATH, set_task=SEG_CLS)[0]
 
 
 class FCN_Voc(SegProcess, Voc):
@@ -317,7 +316,7 @@ class DeeplabV3_Voc(SegProcess, Voc):
             from examples.semantic_segment import DeeplabV3_Voc as Process
 
             Process().run(max_epoch=1000)
-            {'score': 0.1962}
+            {'score': 0.3021}
     """
 
     def __init__(self, model_version='DeeplabV3', dataset_version='Voc',

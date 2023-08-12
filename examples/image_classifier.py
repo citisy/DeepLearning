@@ -1,4 +1,3 @@
-import cv2
 import numpy as np
 import torch
 from torch import nn, optim
@@ -29,12 +28,14 @@ class ClsProcess(Process):
 
         self.model.to(self.device)
 
-        stopper = EarlyStopping(patience=10, stdout_method=self.logger.info)
+        stopper = EarlyStopping(patience=10, min_epoch=10, stdout_method=self.logger.info)
         max_score = -1
 
         for i in range(max_epoch):
             self.model.train()
             pbar = tqdm(dataloader, desc=f'train {i}/{max_epoch}')
+            total_loss = 0
+            total_batch = 0
 
             for rets in pbar:
                 images = [torch.from_numpy(ret.pop('image')).to(self.device, non_blocking=True, dtype=torch.float) for ret in rets]
@@ -50,8 +51,12 @@ class ClsProcess(Process):
                 loss.backward()
                 self.optimizer.step()
 
+                total_loss += loss.item()
+                total_batch += len(rets)
+
                 pbar.set_postfix({
                     'loss': f'{loss.item():.06}',
+                    'mean_loss': f'{total_loss / total_batch:.06}',
                     # 'cpu_info': MemoryInfo.get_process_mem_info(),
                     # 'gpu_info': MemoryInfo.get_gpu_mem_info()
                 })
@@ -60,6 +65,7 @@ class ClsProcess(Process):
                 self.save(f'{self.model_dir}/{self.dataset_version}/last.pth')
 
                 val_data = self.get_val_data()
+                # val_data = self.get_train_data()
                 val_dataset = self.dataset(val_data, augment_func=self.val_data_augment)
                 result = self.metric(val_dataset, batch_size)
                 score = result['score']
@@ -655,6 +661,39 @@ class CondenseNet_ImageNet(ClsProcess, ImageNet):
 
         super().__init__(
             model=Model(in_ch, input_size, out_features),
+            model_version=model_version,
+            dataset_version=dataset_version,
+            input_size=input_size,
+            **kwargs
+        )
+
+
+class ViT_ImageNet(ClsProcess, ImageNet):
+    """
+    Usage:
+        .. code-block:: python
+
+            from examples.image_cls import ViT_ImageNet as Process
+
+            Process().run(max_epoch=300, train_batch_size=32, predict_batch_size=32)
+            {'p': 0.7049180212308521, 'r': 0.86, 'f': 0.7747742727054547, 'score': 0.7747742727054547}
+    """
+
+    def __init__(self,
+                 in_ch=3,
+                 input_size=224,
+                 out_features=2,
+                 model_version='ViT',
+                 dataset_version='ImageNet2012',
+                 **kwargs
+                 ):
+        from models.image_classifier.ViT import Model
+        model = Model(in_ch, input_size, out_features)
+        optimizer = optim.SGD(model.parameters(), lr=0.001, momentum=0.9, weight_decay=1e-4)
+
+        super().__init__(
+            model=model,
+            optimizer=optimizer,
             model_version=model_version,
             dataset_version=dataset_version,
             input_size=input_size,

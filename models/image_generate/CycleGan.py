@@ -20,14 +20,15 @@ class Model(nn.ModuleList):
     """
 
     def __init__(self, in_ch, net_g_config=net_g_config, net_d_config=net_d_config,
+                 net_g=None, net_d=None,
                  lambda_identity=0.5, real_label=1., fake_label=0.,
                  **kwargs):
         super().__init__()
 
-        self.net_g_a = NetG(in_ch, 3, **net_g_config)
-        self.net_g_b = NetG(in_ch, 3, **net_g_config)
-        self.net_d_a = NetD(in_ch, **net_d_config)
-        self.net_d_b = NetD(in_ch, **net_d_config)
+        self.net_g_a = net_g if net_g is not None else NetG(in_ch, 3, **net_g_config)
+        self.net_g_b = net_g if net_g is not None else NetG(in_ch, 3, **net_g_config)
+        self.net_d_a = net_d if net_d is not None else NetD(in_ch, **net_d_config)
+        self.net_d_b = net_d if net_d is not None else NetD(in_ch, **net_d_config)
 
         initialize_layers(self)
 

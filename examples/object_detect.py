@@ -11,9 +11,9 @@ from data_parse.cv_data_parse.data_augmentation import crop, scale, geometry, pi
 from data_parse.cv_data_parse.base import DataRegister, DataVisualizer
 from .base import Process, BaseDataset
 from utils.torch_utils import EarlyStopping
-from utils.visualize import ImageVisualize
-from utils import configs, os_lib, converter
+from utils import configs, os_lib, converter, cv_utils
 from metrics import object_detection
+from typing import List
 
 
 class OdDataset(BaseDataset):
@@ -141,7 +141,7 @@ class OdProcess(Process):
         with torch.no_grad():
             self.model.eval()
             for rets in tqdm(dataloader, desc='val'):
-                images = [torch.Tensor(ret['image']).to(self.device) for ret in rets]
+                images = [torch.from_numpy(ret['image']).to(self.device) for ret in rets]
                 images = torch.stack(images)
                 images = images / 255
 
@@ -194,6 +194,74 @@ class OdProcess(Process):
         )
 
         return result
+
+    def single_predict(self, image: np.ndarray, *args, **kwargs):
+        with torch.no_grad():
+            self.model.eval()
+            ret = self.val_data_augment({'image': image})
+            images = torch.from_numpy(ret.pop('image')).to(self.device, non_blocking=True, dtype=torch.float).unsqueeze(0)
+            images = images / 255
+            outputs = self.model(images)
+            outputs = [{k: v.to('cpu').numpy() for k, v in t.items()} for t in outputs]
+
+            output = outputs[0]
+            output = configs.merge_dict(ret, output)
+            output = self.val_data_restore(output)
+
+        return output
+
+    def batch_predict(self, images: List[np.ndarray], batch_size=16, **kwargs):
+        results = []
+        with torch.no_grad():
+            self.model.eval()
+            for i in range(0, len(images), batch_size):
+                rets = [self.val_data_augment({'image': image}) for image in images[i:i + batch_size]]
+                images = [torch.from_numpy(ret.pop('image')).to(self.device) for ret in rets]
+                images = torch.stack(images)
+                images = images / 255
+
+                outputs = self.model(images)
+                outputs = [{k: v.to('cpu').numpy() for k, v in t.items()} for t in outputs]
+
+                for ret, output in zip(rets, outputs):
+                    output = configs.merge_dict(ret, output)
+                    output = self.val_data_restore(output)
+                    results.append(output)
+
+        return results
+
+    def fragment_predict(self, image: np.ndarray, **kwargs):
+        images, coors = cv_utils.fragment_image(image, max_size=self.input_size, over_ratio=0.5, overlap_ratio=0.2)
+        results = self.batch_predict(images)
+
+        bboxes = []
+        classes = []
+        confs = []
+
+        for (x1, y1, x2, y2), result in zip(coors, results):
+            bbox = result['bboxes']
+            cls = result['classes']
+            conf = result['confs']
+
+            bbox += (x1, y1, x1, y1)
+            bboxes.append(bbox)
+            classes.append(cls)
+            confs.append(conf)
+
+        bboxes = np.concatenate(bboxes)
+        classes = np.concatenate(classes)
+        confs = np.concatenate(confs)
+
+        keep = cv_utils.non_max_suppression(bboxes, confs, object_detection.Iou.iou)
+        bboxes = bboxes[keep]
+        classes = classes[keep]
+        confs = confs[keep]
+
+        return dict(
+            bboxes=bboxes,
+            classes=classes,
+            confs=confs
+        )
 
 
 class Voc(Process):
