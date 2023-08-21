@@ -77,7 +77,7 @@ def expand_dict(d: dict):
     return cur_dict(d, {})
 
 
-def merge_dict(d1: dict, d2: dict):
+def merge_dict(d1: dict, d2: dict) -> dict:
     """merge values from d1 and d2
     if had same key, d2 will cover d1
 
@@ -101,7 +101,7 @@ def merge_dict(d1: dict, d2: dict):
     return cur(copy.deepcopy(d1), copy.deepcopy(d2))
 
 
-def permute_obj(obj):
+def permute_obj(obj: dict or list):
     """
 
     Example:
@@ -112,7 +112,7 @@ def permute_obj(obj):
 
     """
 
-    def cur(cur_obj):
+    def cur(cur_obj: dict):
         r = [{}]
         for k, v in cur_obj.items():
             r = [{**rr, k: vv} for rr in r for vv in v]
@@ -210,22 +210,31 @@ class MultiProcessTimedRotatingFileHandler(TimedRotatingFileHandler):
         self.rolloverAt = new_rollover_at
 
 
-def logger_init(config={}, log_dir=None):
+def logger_init(log_dir=None, **custom_config):
     """logging配置
     默认loggers：['', 'basic', 'service_standard', 'service', '__main__']
 
-    Examples
+    Usage:
         .. code-block:: python
 
             import logging
             from utils.configs import logger_init
 
+            # default init
             logger_init()
+
+            # log print to file
+            logger_init('logs')
+
+            # add custom config
+            logger_init(handlers={...}, loggers={...})
+
             logger = logging.getLogger('service')
             logger.info('')
+
     """
 
-    default_logging_config = {
+    default_config = {
         'version': 1,
         'disable_existing_loggers': True,
         'formatters': {
@@ -273,7 +282,7 @@ def logger_init(config={}, log_dir=None):
 
     if log_dir is not None:  # add file handles
         os_lib.mk_dir(log_dir)
-        default_logging_config = merge_dict(default_logging_config, {
+        add_config = {
             'handlers': {
                 # 简略信息info
                 'info_standard': {
@@ -307,27 +316,44 @@ def logger_init(config={}, log_dir=None):
             },
 
             'loggers': {
-                'basic': {
-                    'handlers': ['default', 'info_standard', 'error', 'critical'],
+                # root logger
+                '': {
+                    'handlers': ['default', 'info_standard', 'error'],
                     'level': 'INFO',
                     'propagate': False
                 },
-                'service_standard': {
-                    'handlers': ['default', 'info_standard', 'error', 'critical'],
+
+                # 简单的无格式屏幕输出流
+                'print': {
+                    'handlers': ['print', 'info_standard', 'error'],
                     'level': 'INFO',
                     'propagate': False
                 },
+
                 'service': {
-                    'handlers': ['default', 'info', 'error', 'critical'],
+                    'handlers': ['default', 'info', 'error'],
                     'level': 'INFO',
                     'propagate': False
                 },
             }
 
-        })
+        }
+        default_config = merge_dict(default_config, add_config)
 
-    default_logging_config = merge_dict(default_logging_config, config)
-    logging.config.dictConfig(default_logging_config)
+    default_config = merge_dict(default_config, custom_config)
+    logging.config.dictConfig(default_config)
+    return default_config
+
+
+def wandb_init(**custom_config):
+    import wandb
+    default_config = {
+
+    }
+    default_config = merge_dict(default_config, custom_config)
+
+    wandb.init(project='test')
+    return default_config
 
 
 def parse_params_example() -> dict:

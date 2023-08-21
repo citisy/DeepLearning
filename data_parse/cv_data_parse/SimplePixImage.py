@@ -30,8 +30,11 @@ class Loader(DataLoader):
     """
     default_set_type = [DataRegister.MIX]
 
-    def _call(self, image_type=DataRegister.PATH, task='original', pix_task='pixels', **kwargs):
+    def _call(self, image_type=DataRegister.PATH, task='original', pix_task='pixels', max_size=float('inf'), **kwargs):
+        i = 0
         for fp in Path(f'{self.data_dir}/{task}').glob(f'*.{self.image_suffix}'):
+            if i >= max_size:
+                break
             image_path = os.path.abspath(fp)
             image = get_image(image_path, image_type)
 
@@ -47,6 +50,7 @@ class Loader(DataLoader):
             ret = self.convert_func(ret)
 
             if self.filter_func(ret):
+                i += 1
                 yield ret
 
 

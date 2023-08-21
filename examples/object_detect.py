@@ -34,41 +34,28 @@ class OdDataset(BaseDataset):
 
 
 class OdProcess(Process):
-    def fit(self, dataset, max_epoch, batch_size, save_period=None, **dataloader_kwargs):
-        # sampler = distributed.DistributedSampler(dataset, shuffle=True)
-        dataloader = DataLoader(
-            dataset,
-            shuffle=True,
-            # sampler=sampler,
-            pin_memory=True,
-            batch_size=batch_size,
-            collate_fn=dataset.collate_fn,
-            **dataloader_kwargs
-        )
-
-        self.model.to(self.device)
+    def fit(self, max_epoch=100, batch_size=16, save_period=None, metric_kwargs=dict(), **dataloader_kwargs):
+        train_dataloader, val_dataloader, metric_kwargs = self.on_train_start(batch_size, metric_kwargs, **dataloader_kwargs)
 
         lrf = 0.01
 
         # lf = lambda x: (1 - x / max_epoch) * (1.0 - lrf) + lrf
-        # cos_lr
-        lf = lambda x: ((1 - math.cos(x * math.pi / max_epoch)) / 2) * (lrf - 1) + 1
+        lf = lambda x: ((1 - math.cos(x * math.pi / max_epoch)) / 2) * (lrf - 1) + 1  # cos_lr
 
         scheduler = optim.lr_scheduler.LambdaLR(self.optimizer, lr_lambda=lf)
         scheduler.last_epoch = -1
 
         scaler = torch.cuda.amp.GradScaler(enabled=True)
-        stopper = EarlyStopping(patience=10, stdout_method=self.logger.info)
 
-        max_score = -1
-        accumulate = 64 / batch_size
+        accumulate = 64 // batch_size
         j = 0
 
         for i in range(max_epoch):
             self.model.train()
-            pbar = tqdm(dataloader, desc=f'train {i}/{max_epoch}')
+            pbar = tqdm(train_dataloader, desc=f'train {i}/{max_epoch}')
             total_loss = 0
             total_batch = 0
+            mean_loss = 0
 
             for rets in pbar:
                 images = [torch.from_numpy(ret.pop('image')).to(self.device, non_blocking=True, dtype=torch.float) for ret in rets]
@@ -99,53 +86,48 @@ class OdProcess(Process):
 
                 total_loss += loss.item()
                 total_batch += len(rets)
+                mean_loss = total_loss / total_batch
 
                 pbar.set_postfix({
                     'loss': f'{loss.item():.06}',
-                    'mean_loss': f'{total_loss / total_batch:.06}',
+                    'mean_loss': f'{mean_loss:.06}',
                     # 'cpu_info': MemoryInfo.get_process_mem_info(),
                     # 'gpu_info': MemoryInfo.get_gpu_mem_info()
                 })
 
-            if save_period and i % save_period == save_period - 1:
-                self.save(f'{self.model_dir}/{self.dataset_version}/last.pth')
+            scheduler.step()
 
-                val_data = self.get_val_data()
-                val_dataset = self.dataset(val_data, augment_func=self.val_data_augment)
-                result = self.metric(val_dataset, batch_size, **dataloader_kwargs)
-                score = result['score']
-                self.logger.info(f"epoch: {i}, score: {score}")
+            if self.on_train_epoch_end(i, save_period, mean_loss, val_dataloader, **metric_kwargs):
+                break
 
-                if score > max_score:
-                    self.save(f'{self.model_dir}/{self.dataset_version}/best.pth')
-                    max_score = score
+    def metric(self, *args, **kwargs):
+        gt_rets, det_rets = self.predict(*args, **kwargs)
+        df = object_detection.EasyMetric(verbose=False).quick_metric(gt_rets, det_rets, save_path=f'{self.model_dir}/{self.dataset_version}/result.csv')
 
-                if stopper(epoch=i, fitness=score):
-                    break
-
-        scheduler.step()
-
-    def predict(self, dataset, batch_size=128, visualize=False, max_vis_num=None, save_ret_func=None, **dataloader_kwargs):
-        dataloader = DataLoader(
-            dataset,
-            batch_size=batch_size,
-            collate_fn=dataset.collate_fn,
-            **dataloader_kwargs
+        result = dict(
+            per_class_result=df,
+            score=df['ap']['mean']
         )
 
-        self.model.to(self.device)
+        return result
+
+    def predict(self, val_dataloader=None, batch_size=16, cur_epoch=-1, model=None, visualize=False, max_vis_num=float('inf'), save_ret_func=None, **dataloader_kwargs):
+        if val_dataloader is None:
+            val_dataloader = self.on_val_start(batch_size, **dataloader_kwargs)
+
+        model = model or self.model
+        model.to(self.device)
         gt_rets, det_rets = [], []
-        max_vis_num = max_vis_num or float('inf')
         vis_num = 0
 
         with torch.no_grad():
-            self.model.eval()
-            for rets in tqdm(dataloader, desc='val'):
-                images = [torch.from_numpy(ret['image']).to(self.device) for ret in rets]
+            model.eval()
+            for rets in tqdm(val_dataloader, desc='val'):
+                images = [torch.from_numpy(ret.pop('image')).to(self.device) for ret in rets]
                 images = torch.stack(images)
                 images = images / 255
 
-                outputs = self.model(images)
+                outputs = model(images)
                 outputs = [{k: v.to('cpu').numpy() for k, v in t.items()} for t in outputs]
 
                 for i in range(len(images)):
@@ -155,6 +137,9 @@ class OdProcess(Process):
                     output = configs.merge_dict(ret, output)
                     ret = self.val_data_restore(ret)
                     output = self.val_data_restore(output)
+
+                    outputs[i] = output
+                    rets[i] = ret
 
                     gt_rets.append(dict(
                         _id=ret['_id'],
@@ -169,31 +154,29 @@ class OdProcess(Process):
                         confs=output['confs']
                     ))
 
-                if visualize:
-                    for ret, output in zip(rets, outputs):
-                        ret['image'] = ret['ori_image']
-                        output['image'] = ret['ori_image']
-
-                    n = min(batch_size, max_vis_num - vis_num)
-                    if n > 0:
-                        DataVisualizer(self.save_result_dir)(rets[:n], outputs[:n])
-                        vis_num += n
+                vis_num = self.on_val_step_end(rets, outputs, cur_epoch, visualize, batch_size, max_vis_num, vis_num)
 
         if save_ret_func:
             save_ret_func(det_rets)
 
         return gt_rets, det_rets
 
-    def metric(self, dataset, batch_size=128, **kwargs):
-        gt_rets, det_rets = self.predict(dataset, batch_size, **kwargs)
-        df = object_detection.easy_metric.quick_metric(gt_rets, det_rets, save_path=f'{self.model_dir}/{self.dataset_version}/result.csv', verbose=False)
+    def on_val_step_end(self, rets, outputs, cur_epoch, visualize, batch_size, max_vis_num, vis_num):
+        if visualize:
+            n = min(batch_size, max_vis_num - vis_num)
+            if n > 0:
+                for ret, output in zip(rets, outputs):
+                    ret['image'] = ret['ori_image']
+                    output['image'] = ret['ori_image']
 
-        result = dict(
-            per_class_result=df,
-            score=df['ap']['mean']
-        )
+                cls_alias = self.cls_alias if hasattr(self, 'cls_alias') else None
+                cache_image = DataVisualizer(f'{self.save_result_dir}/{cur_epoch}', verbose=False, pbar=False)(
+                    rets[:n], outputs[:n], return_image=True, cls_alias=cls_alias
+                )
+                self.log_info.setdefault('val_image', []).extend([self.wandb.Image(img, caption=Path(r['_id']).stem) for img, r in zip(cache_image, rets)])
+                vis_num += n
 
-        return result
+        return vis_num
 
     def single_predict(self, image: np.ndarray, *args, **kwargs):
         with torch.no_grad():
@@ -268,13 +251,20 @@ class Voc(Process):
     dataset = OdDataset
 
     def get_train_data(self):
-        """example"""
         from data_parse.cv_data_parse.Voc import Loader
 
         loader = Loader(f'data/VOC2012')
-        data = loader(set_type=DataRegister.TRAIN, image_type=DataRegister.PATH, generator=False, task='')[0]
+        self.cls_alias = loader.classes
 
-        return data
+        return loader(set_type=DataRegister.TRAIN, image_type=DataRegister.PATH, generator=False, task='')[0]
+
+    def get_val_data(self):
+        from data_parse.cv_data_parse.Voc import Loader
+
+        loader = Loader(f'data/VOC2012')
+        self.cls_alias = loader.classes
+
+        return loader(set_type=DataRegister.VAL, image_type=DataRegister.PATH, generator=False, task='')[0]
 
     aug = Apply([
         scale.LetterBox(),
@@ -300,16 +290,6 @@ class Voc(Process):
     def val_data_restore(self, ret):
         ret = scale.LetterBox().restore(ret)
         return ret
-
-    def get_val_data(self):
-        """example"""
-        from data_parse.cv_data_parse.Voc import Loader
-
-        loader = Loader(f'data/VOC2012')
-        data = loader(set_type=DataRegister.VAL, image_type=DataRegister.PATH, generator=False, task='')[0]
-        # data = data[:20]
-
-        return data
 
 
 class FastererRCNN_Voc(OdProcess, Voc):
@@ -345,22 +325,22 @@ class FastererRCNN_Voc(OdProcess, Voc):
 class YoloV5(OdProcess):
     def __init__(self,
                  model_version='YoloV5',
-                 dataset_version='',
                  device=0,
                  input_size=640,
                  in_ch=3,
                  n_classes=20,
+                 model=None,
                  **kwargs
                  ):
         from models.object_detection.YoloV5 import Model
-        model = Model(
+        model = model or Model(
             n_classes,
             in_module_config=dict(in_ch=in_ch, input_size=input_size),
         )
 
         g = [], [], []  # optimizer parameter groups
         bn = tuple(v for k, v in nn.__dict__.items() if 'Norm' in k)  # normalization layers, i.e. BatchNorm2d()
-        for v in self.model.modules():
+        for v in model.modules():
             if hasattr(v, 'bias') and isinstance(v.bias, nn.Parameter):  # bias
                 g[2].append(v.bias)
             if isinstance(v, bn):  # weight (no decay)
@@ -380,17 +360,21 @@ class YoloV5(OdProcess):
             model=model,
             optimizer=optimizer,
             model_version=model_version,
-            dataset_version=dataset_version,
             input_size=input_size,
-            device=device
+            device=device,
+            **kwargs
         )
 
+
+class Voc_(Voc):
     def data_augment(self, ret):
         ret.update(RandomApply([geometry.HFlip()])(**ret))
         return ret
 
+    mosaic_prob = 0.5
+
     def complex_data_augment(self, idx, data, base_process):
-        if np.random.random() > 0.5:
+        if np.random.random() > self.mosaic_prob:
             idxes = [idx] + list(np.random.choice(range(len(data)), 3, replace=False))
             rets = []
             for idx in idxes:
@@ -420,7 +404,7 @@ class YoloV5(OdProcess):
         return ret
 
 
-class YoloV5_Voc(YoloV5, Voc):
+class YoloV5_Voc(YoloV5, Voc_):
     """
     Usage:
         .. code-block:: python

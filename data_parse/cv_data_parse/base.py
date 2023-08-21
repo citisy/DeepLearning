@@ -87,7 +87,7 @@ class DataLoader:
     def __init__(self, data_dir, verbose=True, stdout_method=print):
         self.data_dir = data_dir
         self.verbose = verbose
-        self.stdout_method = stdout_method
+        self.stdout_method = stdout_method if verbose else os_lib.FakeIo()
 
     def __call__(self, set_type=None, image_type=None, generator=True, **kwargs):
         """
@@ -170,7 +170,7 @@ class DataSaver:
         self.data_dir = data_dir
         self.default_set_type = [DataRegister.TRAIN, DataRegister.TEST]
         self.verbose = verbose
-        self.stdout_method = stdout_method
+        self.stdout_method = stdout_method if verbose else os_lib.FakeIo()
 
         os_lib.mk_dir(self.data_dir)
 
@@ -231,7 +231,7 @@ class DatasetGenerator:
         self.image_dir = image_dir
         self.label_dir = label_dir
         self.verbose = verbose
-        self.stdout_method = stdout_method
+        self.stdout_method = stdout_method if verbose else os_lib.FakeIo()
 
     def gen_sets(self, **kwargs):
         """please implement this function"""
@@ -342,7 +342,7 @@ class DataVisualizer:
         self.pbar = pbar
         os_lib.mk_dir(save_dir)
 
-    def __call__(self, *iter_data, max_vis_num=None, **visual_kwargs):
+    def __call__(self, *iter_data, max_vis_num=None, return_image=False, **visual_kwargs):
         """
 
         Args:
@@ -358,6 +358,7 @@ class DataVisualizer:
 
             **visual_kwargs:
                 cls_alias:
+                return_image:
 
         Returns:
 
@@ -368,6 +369,7 @@ class DataVisualizer:
 
         vis_num = 0
         max_vis_num = max_vis_num or float('inf')
+        cache_image = []
         for rets in pbar:
             if vis_num >= max_vis_num:
                 return
@@ -386,6 +388,10 @@ class DataVisualizer:
             image = self.concat_images(images)
             self.saver.save_img(image, f'{self.save_dir}/{_id}')
             vis_num += 1
+            if return_image:
+                cache_image.append(image)
+
+        return cache_image
 
     def visual_one_image(self, r, **visual_kwargs):
         image = r['image']
@@ -401,7 +407,7 @@ class DataVisualizer:
                 else:
                     colors = [visualize.get_color_array(int(cls)) for cls in classes]
 
-                if 'cls_alias' in visual_kwargs:
+                if 'cls_alias' in visual_kwargs and visual_kwargs['cls_alias']:
                     cls_alias = visual_kwargs['cls_alias']
                     classes = [cls_alias[_] for _ in classes]
 
@@ -425,7 +431,8 @@ class DataVisualizer:
         if n < 4:
             return np.concatenate(images, 1)
 
-        n_row = int(np.ceil(np.sqrt(n)))
-        images += [np.zeros_like(images[0])] * (n_row * n_row - n)
-        images = [np.concatenate(images[i: i + n_row], 1) for i in range(0, len(images), n_row)]
+        n_col = int(np.ceil(np.sqrt(n)))
+        n_row = int(np.ceil(n / n_col))
+        images += [np.zeros_like(images[0])] * (n_col * n_row - n)
+        images = [np.concatenate(images[i: i + n_col], 1) for i in range(0, len(images), n_col)]
         return np.concatenate(images, 0)

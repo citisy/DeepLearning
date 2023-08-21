@@ -3,25 +3,56 @@ import torch
 from torch import nn
 from ..loss import FocalLoss
 from utils.torch_utils import initialize_layers
-from ..layers import Conv, ConvInModule, Cache, Concat
+from ..layers import ConvInModule, Cache, Concat
 from . import cls_nms, bbox_iou
-from ..image_classifier.CspDarkNet import Backbone, C3, darknet_config
+from ..image_classifier.CspDarkNet import Backbone, C3, Conv
 
+# default config, base on yolov5l config
 in_module_config = dict(
     in_ch=3,
     input_size=640,
 )
-
-neck_config = dict()
-
+backbone_config = (64, (3, 6, 9, 3), (1, 2))
+neck_config = dict(n_c3=3)
 head_config = dict(
     anchors=[  # length of wh
         [(10, 13), (16, 30), (33, 23)],
         [(30, 61), (62, 45), (59, 119)],
         [(116, 90), (156, 198), (373, 326)],
     ],
-
 )
+
+default_model_multiple = {
+    'yolov5x': dict(depth_multiple=1.33, width_multiple=1.25),
+    'yolov5l': dict(depth_multiple=1, width_multiple=1),
+    'yolov5m': dict(depth_multiple=0.67, width_multiple=0.75),
+    'yolov5s': dict(depth_multiple=0.33, width_multiple=0.50),
+    'yolov5n': dict(depth_multiple=0.33, width_multiple=0.25),
+}
+
+
+def make_config(backbone_config, neck_config, depth_multiple=1, width_multiple=1):
+    """
+    Args:
+        depth_multiple: model depth multiple
+        width_multiple: layer channel multiple
+
+    Usage:
+        .. code-block:: python
+
+            from models.object_detection.YoloV5 import backbone_config, neck_config, make_config, default_model_multiple
+            backbone_config, neck_config = make_config(backbone_config, neck_config, **default_model_multiple['yolov5m'])
+    """
+    compute_width = lambda x: math.ceil(x * width_multiple / 8) * 8     # make sure that it is multiple of 8
+    compute_deep = lambda n: max(round(n * depth_multiple), 1) if n > 1 else n  # depth gain
+
+    out_ch, n_conv, cache_block_idx = backbone_config
+    out_ch = compute_width(out_ch)
+    n_conv_ = [compute_deep(_) for _ in n_conv]
+    backbone_config = (out_ch, tuple(n_conv_), cache_block_idx)
+    neck_config['n_c3'] = compute_deep(neck_config['n_c3'])
+
+    return backbone_config, neck_config
 
 
 class Model(nn.Module):
@@ -30,9 +61,9 @@ class Model(nn.Module):
     def __init__(
             self, n_classes,
             in_module=None, backbone=None, neck=None, head=None,
-            in_module_config=in_module_config, backbone_config=darknet_config,
+            in_module_config=in_module_config, backbone_config=backbone_config,
             neck_config=neck_config, head_config=head_config,
-            conf_thres=0.001, nms_thres=0.6, max_det=300
+            conf_thres=0.5, nms_thres=0.6, max_det=300
     ):
         super().__init__()
         self.input = in_module(**in_module_config) if in_module is not None else ConvInModule(**in_module_config)
@@ -53,6 +84,7 @@ class Model(nn.Module):
         initialize_layers(self)
 
     def forward(self, x, gt_boxes=None, gt_cls=None):
+        x = self.input(x)
         features = self.backbone(x)
         features = self.neck(features)
 
@@ -116,6 +148,9 @@ class Model(nn.Module):
                 bboxes[:, :2] = _bboxes[:, :2] - _bboxes[:, 2:] / 2
                 bboxes[:, 2:] = _bboxes[:, :2] + _bboxes[:, 2:] / 2
 
+                # todo: if num of bboxes is too large, it will raise:
+                # RuntimeError: Trying to create tensor with negative dimension
+                # so, do not set conf_thres too small
                 keep = cls_nms(bboxes, scores, classes, self.nms_thres)
                 keep = keep[:self.max_det]
                 bboxes, classes, scores = bboxes[keep], classes[keep], scores[keep]
@@ -130,18 +165,18 @@ class Model(nn.Module):
 
 
 class Neck(nn.Module):
-    def __init__(self, in_ch):
+    def __init__(self, in_ch, n_c3=3):
         super().__init__()
         out_ch = in_ch // 2
 
         out_channels = []
         layers = [
-            Conv(in_ch, out_ch, 1, act=nn.SiLU()),
+            Conv(in_ch, out_ch, 1),
             Cache(),
 
-            nn.Upsample(None, 2, 'nearest'),
+            nn.Upsample(scale_factor=2, mode='nearest'),
             Concat(1),
-            C3(in_ch, out_ch, n=3, shortcut=False),
+            C3(in_ch, out_ch, n=n_c3, shortcut=False),
         ]
 
         in_ch = out_ch
@@ -149,15 +184,15 @@ class Neck(nn.Module):
         out_channels.append(out_ch)
 
         layers += [
-            Conv(in_ch, out_ch, 1, act=nn.SiLU()),
+            Conv(in_ch, out_ch, 1),
             Cache(1),
 
-            nn.Upsample(None, 2, 'nearest'),
+            nn.Upsample(scale_factor=2, mode='nearest'),
             Concat(0),
-            C3(in_ch, out_ch, n=3, shortcut=False),
+            C3(in_ch, out_ch, n=n_c3, shortcut=False),
             Cache(0),
 
-            Conv(out_ch, out_ch, 3, 2, act=nn.SiLU()),
+            Conv(out_ch, out_ch, 3, 2),
             Concat(1),
         ]
 
@@ -166,10 +201,10 @@ class Neck(nn.Module):
         out_channels.append(out_ch)
 
         layers += [
-            C3(out_ch, out_ch, n=3, shortcut=False),
+            C3(out_ch, out_ch, n=n_c3, shortcut=False),
             Cache(1),
 
-            Conv(out_ch, out_ch, 3, 2, act=nn.SiLU()),
+            Conv(out_ch, out_ch, 3, 2),
             Concat(2),
         ]
 
@@ -178,7 +213,7 @@ class Neck(nn.Module):
         out_channels.append(out_ch)
 
         layers += [
-            C3(out_ch, out_ch, n=3, shortcut=False),
+            C3(out_ch, out_ch, n=n_c3, shortcut=False),
             Cache(2)
         ]
 
@@ -205,13 +240,13 @@ class Head(nn.Module):
         super().__init__()
         self.n_classes = n_classes
         self.output_size = n_classes + 5
-        self.n_layers = len(anchors)
+        self.n_layers = len(anchors)    # same to num of features
         self.n_anchors = len(anchors[0])
 
         self.grid = None  # init grid
         self.anchor_grid = None  # init anchor grid
         self.stride = torch.tensor(stride)  # image_size / feature_sizes
-        self.register_buffer('anchors', torch.tensor(anchors).float() / self.stride.view(-1, 1, 1))  # shape(nl,na,2)
+        self.register_buffer('anchors', torch.tensor(anchors).float() / self.stride.view(-1, 1, 1))  # (n_layers, n_anchors, 2)
 
         self.conv_list = nn.ModuleList(nn.Conv2d(x, self.output_size * self.n_anchors, 1) for x in in_ches)  # output conv
         self._initialize_biases()
@@ -248,8 +283,8 @@ class Head(nn.Module):
 
     def forward(self, features, gt_boxes=None, gt_cls=None, image_size=None):
         for i, f in enumerate(features):
-            f = self.conv_list[i](f)  # conv
-            b, _, h, w = f.shape
+            f = self.conv_list[i](f)
+            b, _, h, w = f.shape    # num_grid = h * w
 
             # (b, n_anchors * output_size, h, w) -> (b, n_anchors, h, w, output_size)
             f = f.view(b, self.n_anchors, self.output_size, h, w).permute(0, 1, 3, 4, 2).contiguous()
@@ -358,7 +393,7 @@ class Head(nn.Module):
 
                 # Regression
                 det_reg = torch.cat((pxy, pwh), 1)  # predicted box
-                iou = bbox_iou(det_reg, gt_reg, CIoU=True, xywh=True).squeeze()     # 1D
+                iou = bbox_iou(det_reg, gt_reg, CIoU=True, xywh=True).squeeze()  # 1D
 
                 # box1 = det_reg
                 # box2 = gt_reg

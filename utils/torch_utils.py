@@ -83,7 +83,7 @@ class ModuleInfo:
 class EarlyStopping:
     def __init__(self, thres=0.005, patience=30, min_epoch=None, verbose=True, stdout_method=print):
         self.thres = thres
-        self.best_fitness = 0.0
+        self.best_fitness = -1
         self.best_epoch = 0
         self.acc_epoch = 0
         self.min_epoch = min_epoch or 0
@@ -185,43 +185,36 @@ def de_parallel(model):
     return model.module if is_parallel(model) else model
 
 
-def copy_attr(a, b, include=(), exclude=()):
-    # Copy attributes from b to a, options to only include [...] and to exclude [...]
-    for k, v in b.__dict__.items():
-        if (len(include) and k not in include) or k.startswith('_') or k in exclude:
-            continue
-        else:
-            setattr(a, k, v)
-
-
-class ModelEMA:
+class EMA:
     """ Updated Exponential Moving Average (EMA) from https://github.com/rwightman/pytorch-image-models
     Keeps a moving average of everything in the model state_dict (parameters and buffers)
     For EMA details see https://www.tensorflow.org/api_docs/python/tf/train/ExponentialMovingAverage
     """
 
-    def __init__(self, model, decay=0.9999, tau=2000, updates=0):
-        # Create EMA
-        self.ema = copy.deepcopy(de_parallel(model)).eval()  # FP32 EMA
-        # if next(model.parameters()).device.type != 'cpu':
-        #     self.ema.half()  # FP16 EMA
-        self.updates = updates  # number of EMA updates
+    def __init__(self, model, cur_step=0, step_start_ema=200, decay=0.9999, tau=2000):
+        super().__init__()
+        self.cur_step = cur_step
+        self.step_start_ema = step_start_ema
+        self.ema_model = copy.deepcopy(de_parallel(model)).eval()  # FP32 EMA
         self.decay = lambda x: decay * (1 - math.exp(-x / tau))  # decay exponential ramp (to help early epochs)
-        for p in self.ema.parameters():
-            p.requires_grad_(False)
 
-    def update(self, model):
-        # Update EMA parameters
-        with torch.no_grad():
-            self.updates += 1
-            d = self.decay(self.updates)
+    def update_ma_attr(self, model):
+        for current_params, ma_params in zip(model.parameters(), self.ema_model.parameters()):
+            old_weight, new_weight = ma_params.data, current_params.data
+            if old_weight is not None:
+                beta = self.decay(self.cur_step)
+                ma_params.data = old_weight * beta + (1 - beta) * new_weight
 
-            msd = de_parallel(model).state_dict()  # model state_dict
-            for k, v in self.ema.state_dict().items():
-                if v.dtype.is_floating_point:
-                    v *= d
-                    v += (1 - d) * msd[k].detach()
+    def copy_attr(self, model, include=(), exclude=()):
+        for k, v in model.__dict__.items():
+            if (len(include) and k not in include) or k.startswith('_') or k in exclude:
+                continue
+            else:
+                setattr(self.ema_model, k, v)
 
-    def update_attr(self, model, include=(), exclude=('process_group', 'reducer')):
-        # Update EMA attributes
-        copy_attr(self.ema, model, include, exclude)
+    def step(self, model):
+        if self.cur_step < self.step_start_ema:
+            self.copy_attr(model)
+        else:
+            self.update_ma_attr(model)
+        self.cur_step += 1

@@ -6,9 +6,10 @@ from torch import nn, optim
 from torch.utils.data import Dataset, DataLoader
 from tqdm import tqdm
 from utils.torch_utils import EarlyStopping, ModuleInfo, Export
-from utils import visualize, os_lib
+from utils import os_lib, configs
 from data_parse.cv_data_parse.base import DataRegister, DataVisualizer
 from data_parse.cv_data_parse.data_augmentation import crop, scale, geometry, pixel_perturbation, RandomApply, Apply, channel
+from pathlib import Path
 
 
 class IgProcess(Process):
@@ -29,21 +30,34 @@ class IgProcess(Process):
 
             self.logger.info(s)
 
-    def run(self, max_epoch=2000, train_batch_size=64, predict_batch_size=None, save_period=None):
-        ####### train ###########
-        data = self.get_train_data()
+    def on_train_epoch_end(self, total_nums, save_period, mean_loss, val_dataloader, max_size, train_batch_size, **metric_kwargs):
+        mean_loss_g, mean_loss_d = mean_loss
+        if save_period and total_nums % save_period < train_batch_size:
+            self.wandb.log_info = {'total_nums': total_nums, 'mean_loss_g': mean_loss_g, 'mean_loss_d': mean_loss_d}
+            self.metric(val_dataloader, cur_epoch=total_nums, **metric_kwargs)
+            self.save(f'{self.work_dir}/{total_nums}.pth')
+            os_lib.FileCacher(f'{self.work_dir}/', max_size=max_size, stdout_method=self.logger.info).delete_over_range(suffix='pth')
 
-        dataset = self.dataset(
-            data,
-            augment_func=self.data_augment,
-            complex_augment_func=self.complex_data_augment if hasattr(self, 'complex_data_augment') else None
-        )
+            self.wandb.log(self.wandb.log_info)
 
-        self.fit(
-            dataset, max_epoch, train_batch_size, save_period,
-            num_workers=16
-        )
-        self.save(self.model_path)
+    def metric(self, *args, **kwargs):
+        self.predict(*args, **kwargs)
+
+    def on_val_step_end(self, vis_image, _ids, cur_epoch, visualize, batch_size, max_vis_num, vis_num):
+        if visualize:
+            n = min(batch_size, max_vis_num - vis_num)
+            if n > 0:
+                ret = []
+                for name, images in vis_image.items():
+                    images = images.mul(255).clamp_(0, 255).permute(0, 2, 3, 1).to("cpu", torch.uint8).numpy()
+                    ret.append([{'image': image, '_id': _id} for image, _id in zip(images, _ids)])
+
+                ret = [r[:n] for r in ret]
+                cache_dir = f'{self.save_result_dir}/{cur_epoch}'
+                cache_image = DataVisualizer(cache_dir, verbose=False, pbar=False)(*ret, return_image=True)
+                self.log_info.setdefault('val_image', []).extend([self.wandb.Image(img, caption=Path(_id).stem) for img, _id in zip(cache_image, _ids)])
+                vis_num += n
+        return vis_num
 
 
 class Mnist(Process):
@@ -70,22 +84,30 @@ class Mnist(Process):
 
         return ret
 
+    def get_val_data(self, *args, **kwargs):
+        from data_parse.cv_data_parse.Mnist import Loader
 
-class WGAN_Mnist(IgProcess, Mnist):
-    """
-    Usage:
-        .. code-block:: python
+        # loader = Loader(f'data/mnist')
+        loader = Loader(f'data/fashion')
+        data = loader(set_type=DataRegister.TEST, image_type=DataRegister.ARRAY, generator=False)[0]
 
-            from examples.image_generate import WGAN_Mnist as Process
+        return data
 
-            Process().run(max_epoch=2000, train_batch_size=64, save_period=2000)
-    """
+    def val_data_augment(self, ret):
+        ret.update(dst=self.input_size)
+        ret.update(self.aug(**ret))
 
+        return ret
+
+
+class WGAN(IgProcess, Mnist):
     def __init__(self,
                  input_size=64,
                  in_ch=3,
                  hidden_ch=100,
-                 device=0):
+                 model_version='WGAN',
+                 **kwargs
+                 ):
         from models.image_generate.wgan import Model
 
         model = Model(
@@ -100,36 +122,25 @@ class WGAN_Mnist(IgProcess, Mnist):
         super().__init__(
             model=model,
             optimizer=(optimizer_d, optimizer_g),
-            model_version='WGAN',
-            # dataset_version='mnist',
-            dataset_version='fashion',
+            model_version=model_version,
             input_size=input_size,
-            device=device
+            **kwargs
         )
 
-    def fit(self, dataset, max_epoch, batch_size, save_period=None, **dataloader_kwargs):
-        # sampler = distributed.DistributedSampler(dataset, shuffle=True)
-        dataloader = DataLoader(
-            dataset,
-            shuffle=True,
-            # sampler=sampler,
-            pin_memory=True,
-            batch_size=batch_size,
-            collate_fn=dataset.collate_fn,
-            **dataloader_kwargs
-        )
+    def fit(self, max_epoch, batch_size, save_period=None, save_maxsize=None, metric_kwargs=dict(), **dataloader_kwargs):
+        train_dataloader, val_dataloader, metric_kwargs = self.on_train_start(batch_size, metric_kwargs, **dataloader_kwargs)
 
         self.model.to(self.device)
         optimizer_d, optimizer_g = self.optimizer
 
-        val_noise = torch.normal(mean=0., std=1., size=(batch_size, self.model.hidden_ch, 1, 1), device=self.device)
-        flag = True
+        val_noise = torch.normal(mean=0., std=1., size=(64, self.model.hidden_ch, 1, 1), device=self.device)
 
-        gen_iter = 0
-        j = 0
         for i in range(max_epoch):
             self.model.train()
-            pbar = tqdm(dataloader, desc=f'train {i}/{max_epoch}')
+            pbar = tqdm(train_dataloader, desc=f'train {i}/{max_epoch}')
+            total_nums = 0
+            total_loss_g = 0
+            total_loss_d = 0
 
             for rets in pbar:
                 images = [torch.from_numpy(ret.pop('image')).to(self.device, non_blocking=True, dtype=torch.float) for ret in rets]
@@ -139,46 +150,80 @@ class WGAN_Mnist(IgProcess, Mnist):
                 loss_d.backward()
                 optimizer_d.step()
 
-                # note that, to avoid G so strong, training G once while training D iter_gap times
-                if gen_iter < (25 * batch_size) or gen_iter % (500 * batch_size) < batch_size:
-                    iter_gap = 100
-                else:
-                    iter_gap = 5
+                total_loss_d += loss_d.item()
+                total_nums += len(rets)
 
-                if j % iter_gap == iter_gap - 1:
+                # note that, to avoid G so strong, training G once while training D iter_gap times
+                if total_nums < 1000 or total_nums % 20000 < batch_size:
+                    iter_gap = 3000
+                else:
+                    iter_gap = 150
+
+                if total_nums % iter_gap < batch_size:
                     loss_g = self.model.loss_g(images)
                     loss_g.backward()
                     optimizer_g.step()
 
+                    total_loss_g += loss_g.item()
+
+                    mean_loss_g = total_loss_g / total_nums
+                    mean_loss_d = total_loss_d / total_nums
+
                     pbar.set_postfix({
-                        'gen_iter': gen_iter,
-                        'loss_d': f'{loss_d.item():.06}',
-                        'loss_g': f'{loss_g.item():.06}',
+                        'gen_iter': total_nums,
+                        'mean_loss_d': f'{mean_loss_d:.06}',
+                        'mean_loss_g': f'{mean_loss_g:.06}',
                         # 'cpu_info': MemoryInfo.get_process_mem_info(),
                         # 'gpu_info': MemoryInfo.get_gpu_mem_info()
                     })
 
-                    gen_iter += len(rets)
+                    if self.on_train_epoch_end(total_nums, save_period, (mean_loss_g, mean_loss_d), val_noise, save_maxsize, batch_size, **metric_kwargs):
+                        break
 
-                    if save_period and gen_iter % save_period < batch_size:
-                        if flag:
-                            images = images.mul(0.5).add(0.5).mul(255).add_(0.5).clamp_(0, 255).permute(0, 2, 3, 1).to("cpu", torch.uint8).numpy()
+    def predict(self, val_noise, batch_size=128, cur_epoch=-1, model=None, visualize=False, max_vis_num=None, save_ret_func=None, **dataloader_kwargs):
+        self.model.to(self.device)
+        max_vis_num = max_vis_num or float('inf')
+        vis_num = 0
 
-                            ret = [[{'image': image, '_id': 'real.png'}] for image in images]
-                            DataVisualizer(f'cache_data/{self.model_version}/{self.dataset_version}', verbose=True, stdout_method=self.logger.info)(*ret)
-                            flag = False
-
-                        self.metric(val_noise, gen_iter)
-                        # self.save(f'{self.model_dir}/{self.dataset_version}_{gen_iter}.pth')
-
-                j += 1
-
-    def metric(self, x, gen_iter):
         with torch.no_grad():
-            fake_y = self.model.net_g(x)
-            fake_y = fake_y.data.mul(0.5).add(0.5).mul(255).clamp_(0, 255).permute(0, 2, 3, 1).to("cpu", torch.uint8).numpy()
-            ret = [[{'image': image, '_id': f'{gen_iter}_fake.png'}] for image in fake_y]
-            DataVisualizer(f'cache_data/{self.dataset_version}', verbose=True, stdout_method=self.logger.info)(*ret)
+            for i in tqdm(range(0, len(val_noise), batch_size), desc='val'):
+                x = val_noise[i:i + batch_size].to(self.device)
+                fake_y = self.model.net_g(x)
+                vis_image = dict(
+                    fake=fake_y,
+                )
+
+                vis_num = self.on_val_step_end(vis_image, cur_epoch, visualize, batch_size, max_vis_num, vis_num)
+
+    def on_val_step_end(self, vis_image, cur_epoch, visualize, batch_size, max_vis_num, vis_num):
+        if visualize:
+            n = min(batch_size, max_vis_num - vis_num)
+            if n > 0:
+                ret = []
+                for name, images in vis_image.items():
+                    images = images.data.mul(0.5).add(0.5).mul(255).clamp_(0, 255).permute(0, 2, 3, 1).to("cpu", torch.uint8).numpy()
+                    ret.append([{'image': image, '_id': f'{name}.png'} for image in images])
+
+                ret = [r for r in zip(*ret)]
+                cache_dir = f'{self.save_result_dir}/{cur_epoch}'
+                DataVisualizer(cache_dir, verbose=False, stdout_method=self.logger.info)(*ret[:n])
+                self.log_info['val_image'] = [self.wandb.Image(str(fp), caption=fp.stem) for fp in Path(cache_dir).glob('*.png')]
+                vis_num += n
+        return vis_num
+
+
+class WGAN_Mnist(WGAN, Mnist):
+    """
+    Usage:
+        .. code-block:: python
+
+            from examples.image_generate import WGAN_Mnist as Process
+
+            Process().run(max_epoch=1000, train_batch_size=64, save_period=10000, metric_kwargs=dict(visualize=True, max_vis_num=64))
+    """
+
+    def __init__(self, dataset_version='fashion', **kwargs):
+        super().__init__(dataset_version=dataset_version, **kwargs)
 
 
 class Facade(Process):
@@ -199,11 +244,32 @@ class Facade(Process):
 
     def data_augment(self, ret):
         ret.update(dst=self.input_size)
-        ret.update()(self.aug(**ret))
+        ret.update(self.aug(**ret))
         pix_image = ret['pix_image']
         pix_image = self.aug.apply_image(pix_image, ret)
         ret['pix_image'] = pix_image
 
+        return ret
+
+    def get_val_data(self, *args, **kwargs):
+        from data_parse.cv_data_parse.cmp_facade import Loader
+
+        loader = Loader(f'data/cmp_facade')
+        data = loader(set_type=DataRegister.TEST, image_type=DataRegister.ARRAY, generator=False)[0]
+
+        return data
+
+    def val_data_augment(self, ret) -> dict:
+        ret.update(dst=self.input_size)
+        ret.update(self.aug(**ret))
+        pix_image = ret['pix_image']
+        pix_image = self.aug.apply_image(pix_image, ret)
+        ret['pix_image'] = pix_image
+
+        return ret
+
+    def val_data_restore(self, ret) -> dict:
+        ret = self.aug.restore(ret)
         return ret
 
 
@@ -232,25 +298,17 @@ class Pix2pix(IgProcess):
             **kwargs
         )
 
-    def fit(self, dataset, max_epoch, batch_size, save_period=None, save_maxsize=None, **dataloader_kwargs):
-        # sampler = distributed.DistributedSampler(dataset, shuffle=True)
-        dataloader = DataLoader(
-            dataset,
-            shuffle=True,
-            # sampler=sampler,
-            pin_memory=True,
-            batch_size=batch_size,
-            collate_fn=dataset.collate_fn,
-            **dataloader_kwargs
-        )
+    def fit(self, max_epoch, batch_size, save_period=None, save_maxsize=None, metric_kwargs=dict(), **dataloader_kwargs):
+        train_dataloader, val_dataloader, metric_kwargs = self.on_train_start(batch_size, metric_kwargs, **dataloader_kwargs)
 
-        self.model.to(self.device)
         optimizer_d, optimizer_g = self.optimizer
 
-        gen_iter = 0
         for i in range(max_epoch):
             self.model.train()
-            pbar = tqdm(dataloader, desc=f'train {i}/{max_epoch}')
+            pbar = tqdm(train_dataloader, desc=f'train {i}/{max_epoch}')
+            total_nums = 0
+            total_loss_g = 0
+            total_loss_d = 0
 
             for rets in pbar:
                 images_a = [torch.from_numpy(ret.pop('image')).to(self.device, non_blocking=True, dtype=torch.float) for ret in rets]
@@ -274,30 +332,54 @@ class Pix2pix(IgProcess):
                 loss_g.backward()
                 optimizer_g.step()
 
+                total_loss_g += loss_g.item()
+                total_loss_d += loss_d.item()
+
+                total_nums += len(rets)
+                mean_loss_g = total_loss_g / total_nums
+                mean_loss_d = total_loss_d / total_nums
+
                 pbar.set_postfix({
-                    'gen_iter': gen_iter,
+                    'total_nums': total_nums,
                     'loss_g': f'{loss_g.item():.06}',
                     'loss_d': f'{loss_d.item():.06}',
+                    'mean_loss_g': f'{mean_loss_g:.06}',
+                    'mean_loss_d': f'{mean_loss_d:.06}',
                     # 'cpu_info': MemoryInfo.get_process_mem_info(),
                     # 'gpu_info': MemoryInfo.get_gpu_mem_info()
                 })
 
-                gen_iter += len(rets)
-                if gen_iter % save_period < batch_size:
-                    vis_image = dict(
-                        real_a=real_a,
-                        real_b=real_b,
-                        fake_b=fake_b
-                    )
-                    ret = []
-                    for name, images in vis_image.items():
-                        images = images.mul(255).clamp_(0, 255).permute(0, 2, 3, 1).to("cpu", torch.uint8).numpy()
-                        ret.append([{'image': image, '_id': f'{gen_iter}_{name}.png'} for image in images])
+                if self.on_train_epoch_end(total_nums, save_period, (mean_loss_g, mean_loss_d), val_dataloader, save_maxsize, batch_size, **metric_kwargs):
+                    break
 
-                    ret = [r for r in zip(*ret)]
-                    DataVisualizer(f'cache_data/{self.model_version}/{self.dataset_version}', verbose=True, stdout_method=self.logger.info)(*ret)
-                    self.save(f'{self.model_dir}/{self.dataset_version}/{gen_iter}.pth')
-                    os_lib.FileCacher(f'{self.model_dir}/{self.dataset_version}/', max_size=save_maxsize).delete_over_range(suffix='pth')
+    def predict(self, val_dataloader=None, batch_size=16, cur_epoch=-1, model=None, visualize=False, max_vis_num=None, save_ret_func=None, **dataloader_kwargs):
+        if val_dataloader is None:
+            val_dataloader = self.on_val_start(batch_size, **dataloader_kwargs)
+
+        self.model.to(self.device)
+        max_vis_num = max_vis_num or float('inf')
+        vis_num = 0
+
+        with torch.no_grad():
+            for rets in tqdm(val_dataloader, desc='val'):
+                images_a = [torch.from_numpy(ret.pop('image')).to(self.device, non_blocking=True, dtype=torch.float) for ret in rets]
+                images_a = torch.stack(images_a)
+
+                images_b = [torch.from_numpy(ret.pop('pix_image')).to(self.device, non_blocking=True, dtype=torch.float) for ret in rets]
+                images_b = torch.stack(images_b)
+
+                real_a = images_a
+                real_b = images_b
+                fake_b = self.model.net_g(real_a)
+
+                vis_image = dict(
+                    real_a=real_a,
+                    real_b=real_b,
+                    fake_b=fake_b
+                )
+                _ids = [r['_id'] for r in rets]
+
+                vis_num = self.on_val_step_end(vis_image, _ids, cur_epoch, visualize, batch_size, max_vis_num, vis_num)
 
 
 class Pix2pix_facade(Pix2pix, Facade):
@@ -307,7 +389,7 @@ class Pix2pix_facade(Pix2pix, Facade):
 
             from examples.image_generate import Pix2pix_facade as Process
 
-            Process().run(max_epoch=2000, train_batch_size=16, save_period=2000)
+            Process().run(max_epoch=1000, train_batch_size=16, save_period=2000)
     """
 
     def __init__(self, dataset_version='facade', **kwargs):
@@ -355,18 +437,9 @@ class CycleGan(IgProcess):
 
             self.logger.info(s)
 
-    def fit(self, dataset, max_epoch, batch_size, save_period=None, save_maxsize=None, **dataloader_kwargs):
-        dataloader = DataLoader(
-            dataset,
-            shuffle=True,
-            # sampler=sampler,
-            pin_memory=True,
-            batch_size=batch_size,
-            collate_fn=dataset.collate_fn,
-            **dataloader_kwargs
-        )
+    def fit(self, max_epoch, batch_size, save_period=None, save_maxsize=None, metric_kwargs=dict(), **dataloader_kwargs):
+        train_dataloader, val_dataloader, metric_kwargs = self.on_train_start(batch_size, metric_kwargs, **dataloader_kwargs)
 
-        self.model.to(self.device)
         optimizer_d, optimizer_g = self.optimizer
 
         net_g_a = self.model.net_g_a
@@ -380,10 +453,12 @@ class CycleGan(IgProcess):
         lambda_a = 10
         lambda_b = 10
 
-        gen_iter = 0
         for i in range(max_epoch):
             self.model.train()
-            pbar = tqdm(dataloader, desc=f'train {i}/{max_epoch}')
+            pbar = tqdm(train_dataloader, desc=f'train {i}/{max_epoch}')
+            total_nums = 0
+            total_loss_g = 0
+            total_loss_d = 0
 
             for rets in pbar:
                 images_a = [torch.from_numpy(ret.pop('image')).to(self.device, non_blocking=True, dtype=torch.float) for ret in rets]
@@ -409,33 +484,82 @@ class CycleGan(IgProcess):
                 loss_d.backward()
                 optimizer_d.step()
 
+                total_nums += len(rets)
+
+                total_loss_g += loss_g.item()
+                total_loss_d += loss_d.item()
+
+                mean_loss_g = total_loss_g / total_nums
+                mean_loss_d = total_loss_d / total_nums
+
                 pbar.set_postfix({
-                    'gen_iter': gen_iter,
+                    'total_nums': total_nums,
                     'loss_g': f'{loss_g.item():.06}',
                     'loss_d': f'{loss_d.item():.06}',
+                    'mean_loss_g': f'{mean_loss_g:.06}',
+                    'mean_loss_d': f'{mean_loss_d:.06}',
                     # 'cpu_info': MemoryInfo.get_process_mem_info(),
                     # 'gpu_info': MemoryInfo.get_gpu_mem_info()
                 })
 
-                gen_iter += len(rets)
-                if gen_iter % save_period < batch_size:
-                    vis_image = dict(
-                        real_a=real_a,
-                        fake_a=fake_a,
-                        rec_a=rec_a,
-                        real_b=real_b,
-                        fake_b=fake_b,
-                        rec_b=rec_b
-                    )
-                    ret = []
-                    for name, images in vis_image.items():
-                        images = images.mul(255).clamp_(0, 255).permute(0, 2, 3, 1).to("cpu", torch.uint8).numpy()
-                        ret.append([{'image': image, '_id': f'{gen_iter}_{name}.png'} for image in images])
+                if self.on_train_epoch_end(total_nums, save_period, (mean_loss_g, mean_loss_d), val_dataloader, save_maxsize, batch_size, **metric_kwargs):
+                    break
 
-                    ret = [r for r in zip(*ret)]
-                    DataVisualizer(f'cache_data/{self.model_version}/{self.dataset_version}', verbose=True, stdout_method=self.logger.info)(*ret)
-                    self.save(f'{self.model_dir}/{self.dataset_version}/{gen_iter}.pth')
-                    os_lib.FileCacher(f'{self.model_dir}/{self.dataset_version}/', max_size=save_maxsize).delete_over_range(suffix='pth')
+    def predict(self, val_dataloader=None, batch_size=16, cur_epoch=-1, model=None, visualize=False, max_vis_num=None, save_ret_func=None, **dataloader_kwargs):
+        if val_dataloader is None:
+            val_dataloader = self.on_val_start(batch_size, **dataloader_kwargs)
+
+        self.model.to(self.device)
+        max_vis_num = max_vis_num or float('inf')
+        vis_num = 0
+
+        with torch.no_grad():
+            for rets in tqdm(val_dataloader, desc='val'):
+                images_a = [torch.from_numpy(ret.pop('image')).to(self.device, non_blocking=True, dtype=torch.float) for ret in rets]
+                images_a = torch.stack(images_a)
+
+                images_b = [torch.from_numpy(ret.pop('pix_image')).to(self.device, non_blocking=True, dtype=torch.float) for ret in rets]
+                images_b = torch.stack(images_b)
+
+                real_a = images_a
+                real_b = images_b
+
+                fake_b = self.model.net_g_a(real_a)
+                fake_a = self.model.net_g_b(real_b)
+
+                rec_a = self.model.net_g_b(fake_b)
+                rec_b = self.model.net_g_a(fake_a)
+
+                vis_image = dict(
+                    real_a=real_a,
+                    fake_a=fake_a,
+                    rec_a=rec_a,
+                    real_b=real_b,
+                    fake_b=fake_b,
+                    rec_b=rec_b
+                )
+                _ids = [r['_id'] for r in rets]
+
+                vis_num = self.on_val_step_end(vis_image, _ids, cur_epoch, visualize, batch_size, max_vis_num, vis_num)
+
+    def batch_predict(self, images, batch_size=16, **kwargs):
+        results = []
+        with torch.no_grad():
+            self.model.eval()
+            for i in range(0, len(images), batch_size):
+                rets = [self.val_data_augment({'image': image}) for image in images[i:i + batch_size]]
+                images = [torch.from_numpy(ret.pop('image')).to(self.device) for ret in rets]
+                images = torch.stack(images)
+
+                outputs = self.model.net_g_b(images)
+                outputs = [{k: v.to('cpu').numpy() for k, v in t.items()} for t in outputs]
+
+                for ret, output in zip(rets, outputs):
+                    output = configs.merge_dict(ret, output)
+                    output = self.val_data_restore(output)
+                    results.append(output)
+
+        return results
 
 
 class CycleGan_facade(CycleGan, Facade):

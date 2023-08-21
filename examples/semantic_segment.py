@@ -1,21 +1,19 @@
+import math
 import cv2
 import copy
 import numpy as np
 import torch
 from torch import nn, optim
 from torch.utils.data import DataLoader
-from tqdm import tqdm
-from utils.os_lib import MemoryInfo
-from utils.torch_utils import EarlyStopping
-from utils.visualize import get_color_array
-from metrics import classifier, mulit_classifier
-from data_parse.cv_data_parse.data_augmentation import crop, scale, geometry, channel, pixel_perturbation, RandomApply, Apply
-from data_parse import DataRegister
-from data_parse.cv_data_parse.base import DataVisualizer
-from .base import Process, BaseDataset
-from torch.nn import functional as F
 from PIL import Image
-import math
+from tqdm import tqdm
+from pathlib import Path
+from utils.os_lib import MemoryInfo
+from utils.visualize import get_color_array
+from .base import Process, BaseDataset
+from metrics import classifier, mulit_classifier
+from data_parse.cv_data_parse.base import DataVisualizer
+from data_parse.cv_data_parse.data_augmentation import crop, scale, geometry, channel, pixel_perturbation, RandomApply, Apply
 
 
 class SegDataset(BaseDataset):
@@ -41,18 +39,9 @@ class SegDataset(BaseDataset):
 class SegProcess(Process):
     dataset = SegDataset
 
-    def fit(self, dataset, max_epoch, batch_size, save_period=None, **dataloader_kwargs):
-        dataloader = DataLoader(
-            dataset,
-            shuffle=True,
-            # sampler=sampler,
-            pin_memory=True,
-            batch_size=batch_size,
-            collate_fn=dataset.collate_fn,
-            **dataloader_kwargs
-        )
+    def fit(self, max_epoch, batch_size, save_period=None, metric_kwargs=dict(), **dataloader_kwargs):
+        train_dataloader, val_dataloader, metric_kwargs = self.on_train_start(batch_size, metric_kwargs, **dataloader_kwargs)
 
-        self.model.to(self.device)
         lrf = 0.01
 
         # lf = lambda x: (1 - x / max_epoch) * (1.0 - lrf) + lrf
@@ -62,16 +51,15 @@ class SegProcess(Process):
         scheduler.last_epoch = -1
 
         scaler = torch.cuda.amp.GradScaler(enabled=True)
-        stopper = EarlyStopping(patience=10, min_epoch=50, stdout_method=self.logger.info)
-        max_score = -1
-        accumulate = 64 / batch_size
+        accumulate = 64 // batch_size
         j = 0
 
         for i in range(max_epoch):
             self.model.train()
-            pbar = tqdm(dataloader, desc=f'train {i}/{max_epoch}')
+            pbar = tqdm(train_dataloader, desc=f'train {i}/{max_epoch}')
             total_loss = 0
             total_batch = 0
+            mean_loss = 0
 
             for rets in pbar:
                 images = [torch.from_numpy(ret.pop('image')).to(self.device, non_blocking=True, dtype=torch.float) for ret in rets]
@@ -97,32 +85,34 @@ class SegProcess(Process):
                 j += 1
                 total_loss += loss.item()
                 total_batch += len(rets)
+                mean_loss = total_loss / total_batch
 
                 pbar.set_postfix({
                     'loss': f'{loss.item():.06}',
-                    'mean_loss': f'{total_loss / total_batch:.06}',
+                    'mean_loss': f'{mean_loss:.06}',
                     # 'cpu_info': MemoryInfo.get_process_mem_info(),
                     # 'gpu_info': MemoryInfo.get_gpu_mem_info()
                 })
 
-            if save_period and i % save_period == save_period - 1:
-                self.save(f'{self.model_dir}/{self.dataset_version}/last.pth')
+            scheduler.step()
+            if self.on_train_epoch_end(i, save_period, mean_loss, val_dataloader, **metric_kwargs):
+                break
 
-                val_data = self.get_val_data()
-                # val_data = self.get_train_data()
-                val_dataset = self.dataset(val_data, augment_func=self.val_data_augment)
-                result = self.metric(val_dataset, batch_size)
-                score = result['score']
-                self.logger.info(f"epoch: {i}, score: {score}")
+    def metric(self, *args, **kwargs):
+        true, pred = self.predict(*args, **kwargs)
+        # ignore background
+        pred = np.concatenate(pred).flatten() - 1
+        true = np.concatenate(true).flatten() - 1
 
-                if score > max_score:
-                    self.save(f'{self.model_dir}/{self.dataset_version}/best.pth')
-                    max_score = score
+        result = mulit_classifier.TopMetric(n_class=self.out_features, ignore_class=(-1, 254)).f1(true, pred)
 
-                if stopper(epoch=i, fitness=score):
-                    break
+        result.update(
+            score=result['f']
+        )
 
-    def predict(self, dataset, batch_size=16, visualize=False, max_vis_num=None, save_ret_func=None, **dataloader_kwargs):
+        return result
+
+    def predict(self, dataset, batch_size=16, cur_epoch=-1, visualize=False, max_vis_num=None, save_ret_func=None, **dataloader_kwargs):
         dataloader = DataLoader(
             dataset,
             batch_size=batch_size,
@@ -147,48 +137,40 @@ class SegProcess(Process):
                 pred.append(pred_images)
                 true.append([ret.pop('pix_image') for ret in rets])
 
-                if visualize:
-                    outputs = []
-                    for ret, output in zip(rets, pred_images):
-                        ret.pop('bboxes')
-
-                        ori_pix_image = ret['ori_pix_image']
-                        pred_image = np.zeros((*output.shape, 3), dtype=output.dtype) + 255
-                        true_image = np.zeros((*ori_pix_image.shape, 3), dtype=output.dtype) + 255
-                        for i in range(self.out_features + 1):
-                            pred_image[output == i] = get_color_array(i)
-                            true_image[ori_pix_image == i] = get_color_array(i)
-
-                        det_ret = {'image': pred_image, **ret}
-                        det_ret = self.val_data_restore(det_ret)
-                        outputs.append(det_ret)
-
-                        ret['image'] = ret['ori_image']
-                        ret['pix_image'] = true_image
-
-                    n = min(batch_size, max_vis_num - vis_num)
-                    if n > 0:
-                        DataVisualizer(self.save_result_dir, stdout_method=self.logger.info)(rets[:n], outputs[:n])
-                        vis_num += n
+                vis_num = self.on_val_step_end(rets, pred_images, cur_epoch, visualize, batch_size, max_vis_num, vis_num)
 
         if save_ret_func:
             save_ret_func(pred)
 
         return true, pred
 
-    def metric(self, dataset, batch_size=16, **kwargs):
-        true, pred = self.predict(dataset, batch_size, **kwargs)
-        # ignore background
-        pred = np.concatenate(pred).flatten() - 1
-        true = np.concatenate(true).flatten() - 1
+    def on_val_step_end(self, rets, pred_images, cur_epoch, visualize, batch_size, max_vis_num, vis_num):
+        if visualize:
+            n = min(batch_size, max_vis_num - vis_num)
+            if n > 0:
+                outputs = []
+                for ret, output in zip(rets, pred_images):
+                    ret.pop('bboxes')
 
-        result = mulit_classifier.TopMetric(n_class=self.out_features, ignore_class=(-1, 254)).f1(true, pred)
+                    ori_pix_image = ret['ori_pix_image']
+                    pred_image = np.zeros((*output.shape, 3), dtype=output.dtype) + 255
+                    true_image = np.zeros((*ori_pix_image.shape, 3), dtype=output.dtype) + 255
+                    for i in range(self.out_features + 1):
+                        pred_image[output == i] = get_color_array(i)
+                        true_image[ori_pix_image == i] = get_color_array(i)
 
-        result.update(
-            score=result['f']
-        )
+                    det_ret = {'image': pred_image, **ret}
+                    det_ret = self.val_data_restore(det_ret)
+                    outputs.append(det_ret)
 
-        return result
+                    ret['image'] = ret['ori_image']
+                    ret['pix_image'] = true_image
+
+                cache_image = DataVisualizer(f'{self.save_result_dir}/{cur_epoch}', verbose=False, pbar=False)(rets[:n], outputs[:n], return_image=True)
+                self.log_info.setdefault('val_image', []).extend([self.wandb.Image(img, caption=Path(r['_id']).stem) for img, r in zip(cache_image, rets)])
+                vis_num += n
+
+        return vis_num
 
 
 class Voc(Process):

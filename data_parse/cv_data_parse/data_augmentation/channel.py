@@ -1,4 +1,4 @@
-"""change the channels of image"""
+"""change the channels of image, it is best to apply them in final"""
 import numpy as np
 import cv2
 
@@ -48,3 +48,39 @@ class Gray2BGR:
     def apply_image(self, image, *args):
         image = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
         return image
+
+
+class AddXY:
+    def __init__(self, axis=-1):
+        # y = -cot(x)
+        # y in (-1.9, 1.4) where x in (0.5, 2.5)
+        self.func = lambda x: (-1 / np.tan(np.linspace(0.5, 2.5, x)) + 1.9) / 3.3 * 255
+        self.axis = axis
+
+    def __call__(self, image, **kwargs):
+        return dict(
+            image=self.apply_image(image)
+        )
+
+    def apply_image(self, image, *args):
+        if self.axis in (-1, 3):
+            h, w, c = image.shape
+        elif self.axis == 0:
+            c, h, w = image.shape
+        else:
+            raise ValueError(f'Do not support axis = {self.axis}')
+
+        x, y = self.func(w), self.func(h)
+        xv, yv = np.meshgrid(x, y)  # (h, w)
+        xv = np.expand_dims(xv, axis=self.axis).astype(np.uint8)
+        yv = np.expand_dims(yv, axis=self.axis).astype(np.uint8)
+        img_xy = np.concatenate((image, xv, yv), axis=self.axis)
+        return img_xy
+
+    def restore(self, ret):
+        if self.axis in (-1, 3):
+            ret['image'] = ret['image'][:, :, :3]
+        elif self.axis == 0:
+            ret['image'] = ret['image'][:3]
+
+        return ret

@@ -149,7 +149,7 @@ class Mosaic4:
         img4 = np.full((s * 2, s * 2, image_list[0].shape[2]), 114, dtype=np.uint8)  # base image with 4 tiles
         coors = self.parse_add_params(ret)
 
-        for img, (x1a, y1a, x2a, y2a), (x1b, y1b, x2b, y2b) in zip(image_list, coors):
+        for img, ((x1a, y1a, x2a, y2a), (x1b, y1b, x2b, y2b)) in zip(image_list, coors):
             img4[y1a:y2a, x1a:x2a] = img[y1b:y2b, x1b:x2b]  # img4[ymin:ymax, xmin:xmax]
 
         return img4
@@ -159,7 +159,7 @@ class Mosaic4:
         if bboxes_list is not None:
             coors = self.parse_add_params(ret)
             bboxes4 = []
-            for bboxes, (x1a, y1a, x2a, y2a), (x1b, y1b, x2b, y2b) in zip(bboxes_list, coors):
+            for bboxes, ((x1a, y1a, x2a, y2a), (x1b, y1b, x2b, y2b)) in zip(bboxes_list, coors):
                 shift = np.array([x1a - x1b, y1a - y1b, x1a - x1b, y1a - y1b])
                 bboxes += shift
                 bboxes4.append(bboxes)
@@ -238,7 +238,7 @@ class Mosaic9:
         s = self.img_size
         img9 = np.full((s * 3, s * 3, image_list[0].shape[2]), 114, dtype=np.uint8)  # base image with 4 tiles
 
-        for img, (x1, y1, x2, y2), (padx, pady) in zip(image_list, coors):
+        for img, ((x1, y1, x2, y2), (padx, pady)) in zip(image_list, coors):
             img9[y1:y2, x1:x2] = img[y1 - pady:, x1 - padx:]  # img9[ymin:ymax, xmin:xmax]
 
         img9 = img9[yc:yc + 2 * s, xc:xc + 2 * s]
@@ -249,7 +249,7 @@ class Mosaic9:
         if bboxes_list is not None:
             bboxes9 = []
             coors, yc, xc = self.parse_add_params(ret)
-            for bboxes, (x1, y1, x2, y2), (padx, pady) in zip(bboxes_list, coors):
+            for bboxes, ((x1, y1, x2, y2), (padx, pady)) in zip(bboxes_list, coors):
                 shift = np.array([padx, pady, padx, pady])
                 bboxes += shift
                 bboxes9.append(bboxes)

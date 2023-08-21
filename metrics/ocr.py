@@ -10,7 +10,7 @@ class EasyMetric:
     def __init__(self, iou_thres=0.5, verbose=True, stdout_method=print, **ap_kwargs):
         self.iou_thres = iou_thres
         self.verbose = verbose
-        self.stdout_method = stdout_method
+        self.stdout_method = stdout_method if verbose else os_lib.FakeIo()
         self.ap = object_detection.AP(**ap_kwargs)
 
     def get_det_rets(self, gt_iter_data, det_iter_data, image_dir=None):
@@ -78,9 +78,7 @@ class EasyMetric:
         ret = object_detection.ap.mAP_thres_range(gt_boxes, det_boxes, confs)
         df = pd.DataFrame(ret)
         df = df.round(4)
-
-        if self.verbose:
-            self.stdout_method(df)
+        self.stdout_method(df)
 
         if save_path:
             os_lib.Saver(verbose=self.verbose, stdout_method=self.stdout_method).auto_save(df, save_path)
@@ -139,9 +137,7 @@ class EasyMetric:
 
         df = pd.DataFrame(ret).T
         df = df.round(6)
-
-        if self.verbose:
-            self.stdout_method(df)
+        self.stdout_method(df)
 
         if save_path:
             os_lib.Saver(verbose=self.verbose, stdout_method=self.stdout_method).auto_save(df, save_path)

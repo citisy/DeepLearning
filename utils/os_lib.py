@@ -4,6 +4,7 @@ import os
 import pickle
 import time
 import psutil
+import uuid
 import random
 import numpy as np
 import pandas as pd
@@ -25,21 +26,33 @@ def mk_parent_dir(file_path):
     mk_dir(dir_path)
 
 
+def auto_suffix(obj):
+    if isinstance(obj, (list, tuple, set)):
+        s = '.txt'
+    elif isinstance(obj, dict):
+        s = '.json'
+    elif isinstance(obj, np.ndarray) and obj.dtype == np.uint8:
+        s = '.png'
+    elif isinstance(obj, pd.DataFrame):
+        s = '.csv'
+    else:
+        s = '.pkl'
+    return s
+
+
 class Saver:
     def __init__(self, verbose=True, stdout_method=print, stdout_fmt='Save to %s successful!', stderr_method=print, stderr_fmt='Save to %s failed!'):
         self.verbose = verbose
-        self.stdout_method = stdout_method
+        self.stdout_method = stdout_method if verbose else FakeIo()
         self.stdout_fmt = stdout_fmt
-        self.stderr_method = stderr_method
+        self.stderr_method = stderr_method if verbose else FakeIo()
         self.stderr_fmt = stderr_fmt
 
     def stdout(self, path):
-        if self.verbose:
-            self.stdout_method(self.stdout_fmt % path)
+        self.stdout_method(self.stdout_fmt % path)
 
     def stderr(self, path):
-        if self.verbose:
-            self.stderr_method(self.stderr_fmt % path)
+        self.stderr_method(self.stderr_fmt % path)
 
     def auto_save(self, obj, path: str):
         suffix = Path(path).suffix.lower()
@@ -64,9 +77,9 @@ class Saver:
 
         self.stdout(path)
 
-    def save_txt(self, obj: iter, path):
+    def save_txt(self, obj: iter, path, sep='\n'):
         with open(path, 'w', encoding='utf8') as f:
-            f.write('\n'.join(obj))
+            f.write(sep.join(obj))
 
         self.stdout(path)
 
@@ -141,12 +154,11 @@ class Saver:
 class Loader:
     def __init__(self, verbose=True, stdout_method=print, stdout_fmt='Read %s successful!'):
         self.verbose = verbose
-        self.stdout_method = stdout_method
+        self.stdout_method = stdout_method if verbose else FakeIo()
         self.stdout_fmt = stdout_fmt
 
     def stdout(self, path):
-        if self.verbose:
-            self.stdout_method(self.stdout_fmt % path)
+        self.stdout_method(self.stdout_fmt % path)
 
     def auto_load(self, path: str):
         suffix = Path(path).suffix
@@ -271,26 +283,30 @@ class MemoryCacher:
                  ):
         self.max_size = max_size
         self.verbose = verbose
-        self.stdout_method = stdout_method
+        self.stdout_method = stdout_method if verbose else FakeIo()
         self.cache = {}
 
     def cache_one(self, obj):
-        key = time.time()
+        time_str = time.time()
+        uid = str(uuid.uuid1())
+        _id = (uid, time_str)
         self.delete_over_range()
-        self.cache[key] = obj
+        self.cache[_id] = obj
+        return _id
 
     def cache_batch(self, objs):
-        for i, obj in enumerate(objs):
-            key = time.time() + 1e-6 * i
-            self.delete_over_range()
-            self.cache[key] = obj
+        _ids = []
+        for obj in objs:
+            _id = self.cache_one(obj)
+            _ids.append(_id)
+        return _ids
 
     def delete_over_range(self):
         if not self.max_size:
             return
 
         if len(self.cache) >= self.max_size:
-            key = min(self.cache.keys())
+            key = min(self.cache.keys(), key=lambda x: x[1])
             self.cache.pop(key)
 
     def get_one(self, _id=None):
@@ -300,7 +316,9 @@ class MemoryCacher:
 
     def get_batch(self, _ids=None, size=None):
         if _ids is None:
-            _ids = np.random.choice(list(self.cache.keys()), size, replace=False)
+            keys = list(self.cache.keys())
+            _ids = np.random.choice(range(len(keys)), size, replace=False)
+            _ids = [keys[_] for _ in _ids]
 
         return [self.cache[_id] for _id in _ids]
 
@@ -313,21 +331,25 @@ class FileCacher:
         self.cache_dir = Path(cache_dir)
         self.max_size = max_size
         self.verbose = verbose
-        self.stdout_method = stdout_method
+        self.stdout_method = stdout_method if verbose else FakeIo()
         self.stdout_fmt = stdout_fmt
         self.saver = Saver(verbose, stdout_method, **saver_kwargs)
         self.loader = Loader(verbose, stdout_method, **loader_kwargs)
 
-    def cache_one(self, obj, file_name):
+    def cache_one(self, obj, file_name=None):
+        file_name = file_name or str(uuid.uuid1()) + auto_suffix(obj)
         path = f'{self.cache_dir}/{file_name}'
         self.delete_over_range(suffix=Path(path).suffix)
         self.saver.auto_save(obj, path)
+        return file_name
 
-    def cache_batch(self, objs, file_names):
+    def cache_batch(self, objs, file_names=None):
+        file_names = file_names or [str(uuid.uuid1()) + auto_suffix(obj) for obj in objs]
         for obj, file_name in zip(objs, file_names):
             path = f'{self.cache_dir}/{file_name}'
             self.delete_over_range(suffix=Path(path).suffix)
             self.saver.auto_save(obj, path)
+        return file_names
 
     def delete_over_range(self, suffix=''):
         if not self.max_size:
@@ -343,12 +365,10 @@ class FileCacher:
                 os.remove(old_path)
             except FileNotFoundError:
                 # todo: if it occur, number of file would be greater than max_size
-                self.stdout_method('Two process were crashed while deleting file possibly')
+                self.stdout_method('Two process thread were crashed while deleting file possibly')
                 return
 
-            if self.verbose:
-                self.stdout_method(self.stdout_fmt % old_path)
-
+            self.stdout_method(self.stdout_fmt % old_path)
             return old_path
 
     def get_one(self, file_name=None):
@@ -382,7 +402,7 @@ class MongoDBCacher:
         self.collection = self.db[collection]
         self.max_size = max_size
         self.verbose = verbose
-        self.stdout_method = stdout_method
+        self.stdout_method = stdout_method if verbose else FakeIo()
         self.stdout_fmt = stdout_fmt
 
     def cache_one(self, obj: dict, _id=None):
@@ -396,15 +416,27 @@ class MongoDBCacher:
         else:
             self.collection.update_one({'_id': _id}, {'$set': obj}, upsert=True)
 
-        if self.verbose:
-            self.stdout_method(self.stdout_fmt % _id)
+        self.stdout_method(self.stdout_fmt % _id)
+        return _id
 
-    def delete_over_range(self):
+    def cache_batch(self, objs, _ids=None):
+        self.delete_over_range(len(objs))
+        if _ids is None:
+            x = self.collection.insert_many(objs)
+            _ids = x.inserted_ids
+
+        else:
+            for _id, obj in zip(_ids, objs):
+                self.collection.update_one({'_id': _id}, {'$set': obj}, upsert=True)
+
+        return _ids
+
+    def delete_over_range(self, batch_size=1):
         if not self.max_size:
             return
 
         query = self.collection.find()
-        if query.count() > self.max_size:
+        if query.count() > self.max_size - batch_size:
             x = query.sort({'update_time': 1}).limit(1)
             self.collection.delete_one(x)
 
@@ -422,7 +454,26 @@ class MongoDBCacher:
 
 
 class FakeIo:
-    """empty io method to cheat some functions which must use an io method"""
+    """a placeholder, empty io method to cheat some functions which must use an io method,
+    it means that the method do nothing in fact,
+    it is useful to reduce the amounts of code changes
+
+    Examples
+    .. code-block:: python
+
+        # save obj
+        io_method = open
+
+        # do not save obj
+        io_method = FakeIo
+
+        with io_method(fp, 'w', encoding='utf8') as f:
+            f.write(obj)
+    """
+
+    def __init__(self, *args, **kwargs):
+        pass
+
     def write(self, *args, **kwargs):
         pass
 
@@ -430,7 +481,7 @@ class FakeIo:
         pass
 
     def __enter__(self):
-        pass
+        return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         pass
@@ -439,9 +490,30 @@ class FakeIo:
         pass
 
 
+class FakeWandb:
+    def __init__(self, *args, **kwargs):
+        pass
+
+    def init(self, *args, **kwargs):
+        return self
+
+    def Table(self, *args, **kwargs):
+        return self
+
+    def Image(self, *args, **kwargs):
+        return self
+
+    def log(self, *args, **kwargs):
+        pass
+
+    def finish(self, *args, **kwargs):
+        pass
+
+
 class Retry:
-    def __init__(self, stdout_method=print, count=3, wait=15):
-        self.stdout_method = stdout_method
+    def __init__(self, verbose=True, stdout_method=print, count=3, wait=15):
+        self.verbose = verbose
+        self.stdout_method = stdout_method if verbose else FakeIo()
         self.count = count
         self.wait = wait
 
@@ -472,8 +544,8 @@ class Retry:
 
 
 class IgnoreException:
-    def __init__(self, stdout_method=print):
-        self.print_method = stdout_method
+    def __init__(self, verbose=True, stdout_method=print):
+        self.stdout_method = stdout_method if verbose else FakeIo()
 
     def add_ignore(
             self,
@@ -488,7 +560,7 @@ class IgnoreException:
 
                 except err_type as e:
                     msg = error_message or f'Something error occur: {e}'
-                    self.print_method(msg)
+                    self.stdout_method(msg)
 
             return wrap
 
@@ -511,8 +583,8 @@ class AutoLog:
                     ...
     """
 
-    def __init__(self, stdout_method=print, is_simple_log=True, is_time_log=True, is_memory_log=True):
-        self.stdout_method = stdout_method
+    def __init__(self, verbose=True, stdout_method=print, is_simple_log=True, is_time_log=True, is_memory_log=True):
+        self.stdout_method = stdout_method if verbose else FakeIo()
         self.is_simple_log = is_simple_log
         self.is_time_log = is_time_log
         self.is_memory_log = is_memory_log

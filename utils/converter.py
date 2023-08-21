@@ -134,8 +134,8 @@ class CoordinateConvert:
         return cls._call(bbox, wh, blow_up, convert_func)
 
     @staticmethod
-    def box2rect(boxes) -> np.ndarray:
-        """bbox(-1, 4, 2) convert to rec(-1, 4)"""
+    def rect2box(boxes) -> np.ndarray:
+        """rec(-1, 4, 2) convert to box(-1, 4)"""
         boxes = np.array(boxes)
 
         if boxes.size == 0:
@@ -147,8 +147,8 @@ class CoordinateConvert:
         return rects
 
     @staticmethod
-    def rect2box(rects) -> np.ndarray:
-        """rec(-1, 4) convert to bbox(-1, 4, 2)"""
+    def box2rect(rects) -> np.ndarray:
+        """box(-1, 4) convert to rec(-1, 4, 2)"""
         rects = np.array(rects)
 
         if rects.size == 0:
@@ -263,16 +263,23 @@ class DataConvert:
         >>> DataConvert.str_to_constant('1.0')
         1.0
         >>> DataConvert.str_to_constant('true')
-        True
+        1
         >>> DataConvert.str_to_constant('abc')
         'abc'
 
         """
+        obj = cls.str_to_constant_str(obj)
         for func in [cls.str_to_int, cls.str_to_float, cls.str_to_bool]:
             s = func(obj)
             if s is not None:
                 return s
 
+        return obj
+
+    @staticmethod
+    def str_to_constant_str(obj: str):
+        if obj[0] in ['"', "'"] and obj[-1] in ['"', "'"]:
+            obj = obj[1:-1]
         return obj
 
     @staticmethod
@@ -322,4 +329,3 @@ class DataConvert:
     def file_to_md5(cls, obj: str or Path):
         with open(obj, 'rb') as f:
             return cls.bytes_to_md5(f.read())
-

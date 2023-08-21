@@ -91,15 +91,17 @@ class Loader(DataLoader):
         else:
             return self.load_set(set_type, image_type, set_task, **kwargs)
 
-    def load_full(self, image_type, task='', **kwargs):
+    def load_full(self, image_type, task='', max_size=float('inf'), **kwargs):
+        i = 0
         for img_fp in Path(f'{self.data_dir}/images/{task}').glob(f'*.{self.image_suffix}'):
+            if i >= max_size:
+                break
             image_path = os.path.abspath(img_fp)
             img_fp = Path(image_path)
             image = get_image(image_path, image_type)
             label_path = image_path.replace('images', 'labels').replace(f'.{self.image_suffix}', '.txt')
             if not os.path.exists(label_path):
-                if self.verbose:
-                    self.stdout_method(f'{label_path} not exist!')
+                self.stdout_method(f'{label_path} not exist!')
                 continue
             labels = np.genfromtxt(label_path).reshape((-1, 5))
 
@@ -119,11 +121,15 @@ class Loader(DataLoader):
             ret = self.convert_func(ret)
 
             if self.filter_func(ret):
+                i += 1
                 yield ret
 
-    def load_set(self, set_type=DataRegister.TRAIN, image_type=DataRegister.PATH, set_task='', sub_dir='image_sets', **kwargs):
+    def load_set(self, set_type=DataRegister.TRAIN, image_type=DataRegister.PATH, set_task='', sub_dir='image_sets', max_size=float('inf'), **kwargs):
+        i = 0
         with open(f'{self.data_dir}/{sub_dir}/{set_task}/{set_type.value}.txt', 'r', encoding='utf8') as f:
             for line in f.read().strip().split('\n'):
+                if i >= max_size:
+                    break
                 image_path = os.path.abspath(line)
                 img_fp = Path(image_path)
                 image = get_image(image_path, image_type)
@@ -145,12 +151,16 @@ class Loader(DataLoader):
                 ret = self.convert_func(ret)
 
                 if self.filter_func(ret):
+                    i += 1
                     yield ret
 
-    def load_full_labels(self, task='', sub_dir='full_labels'):
+    def load_full_labels(self, task='', sub_dir='full_labels', max_size=float('inf')):
         """format of saved label txt like (class, x1, y1, x2, y2, conf, w, h)
         only return labels but no images. can use _id to load images"""
+        i = 0
         for fp in Path(f'{self.data_dir}/{sub_dir}/{task}').glob('*.txt'):
+            if i >= max_size:
+                break
             img_fp = Path(str(fp).replace('.txt', '.png').replace(sub_dir, 'images'))
 
             # (class, x1, y1, x2, y2, conf, w, h)
@@ -177,6 +187,7 @@ class Loader(DataLoader):
             ret = self.convert_func(ret)
 
             if self.filter_func(ret):
+                i += 1
                 yield ret
 
 

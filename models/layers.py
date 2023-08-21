@@ -16,6 +16,10 @@ class BaseImgClsModel(nn.Module):
     ):
         super().__init__()
 
+        self.in_channels = in_ch
+        self.input_size = input_size
+        self.out_features = out_features
+
         # `bool(nn.Sequential()) = False`, so do not ues `input = in_module or ConvInModule()`
         self.input = in_module if in_module is not None else ConvInModule(in_ch, input_size, out_ch=backbone_in_ch, output_size=backbone_input_size)
         self.backbone = backbone
@@ -272,13 +276,14 @@ class Cache(nn.Module):
 
 
 class Concat(nn.Module):
-    def __init__(self, idx, replace=False):
+    def __init__(self, idx, dim=1, replace=False):
         super().__init__()
         self.idx = idx
+        self.dim = dim
         self.replace = replace
 
     def forward(self, x, features):
-        x = torch.cat([x, features[self.idx]], 1)
+        x = torch.cat([x, features[self.idx]], self.dim)
 
         if self.replace:
             features[self.idx] = x

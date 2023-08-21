@@ -4,7 +4,8 @@ import torch
 from torch import nn, Tensor
 import torch.nn.functional as F
 from ..layers import Conv, Linear, ConvInModule
-from . import GetBackbone, cls_nms
+from . import cls_nms
+from ..image_classifier import GetBackbone
 from utils.torch_utils import initialize_layers
 
 in_module_config = dict(
@@ -420,7 +421,7 @@ class RoIHead(nn.Module):
         super().__init__()
 
         self.n_classes = n_classes
-        self.output_size = n_classes + 1   # the last cls is bg sample
+        self.output_size = n_classes + 1  # the last cls is bg sample
         self.neg_iou = neg_iou
         self.pos_iou = pos_iou
         self.max_backprop_sample = max_backprop_sample

@@ -2,6 +2,7 @@ import time
 import numpy as np
 from typing import List, Iterable, Iterator
 from tqdm import tqdm
+from utils import os_lib
 
 
 class Area:
@@ -711,7 +712,7 @@ class EasyMetric:
     def __init__(self, iou_thres=0.5, cls_alias=None, verbose=True, stdout_method=print, **ap_kwargs):
         self.iou_thres = iou_thres
         self.verbose = verbose
-        self.stdout_method = stdout_method
+        self.stdout_method = stdout_method if verbose else os_lib.FakeIo()
         self.ap = AP(**ap_kwargs)
 
         if isinstance(cls_alias, list):
@@ -790,8 +791,7 @@ class EasyMetric:
         df.loc['mean'] = m
         df = df.round(6)
 
-        if self.verbose:
-            self.stdout_method(df)
+        self.stdout_method(df)
 
         if save_path:
             from utils import os_lib

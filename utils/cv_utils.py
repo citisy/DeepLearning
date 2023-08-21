@@ -1,6 +1,7 @@
 import cv2
 import numpy as np
 from collections import Counter
+from typing import Callable
 
 
 def detect_continuous_axis(image, tol=0, region_thres=0, binary_thres=200, axis=1):
@@ -88,11 +89,9 @@ class PixBox:
                 continue
 
             mask = (pix_image == c).astype(np.uint8)
-            cv2.imwrite('test1.png', mask * 255)
             if convert_func:
                 mask = convert_func(mask)
 
-            cv2.imwrite('test2.png', mask * 255)
             num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(mask, connectivity=8, ltype=cv2.CV_16U)
             stats = stats[stats[:, 4] > min_area]
 
@@ -167,7 +166,7 @@ def fragment_image(image: np.ndarray,
                    overlap_size=None, overlap_ratio=None,
                    over_size=None, over_ratio=None
                    ):
-    """
+    """fragment large image to small pieces
 
     Args:
         image:
@@ -177,8 +176,6 @@ def fragment_image(image: np.ndarray,
         overlap_ratio:
         over_size:
         over_ratio:
-
-    Returns:
 
     Usage:
 
@@ -241,13 +238,13 @@ def non_max_suppression(boxes, conf, iou_method, threshold=0.6):
     """
 
     Args:
-        boxes: np.ndarray(n_samples， 4), x1,y1,x2,y2
-        conf: np.ndarray(n_samples, )
-        iou_method:
-        threshold: IOU threshold
+        boxes (np.ndarray): (n_samples， 4), 4 gives x1,y1,x2,y2
+        conf (np.ndarray): (n_samples, )
+        iou_method (Callable):
+        threshold (float): IOU threshold
 
     Returns:
-        keep: 1-dim array, index of dects to keep
+        keep (np.ndarray): 1-dim array, index of detections to keep
     """
     index = conf.argsort()[::-1]
     keep = []

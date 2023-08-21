@@ -5,37 +5,27 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 from models.layers import SimpleInModule
 from utils.os_lib import MemoryInfo
-from utils.torch_utils import EarlyStopping
+from utils import configs
 from metrics import classifier
 from data_parse.cv_data_parse.data_augmentation import crop, scale, geometry, channel, RandomApply, Apply
 from data_parse import DataRegister
+from data_parse.cv_data_parse.base import DataVisualizer
 from .base import Process, BaseDataset
+from pathlib import Path
 
 
 class ClsProcess(Process):
     dataset = BaseDataset
 
-    def fit(self, dataset, max_epoch, batch_size, save_period=None, **dataloader_kwargs):
-        dataloader = DataLoader(
-            dataset,
-            shuffle=True,
-            # sampler=sampler,
-            pin_memory=True,
-            batch_size=batch_size,
-            collate_fn=dataset.collate_fn,
-            **dataloader_kwargs
-        )
-
-        self.model.to(self.device)
-
-        stopper = EarlyStopping(patience=10, min_epoch=10, stdout_method=self.logger.info)
-        max_score = -1
+    def fit(self, max_epoch=100, batch_size=16, save_period=None, metric_kwargs=dict(), **dataloader_kwargs):
+        train_dataloader, val_dataloader, metric_kwargs = self.on_train_start(batch_size, metric_kwargs, **dataloader_kwargs)
 
         for i in range(max_epoch):
             self.model.train()
-            pbar = tqdm(dataloader, desc=f'train {i}/{max_epoch}')
+            pbar = tqdm(train_dataloader, desc=f'train {i}/{max_epoch}')
             total_loss = 0
             total_batch = 0
+            mean_loss = 0
 
             for rets in pbar:
                 images = [torch.from_numpy(ret.pop('image')).to(self.device, non_blocking=True, dtype=torch.float) for ret in rets]
@@ -54,59 +44,21 @@ class ClsProcess(Process):
                 total_loss += loss.item()
                 total_batch += len(rets)
 
+                mean_loss = total_loss / total_batch
                 pbar.set_postfix({
                     'loss': f'{loss.item():.06}',
-                    'mean_loss': f'{total_loss / total_batch:.06}',
+                    'mean_loss': f'{mean_loss:.06}',
                     # 'cpu_info': MemoryInfo.get_process_mem_info(),
                     # 'gpu_info': MemoryInfo.get_gpu_mem_info()
                 })
 
-            if save_period and i % save_period == save_period - 1:
-                self.save(f'{self.model_dir}/{self.dataset_version}/last.pth')
+            if self.on_train_epoch_end(i, save_period, mean_loss, val_dataloader, **metric_kwargs):
+                break
 
-                val_data = self.get_val_data()
-                # val_data = self.get_train_data()
-                val_dataset = self.dataset(val_data, augment_func=self.val_data_augment)
-                result = self.metric(val_dataset, batch_size)
-                score = result['score']
-                self.logger.info(f"epoch: {i}, score: {score}")
+        self.wandb.finish()
 
-                if score > max_score:
-                    self.save(f'{self.model_dir}/{self.dataset_version}/best.pth')
-                    max_score = score
-
-                if stopper(epoch=i, fitness=score):
-                    break
-
-    def predict(self, dataset, batch_size=128, **dataloader_kwargs):
-        dataloader = DataLoader(
-            dataset,
-            batch_size=batch_size,
-            collate_fn=dataset.collate_fn,
-            **dataloader_kwargs
-        )
-
-        pred = []
-        true = []
-        with torch.no_grad():
-            self.model.eval()
-            for rets in tqdm(dataloader):
-                images = [torch.from_numpy(ret.pop('image')).to(self.device, non_blocking=True, dtype=torch.float) for ret in rets]
-                images = torch.stack(images)
-                images = images / 255
-
-                p = self.model(images)['pred'].argmax(1).cpu().detach().numpy()
-                pred.extend(p.tolist())
-                true.extend([ret['_class'] for ret in rets])
-
-        pred = np.array(pred)
-        true = np.array(true)
-
-        return true, pred
-
-    def metric(self, dataset, batch_size=128, **kwargs):
-        true, pred = self.predict(dataset, batch_size, **kwargs)
-
+    def metric(self, *args, **predict_kwargs):
+        true, pred = self.predict(*args, **predict_kwargs)
         result = classifier.top_metric.f_measure(true, pred)
 
         result.update(
@@ -114,6 +66,50 @@ class ClsProcess(Process):
         )
 
         return result
+
+    def predict(self, val_dataloader=None, batch_size=128, cur_epoch=-1, model=None, visualize=False, max_vis_num=float('inf'), save_ret_func=None, **dataloader_kwargs):
+        if val_dataloader is None:
+            val_dataloader = self.on_val_start(batch_size, **dataloader_kwargs)
+
+        model = model or self.model
+        model.to(self.device)
+
+        pred = []
+        true = []
+        vis_num = 0
+
+        with torch.no_grad():
+            self.model.eval()
+            for rets in tqdm(val_dataloader):
+                images = [torch.from_numpy(ret.pop('image')).to(self.device, non_blocking=True, dtype=torch.float) for ret in rets]
+                images = torch.stack(images)
+                images = images / 255
+
+                outputs = self.model(images)
+                outputs['pred'] = outputs['pred'].argmax(1).cpu().detach().numpy()
+                pred.extend(outputs['pred'].tolist())
+                true.extend([ret['_class'] for ret in rets])
+
+                vis_num = self.on_val_step_end(rets, outputs, cur_epoch, visualize, batch_size, max_vis_num, vis_num)
+
+        pred = np.array(pred)
+        true = np.array(true)
+
+        return true, pred
+
+    def on_val_step_end(self, rets, outputs, cur_epoch, visualize, batch_size, max_vis_num, vis_num):
+        if visualize:
+            n = min(batch_size, max_vis_num - vis_num)
+            if n > 0:
+                for ret, _p in zip(rets, outputs['pred']):
+                    _id = Path(ret['_id'])
+                    ret['_id'] = f'{_id.stem}(t={ret["_class"]},p={_p}){_id.suffix}'
+                    ret['image'] = ret['ori_image']
+                DataVisualizer(f'{self.save_result_dir}/{cur_epoch}', verbose=False, pbar=False)(rets[:n])
+                self.log_info.setdefault('val_image', []).extend([self.wandb.Image(ret['image'], caption=ret['_id']) for ret in rets[:n]])
+                vis_num += n
+
+        return vis_num
 
 
 class Mnist(Process):
