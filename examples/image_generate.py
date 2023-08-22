@@ -1,4 +1,4 @@
-from .base import Process, BaseDataset
+from .base import Process, BaseDataset, WEIGHT
 import random
 import itertools
 import torch
@@ -10,10 +10,29 @@ from utils import os_lib, configs
 from data_parse.cv_data_parse.base import DataRegister, DataVisualizer
 from data_parse.cv_data_parse.data_augmentation import crop, scale, geometry, pixel_perturbation, RandomApply, Apply, channel
 from pathlib import Path
+import numpy as np
+from datetime import datetime
+
+
+class IgOptimizer:
+    def __init__(self, optimizer_d, optimizer_g):
+        self.optimizer_d = optimizer_d
+        self.optimizer_g = optimizer_g
+
+    def state_dict(self):
+        return {
+            'optimizer_d': self.optimizer_d.state_dict(),
+            'optimizer_g': self.optimizer_g.state_dict()
+        }
+
+    def load_state_dict(self, dic):
+        self.optimizer_d.load_state_dict(dic['optimizer_d'])
+        self.optimizer_g.load_state_dict(dic['optimizer_g'])
 
 
 class IgProcess(Process):
     dataset = BaseDataset
+    total_nums = 0
 
     def model_info(self, depth=None, **kwargs):
         modules = dict(
@@ -35,7 +54,14 @@ class IgProcess(Process):
         if save_period and total_nums % save_period < train_batch_size:
             self.wandb.log_info = {'total_nums': total_nums, 'mean_loss_g': mean_loss_g, 'mean_loss_d': mean_loss_d}
             self.metric(val_dataloader, cur_epoch=total_nums, **metric_kwargs)
-            self.save(f'{self.work_dir}/{total_nums}.pth')
+
+            ckpt = {
+                'total_nums': total_nums,
+                'wandb_id': self.wandb_run.id,
+                'date': datetime.now().isoformat()
+            }
+
+            self.save(f'{self.work_dir}/{total_nums}.pth', save_type=WEIGHT, **ckpt)
             os_lib.FileCacher(f'{self.work_dir}/', max_size=max_size, stdout_method=self.logger.info).delete_over_range(suffix='pth')
 
             self.wandb.log(self.wandb.log_info)
@@ -100,7 +126,7 @@ class Mnist(Process):
         return ret
 
 
-class WGAN(IgProcess, Mnist):
+class WGAN(IgProcess):
     def __init__(self,
                  input_size=64,
                  in_ch=3,
@@ -121,7 +147,7 @@ class WGAN(IgProcess, Mnist):
 
         super().__init__(
             model=model,
-            optimizer=(optimizer_d, optimizer_g),
+            optimizer=IgOptimizer(optimizer_d, optimizer_g),
             model_version=model_version,
             input_size=input_size,
             **kwargs
@@ -131,9 +157,11 @@ class WGAN(IgProcess, Mnist):
         train_dataloader, val_dataloader, metric_kwargs = self.on_train_start(batch_size, metric_kwargs, **dataloader_kwargs)
 
         self.model.to(self.device)
-        optimizer_d, optimizer_g = self.optimizer
+        optimizer_d, optimizer_g = self.optimizer.optimizer_d, self.optimizer.optimizer_g
 
         val_noise = torch.normal(mean=0., std=1., size=(64, self.model.hidden_ch, 1, 1), device=self.device)
+        if save_period:
+            save_period = int(np.ceil(save_period / 3000)) * 3000
 
         for i in range(max_epoch):
             self.model.train()
@@ -152,14 +180,15 @@ class WGAN(IgProcess, Mnist):
 
                 total_loss_d += loss_d.item()
                 total_nums += len(rets)
+                self.total_nums += len(rets)
 
                 # note that, to avoid G so strong, training G once while training D iter_gap times
-                if total_nums < 1000 or total_nums % 20000 < batch_size:
+                if self.total_nums < 1000 or self.total_nums % 20000 < batch_size:
                     iter_gap = 3000
                 else:
                     iter_gap = 150
 
-                if total_nums % iter_gap < batch_size:
+                if self.total_nums % iter_gap < batch_size:
                     loss_g = self.model.loss_g(images)
                     loss_g.backward()
                     optimizer_g.step()
@@ -177,7 +206,7 @@ class WGAN(IgProcess, Mnist):
                         # 'gpu_info': MemoryInfo.get_gpu_mem_info()
                     })
 
-                    if self.on_train_epoch_end(total_nums, save_period, (mean_loss_g, mean_loss_d), val_noise, save_maxsize, batch_size, **metric_kwargs):
+                    if self.on_train_epoch_end(self.total_nums, save_period, (mean_loss_g, mean_loss_d), val_noise, save_maxsize, batch_size, **metric_kwargs):
                         break
 
     def predict(self, val_noise, batch_size=128, cur_epoch=-1, model=None, visualize=False, max_vis_num=None, save_ret_func=None, **dataloader_kwargs):
@@ -292,7 +321,7 @@ class Pix2pix(IgProcess):
 
         super().__init__(
             model=model,
-            optimizer=(optimizer_d, optimizer_g),
+            optimizer=IgOptimizer(optimizer_d, optimizer_g),
             model_version=model_version,
             input_size=input_size,
             **kwargs
@@ -301,7 +330,7 @@ class Pix2pix(IgProcess):
     def fit(self, max_epoch, batch_size, save_period=None, save_maxsize=None, metric_kwargs=dict(), **dataloader_kwargs):
         train_dataloader, val_dataloader, metric_kwargs = self.on_train_start(batch_size, metric_kwargs, **dataloader_kwargs)
 
-        optimizer_d, optimizer_g = self.optimizer
+        optimizer_d, optimizer_g = self.optimizer.optimizer_d, self.optimizer.optimizer_g
 
         for i in range(max_epoch):
             self.model.train()
@@ -336,6 +365,7 @@ class Pix2pix(IgProcess):
                 total_loss_d += loss_d.item()
 
                 total_nums += len(rets)
+                self.total_nums += len(rets)
                 mean_loss_g = total_loss_g / total_nums
                 mean_loss_d = total_loss_d / total_nums
 
@@ -349,7 +379,7 @@ class Pix2pix(IgProcess):
                     # 'gpu_info': MemoryInfo.get_gpu_mem_info()
                 })
 
-                if self.on_train_epoch_end(total_nums, save_period, (mean_loss_g, mean_loss_d), val_dataloader, save_maxsize, batch_size, **metric_kwargs):
+                if self.on_train_epoch_end(self.total_nums, save_period, (mean_loss_g, mean_loss_d), val_dataloader, save_maxsize, batch_size, **metric_kwargs):
                     break
 
     def predict(self, val_dataloader=None, batch_size=16, cur_epoch=-1, model=None, visualize=False, max_vis_num=None, save_ret_func=None, **dataloader_kwargs):
@@ -485,6 +515,7 @@ class CycleGan(IgProcess):
                 optimizer_d.step()
 
                 total_nums += len(rets)
+                self.total_nums += len(rets)
 
                 total_loss_g += loss_g.item()
                 total_loss_d += loss_d.item()
@@ -502,7 +533,7 @@ class CycleGan(IgProcess):
                     # 'gpu_info': MemoryInfo.get_gpu_mem_info()
                 })
 
-                if self.on_train_epoch_end(total_nums, save_period, (mean_loss_g, mean_loss_d), val_dataloader, save_maxsize, batch_size, **metric_kwargs):
+                if self.on_train_epoch_end(self.total_nums, save_period, (mean_loss_g, mean_loss_d), val_dataloader, save_maxsize, batch_size, **metric_kwargs):
                     break
 
     def predict(self, val_dataloader=None, batch_size=16, cur_epoch=-1, model=None, visualize=False, max_vis_num=None, save_ret_func=None, **dataloader_kwargs):

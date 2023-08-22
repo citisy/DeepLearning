@@ -10,6 +10,7 @@ from utils import os_lib, converter, configs, visualize
 from utils.torch_utils import EarlyStopping, ModuleInfo, Export
 from data_parse.cv_data_parse.data_augmentation import crop, scale, geometry, pixel_perturbation, RandomApply, Apply, channel
 from typing import List
+from datetime import datetime
 
 MODEL = 1
 WEIGHT = 2
@@ -99,18 +100,14 @@ class Process:
             wandb = FakeWandb()
 
         self.wandb = wandb
-        self.wandb.init(
-            project=self.model_version,
-            name=self.dataset_version,
-            dir=f'{self.work_dir}'
-        )
         self.log_info = {}
 
         self.logger.info(f'{self.model_version = }')
         self.logger.info(f'{self.dataset_version = }')
 
         self.device = torch.device(f"cuda:{device}" if torch.cuda.is_available() else "cpu") if device is not None else 'cpu'
-        self.model = model or callable_model()
+        # note that, it must be set device before load_state_dict()
+        self.model = (model or callable_model()).to(self.device)
         self.callable_model = callable_model
         model_params = model_params or self.model.parameters()
         self.optimizer = optimizer or callable_optimizer(model_params)
@@ -119,6 +116,7 @@ class Process:
 
         self.input_size = input_size or self.model.input_size
         self.out_features = out_features
+        self.start_epoch = 0
 
         self.__dict__.update(kwargs)
 
@@ -152,14 +150,23 @@ class Process:
         fit_kwargs.setdefault('metric_kwargs', metric_kwargs)
 
         self.fit(
-            max_epoch, train_batch_size, save_period,
+            max_epoch,
+            train_batch_size,
+            save_period=save_period,
             num_workers=min(train_batch_size, 16),
             **fit_kwargs
         )
-        self.save(self.model_path)
 
-        # self.load(self.model_path)
-        # self.load(f'{self.model_dir}/{self.dataset_version}_last.pth')
+        ckpt = {
+            'start_epoch': max_epoch + 1,
+            'wandb_id': self.wandb_run.id,
+            'date': datetime.now().isoformat()
+        }
+
+        self.save(self.model_path, save_type=WEIGHT, **ckpt)
+
+        # self.load(self.model_path, save_type=WEIGHT)
+        # self.load(f'{self.model_dir}/{self.dataset_version}/last.pth', save_type=WEIGHT)
 
         r = self.metric(
             batch_size=predict_batch_size or train_batch_size,
@@ -191,6 +198,13 @@ class Process:
     def on_train_start(self, batch_size, metric_kwargs=dict(), **dataloader_kwargs):
         metric_kwargs = configs.merge_dict(dataloader_kwargs, metric_kwargs)
         metric_kwargs.setdefault('batch_size', batch_size)
+
+        self.wandb_run = self.wandb.init(
+            project=self.model_version,
+            name=self.dataset_version,
+            dir=f'{self.work_dir}',
+            id=self.wandb_id if hasattr(self, 'wandb_id') else None
+        )
 
         train_data = self.get_train_data()
 
@@ -231,16 +245,22 @@ class Process:
         self.logger.info(f'train log: epoch: {epoch}, mean_loss: {mean_loss}')
         self.log_info = {'epoch': epoch, 'mean_loss': mean_loss}
 
-        if save_period and epoch % save_period == save_period - 1:
-            self.save(f'{self.model_dir}/{self.dataset_version}/last.pth')
+        ckpt = {
+            'start_epoch': epoch + 1,
+            'wandb_id': self.wandb_run.id,
+            'date': datetime.now().isoformat()
+        }
 
+        self.save(f'{self.model_dir}/{self.dataset_version}/last.pth', save_type=WEIGHT, **ckpt)
+
+        if save_period and epoch % save_period == save_period - 1:
             result = self.metric(val_dataloader, cur_epoch=epoch, **metric_kwargs)
             score = result['score']
             self.log_info['score'] = score
             self.logger.info(f"val log: epoch: {epoch}, score: {score}")
 
             if score > self.stopper.best_fitness:
-                self.save(f'{self.model_dir}/{self.dataset_version}/best.pth')
+                self.save(f'{self.model_dir}/{self.dataset_version}/best.pth', save_type=WEIGHT, **ckpt)
 
             if self.stopper(epoch=epoch, fitness=score):
                 return True
@@ -286,18 +306,23 @@ class Process:
 
         if save_type == MODEL:
             torch.save(self.model, save_path)
+
         elif save_type == WEIGHT:
             ckpt = dict(
                 model=self.model.state_dict(),
+                optimizer=self.optimizer.state_dict(),
                 **kwargs
             )
             torch.save(ckpt, save_path)
+
         elif save_type == JIT:
             trace_input = torch.rand(1, 3, self.input_size, self.input_size).to(self.device)
             model = Export.to_jit(self.model, trace_input)
             model.save(save_path)
+
         elif save_type == TRITON:
             pass
+
         else:
             raise ValueError(f'dont support {save_type = }')
 
@@ -307,13 +332,23 @@ class Process:
     def load(self, save_path, save_type=WEIGHT, verbose=True):
         if save_type == MODEL:
             self.model = torch.load(save_path, map_location=self.device)
+
         elif save_type == WEIGHT:
             ckpt = torch.load(save_path, map_location=self.device)
+
             if self.model is None:
-                self.model = self.callable_model(**ckpt['config'])
-            self.model.load_state_dict(ckpt['model'], strict=False)
+                self.model = self.callable_model(**ckpt['model_config'])
+            self.model.load_state_dict(ckpt.pop('model'), strict=False)
+
+            if self.optimizer is None:
+                self.optimizer = self.callable_optimizer(**ckpt['optimizer_config'])
+            self.optimizer.load_state_dict(ckpt.pop('optimizer'))
+
+            self.__dict__.update(ckpt)
+
         elif save_type == JIT:
             self.model = torch.jit.load(save_path, map_location=self.device)
+
         else:
             raise ValueError(f'dont support {save_type = }')
 

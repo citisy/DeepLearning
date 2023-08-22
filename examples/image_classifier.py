@@ -20,7 +20,7 @@ class ClsProcess(Process):
     def fit(self, max_epoch=100, batch_size=16, save_period=None, metric_kwargs=dict(), **dataloader_kwargs):
         train_dataloader, val_dataloader, metric_kwargs = self.on_train_start(batch_size, metric_kwargs, **dataloader_kwargs)
 
-        for i in range(max_epoch):
+        for i in range(self.start_epoch, max_epoch):
             self.model.train()
             pbar = tqdm(train_dataloader, desc=f'train {i}/{max_epoch}')
             total_loss = 0

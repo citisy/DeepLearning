@@ -54,7 +54,7 @@ class SegProcess(Process):
         accumulate = 64 // batch_size
         j = 0
 
-        for i in range(max_epoch):
+        for i in range(self.start_epoch, max_epoch):
             self.model.train()
             pbar = tqdm(train_dataloader, desc=f'train {i}/{max_epoch}')
             total_loss = 0

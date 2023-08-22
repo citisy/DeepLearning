@@ -4,13 +4,11 @@ import math
 import numpy as np
 import torch
 from torch import nn, optim
-from torch.utils.data import DataLoader
 from tqdm import tqdm
 from pathlib import Path
 from data_parse.cv_data_parse.data_augmentation import crop, scale, geometry, pixel_perturbation, RandomApply, Apply, channel, complex
 from data_parse.cv_data_parse.base import DataRegister, DataVisualizer
 from .base import Process, BaseDataset
-from utils.torch_utils import EarlyStopping
 from utils import configs, os_lib, converter, cv_utils
 from metrics import object_detection
 from typing import List
@@ -50,7 +48,7 @@ class OdProcess(Process):
         accumulate = 64 // batch_size
         j = 0
 
-        for i in range(max_epoch):
+        for i in range(self.start_epoch, max_epoch):
             self.model.train()
             pbar = tqdm(train_dataloader, desc=f'train {i}/{max_epoch}')
             total_loss = 0
@@ -268,7 +266,6 @@ class Voc(Process):
 
     aug = Apply([
         scale.LetterBox(),
-        # pixel_perturbation.MinMax(),
         # pixel_perturbation.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
         channel.HWC2CHW()
     ])
@@ -396,7 +393,6 @@ class Voc_(Voc):
         ret.update(dst=self.input_size)
         ret.update(Apply([
             scale.LetterBox(),
-            # pixel_perturbation.MinMax(),
             # pixel_perturbation.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
             channel.HWC2CHW()
         ])(**ret))
@@ -447,7 +443,6 @@ class Yolov5Dataset(Process):
         loader = Loader('yolov5/data_mapping')
         loader.convert_func = convert_func
         data = loader(set_type=DataRegister.VAL, image_type=DataRegister.PATH, generator=False, sub_dir='')[0]
-        # data = data[:20]
 
         return data
 
