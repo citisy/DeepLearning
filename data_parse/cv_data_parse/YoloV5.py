@@ -69,126 +69,133 @@ class Loader(DataLoader):
 
     image_suffix = 'png'
 
-    def _call(self, set_type, image_type, task='', set_task='', **kwargs):
-        """See Also `data_parse.cv_data_parse.base.DataLoader._call`
+    def _call(self, set_type=DataRegister.TRAIN, **gen_kwargs):
+        """
 
         Args:
             set_type:
-            image_type:
-            task(str): one of dir name in `images` dir
-            set_task(str): one of dir name in `image_sets` dir
+            gen_kwargs:
+                see also `load_full` and `load_set` functions to get more details
+                see also `gen_data` function to get more details of gen_kwargs
+                see also `get_ret` function to get more details of get_kwargs
 
         Returns:
-            a dict had keys of
+            a generator of retuning the result dict
+            see also `get_ret` function to get more details of result dict
+
+        """
+
+        if set_type == DataRegister.MIX:
+            return self.load_full(**gen_kwargs)
+        else:
+            return self.load_set(set_type=set_type, **gen_kwargs)
+
+    def load_full(self, task='', **gen_kwargs):
+        """
+
+        Args:
+            task(str): one of dir name in `images` dir
+            **gen_kwargs:
+                see also `gen_data` function to get more details of gen_kwargs
+                see also `get_ret` function to get more details of get_kwargs
+
+        Returns:
+
+        """
+        gen_func = Path(f'{self.data_dir}/images/{task}').glob(f'*.{self.image_suffix}')
+        return self.gen_data(gen_func, **gen_kwargs)
+
+    def load_set(self, set_type=DataRegister.TRAIN, set_task='', sub_dir='image_sets', **gen_kwargs):
+        """
+
+        Args:
+            set_type:
+            set_task(str): one of dir name in `image_sets` dir
+            sub_dir:
+            **gen_kwargs:
+                see also `gen_data` function to get more details of gen_kwargs
+                see also `get_ret` function to get more details of get_kwargs
+
+        Returns:
+
+        """
+        with open(f'{self.data_dir}/{sub_dir}/{set_task}/{set_type.value}.txt', 'r', encoding='utf8') as f:
+            gen_func = f.read().strip().split('\n')
+        return self.gen_data(gen_func, **gen_kwargs)
+
+    def get_ret(self, fp, image_type=DataRegister.PATH, **kwargs) -> dict:
+        """
+
+        Args:
+            fp:
+            image_type:
+
+        Returns:
+            a dict having keys of
                 _id: image file name
                 image: see also image_type
                 bboxes: a np.ndarray with shape of (-1, 4), 4 means [center_x, center_y, w, h] after norm
                 classes: a list
         """
+        image_path = os.path.abspath(fp)
+        img_fp = Path(image_path)
+        image = get_image(image_path, image_type)
+        label_path = image_path.replace('images', 'labels').replace(f'.{self.image_suffix}', '.txt')
 
-        if set_type == DataRegister.MIX:
-            return self.load_full(image_type, task, **kwargs)
-        else:
-            return self.load_set(set_type, image_type, set_task, **kwargs)
+        if not os.path.exists(label_path):
+            self.stdout_method(f'{label_path} not exist!')
+            return {}
 
-    def load_full(self, image_type, task='', max_size=float('inf'), **kwargs):
-        i = 0
-        for img_fp in Path(f'{self.data_dir}/images/{task}').glob(f'*.{self.image_suffix}'):
-            if i >= max_size:
-                break
-            image_path = os.path.abspath(img_fp)
-            img_fp = Path(image_path)
-            image = get_image(image_path, image_type)
-            label_path = image_path.replace('images', 'labels').replace(f'.{self.image_suffix}', '.txt')
-            if not os.path.exists(label_path):
-                self.stdout_method(f'{label_path} not exist!')
-                continue
-            labels = np.genfromtxt(label_path).reshape((-1, 5))
+        labels = np.genfromtxt(label_path).reshape((-1, 5))
 
-            # (center x, center y, box w, box h) after norm
-            # e.g. norm box w = real box w / real image w
-            bboxes = labels[:, 1:]
-            classes = labels[:, 0].astype(int)
+        # (center x, center y, box w, box h) after norm
+        # e.g. norm box w = real box w / real image w
+        bboxes = labels[:, 1:]
+        classes = labels[:, 0].astype(int)
 
-            ret = dict(
-                _id=img_fp.name,
-                image_dir=str(img_fp.parent),
-                image=image,
-                bboxes=bboxes,
-                classes=classes,
-            )
+        return dict(
+            _id=img_fp.name,
+            image_dir=str(img_fp.parent),
+            image=image,
+            bboxes=bboxes,
+            classes=classes,
+        )
 
-            ret = self.convert_func(ret)
 
-            if self.filter_func(ret):
-                i += 1
-                yield ret
+class LoaderFull(DataLoader):
+    image_suffix = 'png'
 
-    def load_set(self, set_type=DataRegister.TRAIN, image_type=DataRegister.PATH, set_task='', sub_dir='image_sets', max_size=float('inf'), **kwargs):
-        i = 0
-        with open(f'{self.data_dir}/{sub_dir}/{set_task}/{set_type.value}.txt', 'r', encoding='utf8') as f:
-            for line in f.read().strip().split('\n'):
-                if i >= max_size:
-                    break
-                image_path = os.path.abspath(line)
-                img_fp = Path(image_path)
-                image = get_image(image_path, image_type)
-                labels = np.genfromtxt(image_path.replace('images', 'labels').replace(f'.{self.image_suffix}', '.txt')).reshape((-1, 5))
-
-                # (center x, center y, box w, box h) after norm
-                # e.g. norm box w = real box w / real image w
-                bboxes = labels[:, 1:]
-                classes = labels[:, 0]
-
-                ret = dict(
-                    _id=img_fp.name,
-                    image_dir=str(img_fp.parent),
-                    image=image,
-                    bboxes=bboxes,  # (-1, 4)
-                    classes=classes,
-                )
-
-                ret = self.convert_func(ret)
-
-                if self.filter_func(ret):
-                    i += 1
-                    yield ret
-
-    def load_full_labels(self, task='', sub_dir='full_labels', max_size=float('inf')):
+    def _call(self, task='', sub_dir='full_labels', **gen_kwargs):
         """format of saved label txt like (class, x1, y1, x2, y2, conf, w, h)
         only return labels but no images. can use _id to load images"""
-        i = 0
-        for fp in Path(f'{self.data_dir}/{sub_dir}/{task}').glob('*.txt'):
-            if i >= max_size:
-                break
-            img_fp = Path(str(fp).replace('.txt', '.png').replace(sub_dir, 'images'))
+        gen_func = Path(f'{self.data_dir}/{sub_dir}/{task}').glob('*.txt')
+        return self.gen_data(gen_func, task=task, sub_dir=sub_dir, **gen_kwargs)
 
-            # (class, x1, y1, x2, y2, conf, w, h)
-            labels = np.genfromtxt(fp)
-            if not labels.size:
-                labels = labels.reshape((-1, 8))
+    def get_ret(self, fp, task='', sub_dir='', **kwargs) -> dict:
+        img_fp = Path(str(fp).replace('.txt', '.png').replace(sub_dir, 'images'))
 
-            if len(labels.shape) == 1:
-                labels = labels[None, :]
+        # (class, x1, y1, x2, y2, conf, w, h)
+        labels = np.genfromtxt(fp)
+        if not labels.size:
+            labels = labels.reshape((-1, 8))
 
-            ret = dict(
-                _id=img_fp.name,
-                task=task,
-                classes=labels[:, 0],
-                bboxes=labels[:, 1:5],
+        if len(labels.shape) == 1:
+            labels = labels[None, :]
+
+        ret = dict(
+            _id=img_fp.name,
+            task=task,
+            classes=labels[:, 0],
+            bboxes=labels[:, 1:5],
+        )
+
+        if labels.shape[-1] > 5:
+            ret.update(
+                confs=labels[:, 5],
+                image_shape=labels[:, 6:8],  # (w, h)
             )
 
-            if labels.shape[-1] > 5:
-                ret.update(
-                    confs=labels[:, 5],
-                    image_shape=labels[:, 6:8],  # (w, h)
-                )
-
-            ret = self.convert_func(ret)
-
-            if self.filter_func(ret):
-                i += 1
-                yield ret
+        return ret
 
 
 class Saver(DataSaver):
@@ -234,6 +241,7 @@ class Saver(DataSaver):
             saver(data, set_type=DataRegister.TRAIN)
 
     """
+
     def mkdirs(self, set_types, task='', set_task='', **kwargs):
         os_lib.mk_dir(f'{self.data_dir}/image_sets/{set_task}')
         os_lib.mk_dir(f'{self.data_dir}/images/{task}')
@@ -255,11 +263,7 @@ class Saver(DataSaver):
         else:
             f = open(f'{self.data_dir}/image_sets/{set_task}/{set_type.value}.txt', 'w', encoding='utf8')
 
-        pbar = iter_data
-        if self.verbose:
-            pbar = tqdm(pbar, desc=f'Save {set_type.value} dataset')
-
-        for ret in pbar:
+        for ret in iter_data:
             ret = self.convert_func(ret)
 
             image = ret['image']
@@ -292,7 +296,7 @@ class Saver(DataSaver):
         save_dir = f'{self.data_dir}/{sub_dir}/{task}'
         os_lib.mk_dir(save_dir)
 
-        for i, ret in enumerate(tqdm(iter_data)):
+        for i, ret in enumerate(iter_data):
             ret = self.convert_func(ret)
 
             if 'image' in ret:

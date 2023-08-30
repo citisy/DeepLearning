@@ -47,7 +47,7 @@ class Loader(DataLoader):
     default_set_type = [DataRegister.TRAIN, DataRegister.VAL]
     classes = None
 
-    def _call(self, set_type, image_type, task='instances', **kwargs):
+    def _call(self, set_type=DataRegister.TRAIN, task='instances', **kwargs):
         """See Also `cv_data_parse.base.DataLoader._call`
 
         Args:
@@ -76,28 +76,31 @@ class Loader(DataLoader):
         for d in js['annotations']:
             annotations.setdefault(d['image_id'], []).append(d)
 
-        for tmp in js['images']:
-            image_path = os.path.abspath(f'{self.data_dir}/{set_type.value}2017/{tmp["file_name"]}')
-            image = get_image(image_path, image_type)
+        gen_func = js['images']
+        return self.gen_data(gen_func, set_type=set_type, annotations=annotations, **kwargs)
 
-            size = (tmp['width'], tmp['height'], 3)
-            _id = tmp['id']
+    def get_ret(self, js, set_type=DataRegister.TRAIN, image_type=DataRegister.ARRAY, annotations=None, **kwargs) -> dict:
+        image_path = os.path.abspath(f'{self.data_dir}/{set_type.value}2017/{js["file_name"]}')
+        image = get_image(image_path, image_type)
 
-            labels = annotations.get(_id, [])
+        size = (js['width'], js['height'], 3)
+        _id = js['id']
 
-            bboxes = []
-            classes = []
-            for label in labels:
-                # [x, y, w, h]
-                bboxes.append(converter.CoordinateConvert.top_xywh2top_xyxy(label['bboxes']))
-                classes.append(int(label['category_id']))
+        labels = annotations.get(_id, [])
 
-            bboxes = np.array(bboxes, dtype=int)
+        bboxes = []
+        classes = []
+        for label in labels:
+            # [x, y, w, h]
+            bboxes.append(converter.CoordinateConvert.top_xywh2top_xyxy(label['bboxes']))
+            classes.append(int(label['category_id']))
 
-            yield dict(
-                _id=tmp['file_name'],
-                image=image,
-                size=size,
-                bboxes=bboxes,
-                classes=classes,
-            )
+        bboxes = np.array(bboxes, dtype=int)
+
+        return dict(
+            _id=js['file_name'],
+            image=image,
+            size=size,
+            bboxes=bboxes,
+            classes=classes,
+        )

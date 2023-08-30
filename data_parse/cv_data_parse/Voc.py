@@ -52,7 +52,7 @@ class Loader(DataLoader):
 
     image_suffix = 'jpg'
 
-    def _call(self, set_type, image_type, set_task=DET, task=None, **kwargs):
+    def _call(self, set_task=DET, task=None, **kwargs):
         """See Also `cv_data_parse.base.DataLoader._call`
 
         Args:
@@ -79,48 +79,38 @@ class Loader(DataLoader):
         """
         if set_task == DET:
             if task is None:
-                return self.load_det_total(image_type, **kwargs)
+                return self.load_det_total(task=task, **kwargs)
             else:
-                return self.load_det_task(set_type, image_type, task, **kwargs)
+                return self.load_det_task(task=task, **kwargs)
         else:
             if set_task == SEG_CLS:
-                return self.load_seg_task(set_type, image_type, task='SegmentationClass')
+                return self.load_seg_task(task='SegmentationClass', **kwargs)
             elif set_task == SEG_OBJ:
-                return self.load_seg_task(set_type, image_type, task='SegmentationObject')
+                return self.load_seg_task(task='SegmentationObject', **kwargs)
 
-    def load_det_total(self, image_type, **kwargs):
-        for xml_file in Path(f'{self.data_dir}/Annotations').glob('*.xml'):
-            ret = self.parse_xml(xml_file.stem, image_type)
-            ret = self.convert_func(ret)
-            if self.filter_func(ret):
-                yield ret
+    def load_det_total(self, **kwargs):
+        gen_func = [xml_file.stem for xml_file in Path(f'{self.data_dir}/Annotations').glob('*.xml')]
+        return self.gen_data(gen_func, **kwargs)
 
-    def load_det_task(self, set_type, image_type, task='', **kwargs):
+    def load_det_task(self, set_type=DataRegister.TRAIN, task='', **kwargs):
         if task:
             task += '_'
-
         with open(f'{self.data_dir}/ImageSets/Main/{task}{set_type.value}.txt', 'r', encoding='utf8') as f:
-            for _id in f.read().strip().split('\n'):
-                ret = self.parse_xml(_id, image_type)
-                ret = self.convert_func(ret)
-                if self.filter_func(ret):
-                    yield ret
+            gen_func = f.read().strip().split('\n')
+        return self.gen_data(gen_func, **kwargs)
 
     def load_seg_task(self, set_type, image_type, task='SegmentationClass', **kwargs):
         with open(f'{self.data_dir}/ImageSets/Segmentation/{set_type.value}.txt', 'r', encoding='utf8') as f:
-            for _id in f.read().strip().split('\n'):
-                ret = self.parse_xml(_id, image_type)
+            gen_func = f.read().strip().split('\n')
 
-                pix_image_path = os.path.abspath(f'{self.data_dir}/{task}/{_id}.png')
-                pix_image = get_image(pix_image_path, image_type)
+        for ret in self.gen_data(gen_func, **kwargs):
+            pix_image_path = os.path.abspath(f'{self.data_dir}/{task}/{ret["_id"]}.png')
+            pix_image = get_image(pix_image_path, image_type)
 
-                ret['pix_image'] = pix_image
+            ret['pix_image'] = pix_image
+            yield ret
 
-                ret = self.convert_func(ret)
-                if self.filter_func(ret):
-                    yield ret
-
-    def parse_xml(self, _id, image_type):
+    def get_ret(self, _id, image_type):
         xml_file = Path(f'{self.data_dir}/Annotations/{_id}.xml')
         tree = ET.parse(xml_file)
         root = tree.getroot()

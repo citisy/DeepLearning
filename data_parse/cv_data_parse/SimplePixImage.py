@@ -1,7 +1,5 @@
 import os
-import numpy as np
 from pathlib import Path
-from tqdm import tqdm
 from .base import DataLoader, DataSaver, DataRegister, get_image, save_image
 from utils import os_lib
 
@@ -30,28 +28,22 @@ class Loader(DataLoader):
     """
     default_set_type = [DataRegister.MIX]
 
-    def _call(self, image_type=DataRegister.PATH, task='original', pix_task='pixels', max_size=float('inf'), **kwargs):
-        i = 0
-        for fp in Path(f'{self.data_dir}/{task}').glob(f'*.{self.image_suffix}'):
-            if i >= max_size:
-                break
-            image_path = os.path.abspath(fp)
-            image = get_image(image_path, image_type)
+    def _call(self, task='original', **kwargs):
+        gen_func = Path(f'{self.data_dir}/{task}').glob(f'*.{self.image_suffix}')
+        return self.gen_data(gen_func, task=task, **kwargs)
 
-            pix_image_path = image_path.replace(task, pix_task)
-            pix_image = get_image(pix_image_path, image_type)
+    def get_ret(self, fp, image_type=DataRegister.PATH, task='original', pix_task='pixels', **kwargs) -> dict:
+        image_path = os.path.abspath(fp)
+        image = get_image(image_path, image_type)
 
-            ret = dict(
-                _id=fp.name,
-                image=image,
-                pix_image=pix_image,
-            )
+        pix_image_path = image_path.replace(task, pix_task)
+        pix_image = get_image(pix_image_path, image_type)
 
-            ret = self.convert_func(ret)
-
-            if self.filter_func(ret):
-                i += 1
-                yield ret
+        return dict(
+            _id=fp.name,
+            image=image,
+            pix_image=pix_image,
+        )
 
 
 class Saver(DataSaver):
@@ -84,11 +76,7 @@ class Saver(DataSaver):
         os_lib.mk_dir(f'{self.data_dir}/{pix_task}')
 
     def _call(self, iter_data, image_type=DataRegister.PATH, task='', pix_task='', **kwargs):
-        pbar = iter_data
-        if self.verbose:
-            pbar = tqdm(pbar, desc=f'Save dataset')
-
-        for ret in pbar:
+        for ret in iter_data:
             ret = self.convert_func(ret)
 
             image = ret['image']

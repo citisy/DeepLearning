@@ -37,7 +37,7 @@ class Cifar10Loader(DataLoader):
     image_suffix = 'png'
     classes = ["airplane", "automobile", "bird", "cat", "deer", "dog", "frog", "horse", "ship", "truck"]
 
-    def _call(self, set_type, image_type, **kwargs):
+    def _call(self, set_type=DataRegister.TRAIN, image_type=DataRegister.PATH, **kwargs):
         """See Also `cv_data_parse.base.DataLoader._call`
 
         Returns:
@@ -70,20 +70,24 @@ class Cifar10Loader(DataLoader):
             with open(f'{self.data_dir}/test_batch', 'rb') as fo:
                 data_dict = pickle.load(fo, encoding='bytes')
 
-        for image, _class, _id in zip(data_dict[b'data'], data_dict[b'labels'], data_dict[b'filenames']):
-            _id = _id.decode('utf8')
+        gen_func = zip(data_dict[b'data'], data_dict[b'labels'], data_dict[b'filenames'])
+        return self.gen_data(gen_func, **kwargs)
 
-            image = np.reshape(image, [3, 32, 32])
+    def get_ret(self, obj, **kwargs) -> dict:
+        image, _class, _id = obj
+        _id = _id.decode('utf8')
 
-            # (c, h, w) -> (h, w, c)
-            image = chw2hwc.apply_image(image)
+        image = np.reshape(image, [3, 32, 32])
 
-            yield dict(
-                _id=_id,
-                image=image,
-                size=image.shape,
-                _class=_class,
-            )
+        # (c, h, w) -> (h, w, c)
+        image = chw2hwc.apply_image(image)
+
+        return dict(
+            _id=_id,
+            image=image,
+            size=image.shape,
+            _class=_class,
+        )
 
 
 class Cifar100Loader(Cifar10Loader):

@@ -6,7 +6,7 @@ from utils import converter
 from .base import DataLoader, DataRegister, get_image
 
 
-class CelebALoader(DataLoader):
+class Loader(DataLoader):
     """http://mmlab.ie.cuhk.edu.hk/projects/CelebA.html
 
     Data structure:
@@ -50,12 +50,10 @@ class CelebALoader(DataLoader):
     attr_classes = None
     landmarks_classes = None
 
-    def _call(self, set_type, image_type, img_task='original', **kwargs):
+    def _call(self, img_task='original', **kwargs):
         """See Also `cv_data_parse.base.DataLoader._call`
 
         Args:
-            set_type:
-            image_type:
             img_task(str): which image dir to load
                 see also `CelebALoader.img_task_dict`
 
@@ -87,31 +85,37 @@ class CelebALoader(DataLoader):
         else:
             landmarks_df = pd.read_csv(f'{self.data_dir}/Anno/list_landmarks_celeba.txt', sep=r'\s+', index_col=0, header=1)
 
-        for line in lines:
-            _id, _data_type = line.split(' ')
+        gen_func = lines
+        return self.gen_data(gen_func,
+                             bbox_df=bbox_df, attr_df=attr_df, identity_df=identity_df,
+                             load_type_df=load_type_df, landmarks_df=landmarks_df, **kwargs)
 
-            if img_task == 'crop':
-                image_path = os.path.abspath(f'{self.data_dir}/Img/{self.img_task_dict[img_task]}/{Path(_id).stem}.{self.image_suffix}')
-            else:
-                image_path = os.path.abspath(f'{self.data_dir}/Img/{self.img_task_dict[img_task]}/{_id}')
+    def get_ret(self, line, image_type=DataRegister.ARRAY, img_task='original',
+                bbox_df=None, attr_df=None, identity_df=None, load_type_df=None, landmarks_df=None, **kwargs) -> dict:
+        _id, _data_type = line.split(' ')
 
-            image = get_image(image_path, image_type)
-            xywh = list(bbox_df.loc[_id])
-            bbox = converter.CoordinateConvert.top_xywh2top_xyxy(xywh)
-            attr = list(attr_df.loc[_id])
-            identity = identity_df.loc[_id][1]
-            landmarks = list(landmarks_df.loc[_id])
-            _type = load_type_df.loc[_id][1]
+        if img_task == 'crop':
+            image_path = os.path.abspath(f'{self.data_dir}/Img/{self.img_task_dict[img_task]}/{Path(_id).stem}.{self.image_suffix}')
+        else:
+            image_path = os.path.abspath(f'{self.data_dir}/Img/{self.img_task_dict[img_task]}/{_id}')
 
-            yield dict(
-                _id=_id,
-                _type=_type,
-                image=image,
-                bbox=bbox,
-                attr=attr,
-                identity=identity,
-                landmarks=landmarks
-            )
+        image = get_image(image_path, image_type)
+        xywh = list(bbox_df.loc[_id])
+        bbox = converter.CoordinateConvert.top_xywh2top_xyxy(xywh)
+        attr = list(attr_df.loc[_id])
+        identity = identity_df.loc[_id][1]
+        landmarks = list(landmarks_df.loc[_id])
+        _type = load_type_df.loc[_id][1]
+
+        return dict(
+            _id=_id,
+            _type=_type,
+            image=image,
+            bbox=bbox,
+            attr=attr,
+            identity=identity,
+            landmarks=landmarks
+        )
 
 
 class CelebAHQLoader(DataLoader):
@@ -122,6 +126,3 @@ class CelebAHQLoader(DataLoader):
 class CelebASpoofLoader(DataLoader):
     """http://mmlab.ie.cuhk.edu.hk/projects/CelebA/CelebA_Spoof.html
     """
-
-
-Loader = CelebALoader

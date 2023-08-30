@@ -1,7 +1,6 @@
 import os
 import jsonlines
 import json
-import cv2
 from .base import DataRegister, DataLoader, DataSaver, get_image
 
 
@@ -45,23 +44,24 @@ class Loader(DataLoader):
                 segmentation: a list with shape of (-1, -1, 2)
                 transcription: List[str]
         """
-
         with jsonlines.open(f'{self.data_dir}/PubTabNet_2.0.0.{set_type.value}.jsonl', 'r') as reader:
             # {filename, split, imgid, html}
-            for line in reader:
+            gen_func = reader
+        return self.gen_data(gen_func, **kwargs)
 
-                image_path = os.path.abspath(f'{self.data_dir}/{set_type.value}/{line["filename"]}')
-                image = get_image(image_path, image_type)
+    def get_ret(self, line, set_type=DataRegister.TRAIN, image_type=DataRegister.PATH, **kwargs) -> dict:
+        image_path = os.path.abspath(f'{self.data_dir}/{set_type.value}/{line["filename"]}')
+        image = get_image(image_path, image_type)
 
-                segmentation = [cell['bbox'] for cell in line['html']['cells'] if 'bbox' in cell]
-                transcription = [cell['tokens'] for cell in line['html']['cells'] if 'bbox' in cell]
+        segmentation = [cell['bbox'] for cell in line['html']['cells'] if 'bbox' in cell]
+        transcription = [cell['tokens'] for cell in line['html']['cells'] if 'bbox' in cell]
 
-                yield dict(
-                    _id=line['filename'],
-                    image=image,
-                    segmentation=segmentation,
-                    transcription=transcription
-                )
+        return dict(
+            _id=line['filename'],
+            image=image,
+            segmentation=segmentation,
+            transcription=transcription
+        )
 
     def split_json(self):
         f1 = open(f'{self.data_dir}/PubTabNet_2.0.0.train.jsonl', 'w', encoding='utf8')

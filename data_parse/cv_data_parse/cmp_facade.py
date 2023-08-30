@@ -39,7 +39,7 @@ class Loader(DataLoader):
         DataRegister.TEST: 'extended'
     }
 
-    def _call(self, set_type=DataRegister.TRAIN, image_type=DataRegister.PATH, **kwargs):
+    def _call(self, set_type=DataRegister.TRAIN, **kwargs):
         """See Also `cv_data_parse.base.DataLoader._call`
 
         Args:
@@ -55,41 +55,39 @@ class Loader(DataLoader):
                 bboxes: a np.ndarray with shape of (-1, 4), 4 means [top_left_x, top_left_y, w, h]
                 classes: a list
         """
-        for fp in Path(f'{self.data_dir}/{self.set_type_dict[set_type]}').glob('*.jpg'):
-            image_path = os.path.abspath(fp)
-            image = get_image(image_path, image_type)
+        gen_func = Path(f'{self.data_dir}/{self.set_type_dict[set_type]}').glob('*.jpg')
+        return self.gen_data(gen_func, **kwargs)
 
-            pix_image_path = image_path.replace('.jpg', '.png')
-            pix_image = get_image(pix_image_path, image_type)
+    def get_ret(self, fp, image_type=DataRegister.PATH, **kwargs) -> dict:
+        image_path = os.path.abspath(fp)
+        image = get_image(image_path, image_type)
 
-            label_path = image_path.replace('.jpg', '.xml')
-            # get wrong directly with using raw xml file
-            with open(label_path, 'r', encoding='utf8') as f:
-                xml = f.read()
-            tree = ET.fromstring(f'<root>\n{xml}\n</root>')
+        pix_image_path = image_path.replace('.jpg', '.png')
+        pix_image = get_image(pix_image_path, image_type)
 
-            bboxes = []
-            classes = []
+        label_path = image_path.replace('.jpg', '.xml')
+        # get wrong directly with using raw xml file
+        with open(label_path, 'r', encoding='utf8') as f:
+            xml = f.read()
+        tree = ET.fromstring(f'<root>\n{xml}\n</root>')
 
-            for obj in tree.iter('object'):
-                points = obj.find('points')
-                xs = [float(x.text.strip()) for x in points.iter('x')]
-                ys = [float(y.text.strip()) for y in points.iter('y')]
-                bboxes.append([ys[0], xs[0], ys[1], xs[1]])
-                classes.append(int(obj.find('label').text.strip()))
+        bboxes = []
+        classes = []
 
-            bboxes = np.array(bboxes)
-            classes = np.array(classes) - 1
+        for obj in tree.iter('object'):
+            points = obj.find('points')
+            xs = [float(x.text.strip()) for x in points.iter('x')]
+            ys = [float(y.text.strip()) for y in points.iter('y')]
+            bboxes.append([ys[0], xs[0], ys[1], xs[1]])
+            classes.append(int(obj.find('label').text.strip()))
 
-            ret = dict(
-                _id=fp.name,
-                image=image,
-                pix_image=pix_image,
-                bboxes=bboxes,
-                classes=classes,
-            )
+        bboxes = np.array(bboxes)
+        classes = np.array(classes) - 1
 
-            ret = self.convert_func(ret)
-
-            if self.filter_func(ret):
-                yield ret
+        return dict(
+            _id=fp.name,
+            image=image,
+            pix_image=pix_image,
+            bboxes=bboxes,
+            classes=classes,
+        )

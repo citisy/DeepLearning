@@ -28,7 +28,7 @@ class Loader(DataLoader):
     default_set_type = [DataRegister.TRAIN, DataRegister.TEST]
     image_suffix = 'png'
 
-    def _call(self, set_type=DataRegister.TRAIN, image_type=DataRegister.TRAIN, set_task='', label_dir='labels', **kwargs):
+    def _call(self, set_type=DataRegister.TRAIN, set_task='', label_dir='labels', **kwargs):
         """See Also `cv_data_parse.base.DataLoader._call`
 
         Returns:
@@ -55,33 +55,40 @@ class Loader(DataLoader):
 
         """
 
-        with open(f'{self.data_dir}/{label_dir}/{set_task}/{set_type.value}.txt', 'r', encoding='utf8') as f:
-            for line in f.read().strip().split('\n'):
-                items = line.split('\t')
-                if len(items) == 2:
-                    image_paths, transcription = items
-                    conf = 1
-                elif len(items) == 3:
-                    image_paths, transcription, conf = items
-                else:
-                    raise f'the line: {line}\nthere are {len(items)} items'
+        def gen_func():
+            with open(f'{self.data_dir}/{label_dir}/{set_task}/{set_type.value}.txt', 'r', encoding='utf8') as f:
+                for line in f.read().strip().split('\n'):
+                    items = line.split('\t')
+                    if len(items) == 2:
+                        image_paths, transcription = items
+                        conf = 1
+                    elif len(items) == 3:
+                        image_paths, transcription, conf = items
+                    else:
+                        raise f'the line: {line}\nthere are {len(items)} items'
 
-                # make sure that '[' is not in image_path
-                if '[' in image_paths:
-                    image_paths = eval(image_paths)
-                else:
-                    image_paths = [image_paths]
+                    # make sure that '[' is not in image_path
+                    if '[' in image_paths:
+                        image_paths = eval(image_paths)
+                    else:
+                        image_paths = [image_paths]
 
-                for image_path in image_paths:
-                    image_path = os.path.abspath(image_path)
-                    image = get_image(image_path, image_type)
+                    for image_path in image_paths:
+                        yield image_path, transcription, conf
 
-                    yield dict(
-                        _id=Path(image_path).name,
-                        image=image,
-                        transcription=transcription,
-                        conf=conf
-                    )
+        return self.gen_data(gen_func, **kwargs)
+
+    def get_ret(self, obj, image_type=DataRegister.PATH, **kwargs) -> dict:
+        image_path, transcription, conf = obj
+        image_path = os.path.abspath(image_path)
+        image = get_image(image_path, image_type)
+
+        yield dict(
+            _id=Path(image_path).name,
+            image=image,
+            transcription=transcription,
+            conf=conf
+        )
 
     def load_dist_rec(self, set_type=DataRegister.TRAIN, image_type=DataRegister.TRAIN, set_task='', label_dir='labels', is_student=True, **kwargs):
         with open(f'{self.data_dir}/{label_dir}/{set_task}/{set_type.value}.txt', 'r', encoding='utf8') as f:
@@ -102,6 +109,32 @@ class Loader(DataLoader):
                     image=image,
                     transcription=transcription,
                 )
+
+
+class LoaderDist(DataLoader):
+    def _call(self, set_type=DataRegister.TRAIN, set_task='', label_dir='labels', **kwargs):
+        with open(f'{self.data_dir}/{label_dir}/{set_task}/{set_type.value}.txt', 'r', encoding='utf8') as f:
+            gen_func = f.readlines()
+
+        return self.gen_data(gen_func, **kwargs)
+
+    def get_ret(self, line, image_type=DataRegister.PATH, is_student=True, **kwargs) -> dict:
+        image_path, ret = line.split('\t')
+        image_path = os.path.abspath(image_path)
+        image = get_image(image_path, image_type)
+        ret = json.loads(ret)
+        if is_student:
+            ret = ret['Student']
+        else:
+            ret = ret['Teacher']
+
+        transcription = ret['label']
+
+        return dict(
+            _id=Path(image_path).name,
+            image=image,
+            transcription=transcription,
+        )
 
 
 class Saver(DataSaver):
@@ -152,7 +185,7 @@ class Saver(DataSaver):
         """
         f = open(f'{self.data_dir}/labels/{set_task}/{set_type.value}.txt', 'w', encoding='utf8')
 
-        for dic in tqdm(iter_data):
+        for dic in iter_data:
             image = dic['image']
             transcription = dic['transcription']
             _id = dic['_id']
@@ -210,4 +243,3 @@ class Saver(DataSaver):
                 f.write(f'{img_fp}\t{transcription.strip()}\n')
 
         f.close()
-

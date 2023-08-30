@@ -39,42 +39,46 @@ def save_image(obj, save_path, image_type):
 
 class ImgClsDict:
     # image file name, e.g. 'xxx.png'
-    _id: str = ''
+    _id: str
 
     # if `image_type = DataRegister.PATH`,, return a string
     # if `image_type = DataRegister.ARRAY`,, return a np.ndarray from cv2.read()
-    image: str or np.ndarray = None
+    image: str or np.ndarray
 
     # usually an int number giving the pic class
-    _class: Number = None
+    _class: Number
 
 
 class ObjDetDict:
     # image file name, e.g. 'xxx.png'
-    _id: str = ''
+    _id: str
 
     # if `image_type = DataRegister.PATH`,, return a string
     # if `image_type = DataRegister.ARRAY`,, return a np.ndarray from cv2.read()
-    image: str or np.ndarray = None
+    image: str or np.ndarray
 
     # a np.ndarray with shape of (n_obj, 4), 4 gives [top_left_x, top_left_y, right_down_x, right_down_y] usually
-    bboxes: np.ndarray = None
+    bboxes: np.ndarray
 
     # a np.ndarray with shape of (n_obj, )
-    classes: np.ndarray = None
+    classes: np.ndarray
 
 
 class ImgSegDict:
     # image file name, e.g. 'xxx.png'
-    _id: str = ''
+    _id: str
 
     # if `image_type = DataRegister.PATH`,, return a string
     # if `image_type = DataRegister.ARRAY`,, return a np.ndarray from cv2.read()
-    image: str or np.ndarray = None
+    image: str or np.ndarray
 
     # if `image_type = DataRegister.PATH`,, return a string
     # if `image_type = DataRegister.ARRAY`,, return a np.ndarray from cv2.read()
-    pix_image: str or np.ndarray = None
+    pix_image: str or np.ndarray
+
+
+def fake_func(x):
+    return x
 
 
 class DataLoader:
@@ -89,7 +93,12 @@ class DataLoader:
         self.verbose = verbose
         self.stdout_method = stdout_method if verbose else os_lib.FakeIo()
 
-    def __call__(self, set_type=None, image_type=None, generator=True, **kwargs):
+    def __call__(self, *args, **kwargs):
+        return self.load(*args, **kwargs)
+
+    def load(self, set_type=None, image_type=None, generator=True,
+             use_multiprocess=False, n_process=5,
+             **load_kwargs):
         """
         Args:
             set_type(list or DataRegister): a DataRegister type or a list of them
@@ -100,6 +109,14 @@ class DataLoader:
                 ARRAY -> a np.ndarray of image, read from cv2, as (h, w, c)
             generator(bool):
                 return a generator if True else a list
+            use_multiprocess(bool):
+                whether used multiprocess to load data or not
+            n_process(int):
+                num of process pools to execute if used multiprocess
+            load_kwargs:
+                see also `_call` function to get more details of load_kwargs
+                see also 'gen_data' function to get more details of gen_kwargs
+                see also 'get_ret' function to get more details of get_kwargs
 
         Returns:
             a list apply for set_type
@@ -121,35 +138,71 @@ class DataLoader:
 
         r = []
         for set_type in set_types:
-            tmp = []
+            pbar = self._call(set_type=set_type, image_type=image_type, **load_kwargs)
+
+            if use_multiprocess:
+                from multiprocessing.pool import Pool
+
+                pool = Pool(n_process)
+                pbar = pool.imap(fake_func, pbar)
+
+            if self.verbose:
+                pbar = tqdm(pbar, desc=visualize.TextVisualize.highlight_str(f'Load {set_type.value} dataset'))
+
             if generator:
-                r.append(self._call(set_type=set_type, image_type=image_type, **kwargs))
-
+                r.append(pbar)
             else:
-                pbar = self._call(set_type=set_type, image_type=image_type, **kwargs)
-                if self.verbose:
-                    pbar = tqdm(pbar, desc=f'Load {set_type.value} dataset')
-
-                for _ in pbar:
-                    tmp.append(_)
-
-                r.append(tmp)
+                r.append(list(pbar))
 
         return r
 
-    def _call(self, set_type, image_type, **kwargs):
+    def _call(self, **gen_kwargs):
+        """
+        Args:
+            gen_kwargs:
+                see also `gen_data` function to get more details of gen_kwargs
+                see also `get_ret` function to get more details of get_kwargs
+
+        Returns:
+            a generator which yield a dict of data
+
+        Usage:
+            .. code-block:: python
+
+            def _call(self, **gen_kwargs)
+                gen_func = ...
+                return self.gen_data(gen_func, **gen_kwargs)
+        """
+        raise NotImplementedError
+
+    def gen_data(self, gen_func, max_size=float('inf'), **get_kwargs):
         """
 
         Args:
-            set_type(DataRegister): a DataRegister type, see also `DataLoader.__call__`
-            image_type(DataRegister): `DataRegister.PATH` or `DataRegister.ARRAY`
-                PATH -> a str of image abs path
-                IMAGE -> a np.ndarray of image, read from cv2, as (h, w, c)
+            gen_func:
+            max_size: num of loaded data
+            **get_kwargs:
+                see also `get_ret` function to get more details of get_kwargs
 
-        Returns:
-            yield a dict of loaded data
+        Yields
+            a dict of result data
 
         """
+        i = 0
+        for a in gen_func:
+            if i >= max_size:
+                break
+
+            ret = self.get_ret(a, **get_kwargs)
+            if not ret:
+                continue
+
+            ret = self.convert_func(ret)
+            if self.filter_func(ret):
+                i += 1
+                yield ret
+
+    def get_ret(self, *args, **kwargs) -> dict:
         raise NotImplementedError
 
     def load_cache(self, save_name):
@@ -174,7 +227,10 @@ class DataSaver:
 
         os_lib.mk_dir(self.data_dir)
 
-    def __call__(self, data, set_type=DataRegister.FULL, image_type=DataRegister.PATH, **kwargs):
+    def __call__(self, *args, **kwargs):
+        return self.save(*args, **kwargs)
+
+    def save(self, data, set_type=DataRegister.FULL, image_type=DataRegister.PATH, **kwargs):
         """
 
         Args:
@@ -200,6 +256,9 @@ class DataSaver:
         self.mkdirs(set_types, **kwargs)
 
         for i, iter_data in enumerate(data):
+            if self.verbose:
+                iter_data = tqdm(iter_data, desc=visualize.TextVisualize.highlight_str(f'Save {set_type.value} dataset'))
+
             self._call(iter_data, set_type=set_types[i], image_type=image_type, **kwargs)
 
     def mkdirs(self, set_types, **kwargs):

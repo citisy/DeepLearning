@@ -50,7 +50,7 @@ class Icdar2015(DataLoader):
     default_set_type = [DataRegister.TRAIN, DataRegister.TEST]
     image_suffix = 'jpg'
 
-    def _call(self, set_type, image_type, train_task='1', **kwargs):
+    def _call(self, train_task='1', **kwargs):
         """See Also `cv_data_parse.base.DataLoader._call`
 
         Args:
@@ -67,15 +67,15 @@ class Icdar2015(DataLoader):
         """
 
         if train_task == '1':
-            return self.load_task_1(set_type, image_type, **kwargs)
+            return self.load_task_1(**kwargs)
         elif train_task == '3':
-            return self.load_task_3(set_type, image_type, **kwargs)
+            return self.load_task_3(**kwargs)
         elif train_task == '4':
-            return self.load_task_4(set_type, image_type, **kwargs)
+            return self.load_task_4(**kwargs)
         else:
             raise ValueError(f'dont support {train_task = }')
 
-    def load_task_1(self, set_type, image_type, **kwargs):
+    def load_task_1(self, set_type=DataRegister.PATH, **kwargs):
         """See Also `self._call`
 
         Returns:
@@ -92,31 +92,34 @@ class Icdar2015(DataLoader):
             image_dir = 'ch4_test_images'
             label_dir = 'Challenge4_Test_Task1_GT'
 
-        for fp in Path(f'{self.data_dir}/{label_dir}').glob('*.txt'):
-            image_path = os.path.abspath(f'{self.data_dir}/{image_dir}/{fp.stem.replace("gt_", "")}.{self.image_suffix}')
-            image = get_image(image_path, image_type)
+        gen_func = Path(f'{self.data_dir}/{label_dir}').glob('*.txt')
+        return self.gen_data(gen_func, image_dir=image_dir, **kwargs)
 
-            with open(fp, 'r', encoding='utf8') as f:
-                lines = f.read().strip().strip('\ufeff').split('\n')
-
-            labels = [_.split(',', 8) for _ in lines]
-            labels = np.array(labels)
-
-            segmentations = np.array(labels[:, :8], dtype=int).reshape((-1, 4, 2))
-            transcriptions = labels[:, 8].tolist()
-
-            yield dict(
-                _id=Path(image_path).name,
-                image=image,
-                segmentations=segmentations,
-                transcriptions=transcriptions,
-            )
-
-    def load_task_3(self, set_type, image_type, **kwargs):
+    def load_task_3(self, **kwargs):
         pass
 
-    def load_task_4(self, set_type, image_type, **kwargs):
+    def load_task_4(self, **kwargs):
         pass
+
+    def get_ret(self, fp, image_type=DataRegister.PATH, image_dir='', **kwargs) -> dict:
+        image_path = os.path.abspath(f'{self.data_dir}/{image_dir}/{fp.stem.replace("gt_", "")}.{self.image_suffix}')
+        image = get_image(image_path, image_type)
+
+        with open(fp, 'r', encoding='utf8') as f:
+            lines = f.read().strip().strip('\ufeff').split('\n')
+
+        labels = [_.split(',', 8) for _ in lines]
+        labels = np.array(labels)
+
+        segmentations = np.array(labels[:, :8], dtype=int).reshape((-1, 4, 2))
+        transcriptions = labels[:, 8].tolist()
+
+        return dict(
+            _id=Path(image_path).name,
+            image=image,
+            segmentations=segmentations,
+            transcriptions=transcriptions,
+        )
 
 
 Loader = Icdar2015

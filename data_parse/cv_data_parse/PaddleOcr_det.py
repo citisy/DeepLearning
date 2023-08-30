@@ -44,7 +44,7 @@ class Loader(DataLoader):
     default_set_type = [DataRegister.TRAIN, DataRegister.TEST]
     image_suffix = 'png'
 
-    def _call(self, set_type=DataRegister.TRAIN, image_type=DataRegister.ARRAY, set_task='', label_dir='labels', **kwargs):
+    def _call(self, set_type=DataRegister.TRAIN, set_task='', label_dir='labels', **kwargs):
         """See Also `cv_data_parse.base.DataLoader._call`
 
         Returns:
@@ -78,29 +78,32 @@ class Loader(DataLoader):
         """
 
         with open(f'{self.data_dir}/{label_dir}/{set_task}/{set_type.value}.txt', 'r', encoding='utf8') as f:
-            for line in f.read().strip().split('\n'):
-                image_path, labels = line.split('\t', 1)
-                image_path = os.path.abspath(image_path)
-                image = get_image(image_path, image_type)
+            gen_func = f.read().strip().split('\n')
+        return self.gen_data(gen_func, **kwargs)
 
-                labels = json.loads(labels)
-                segmentations, transcriptions = [], []
-                for label in labels:
-                    segmentations.append(label['points'])  # (-1, 4, 2)
-                    transcriptions.append(label['transcription'])  # (-1, #str)
+    def get_ret(self, line, image_type=DataRegister.PATH, **kwargs) -> dict:
+        image_path, labels = line.split('\t', 1)
+        image_path = os.path.abspath(image_path)
+        image = get_image(image_path, image_type)
 
-                segmentations = np.array(segmentations)
-                bboxes = np.zeros((len(segmentations), 4))
-                bboxes[:, :2] = np.min(segmentations, axis=1)
-                bboxes[:, -2:] = np.max(segmentations, axis=1)
+        labels = json.loads(labels)
+        segmentations, transcriptions = [], []
+        for label in labels:
+            segmentations.append(label['points'])  # (-1, 4, 2)
+            transcriptions.append(label['transcription'])  # (-1, #str)
 
-                yield dict(
-                    _id=Path(image_path).name,
-                    image=image,
-                    segmentations=segmentations,
-                    bboxes=bboxes,
-                    transcriptions=transcriptions,
-                )
+        segmentations = np.array(segmentations)
+        bboxes = np.zeros((len(segmentations), 4))
+        bboxes[:, :2] = np.min(segmentations, axis=1)
+        bboxes[:, -2:] = np.max(segmentations, axis=1)
+
+        return dict(
+            _id=Path(image_path).name,
+            image=image,
+            segmentations=segmentations,
+            bboxes=bboxes,
+            transcriptions=transcriptions,
+        )
 
 
 class Saver(DataSaver):
@@ -166,7 +169,7 @@ class Saver(DataSaver):
         """
         f = open(f'{self.data_dir}/labels/{set_task}/{set_type.value}.txt', 'w', encoding='utf8')
 
-        for dic in tqdm(iter_data):
+        for dic in iter_data:
             image = dic['image']
             segmentations = np.array(dic['segmentations']).tolist()
             transcriptions = dic['transcriptions']

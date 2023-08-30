@@ -117,27 +117,31 @@ class Normalize:
 
         return mean, std
 
-    def __call__(self, image, **kwargs):
+    def get_add_params(self, image):
         mean, std = self.get_params(image)
-        image = self.apply_image(image, mean, std)
+        return {'pixel.Normalize': dict(mean=mean, std=std)}
+
+    def parse_add_params(self, ret):
+        info = ret['pixel.Normalize']
+        return info['mean'], info['std']
+
+    def __call__(self, image, **kwargs):
+        add_params = self.get_add_params(image)
+        image = self.apply_image(image, add_params)
 
         return {
             'image': image,
-            'pixel.Normalize': dict(
-                mean=mean,
-                std=std
-            )}
+            **add_params
+        }
 
-    def apply_image(self, image, mean, std):
+    def apply_image(self, image, ret):
+        mean, std = self.parse_add_params(ret)
         return (image - mean) / std
 
-    @staticmethod
-    def restore(ret):
-        params = ret['pixel.Normalize']
+    def restore(self, ret):
+        mean, std = self.parse_add_params(ret)
         image = ret['image']
-        mean, std = params['mean'], params['std']
         ret['image'] = image * std + mean
-
         return ret
 
 
@@ -385,16 +389,25 @@ class GaussianBlur:
 
         return ksize
 
+    def get_add_params(self, w, h):
+        ksize = self.get_params(w, h)
+        return {'pixel.GaussianBlur': dict(ksize=ksize)}
+
+    def parse_add_params(self, ret):
+        info = ret['pixel.GaussianBlur']
+        return info['ksize']
+
     def __call__(self, image, **kwargs):
         h, w, c = image.shape
-        ksize = self.get_params(w, h)
+        add_params = self.get_add_params(w, h)
 
         return {
-            'image': self.apply_image(image, ksize),
-            'pixel.GaussianBlur': dict(ksize=ksize)
+            'image': self.apply_image(image, add_params),
+            **add_params
         }
 
-    def apply_image(self, image, ksize):
+    def apply_image(self, image, ret):
+        ksize = self.parse_add_params(ret)
         return cv2.GaussianBlur(image, ksize, sigmaX=self.sigma[0], sigmaY=self.sigma[1])
 
 
@@ -408,18 +421,27 @@ class MotionBlur:
     def get_params(self):
         return self.degree, self.angle
 
-    def __call__(self, image, degree=None, angle=None, **kwargs):
+    def get_add_params(self):
         degree, angle = self.get_params()
-        image = self.apply_image(image, degree, angle)
+        return {'pixel.MotionBlur': dict(
+            degree=degree,
+            angle=angle
+        )}
+
+    def parse_add_params(self, ret):
+        info = ret['pixel.MotionBlur']
+        return info['ksize']
+
+    def __call__(self, image, degree=None, angle=None, **kwargs):
+        add_params = self.get_add_params()
 
         return {
-            'image': image,
-            'pixel.MotionBlur': dict(
-                degree=degree,
-                angle=angle
-            )}
+            'image': self.apply_image(image, add_params),
+            **add_params
+        }
 
-    def apply_image(self, image, degree, angle):
+    def apply_image(self, image, ret):
+        degree, angle = self.parse_add_params(ret)
         M = cv2.getRotationMatrix2D((degree // 2, degree // 2), angle, 1)
         motion_blur_kernel = np.zeros((degree, degree))
         motion_blur_kernel[degree // 2, :] = 1
@@ -454,18 +476,27 @@ class Erase:
         ratios = [self.ratio for _ in range(self.max_iter)]
         return scales, ratios
 
-    def __call__(self, image, **kwargs):
+    def get_add_params(self):
         scales, ratios = self.get_params()
-        image = self.apply_image(image, scales, ratios)
+        return {'pixel.Erase': dict(
+            scales=scales,
+            ratios=ratios
+        )}
+
+    def parse_add_params(self, ret):
+        info = ret['pixel.Erase']
+        return info['scales'], info['ratios']
+
+    def __call__(self, image, **kwargs):
+        add_params = self.get_add_params()
 
         return {
-            'image': image,
-            'pixel.Erase': dict(
-                scales=scales,
-                ratios=ratios
-            )}
+            'image': self.apply_image(image, add_params),
+            **add_params
+        }
 
-    def apply_image(self, image, scales, ratios):
+    def apply_image(self, image, ret):
+        scales, ratios = self.parse_add_params(ret)
         h, w, c = image.shape
         area = h * w
         for scale, ratio in zip(scales, ratios):
@@ -556,3 +587,26 @@ class CutOut:
                 classes = classes[idx]
 
         return image, bboxes, classes
+
+
+class AxisProjection:
+    def __init__(self, axis=0):
+        """
+
+        Args:
+            axis: (h, w, c),
+                0 gives that all pixels are projected to x-axis,
+                1 gives that all pixels are projected to y-axis
+        """
+        self.axis = axis
+
+    def __call__(self, image, **kwargs):
+        return dict(
+            image=self.apply_image(image)
+        )
+
+    def apply_image(self, image, *args):
+        x = image.mean(axis=self.axis)
+        x = np.expand_dims(x, self.axis)
+        x = np.repeat(x, image.shape[self.axis], axis=self.axis)
+        return x

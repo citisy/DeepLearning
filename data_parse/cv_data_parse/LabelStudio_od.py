@@ -24,33 +24,36 @@ class Loader(DataLoader):
 
     def _call(self, image_type=DataRegister.ARRAY, set_task='label_studio', **kwargs):
         with open(f'{self.data_dir}/{set_task}.json', 'r', encoding='utf8') as f:
-            for js in json.load(f):
-                _id = js['file_upload'].split('-', 1)[-1]
-                image_path = f'{self.data_dir}/images/{_id}'
-                image_path = os.path.abspath(image_path)
-                image = get_image(image_path, image_type)
+            gen_func = json.load(f)
+        return self.gen_data(gen_func, **kwargs)
 
-                bboxes = []
-                classes = []
-                for a in js['annotations']:
-                    for r in a['result']:
-                        v = r['value']
-                        bboxes.append([v['x'], v['y'], v['width'], v['height']])
-                        classes.append(self.classes.index(v['rectanglelabels'][0]))
-                        size = (r['original_height'], r['original_width'], 3)
+    def get_ret(self, js, image_type=DataRegister.PATH, **kwargs) -> dict:
+        _id = js['file_upload'].split('-', 1)[-1]
+        image_path = f'{self.data_dir}/images/{_id}'
+        image_path = os.path.abspath(image_path)
+        image = get_image(image_path, image_type)
 
-                bboxes = np.array(bboxes)
-                bboxes /= 100
-                bboxes = converter.CoordinateConvert.top_xywh2top_xyxy(bboxes, wh=(size[1], size[0]), blow_up=True)
-                classes = np.array(classes)
+        bboxes = []
+        classes = []
+        for a in js['annotations']:
+            for r in a['result']:
+                v = r['value']
+                bboxes.append([v['x'], v['y'], v['width'], v['height']])
+                classes.append(self.classes.index(v['rectanglelabels'][0]))
+                size = (r['original_height'], r['original_width'], 3)
 
-                yield dict(
-                    _id=_id,
-                    image=image,
-                    size=size,
-                    bboxes=bboxes,
-                    classes=classes
-                )
+        bboxes = np.array(bboxes)
+        bboxes /= 100
+        bboxes = converter.CoordinateConvert.top_xywh2top_xyxy(bboxes, wh=(size[1], size[0]), blow_up=True)
+        classes = np.array(classes)
+
+        return dict(
+            _id=_id,
+            image=image,
+            size=size,
+            bboxes=bboxes,
+            classes=classes
+        )
 
 
 class Saver(DataSaver):
@@ -62,7 +65,7 @@ class Saver(DataSaver):
 
     def _call(self, iter_data, set_type, image_type, set_task='label_studio', cls_alias=None, **kwargs):
         rets = []
-        for dic in tqdm(iter_data):
+        for dic in iter_data:
             _id = dic['_id']
             image = dic['image']
             image_path = f'{self.data_dir}/images/{_id}'
@@ -111,4 +114,3 @@ class Saver(DataSaver):
 
         with open(f'{self.data_dir}/{set_task}.json', 'w', encoding='utf8') as f:
             json.dump(rets, f, ensure_ascii=False)
-

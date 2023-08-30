@@ -39,7 +39,7 @@ class Loader(DataLoader):
     pdf_suffix = 'pdf'
     loader = os_lib.Loader(verbose=False)
 
-    def _call(self, *args, task='', **kwargs):
+    def _call(self, task='', **kwargs):
         """See Also `cv_data_parse.base.DataLoader._call`
 
         Args:
@@ -55,22 +55,22 @@ class Loader(DataLoader):
                 segmentations_: List[np.ndarray] of chars
                 transcriptions: List[str]
         """
-        for fp in Path(f'{self.data_dir}/pdfs/{task}').glob(f'*.{self.pdf_suffix}'):
-            return self.load_per_pdf(fp, **kwargs)
+        gen_func = Path(f'{self.data_dir}/pdfs/{task}').glob(f'*.{self.pdf_suffix}')
+        return self.gen_data(gen_func, **kwargs)
 
-    def load_per_pdf(self, fp, **kwargs):
+    def get_ret(self, fp, **kwargs):
         fp = Path(fp)
         images = self.loader.load_pdf_to_images2(str(fp))
         doc = fitz.open(str(fp))
 
         for i, (image, page) in enumerate(zip(images, doc)):
-            data_dic = dict(
+            ret = dict(
                 _id=f'{fp.stem}_{i}.png',
                 image=image,
             )
-            data_dic.update(self.load_per_page(page, **kwargs))
+            ret.update(self.load_per_page(page, **kwargs))
 
-            yield data_dic
+            return ret
 
     def load_per_page(
             self, source: fitz.fitz.Page or dict,

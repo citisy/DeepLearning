@@ -55,16 +55,14 @@ class Loader(DataLoader):
         env = lmdb.open(db_path, map_size=1099511627776, max_readers=100, readonly=True)
 
         with env.begin(write=False) as txn:
-            cursor = txn.cursor()
-            for key, val in cursor:
-                image = cv2.imdecode(np.fromstring(val, dtype=np.uint8), 1)
+            gen_func = txn.cursor()
+        return self.gen_data(gen_func, **kwargs)
 
-                ret = dict(
-                    _id=f'{key.decode("utf8")}.{self.image_suffix}',
-                    image=image,
-                )
+    def get_ret(self, obj, **kwargs) -> dict:
+        key, val = obj
+        image = cv2.imdecode(np.fromstring(val, dtype=np.uint8), 1)
 
-                ret = self.convert_func(ret)
-
-                if self.filter_func(ret):
-                    yield ret
+        return dict(
+            _id=f'{key.decode("utf8")}.{self.image_suffix}',
+            image=image,
+        )
