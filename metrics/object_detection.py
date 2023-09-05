@@ -1,4 +1,3 @@
-import time
 import numpy as np
 from typing import List, Iterable, Iterator
 from tqdm import tqdm
@@ -132,6 +131,21 @@ class Overlap:
 
 
 class Iou:
+    def __init__(self, alpha=1, eps=1e-6):
+        """
+
+        Args:
+            alpha:
+                alpha iou, https://arxiv.org/abs/2110.13675
+                if used, set in 3 which is the default value of paper
+            eps:
+                note that, do not set too small, 'cause it will
+                when run in low computational accuracy mode
+                e.g. np.array(1e-12, dtype=np.float16) -> array(0., dtype=float16)
+        """
+        self.alpha = alpha
+        self.eps = eps
+
     @staticmethod
     def iou(box1, box2, inter=None, union=None):
         """vanilla iou
@@ -155,9 +169,8 @@ class Iou:
 
         return inter / (union + 1E-12)
 
-    @staticmethod
-    def siou(box1, box2, inter=None):
-        """single iou
+    def u_iou(self, box1, box2, inter=None):
+        """unidirectional iou
         Area(box1 & box2) / Area(box2)
 
         Args:
@@ -169,19 +182,18 @@ class Iou:
 
         >>> a = np.array([[1, 1, 4, 4]])
         >>> b = np.array([[2, 2, 5, 5]])
-        >>> Iou.siou(a, b) # ((4 - 2) * (4 - 2)) / (5 - 2) * (5 - 2)
+        >>> Iou.u_iou(a, b) # ((4 - 2) * (4 - 2)) / (5 - 2) * (5 - 2)
         [[0.44444444]]
         """
         area2 = Area.real_areas(box2)  # (M,)
         if inter is None:
             inter = Area.intersection_areas(box1, box2)
 
-        return inter / (area2 + 1E-12)  # iou = inter / (area2)
+        return inter / (area2 + self.eps)
 
-    @classmethod
-    def miou(cls, box1, box2, inter=None):
+    def m_iou(self, box1, box2, inter=None):
         """mean iou
-        (siou(box1, box2) + siou(box2, box1).T) / 2
+        (u_iou(box1, box2) + u_iou(box2, box1).T) / 2
 
         Args:
             box1(np.array): shape=(N, 4), 4 means xyxy.
@@ -196,27 +208,25 @@ class Iou:
         if inter is None:
             inter = Area.intersection_areas(box1, box2)
 
-        siou1 = cls.siou(box1, box2, inter=inter)
-        siou2 = cls.siou(box2, box1, inter=inter.T).T
+        u_iou1 = self.u_iou(box1, box2, inter=inter)
+        u_iou2 = self.u_iou(box2, box1, inter=inter.T).T
 
-        return (siou1 + siou2) / 2
+        return (u_iou1 + u_iou2) / 2
 
-    @classmethod
-    def giou(cls, box1, box2):
-        """https://arxiv.org/pdf/1902.09630.pdf
+    def g_iou(self, box1, box2):
+        """generalized iou, https://arxiv.org/pdf/1902.09630.pdf
         iou - (c - Area(box1 & box2)) / c
         See Also `torchvision.ops.generalized_box_iou`
         """
         outer = Area.outer_areas(box1, box2)
         inter = Area.intersection_areas(box1, box2)
         union = Area.union_areas(box1, box2)
-        iou = cls.iou(box1, box2, inter=inter, union=union)
+        iou = self.iou(box1, box2, inter=inter, union=union)
 
         return iou - (outer - union) / outer
 
-    @classmethod
-    def diou(cls, box1, box2, iou=None, eps=1e-7):
-        """https://arxiv.org/pdf/1911.08287.pdf
+    def d_iou(self, box1, box2, iou=None):
+        """distance iou, https://arxiv.org/pdf/1911.08287.pdf
         iou - d ^ 2 / c ^ 2
         See Also `torchvision.ops.distance_box_iou`
         """
@@ -224,21 +234,20 @@ class Iou:
         box2_center = (box2[:, 2:] - box2[:, :2]) / 2
 
         d = np.linalg.norm(box1_center[:, None, :] - box2_center, axis=2) ** 2
-        c = np.linalg.norm((np.maximum(box1[:, None, 2:], box2[:, 2:]) - np.minimum(box1[:, None, :2], box2[:, :2])).clip(0), axis=2) ** 2 + eps
+        c = np.linalg.norm((np.maximum(box1[:, None, 2:], box2[:, 2:]) - np.minimum(box1[:, None, :2], box2[:, :2])).clip(0), axis=2) ** 2 + self.eps
 
         if iou is None:
-            iou = cls.iou(box1, box2)
+            iou = self.iou(box1, box2)
 
         return iou - d / c
 
-    @classmethod
-    def ciou(cls, box1, box2, a=None, v=None, eps=1e-7):
-        """https://arxiv.org/pdf/1911.08287.pdf
+    def c_iou(self, box1, box2, a=None, v=None):
+        """complete iou, https://arxiv.org/pdf/1911.08287.pdf
         diou - av
         See Also `torchvision.ops.complete_box_iou`
         """
-        iou = cls.iou(box1, box2)
-        diou = cls.diou(box1, box2, iou=iou, eps=eps)
+        iou = self.iou(box1, box2)
+        diou = self.d_iou(box1, box2, iou=iou)
 
         if v is None:
             box1_wh = box1[:, 2:] - box1[:, :2]
@@ -249,7 +258,7 @@ class Iou:
             v = 4 / np.pi ** 2 * ((b1[:, None] - b2) ** 2)
 
         if a is None:
-            a = v / (1 - iou + v + eps)
+            a = v / (1 - iou + v + self.eps)
 
         return diou - a * v
 
@@ -275,39 +284,37 @@ class Iou:
 
         return inter / union
 
-    @staticmethod
-    def siou1D(box1, box2):
+    def u_iou1D(self, box1, box2):
         area2 = Area.real_areas(box2)
         inter = Area.intersection_areas1D(box1, box2)
 
-        return inter / (area2 + 1E-12)
+        return inter / (area2 + self.eps)
 
-    @classmethod
-    def giou1D(cls, box1, box2):
+    def g_iou1D(self, box1, box2):
         outer = Area.outer_areas1D(box1, box2)
         inter = Area.intersection_areas1D(box1, box2)
         union = Area.union_areas1D(box1, box2)
-        iou = cls.iou1D(box1, box2, inter=inter, union=union)
+        iou = self.iou1D(box1, box2, inter=inter, union=union)
 
         return iou - (outer - union) / outer
 
-    @classmethod
-    def diou1D(cls, box1, box2, iou=None, eps=1e-7):
+    def d_iou1D(self, box1, box2, iou=None):
         b1_x1, b1_y1, b1_x2, b1_y2 = box1.T
         b2_x1, b2_y1, b2_x2, b2_y2 = box2.T
 
-        c = (np.maximum(b1_x2, b2_x2) - np.minimum(b1_x1, b2_x1)) ** 2 + (np.maximum(b1_y2, b2_y2) - np.minimum(b1_y1, b2_y1)) ** 2 + eps
+        cw = np.maximum(b1_x2, b2_x2) - np.minimum(b1_x1, b2_x1)  # outer width
+        ch = np.maximum(b1_y2, b2_y2) - np.minimum(b1_y1, b2_y1)  # outer height
+        c = cw ** 2 + ch ** 2 + self.eps
         d = ((b2_x1 - b1_x1 + b2_x2 - b1_x2) ** 2 + (b2_y1 - b1_y1 + b2_y2 - b1_y2) ** 2) / 4
 
         if iou is None:
-            iou = cls.iou1D(box1, box2)
+            iou = self.iou1D(box1, box2)
 
         return iou - d / c
 
-    @classmethod
-    def ciou1D(cls, box1, box2, a=None, v=None, eps=1e-7):
-        iou = cls.iou1D(box1, box2)
-        diou = cls.diou1D(box1, box2, iou=iou, eps=eps)
+    def c_iou1D(self, box1, box2, a=None, v=None):
+        iou = self.iou1D(box1, box2)
+        d_iou = self.d_iou1D(box1, box2, iou=iou)
 
         if v is None:
             b1_x1, b1_y1, b1_x2, b1_y2 = box1.T
@@ -318,14 +325,14 @@ class Iou:
             v = (4 / np.pi ** 2) * ((np.arctan(w2 / h2) - np.arctan(w1 / h1)) ** 2)
 
         if a is None:
-            a = v / (1 - iou + v + eps)
+            a = v / (1 - iou + v + self.eps)
 
-        return diou - a * v
+        return d_iou - a * v
 
 
 class ConfusionMatrix:
     def __init__(self, iou_method=None, **iou_method_kwarg):
-        self.iou_method = iou_method or Iou.iou
+        self.iou_method = iou_method or Iou().iou
         self.iou_method_kwarg = iou_method_kwarg
 
     def tp(self, gt_box, det_box, conf=None, _class=None, iou=None, iou_thres=0.5):
@@ -764,8 +771,8 @@ class EasyMetric:
                 task = 'strategy version, e.g. dataset, train datetime, apply params, etc.'
 
                 loader = Loader(data_dir)
-                gt_iter_data = loader.load_full_labels(sub_dir='true_abs_xyxy')
-                det_iter_data = loader.load_full_labels(sub_dir=sub_dir, task=task)
+                gt_iter_data = loader.load_full(sub_dir='true_abs_xyxy')
+                det_iter_data = loader.load_full(sub_dir=sub_dir, task=task)
 
                 EasyMetric().quick_metric(gt_iter_data, det_iter_data)
 
@@ -827,14 +834,14 @@ class EasyMetric:
                 save_res_dir = f'{data_dir}/visuals/false_samples/{set_task}'
 
                 loader = Loader(data_dir)
-                gt_iter_data = loader.load_full_labels(sub_dir='true_abs_xyxy')
-                det_iter_data = loader.load_full_labels(sub_dir=sub_dir, task=task)
+                gt_iter_data = loader.load_full(sub_dir='true_abs_xyxy')
+                det_iter_data = loader.load_full(sub_dir=sub_dir, task=task)
                 cls_alias = {}  # set if you want to convert class name
 
                 EasyMetric(cls_alias=cls_alias).checkout_false_sample(gt_iter_data, det_iter_data, data_dir=data_dir, image_dir=image_dir, save_res_dir=save_res_dir)
 
         """
-        from utils import os_lib, visualize
+        from utils import os_lib
         from data_parse.cv_data_parse.base import DataVisualizer
 
         image_dir = image_dir if image_dir is not None else f'{data_dir}/images'
@@ -913,15 +920,15 @@ class EasyMetric:
                 save_res_dir = f'{data_dir}/visuals/diff_samples/{set_task}'
 
                 loader = Loader(data_dir)
-                gt_iter_data = loader.load_full_labels(sub_dir='true_abs_xyxy')
-                det_iter_data = loader.load_full_labels(sub_dir=sub_dir, task=task)
+                gt_iter_data = loader.load_full(sub_dir='true_abs_xyxy')
+                det_iter_data = loader.load_full(sub_dir=sub_dir, task=task)
                 cls_alias = {}  # set if you want to convert class name
 
                 EasyMetric(cls_alias=cls_alias).checkout_diff_sample(gt_iter_data, det_iter_data, data_dir=data_dir, image_dir=image_dir, save_res_dir=save_res_dir)
 
         """
 
-        from utils import os_lib, visualize
+        from utils import os_lib
         from data_parse.cv_data_parse.base import DataVisualizer
 
         image_dir = image_dir if image_dir is not None else f'{data_dir}/images'

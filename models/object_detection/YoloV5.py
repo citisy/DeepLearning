@@ -1,10 +1,14 @@
 import math
 import torch
 from torch import nn
-from ..loss import FocalLoss
+import numpy as np
+from tqdm import tqdm
+import cv2
+from utils import os_lib, visualize
+from ..loss import FocalLoss, IouLoss
 from utils.torch_utils import initialize_layers
 from ..layers import ConvInModule, Cache, Concat
-from . import cls_nms, bbox_iou
+from . import cls_nms, Iou
 from ..image_classifier.CspDarkNet import Backbone, C3, Conv
 
 # default config, base on yolov5l config
@@ -20,6 +24,7 @@ head_config = dict(
         [(30, 61), (62, 45), (59, 119)],
         [(116, 90), (156, 198), (373, 326)],
     ],
+    stride=(8, 16, 32)
 )
 
 default_model_multiple = {
@@ -31,7 +36,7 @@ default_model_multiple = {
 }
 
 
-def make_config(backbone_config, neck_config, depth_multiple=1, width_multiple=1):
+def make_config(backbone_config=backbone_config, neck_config=neck_config, depth_multiple=1, width_multiple=1):
     """
     Args:
         depth_multiple: model depth multiple
@@ -40,10 +45,10 @@ def make_config(backbone_config, neck_config, depth_multiple=1, width_multiple=1
     Usage:
         .. code-block:: python
 
-            from models.object_detection.YoloV5 import backbone_config, neck_config, make_config, default_model_multiple
-            backbone_config, neck_config = make_config(backbone_config, neck_config, **default_model_multiple['yolov5m'])
+            from models.object_detection.YoloV5 import make_config, default_model_multiple
+            Model(**make_config(**default_model_multiple['yolov5m']))
     """
-    compute_width = lambda x: math.ceil(x * width_multiple / 8) * 8     # make sure that it is multiple of 8
+    compute_width = lambda x: math.ceil(x * width_multiple / 8) * 8  # make sure that it is multiple of 8
     compute_deep = lambda n: max(round(n * depth_multiple), 1) if n > 1 else n  # depth gain
 
     out_ch, n_conv, cache_block_idx = backbone_config
@@ -52,7 +57,22 @@ def make_config(backbone_config, neck_config, depth_multiple=1, width_multiple=1
     backbone_config = (out_ch, tuple(n_conv_), cache_block_idx)
     neck_config['n_c3'] = compute_deep(neck_config['n_c3'])
 
-    return backbone_config, neck_config
+    return dict(backbone_config=backbone_config, neck_config=neck_config)
+
+
+def auto_anchors(iter_data, img_size, head_config=head_config, **kwargs):
+    """
+    Usage:
+        .. code-block:: python
+
+            from models.object_detection.YoloV5 import auto_anchors
+            head_config = auto_anchors(iter_data, img_size)
+            Model(head_config=head_config)
+    """
+    anchors = AutoAnchor(iter_data, img_size=img_size, **kwargs).run(head_config['anchors'], head_config['stride'])
+    head_config['anchors'] = anchors
+
+    return head_config
 
 
 class Model(nn.Module):
@@ -63,7 +83,7 @@ class Model(nn.Module):
             in_module=None, backbone=None, neck=None, head=None,
             in_module_config=in_module_config, backbone_config=backbone_config,
             neck_config=neck_config, head_config=head_config,
-            conf_thres=0.5, nms_thres=0.6, max_det=300
+            conf_thres=0.1, nms_thres=0.6, max_det=300
     ):
         super().__init__()
         self.input = in_module(**in_module_config) if in_module is not None else ConvInModule(**in_module_config)
@@ -71,7 +91,7 @@ class Model(nn.Module):
             self.backbone = Backbone(in_ch=self.input.out_channels, backbone_config=backbone_config)
         else:
             self.backbone = backbone(**backbone_config)
-        self.neck = neck(**neck_config) if neck is not None else Neck(self.backbone.out_channels)
+        self.neck = neck(**neck_config) if neck is not None else Neck(self.backbone.out_channels, **neck_config)
         self.head = head(**head_config) if head is not None else Head(n_classes, self.neck.out_channels, **head_config)
 
         self.conf_thres = conf_thres
@@ -82,6 +102,7 @@ class Model(nn.Module):
         self.stride = self.head.stride
 
         initialize_layers(self)
+        self.head.initialize_biases()
 
     def forward(self, x, gt_boxes=None, gt_cls=None):
         x = self.input(x)
@@ -142,16 +163,20 @@ class Model(nn.Module):
             keep, classes = (det_cls > self.conf_thres).nonzero(as_tuple=False).T
             bboxes, scores = bboxes[keep], det_cls[keep, classes]
 
+            if len(bboxes) > 10 * self.max_det:
+                # if num of bboxes is too large, it will raise:
+                # RuntimeError: Trying to create tensor with negative dimension
+                arg = torch.argsort(det_cls, descending=True)
+                keep = arg < 10 * self.max_det
+                bboxes, classes, scores = bboxes[keep], classes[keep], scores[keep]
+
             if bboxes.numel():
                 # (center x, center y, width, height) to (x1, y1, x2, y2)
                 _bboxes = bboxes.clone()
                 bboxes[:, :2] = _bboxes[:, :2] - _bboxes[:, 2:] / 2
                 bboxes[:, 2:] = _bboxes[:, :2] + _bboxes[:, 2:] / 2
 
-                # todo: if num of bboxes is too large, it will raise:
-                # RuntimeError: Trying to create tensor with negative dimension
-                # so, do not set conf_thres too small
-                keep = cls_nms(bboxes, scores, classes, self.nms_thres)
+                keep = cls_nms(bboxes, scores, classes, iou_threshold=self.nms_thres)
                 keep = keep[:self.max_det]
                 bboxes, classes, scores = bboxes[keep], classes[keep], scores[keep]
 
@@ -234,13 +259,13 @@ class Neck(nn.Module):
 class Head(nn.Module):
     def __init__(self, n_classes, in_ches, anchors,
                  stride=(8, 16, 32), balance=[4.0, 1.0, 0.4],
-                 cls_pw=1., obj_pw=1., label_smoothing=0., fl_gamma=0., anchor_t=4.,
-                 reg_gain=0.05, cls_gain=0.5, obj_gain=1.0, gr=1.,
+                 cls_pw=1., obj_pw=1., label_smoothing=0., fl_gamma=0., iou_gamma=0, anchor_t=4.,
+                 reg_gain=0.05, cls_gain=0.5, obj_gain=1.0, gr=1., iou_method=Iou().c_iou1D,
                  auto_balance=False, sort_obj_iou=False):
         super().__init__()
         self.n_classes = n_classes
         self.output_size = n_classes + 5
-        self.n_layers = len(anchors)    # same to num of features
+        self.n_layers = len(anchors)  # same to num of features
         self.n_anchors = len(anchors[0])
 
         self.grid = None  # init grid
@@ -249,8 +274,6 @@ class Head(nn.Module):
         self.register_buffer('anchors', torch.tensor(anchors).float() / self.stride.view(-1, 1, 1))  # (n_layers, n_anchors, 2)
 
         self.conv_list = nn.ModuleList(nn.Conv2d(x, self.output_size * self.n_anchors, 1) for x in in_ches)  # output conv
-        self._initialize_biases()
-
         self.reg_gain, self.cls_gain, self.obj_gain = reg_gain, cls_gain, obj_gain
 
         cls_bce_loss = nn.BCEWithLogitsLoss(pos_weight=torch.tensor([cls_pw]))
@@ -267,13 +290,14 @@ class Head(nn.Module):
         self.balance = balance
         self.base_stride_idx = list(self.stride).index(16) if auto_balance else 0
         self.cls_bce_loss, self.obj_bce_loss = cls_bce_loss, obj_bce_loss
+        self.iou_loss = IouLoss(iou_method=iou_method, gamma=iou_gamma)
 
         self.gr = gr
         self.auto_balance = auto_balance
         self.sort_obj_iou = sort_obj_iou
         self.anchor_t = anchor_t
 
-    def _initialize_biases(self, cf=None):
+    def initialize_biases(self, cf=None):
         """refer to https://arxiv.org/abs/1708.02002 section 3.3"""
         for mi, s in zip(self.conv_list, self.stride):  # from
             b = mi.bias.view(self.n_anchors, -1).detach()  # conv.bias(255) to (3,85)
@@ -284,7 +308,7 @@ class Head(nn.Module):
     def forward(self, features, gt_boxes=None, gt_cls=None, image_size=None):
         for i, f in enumerate(features):
             f = self.conv_list[i](f)
-            b, _, h, w = f.shape    # num_grid = h * w
+            b, _, h, w = f.shape  # num_grid = h * w
 
             # (b, n_anchors * output_size, h, w) -> (b, n_anchors, h, w, output_size)
             f = f.view(b, self.n_anchors, self.output_size, h, w).permute(0, 1, 3, 4, 2).contiguous()
@@ -393,20 +417,19 @@ class Head(nn.Module):
 
                 # Regression
                 det_reg = torch.cat((pxy, pwh), 1)  # predicted box
-                iou = bbox_iou(det_reg, gt_reg, CIoU=True, xywh=True).squeeze()  # 1D
+                # iou = bbox_iou(det_reg, gt_reg, CIoU=True, xywh=True).squeeze()  # 1D
+                # reg_loss += (1.0 - iou).mean()  # iou loss
 
-                # box1 = det_reg
-                # box2 = gt_reg
-                # (x1, y1, w1, h1), (x2, y2, w2, h2) = box1.chunk(4, 1), box2.chunk(4, 1)
-                # w1_, h1_, w2_, h2_ = w1 / 2, h1 / 2, w2 / 2, h2 / 2
-                # b1_x1, b1_x2, b1_y1, b1_y2 = x1 - w1_, x1 + w1_, y1 - h1_, y1 + h1_
-                # b2_x1, b2_x2, b2_y1, b2_y2 = x2 - w2_, x2 + w2_, y2 - h2_, y2 + h2_
-                # box1 = torch.cat([b1_x1, b1_y1, b1_x2, b1_y2], 1)
-                # box2 = torch.cat([b2_x1, b2_y1, b2_x2, b2_y2], 1)
-                # iou = torchvision.ops.complete_box_iou(box1, box2)    # 2D
-                # iou = iou[range(len(pbox)), range(len(pbox))]
-
-                reg_loss += (1.0 - iou).mean()  # iou loss
+                box1 = det_reg
+                box2 = gt_reg
+                (x1, y1, w1, h1), (x2, y2, w2, h2) = box1.chunk(4, 1), box2.chunk(4, 1)
+                w1_, h1_, w2_, h2_ = w1 / 2, h1 / 2, w2 / 2, h2 / 2
+                b1_x1, b1_x2, b1_y1, b1_y2 = x1 - w1_, x1 + w1_, y1 - h1_, y1 + h1_
+                b2_x1, b2_x2, b2_y1, b2_y2 = x2 - w2_, x2 + w2_, y2 - h2_, y2 + h2_
+                box1 = torch.cat([b1_x1, b1_y1, b1_x2, b1_y2], 1)
+                box2 = torch.cat([b2_x1, b2_y1, b2_x2, b2_y2], 1)
+                iou_loss, iou = self.iou_loss(box1, box2)
+                reg_loss += iou_loss
 
                 # Objectness
                 iou = iou.detach().clamp(0).type(pos.dtype)
@@ -437,3 +460,126 @@ class Head(nn.Module):
         bs = obj_loss.shape[0]  # batch size
 
         return (reg_loss + obj_loss + cls_loss) * bs
+
+
+class AutoAnchor:
+    def __init__(self, iter_data, img_size=640,
+                 thr=4.0, min_bpr=0.98, mutation_prob=0.9, sigma=0.1, device=None,
+                 verbose=True, stdout_method=print):
+        self.stdout_method = stdout_method if verbose else os_lib.FakeIo()
+        self.img_size = img_size
+        self.thr = thr if thr < 1 else 1 / thr
+        self.min_bpr = min_bpr
+        self.mutation_prob = mutation_prob
+        self.sigma = sigma
+        self.device = device
+
+        # Get label wh
+        bboxes = [ret['bboxes'] for ret in iter_data]
+        bboxes = np.concatenate(bboxes)
+        ref_bboxes_wh = bboxes[:, -2:]
+
+        ori_image_wh = []
+        for ret in tqdm(iter_data, desc=visualize.TextVisualize.highlight_str('Load auto-anchor data')):
+            if 'image_size' in ret:
+                ori_image_wh.append(ret['image_size'][:2][::-1])
+            else:
+                image = ret['image']
+                if not isinstance(image, np.ndarray):
+                    image = cv2.imread(image)
+                ori_image_wh.append(image.shape[:2][::-1])
+
+        ori_image_wh = np.array(ori_image_wh)
+        scale_image_wh = img_size * ori_image_wh / ori_image_wh.max(1, keepdims=True)
+        scale_image_wh = np.concatenate([np.repeat(scale_image_wh[i][None, :], len(ret['bboxes']), axis=0) for i, ret in enumerate(iter_data)])
+        self.scale_image_wh = scale_image_wh
+        self.abs_bboxes_wh = scale_image_wh * ref_bboxes_wh
+        self.ref_bboxes_wh = ref_bboxes_wh
+
+    def run(self, anchors, stride):
+        anchors = np.array(anchors)
+        stride = np.array(stride)
+        scale = np.random.uniform(0.9, 1.1, size=(self.scale_image_wh.shape[0], 1))  # augment scale
+        jitter_abs_bboxes_wh = self.abs_bboxes_wh * scale
+
+        stride = stride.reshape((-1, 1, 1))  # model strides
+
+        bpr, aat = self.pr(anchors.reshape((-1, 2)), self.abs_bboxes_wh)
+        self.stdout_method(f'ori bpr = {bpr}, aat = {aat}')
+
+        bpr, aat = self.pr(anchors.reshape((-1, 2)), jitter_abs_bboxes_wh)
+        self.stdout_method(f'jitter bpr = {bpr}, aat = {aat}')
+
+        if bpr < self.min_bpr:
+            na = anchors.size // 2  # number of anchors
+            new_anchors = self.kmean_anchors(n=na, gen=1000)
+            new_bpr, new_aat = self.pr(new_anchors, jitter_abs_bboxes_wh)
+            self.stdout_method(f'jitter bpr = {new_bpr}, aat = {new_aat}')
+            if new_bpr > bpr:  # replace anchors
+                new_anchors = new_anchors.reshape(anchors.shape)
+                a = anchors.prod(-1).mean(-1)
+                da = a[-1] - a[0]  # delta a
+                ds = stride[-1] - stride[0]  # delta s
+                if np.sign(da) == np.sign(ds):  # same order
+                    anchors = new_anchors
+
+        anchors = np.round(anchors)
+        self.stdout_method(f'anchors = {anchors}')
+        return anchors
+
+    def kmean_anchors(self, n=9, gen=1000):
+        from scipy.cluster.vq import kmeans
+
+        large_abs_bboxes_wh = self.abs_bboxes_wh[(self.abs_bboxes_wh >= 2.0).any(1)]  # filter > 2 pixels
+
+        try:
+            assert n <= len(large_abs_bboxes_wh)  # apply overdetermined constraint
+            s = large_abs_bboxes_wh.std(0)  # sigmas for whitening
+            anchors = kmeans(large_abs_bboxes_wh / s, n, iter=30)[0] * s  # points
+            assert n == len(anchors)  # kmeans may return fewer points than requested if wh is insufficient or too similar
+        except Exception:
+            anchors = np.sort(np.random.rand(n * 2)).reshape(n, 2) * self.img_size  # random init
+
+        best_score = self.anchor_fitness(anchors, large_abs_bboxes_wh)
+        pbar = tqdm(range(gen), desc=visualize.TextVisualize.highlight_str('Attempt to find better anchors'))
+        for _ in pbar:
+            v = np.ones(anchors.shape)
+            while (v == 1).all():  # mutate until a change occurs (prevent duplicates)
+                v = (
+                        (np.random.random(anchors.shape) < self.mutation_prob)
+                        * np.random.randn(*anchors.shape)
+                        * self.sigma + 1
+                ).clip(0.3, 3.0)
+            tmp_anchors = (anchors.copy() * v).clip(min=2.0)
+            score = self.anchor_fitness(tmp_anchors, large_abs_bboxes_wh)
+            if score > best_score:
+                best_score, anchors = score, tmp_anchors.copy()
+            pbar.set_postfix({'best_score': best_score})
+
+        anchors = anchors[np.argsort(anchors.prod(1))]  # sort small to large
+        return anchors
+
+    def pr(self, anchors, wh):
+        x, best = self.metric(anchors, wh)
+        aat = (x > self.thr).sum(1).mean()  # anchors above threshold
+        bpr = (best > self.thr).mean()  # best possible recall
+        return bpr, aat
+
+    def metric(self, anchors, wh):  # compute metrics
+        if self.device:
+            anchors = torch.from_numpy(anchors).to(self.device)
+            wh = torch.from_numpy(wh).to(self.device)
+            r = wh[:, None] / anchors[None]
+            x = torch.min(r, 1 / r).min(2)[0]  # ratio metric
+            best = x.max(-1)[0]
+            x = x.cpu().numpy()
+            best = best.cpu().numpy()
+        else:
+            r = wh[:, None] / anchors[None]
+            x = np.minimum(r, 1 / r).min(-1)  # ratio metric
+            best = x.max(-1)
+        return x, best
+
+    def anchor_fitness(self, anchors, wh):  # mutation fitness
+        _, best = self.metric(anchors, wh)
+        return (best * (best > self.thr)).mean()  # fitness

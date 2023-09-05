@@ -20,8 +20,8 @@ class BCEBlurWithLogitsLoss(nn.Module):
 
 
 class FocalLoss(nn.Module):
-    # Wraps focal loss around existing loss_fcn(), i.e. criteria = FocalLoss(nn.BCEWithLogitsLoss(), gamma=1.5)
     def __init__(self, loss_fcn, gamma=1.5, alpha=0.25):
+        """Wraps focal loss around existing loss_fcn(), i.e. criteria = FocalLoss(nn.BCEWithLogitsLoss(), gamma=1.5)"""
         super().__init__()
         self.loss_fcn = loss_fcn  # must be nn.BCEWithLogitsLoss()
         self.gamma = gamma
@@ -73,3 +73,36 @@ class QFocalLoss(nn.Module):
             return loss.sum()
         else:  # 'none'
             return loss
+
+
+class IouLoss(nn.Module):
+    """
+    gamma:
+        focal iou:
+            (iou)^gamma*Loss
+            if used, set in 3 which is the default value of paper
+            https://arxiv.org/pdf/2101.08158.pdf
+    """
+    def __init__(self, iou_method=None, gamma=0):
+        super().__init__()
+        if iou_method is None:
+            from .object_detection import Iou
+            iou_method = Iou().c_iou1D
+
+        self.iou_method = iou_method
+        self.gamma = gamma
+
+    def forward(self, box1, box2):
+        if 'w_iou1D' in str(self.iou_method):
+            iou, r, ori_iou = self.iou_method(box1, box2)
+            iou = iou.squeeze()
+            loss = r * (1 - iou)
+        else:
+            iou, ori_iou = self.iou_method(box1, box2)
+            iou = iou.squeeze()
+            loss = 1 - iou
+
+        ori_iou = ori_iou.detach().squeeze()
+        loss = torch.pow(ori_iou, self.gamma) * loss
+        loss = loss.mean()
+        return loss, iou
