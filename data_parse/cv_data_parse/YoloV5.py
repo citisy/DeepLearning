@@ -52,13 +52,13 @@ class Loader(DataLoader):
             # as standard datasets, the bboxes type is abs top xyxy usually,
             # but as yolov5 official, the bboxes ref center xywh,
             # so can be use a convert function to change the bboxes
-            loader.convert_func = convert_func
+            loader.on_end_convert = convert_func
 
             # filter picture which is in the filter list, and checkout them
             filter_list = list()
             cls_alias = dict()
             checkout_visualizer = DataVisualizer('data/Yolov5Data/visuals/filter_samples', verbose=False)
-            loader.filter_func = filter_func
+            loader.on_end_filter = filter_func
 
             data = loader(set_type=DataRegister.FULL, generator=True, image_type=DataRegister.PATH)
 
@@ -242,12 +242,12 @@ class Saver(DataSaver):
 
     """
 
-    def mkdirs(self, set_types, task='', set_task='', **kwargs):
+    def mkdirs(self, task='', set_task='', **kwargs):
         os_lib.mk_dir(f'{self.data_dir}/image_sets/{set_task}')
         os_lib.mk_dir(f'{self.data_dir}/images/{task}')
         os_lib.mk_dir(f'{self.data_dir}/labels/{task}')
 
-    def _call(self, iter_data, set_type, image_type, task='', set_task='', **kwargs):
+    def _call(self, iter_data, set_type=DataRegister.TRAIN, set_task='', **gen_kwargs):
         """
 
         Args:
@@ -263,26 +263,32 @@ class Saver(DataSaver):
         else:
             f = open(f'{self.data_dir}/image_sets/{set_task}/{set_type.value}.txt', 'w', encoding='utf8')
 
-        for ret in iter_data:
-            ret = self.convert_func(ret)
-
-            image = ret['image']
-            bboxes = np.array(ret['bboxes'])
-            classes = np.array(ret['classes'])
-            _id = ret['_id']
-
-            image_path = f'{self.data_dir}/images/{task}/{_id}'
-            label_path = f'{self.data_dir}/labels/{task}/{Path(_id).stem}.txt'
-            save_image(image, image_path, image_type)
-            label = np.c_[classes, bboxes]
-
-            np.savetxt(label_path, label, fmt='%.6f')
-
-            f.write(image_path + '\n')
-
+        self.gen_data(iter_data, f=f, **gen_kwargs)
         f.close()
 
-    def save_full_labels(self, iter_data, sub_dir='full_labels', task=''):
+    def parse_ret(self, ret, image_type=DataRegister.PATH, f=None, task='', **get_kwargs):
+        image = ret['image']
+        bboxes = np.array(ret['bboxes'])
+        classes = np.array(ret['classes'])
+        _id = ret['_id']
+
+        image_path = f'{self.data_dir}/images/{task}/{_id}'
+        label_path = f'{self.data_dir}/labels/{task}/{Path(_id).stem}.txt'
+        save_image(image, image_path, image_type)
+        label = np.c_[classes, bboxes]
+
+        np.savetxt(label_path, label, fmt='%.6f')
+        f.write(image_path + '\n')
+
+
+class SaverFull(DataSaver):
+    def mkdirs(self, sub_dir='full_labels', task='', **kwargs):
+        os_lib.mk_dir(f'{self.data_dir}/{sub_dir}/{task}')
+
+    def _call(self, iter_data, **gen_kwargs):
+        self.gen_data(iter_data, **gen_kwargs)
+
+    def parse_ret(self, ret, sub_dir='full_labels', task='', **get_kwargs):
         """format of saved label txt like (class, x1, y1, x2, y2, conf, w, h)
 
         Args:
@@ -291,31 +297,24 @@ class Saver(DataSaver):
                 list of dict which has the key of _id, image(non-essential), bboxes, classes, confs
             sub_dir: labels dir
             task: image dir
-
         """
-        save_dir = f'{self.data_dir}/{sub_dir}/{task}'
-        os_lib.mk_dir(save_dir)
+        if 'image' in ret:
+            h, w, c = ret['image'].shape
+        else:
+            h, w = -1, -1
 
-        for i, ret in enumerate(iter_data):
-            ret = self.convert_func(ret)
+        bboxes = ret['bboxes']
+        classes = ret['classes']
 
-            if 'image' in ret:
-                h, w, c = ret['image'].shape
-            else:
-                h, w = -1, -1
+        labels = np.c_[
+            classes,
+            bboxes,
+            ret['confs'] if 'confs' in ret else [1] * len(classes),
+            [w] * len(classes),
+            [h] * len(classes),
+        ]
 
-            bboxes = ret['bboxes']
-            classes = ret['classes']
-
-            labels = np.c_[
-                classes,
-                bboxes,
-                ret['confs'] if 'confs' in ret else [1] * len(classes),
-                [w] * len(classes),
-                [h] * len(classes),
-            ]
-
-            np.savetxt(f'{save_dir}/{Path(ret["_id"]).stem}.txt', labels, fmt='%.6f')
+        np.savetxt(f'{self.data_dir}/{sub_dir}/{task}/{Path(ret["_id"]).stem}.txt', labels, fmt='%.6f')
 
 
 class Generator(DatasetGenerator):

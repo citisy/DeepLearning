@@ -189,20 +189,28 @@ class DataLoader:
 
         """
         i = 0
-        for a in gen_func:
+        for obj in gen_func:
             if i >= max_size:
                 break
 
-            ret = self.get_ret(a, **get_kwargs)
+            obj = self.on_start_convert(obj)
+
+            if not self.on_start_filter(obj):
+                continue
+
+            ret = self.get_ret(obj, **get_kwargs)
             if not ret:
                 continue
 
-            ret = self.convert_func(ret)
-            if self.filter_func(ret):
-                i += 1
-                yield ret
+            ret = self.on_end_convert(ret)
 
-    def get_ret(self, *args, **kwargs) -> dict:
+            if not self.on_end_filter(ret):
+                continue
+
+            i += 1
+            yield ret
+
+    def get_ret(self, obj, image_type=DataRegister.PATH, **kwargs) -> dict:
         raise NotImplementedError
 
     def load_cache(self, save_name):
@@ -211,10 +219,16 @@ class DataLoader:
 
         return data
 
-    def convert_func(self, ret):
+    def on_start_convert(self, obj):
+        return obj
+
+    def on_end_convert(self, ret):
         return ret
 
-    def filter_func(self, ret):
+    def on_start_filter(self, obj):
+        return True
+
+    def on_end_filter(self, ret):
         return True
 
 
@@ -224,8 +238,6 @@ class DataSaver:
         self.default_set_type = [DataRegister.TRAIN, DataRegister.TEST]
         self.verbose = verbose
         self.stdout_method = stdout_method if verbose else os_lib.FakeIo()
-
-        os_lib.mk_dir(self.data_dir)
 
     def __call__(self, *args, **kwargs):
         return self.save(*args, **kwargs)
@@ -253,19 +265,48 @@ class DataSaver:
         else:
             raise ValueError(f'Unknown input {set_type = }')
 
-        self.mkdirs(set_types, **kwargs)
+        self.mkdirs(set_types=set_types, **kwargs)
 
-        for i, iter_data in enumerate(data):
+        for iter_data, set_type in zip(data, set_types):
             if self.verbose:
                 iter_data = tqdm(iter_data, desc=visualize.TextVisualize.highlight_str(f'Save {set_type.value} dataset'))
 
-            self._call(iter_data, set_type=set_types[i], image_type=image_type, **kwargs)
+            self._call(iter_data, set_type=set_type, image_type=image_type, **kwargs)
 
-    def mkdirs(self, set_types, **kwargs):
-        pass
+    def mkdirs(self, **kwargs):
+        os_lib.mk_dir(self.data_dir)
 
-    def _call(self, iter_data, set_type, image_type, **kwargs):
-        raise ValueError
+    def _call(self, iter_data, **gen_kwargs):
+        raise NotImplementedError
+
+    def gen_data(self, gen_func, max_size=float('inf'), **get_kwargs):
+        """
+
+        Args:
+            gen_func:
+            max_size: num of loaded data
+            **get_kwargs:
+                see also `parse_ret` function to get more details of get_kwargs
+
+        Yields
+            a dict of result data
+
+        """
+        i = 0
+        for ret in gen_func:
+            if i >= max_size:
+                break
+
+            ret = self.on_start_convert(ret)
+
+            if not self.on_start_filter(ret):
+                continue
+
+            self.parse_ret(ret, **get_kwargs)
+            i += 1
+
+    def parse_ret(self, ret, image_type=DataRegister.PATH, **get_kwargs):
+        raise NotImplementedError
 
     def save_cache(self, data, save_name):
         save_dir = f'{self.data_dir}/cache'
@@ -274,10 +315,10 @@ class DataSaver:
         with open(f'{save_dir}/{save_name}.pkl', 'wb') as f:
             pickle.dump(data, f)
 
-    def convert_func(self, ret):
+    def on_start_convert(self, ret):
         return ret
 
-    def filter_func(self, ret):
+    def on_start_filter(self, ret):
         return True
 
 

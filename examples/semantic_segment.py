@@ -95,7 +95,9 @@ class SegProcess(Process):
                 })
 
             scheduler.step()
-            if self.on_train_epoch_end(i, save_period, mean_loss, val_dataloader, **metric_kwargs):
+            if self.on_train_epoch_end(i, save_period, val_dataloader,
+                                       mean_loss=None,
+                                       **metric_kwargs):
                 break
 
     def metric(self, *args, **kwargs):

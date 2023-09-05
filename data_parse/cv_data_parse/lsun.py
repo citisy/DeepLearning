@@ -54,8 +54,8 @@ class Loader(DataLoader):
         db_path = f'{self.data_dir}/{task}_{set_type.value}_lmdb'
         env = lmdb.open(db_path, map_size=1099511627776, max_readers=100, readonly=True)
 
-        with env.begin(write=False) as txn:
-            gen_func = txn.cursor()
+        txn = env.begin(write=False)
+        gen_func = txn.cursor()
         return self.gen_data(gen_func, **kwargs)
 
     def get_ret(self, obj, **kwargs) -> dict:

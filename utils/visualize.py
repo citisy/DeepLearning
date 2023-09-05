@@ -22,7 +22,7 @@ class ImageVisualize:
         boxes: polygon: (-1, -1, 2) or rectangle: (-1, 4)
         """
         img = img.copy()
-        colors = colors or [cmap['Blue']['array']] * len(boxes)
+        colors = colors or [get_color_array(0)] * len(boxes)
         line_thickness = line_thickness or round(0.001 * (img.shape[0] + img.shape[1]) / 2) + 1  # line/font thickness
 
         for i in range(len(boxes)):
@@ -56,7 +56,7 @@ class ImageVisualize:
         draw_left = ImageDraw.Draw(img_left)
         draw_right = ImageDraw.Draw(img_right)
 
-        colors = colors or [cmap['Blue']['array']] * len(text_boxes)
+        colors = colors or [get_color_array(0)] * len(text_boxes)
 
         for idx, (box, txt, score) in enumerate(zip(text_boxes, texts, scores)):
             if score < drop_score:
@@ -151,13 +151,11 @@ class ImageVisualize:
         boxes: (-1, 4)
         """
         img = img.copy()
-        line_thickness = line_thickness or round(0.001 * (img.shape[0] + img.shape[1]) / 2) + 1  # line/font thickness
-        colors = colors or [cmap['Blue']['array']] * len(boxes)
+        line_thickness = line_thickness or round(0.002 * (img.shape[0] + img.shape[1]) / 2) + 1  # line/font thickness
+        colors = colors or [get_color_array(0)] * len(boxes)
         labels = [str(i) for i in labels]
 
         img = cls.box(img, boxes, visual_type=RECTANGLE, colors=colors, line_thickness=line_thickness)
-
-        # cv2.rectangle(img, c1, c2, colors, thickness=line_thickness, lineType=cv2.LINE_AA)
 
         # visual label
         for i in range(len(labels)):
@@ -180,7 +178,7 @@ class ImageVisualize:
         alpha: [0, 1], 1 gives opaque totally
         """
         img = img.copy()
-        colors = colors or [cmap['Blue']['array']] * len(boxes)
+        colors = colors or [get_color_array(0)] * len(boxes)
         boxes = np.array(boxes).astype(int)
 
         for i in range(len(boxes)):
@@ -206,7 +204,7 @@ def get_variable_name(var, local_vars):
 
 class TextVisualize:
     @staticmethod
-    def highlight_str(text, types='blue', start='', end=''):
+    def highlight_str(text, types=('blue', 'bold'), start='', end=''):
         """hightlight a string
 
         Args:

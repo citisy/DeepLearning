@@ -110,7 +110,7 @@ class Loader(DataLoader):
             ret['pix_image'] = pix_image
             yield ret
 
-    def get_ret(self, _id, image_type):
+    def get_ret(self, _id, image_type=DataRegister.PATH, **kwargs):
         xml_file = Path(f'{self.data_dir}/Annotations/{_id}.xml')
         tree = ET.parse(xml_file)
         root = tree.getroot()

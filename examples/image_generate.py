@@ -49,7 +49,8 @@ class IgProcess(Process):
 
             self.logger.info(s)
 
-    def on_train_epoch_end(self, total_nums, save_period, mean_loss, val_dataloader, max_size, train_batch_size, **metric_kwargs):
+    def on_train_epoch_end(self, total_nums, save_period, val_dataloader, train_batch_size,
+                           mean_loss=None, max_size=None, **metric_kwargs):
         mean_loss_g, mean_loss_d = mean_loss
         if save_period and total_nums % save_period < train_batch_size:
             self.wandb.log_info = {'total_nums': total_nums, 'mean_loss_g': mean_loss_g, 'mean_loss_d': mean_loss_d}
@@ -199,14 +200,16 @@ class WGAN(IgProcess):
                     mean_loss_d = total_loss_d / total_nums
 
                     pbar.set_postfix({
-                        'gen_iter': total_nums,
+                        'total_nums': self.total_nums,
                         'mean_loss_d': f'{mean_loss_d:.06}',
                         'mean_loss_g': f'{mean_loss_g:.06}',
                         # 'cpu_info': MemoryInfo.get_process_mem_info(),
                         # 'gpu_info': MemoryInfo.get_gpu_mem_info()
                     })
 
-                    if self.on_train_epoch_end(self.total_nums, save_period, (mean_loss_g, mean_loss_d), val_noise, save_maxsize, batch_size, **metric_kwargs):
+                    if self.on_train_epoch_end(self.total_nums, save_period, val_noise, batch_size,
+                                               mean_loss=(mean_loss_g, mean_loss_d), save_maxsize=save_maxsize,
+                                               **metric_kwargs):
                         break
 
     def predict(self, val_noise, batch_size=128, cur_epoch=-1, model=None, visualize=False, max_vis_num=None, save_ret_func=None, **dataloader_kwargs):
@@ -370,7 +373,7 @@ class Pix2pix(IgProcess):
                 mean_loss_d = total_loss_d / total_nums
 
                 pbar.set_postfix({
-                    'total_nums': total_nums,
+                    'total_nums': self.total_nums,
                     'loss_g': f'{loss_g.item():.06}',
                     'loss_d': f'{loss_d.item():.06}',
                     'mean_loss_g': f'{mean_loss_g:.06}',
@@ -379,7 +382,9 @@ class Pix2pix(IgProcess):
                     # 'gpu_info': MemoryInfo.get_gpu_mem_info()
                 })
 
-                if self.on_train_epoch_end(self.total_nums, save_period, (mean_loss_g, mean_loss_d), val_dataloader, save_maxsize, batch_size, **metric_kwargs):
+                if self.on_train_epoch_end(self.total_nums, save_period, val_dataloader, batch_size,
+                                           mean_loss=(mean_loss_g, mean_loss_d), save_maxsize=save_maxsize,
+                                           **metric_kwargs):
                     break
 
     def predict(self, val_dataloader=None, batch_size=16, cur_epoch=-1, model=None, visualize=False, max_vis_num=None, save_ret_func=None, **dataloader_kwargs):
@@ -524,7 +529,7 @@ class CycleGan(IgProcess):
                 mean_loss_d = total_loss_d / total_nums
 
                 pbar.set_postfix({
-                    'total_nums': total_nums,
+                    'total_nums': self.total_nums,
                     'loss_g': f'{loss_g.item():.06}',
                     'loss_d': f'{loss_d.item():.06}',
                     'mean_loss_g': f'{mean_loss_g:.06}',
@@ -533,7 +538,9 @@ class CycleGan(IgProcess):
                     # 'gpu_info': MemoryInfo.get_gpu_mem_info()
                 })
 
-                if self.on_train_epoch_end(self.total_nums, save_period, (mean_loss_g, mean_loss_d), val_dataloader, save_maxsize, batch_size, **metric_kwargs):
+                if self.on_train_epoch_end(self.total_nums, save_period, val_dataloader, batch_size,
+                                           mean_loss=(mean_loss_g, mean_loss_d), save_maxsize=save_maxsize,
+                                           **metric_kwargs):
                     break
 
     def predict(self, val_dataloader=None, batch_size=16, cur_epoch=-1, model=None, visualize=False, max_vis_num=None, save_ret_func=None, **dataloader_kwargs):

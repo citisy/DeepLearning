@@ -36,6 +36,31 @@ class ArgDict(dict):
         del self[name]
 
 
+def collapse_dict(d: dict):
+    """
+
+    Example:
+        >>> d = {'a': {'b': 1, 'c': 2, 'e': {'f': 4}}, 'd': 3}
+        >>> collapse_dict(d)
+        >>> {'a.b': 1, 'a.c': 2, 'a.e.f': 4, 'd': 3}
+
+    """
+
+    def cur(cur_dic, cur_k, new_dic):
+        for k, v in cur_dic.items():
+            if isinstance(v, dict):
+                k = f'{cur_k}.{k}'
+                cur(v, k, new_dic)
+            else:
+                new_dic[f'{cur_k}.{k}'] = v
+
+        return new_dic
+
+    new_dic = cur(d, '', {})
+    new_dic = {k[1:]: v for k, v in new_dic.items()}
+    return new_dic
+
+
 def expand_dict(d: dict):
     """expand dict while '.' in key or '=' in value
 

@@ -44,9 +44,8 @@ class Loader(DataLoader):
                 segmentation: a list with shape of (-1, -1, 2)
                 transcription: List[str]
         """
-        with jsonlines.open(f'{self.data_dir}/PubTabNet_2.0.0.{set_type.value}.jsonl', 'r') as reader:
-            # {filename, split, imgid, html}
-            gen_func = reader
+        # {filename, split, imgid, html}
+        gen_func = jsonlines.open(f'{self.data_dir}/PubTabNet_2.0.0.{set_type.value}.jsonl', 'r')
         return self.gen_data(gen_func, **kwargs)
 
     def get_ret(self, line, set_type=DataRegister.TRAIN, image_type=DataRegister.PATH, **kwargs) -> dict:

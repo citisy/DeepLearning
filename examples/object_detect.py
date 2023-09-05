@@ -1,4 +1,5 @@
 import copy
+import time
 import cv2
 import math
 import numpy as np
@@ -10,6 +11,7 @@ from data_parse.cv_data_parse.data_augmentation import crop, scale, geometry, pi
 from data_parse.cv_data_parse.base import DataRegister, DataVisualizer
 from .base import Process, BaseDataset
 from utils import configs, os_lib, converter, cv_utils
+from utils.torch_utils import EMA
 from metrics import object_detection
 from typing import List
 
@@ -34,6 +36,7 @@ class OdDataset(BaseDataset):
 class OdProcess(Process):
     def fit(self, max_epoch=100, batch_size=16, save_period=None, metric_kwargs=dict(), **dataloader_kwargs):
         train_dataloader, val_dataloader, metric_kwargs = self.on_train_start(batch_size, metric_kwargs, **dataloader_kwargs)
+        # ema = EMA(self.model, step_start_ema=0, tau=2000)
 
         lrf = 0.01
 
@@ -54,6 +57,7 @@ class OdProcess(Process):
             total_loss = 0
             total_batch = 0
             mean_loss = 0
+            epoch_start_time = time.time()
 
             for rets in pbar:
                 images = [torch.from_numpy(ret.pop('image')).to(self.device, non_blocking=True, dtype=torch.float) for ret in rets]
@@ -79,6 +83,7 @@ class OdProcess(Process):
                     scaler.step(self.optimizer)  # optimizer.step
                     scaler.update()
                     self.optimizer.zero_grad()
+                    # ema.step(self.model)
 
                 j += 1
 
@@ -95,7 +100,11 @@ class OdProcess(Process):
 
             scheduler.step()
 
-            if self.on_train_epoch_end(i, save_period, mean_loss, val_dataloader, **metric_kwargs):
+            if self.on_train_epoch_end(i, save_period, val_dataloader,
+                                       mean_loss=mean_loss,
+                                       epoch_start_time=epoch_start_time,
+                                       # model=ema.ema_model,
+                                       **metric_kwargs):
                 break
 
     def metric(self, *args, **kwargs):
@@ -254,7 +263,10 @@ class Voc(Process):
         loader = Loader(f'data/VOC2012')
         self.cls_alias = loader.classes
 
-        return loader(set_type=DataRegister.TRAIN, image_type=DataRegister.PATH, generator=False, task='')[0]
+        return loader(set_type=DataRegister.TRAIN, image_type=DataRegister.PATH, generator=False,
+                      task='',
+                      # max_size=8,
+                      )[0]
 
     def get_val_data(self):
         from data_parse.cv_data_parse.Voc import Loader
@@ -262,7 +274,10 @@ class Voc(Process):
         loader = Loader(f'data/VOC2012')
         self.cls_alias = loader.classes
 
-        return loader(set_type=DataRegister.VAL, image_type=DataRegister.PATH, generator=False, task='')[0]
+        return loader(set_type=DataRegister.VAL, image_type=DataRegister.PATH, generator=False,
+                      task='',
+                      # max_size=8,
+                      )[0]
 
     aug = Apply([
         scale.LetterBox(),
@@ -329,10 +344,15 @@ class YoloV5(OdProcess):
                  model=None,
                  **kwargs
                  ):
+        # auto anchors
+        # from models.object_detection.YoloV5 import auto_anchors
+        # head_config = auto_anchors(self.get_train_data(), input_size)
+
         from models.object_detection.YoloV5 import Model
         model = model or Model(
             n_classes,
             in_module_config=dict(in_ch=in_ch, input_size=input_size),
+            # head_config=head_config
         )
 
         g = [], [], []  # optimizer parameter groups
@@ -363,7 +383,7 @@ class YoloV5(OdProcess):
         )
 
 
-class Voc_(Voc):
+class Voc4Yolov5(Voc):
     def data_augment(self, ret):
         ret.update(RandomApply([geometry.HFlip()])(**ret))
         return ret
@@ -400,7 +420,7 @@ class Voc_(Voc):
         return ret
 
 
-class YoloV5_Voc(YoloV5, Voc_):
+class YoloV5_Voc(YoloV5, Voc4Yolov5):
     """
     Usage:
         .. code-block:: python
@@ -426,7 +446,7 @@ class Yolov5Dataset(Process):
         )
 
         loader = Loader('yolov5/data_mapping')
-        loader.convert_func = convert_func
+        loader.on_end_convert = convert_func
         data = loader(set_type=DataRegister.TRAIN, image_type=DataRegister.PATH, generator=False, sub_dir='')[0]
 
         return data
@@ -441,7 +461,7 @@ class Yolov5Dataset(Process):
         )
 
         loader = Loader('yolov5/data_mapping')
-        loader.convert_func = convert_func
+        loader.on_end_convert = convert_func
         data = loader(set_type=DataRegister.VAL, image_type=DataRegister.PATH, generator=False, sub_dir='')[0]
 
         return data

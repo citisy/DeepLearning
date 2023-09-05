@@ -5,6 +5,7 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 from models.layers import SimpleInModule
 from utils.os_lib import MemoryInfo
+from utils.torch_utils import EMA
 from utils import configs
 from metrics import classifier
 from data_parse.cv_data_parse.data_augmentation import crop, scale, geometry, channel, RandomApply, Apply
@@ -19,6 +20,7 @@ class ClsProcess(Process):
 
     def fit(self, max_epoch=100, batch_size=16, save_period=None, metric_kwargs=dict(), **dataloader_kwargs):
         train_dataloader, val_dataloader, metric_kwargs = self.on_train_start(batch_size, metric_kwargs, **dataloader_kwargs)
+        # ema = EMA(self.model, step_start_ema=0)
 
         for i in range(self.start_epoch, max_epoch):
             self.model.train()
@@ -40,6 +42,7 @@ class ClsProcess(Process):
                 loss = output['loss']
                 loss.backward()
                 self.optimizer.step()
+                # ema.step(self.model)
 
                 total_loss += loss.item()
                 total_batch += len(rets)
@@ -52,7 +55,10 @@ class ClsProcess(Process):
                     # 'gpu_info': MemoryInfo.get_gpu_mem_info()
                 })
 
-            if self.on_train_epoch_end(i, save_period, mean_loss, val_dataloader, **metric_kwargs):
+            if self.on_train_epoch_end(i, save_period, val_dataloader,
+                                       mean_loss=mean_loss,
+                                       # model=ema.ema_model,
+                                       **metric_kwargs):
                 break
 
         self.wandb.finish()
@@ -181,7 +187,7 @@ class ImageNet(Process):
             return ret
 
         loader = Loader(f'data/ImageNet2012')
-        loader.convert_func = convert_func
+        loader.on_end_convert = convert_func
 
         data = loader(set_type=DataRegister.TRAIN, image_type=DataRegister.ARRAY, generator=False,
                       wnid=[
@@ -215,7 +221,7 @@ class ImageNet(Process):
                 return True
 
         loader = Loader(f'data/ImageNet2012')
-        loader.filter_func = filter_func
+        loader.on_end_filter = filter_func
 
         data = loader(set_type=DataRegister.VAL, image_type=DataRegister.PATH, generator=False)[0]
         data = list(map(convert_func, data))

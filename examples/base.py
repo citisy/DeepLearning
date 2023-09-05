@@ -1,5 +1,6 @@
 import logging
 import copy
+import time
 import cv2
 import torch
 from torch import nn, optim
@@ -117,6 +118,7 @@ class Process:
         self.input_size = input_size or self.model.input_size
         self.out_features = out_features
         self.start_epoch = 0
+        self.date = datetime.now().isoformat()
 
         self.__dict__.update(kwargs)
 
@@ -203,8 +205,10 @@ class Process:
             project=self.model_version,
             name=self.dataset_version,
             dir=f'{self.work_dir}',
-            id=self.wandb_id if hasattr(self, 'wandb_id') else None
+            id=self.wandb_id if hasattr(self, 'wandb_id') else None,
+            reinit=True
         )
+        self.wandb_id = self.wandb_run.id
 
         train_data = self.get_train_data()
 
@@ -241,13 +245,20 @@ class Process:
     def on_train_step_end(self, *args, **kwargs):
         raise NotImplementedError
 
-    def on_train_epoch_end(self, epoch, save_period, mean_loss, val_dataloader, **metric_kwargs):
-        self.logger.info(f'train log: epoch: {epoch}, mean_loss: {mean_loss}')
-        self.log_info = {'epoch': epoch, 'mean_loss': mean_loss}
+    def on_train_epoch_end(self, epoch, save_period=None, val_dataloader=None,
+                           mean_loss=None, epoch_start_time=None, **metric_kwargs):
+        self.log_info = {'epoch': epoch}
 
+        if mean_loss is not None:
+            self.log_info['mean_loss'] = mean_loss
+
+        if epoch_start_time is not None:
+            self.log_info['time_consume'] = (time.time() - epoch_start_time) / 60
+
+        self.logger.info(f'train log: {self.log_info}')
         ckpt = {
             'start_epoch': epoch + 1,
-            'wandb_id': self.wandb_run.id,
+            'wandb_id': self.wandb_id,
             'date': datetime.now().isoformat()
         }
 
@@ -256,13 +267,13 @@ class Process:
         if save_period and epoch % save_period == save_period - 1:
             result = self.metric(val_dataloader, cur_epoch=epoch, **metric_kwargs)
             score = result['score']
-            self.log_info['score'] = score
+            self.log_info['val_score'] = score
             self.logger.info(f"val log: epoch: {epoch}, score: {score}")
 
-            if score > self.stopper.best_fitness:
+            if score > self.stopper.best_score:
                 self.save(f'{self.model_dir}/{self.dataset_version}/best.pth', save_type=WEIGHT, **ckpt)
 
-            if self.stopper(epoch=epoch, fitness=score):
+            if self.stopper(epoch=epoch, score=score):
                 return True
 
         self.wandb.log(self.log_info)
@@ -361,50 +372,82 @@ class ParamsSearch:
     Usage:
         .. code-block:: python
 
+            ######## example 1 ########
             from examples.image_classifier import ClsProcess, ImageNet
             from models.image_classifier.ResNet import Model
             from torch import optim
 
             class ResNet_ImageNet(ClsProcess, ImageNet):
-                pass
+                '''define your own process'''
 
             params_search = ParamsSearch(
                 process=ResNet_ImageNet,
-                var_instance=dict(
-                    model=Model,
-                    callable_optimizer=lambda **kwargs: lambda params: optim.Adam(params, **kwargs),
-                ),
-                var_params=dict(
-                    model=dict(input_size=(224, 256)),
-                    callable_optimizer=dict(lr=(0.001, 0.01))
-                ),
-                const_params=dict(
-                    model=dict(in_ch=3, out_features=2)
+                params=dict(
+                    model=dict(
+                        instance=Model,
+                        const=dict(in_ch=3, out_features=2),
+                        var=dict(input_size=(224, 256))
+                    ),
+                    callable_optimizer=dict(
+                        instance=lambda **kwargs: lambda params: optim.Adam(params, **kwargs),
+                        var=dict(lr=(0.001, 0.01))
+                    ),
                 ),
                 run_kwargs=dict(max_epoch=100, save_period=4),
                 process_kwargs=dict(use_wandb=True),
                 model_version='ResNet',
                 dataset_version='ImageNet2012.ps',
             )
+            # there is 4 test group
             params_search.run()
+
+            ######## example 2 ########
+            from models.object_detection.YoloV5 import Model, head_config, make_config, default_model_multiple
+            params_search = ParamsSearch(
+                process=Process,
+                params=dict(
+                    model=dict(
+                        instance=Model,
+                        const=dict(
+                            n_classes=20,
+                            in_module_config=dict(in_ch=3, input_size=640),
+                            head_config=head_config
+                        ),
+                        var=[
+                            {k: [v] for k, v in make_config(**default_model_multiple['yolov5n']).items()},
+                            {k: [v] for k, v in make_config(**default_model_multiple['yolov5s']).items()},
+                            dict(
+                                anchor_t=[3, 4, 5]
+                            )
+                        ]
+                    )
+                ),
+                run_kwargs=dict(max_epoch=100, save_period=4, metric_kwargs=dict(visualize=True, max_vis_num=8)),
+                process_kwargs=dict(use_wandb=True),
+                model_version='yolov5-test',
+                dataset_version='Voc.ps',
+            )
+            # there is 5 test group
+            params_search.run()
+
     """
 
     def __init__(
             self,
-            process, keys, var_params, const_params=dict(),
+            process, params=dict(),
             process_kwargs=dict(), run_kwargs=dict(),
             model_version='', dataset_version='',
     ):
         self.process = process
-        self.var_instance = keys
-        self.var_params = var_params
-        self.const_params = const_params
         self.process_kwargs = process_kwargs
         self.run_kwargs = run_kwargs
         self.model_version = model_version
         self.dataset_version = dataset_version
 
-        self.var_params = {k: configs.permute_obj(var_p) for k, var_p in self.var_params.items()}
+        var_params = {k: v['var'] for k, v in params.items() if 'var' in v}
+        self.var_params = {k: configs.permute_obj(var_p) for k, var_p in var_params.items()}
+        self.const_params = {k: v['const'] for k, v in params.items() if 'const' in v}
+        self.var_instance = {k: v['instance'] for k, v in params.items() if 'instance' in v}
         keys = []
         self.total_params = [[]]
         for k, var_ps in self.var_params.items():
@@ -418,9 +461,16 @@ class ParamsSearch:
         kwargs = copy.deepcopy(self.process_kwargs)
         for _ in self.total_params:
             sub_version = ''
+            info_msg = ''
             for key, (var_p, const_p) in zip(self.keys, _):
-                for k, v in var_p.items():
-                    sub_version += f'{k}={v},'
+                tmp_var_p = configs.collapse_dict(var_p)
+                for k, v in tmp_var_p.items():
+                    if len(str(v)) > 8:
+                        s = converter.DataConvert.str_to_md5(str(v))
+                        sub_version += f'{k}={s[:6]};'
+                    else:
+                        sub_version += f'{k}={v};'
+                    info_msg += f'{k}={v};'
 
                 params = configs.merge_dict(var_p, const_p)
                 if key in self.var_instance:
@@ -430,9 +480,11 @@ class ParamsSearch:
                     kwargs.update(params)
 
             sub_version = sub_version[:-1]
+            info_msg = info_msg[:-1]
 
             kwargs['model_version'] = self.model_version
             kwargs['dataset_version'] = f'{self.dataset_version}/{sub_version}'
             kwargs['log_dir'] = f'model_data/{self.model_version}/{self.dataset_version}/{sub_version}/logs'
             process = self.process(**kwargs)
+            process.logger.info(info_msg)
             process.run(**self.run_kwargs)
