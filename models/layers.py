@@ -234,6 +234,44 @@ class ConvT(nn.Sequential):
         return int(np.ceil((k - s) / 2)) if k > s else 0
 
 
+class Conv2DMod(nn.Module):
+    def __init__(self, in_chan, out_chan, kernel, demod=True, stride=1, dilation=1, eps=1e-8, **kwargs):
+        super().__init__()
+        self.filters = out_chan
+        self.demod = demod
+        self.kernel = kernel
+        self.stride = stride
+        self.dilation = dilation
+        self.weight = nn.Parameter(torch.randn((out_chan, in_chan, kernel, kernel)))
+        self.eps = eps
+        nn.init.kaiming_normal_(self.weight, a=0, mode='fan_in', nonlinearity='leaky_relu')
+
+    def _get_same_padding(self, size, kernel, dilation, stride):
+        return ((size - 1) * (stride - 1) + dilation * (kernel - 1)) // 2
+
+    def forward(self, x, y):
+        b, c, h, w = x.shape
+
+        w1 = y[:, None, :, None, None]
+        w2 = self.weight[None, :, :, :, :]
+        weights = w2 * (w1 + 1)
+
+        if self.demod:
+            d = torch.rsqrt((weights ** 2).sum(dim=(2, 3, 4), keepdim=True) + self.eps)
+            weights = weights * d
+
+        x = x.reshape(1, -1, h, w)
+
+        _, _, *ws = weights.shape
+        weights = weights.reshape(b * self.filters, *ws)
+
+        padding = self._get_same_padding(h, self.kernel, self.dilation, self.stride)
+        x = F.conv2d(x, weights, padding=padding, groups=b)
+
+        x = x.reshape(-1, self.filters, h, w)
+        return x
+
+
 class Linear(nn.Sequential):
     def __init__(self, in_features, out_features,
                  is_act=True, act=None, is_norm=True, bn=None, is_drop=False, drop_prob=0.7):
@@ -256,6 +294,19 @@ class Linear(nn.Sequential):
 
         self.out_features = out_features
         super().__init__(*layers)
+
+
+class EqualLinear(nn.Module):
+    def __init__(self, in_dim, out_dim, lr_mul=1, bias=True):
+        super().__init__()
+        self.weight = nn.Parameter(torch.randn(out_dim, in_dim))
+        if bias:
+            self.bias = nn.Parameter(torch.zeros(out_dim))
+
+        self.lr_mul = lr_mul
+
+    def forward(self, x):
+        return F.linear(x, self.weight * self.lr_mul, bias=self.bias * self.lr_mul)
 
 
 class Cache(nn.Module):
@@ -304,3 +355,19 @@ class Add(nn.Module):
             features[self.idx] = x
 
         return x, features
+
+
+class Residual(nn.Module):
+    def __init__(self, fn, project_fn=None,
+                 is_act=True, act=None):
+        super().__init__()
+        self.fn = fn
+        self.project_fn = project_fn or nn.Identity()
+
+        if is_act:
+            self.act = act or nn.ReLU(True)
+        else:
+            self.act = nn.Identity()
+
+    def forward(self, x):
+        return self.act(self.fn(x) + self.project_fn(x))

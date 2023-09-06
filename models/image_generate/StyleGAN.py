@@ -1,826 +1,669 @@
+import os
+import sys
+import math
+import fire
+import json
+
+from tqdm import tqdm
+from math import floor, log2
+from random import random
+from shutil import rmtree
+from functools import partial
+import multiprocessing
+from contextlib import contextmanager, ExitStack
+
 import numpy as np
+
 import torch
-from torch import nn
+from torch import nn, einsum
+from torch.utils import data
+from torch.optim import Adam
+import torch.nn.functional as F
+from torch.autograd import grad as torch_grad
+from torch.utils.data.distributed import DistributedSampler
+from torch.nn.parallel import DistributedDataParallel as DDP
+
+from einops import rearrange, repeat
+from kornia.filters import filter2d
+
+import torchvision
+from torchvision import transforms
+
+from vector_quantize_pytorch import VectorQuantize
+
+from PIL import Image
+from pathlib import Path
+
+try:
+    from apex import amp
+
+    APEX_AVAILABLE = True
+except:
+    APEX_AVAILABLE = False
+
+import aim
+
+assert torch.cuda.is_available(), 'You need to have an Nvidia GPU with CUDA installed.'
+from functools import partial
+import random
+import torch
+import torch.nn.functional as F
+
+from ..layers import Linear, Conv, ConvT, EqualLinear, Conv2DMod, Residual
 
 
-class Model(nn.ModuleList):
-    def __init__(self):
-        super().__init__()
+def DiffAugment(x, types=[]):
+    for p in types:
+        for f in AUGMENT_FNS[p]:
+            x = f(x)
+    return x.contiguous()
 
 
-class Generator(nn.Module):
-    def __init__(self,
-                 z_dim,  # Input latent (Z) dimensionality.
-                 c_dim,  # Conditioning label (C) dimensionality.
-                 w_dim,  # Intermediate latent (W) dimensionality.
-                 img_resolution,  # Output resolution.
-                 img_channels,  # Number of output color channels.
-                 mapping_kwargs={},  # Arguments for MappingNetwork.
-                 synthesis_kwargs={},  # Arguments for SynthesisNetwork.
-                 ):
-        super().__init__()
-        self.z_dim = z_dim
-        self.c_dim = c_dim
-        self.w_dim = w_dim
-        self.img_resolution = img_resolution
-        self.img_channels = img_channels
-        self.mapping = MappingNetwork(z_dim=z_dim, c_dim=c_dim, w_dim=w_dim, num_ws=self.num_ws, **mapping_kwargs)
-        self.synthesis = SynthesisNetwork(w_dim=w_dim, img_resolution=img_resolution, img_channels=img_channels, **synthesis_kwargs)
-        self.num_ws = self.synthesis.num_ws
+# """
+# Augmentation functions got images as `x`
+# where `x` is tensor with this dimensions:
+# 0 - count of images
+# 1 - channels
+# 2 - width
+# 3 - height of image
+# """
 
-    def forward(self, z, c, truncation_psi=1, truncation_cutoff=None, **synthesis_kwargs):
-        ws = self.mapping(z, c, truncation_psi=truncation_psi, truncation_cutoff=truncation_cutoff)
-        img = self.synthesis(ws, **synthesis_kwargs)
-        return img
-
-
-def normalize_2nd_moment(x, dim=1, eps=1e-8):
-    return x * (x.square().mean(dim=dim, keepdim=True) + eps).rsqrt()
-
-
-class MappingNetwork(nn.Module):
-    def __init__(self,
-                 z_dim,  # Input latent (Z) dimensionality, 0 = no latent.
-                 c_dim,  # Conditioning label (C) dimensionality, 0 = no label.
-                 w_dim,  # Intermediate latent (W) dimensionality.
-                 num_ws,  # Number of intermediate latents to output, None = do not broadcast.
-                 num_layers=8,  # Number of mapping layers.
-                 embed_features=None,  # Label embedding dimensionality, None = same as w_dim.
-                 layer_features=None,  # Number of intermediate features in the mapping layers, None = same as w_dim.
-                 activation='lrelu',  # Activation function: 'relu', 'lrelu', etc.
-                 lr_multiplier=0.01,  # Learning rate multiplier for the mapping layers.
-                 w_avg_beta=0.995,  # Decay for tracking the moving average of W during training, None = do not track.
-                 ):
-        super().__init__()
-        self.z_dim = z_dim
-        self.c_dim = c_dim
-        self.w_dim = w_dim
-        self.num_ws = num_ws
-        self.num_layers = num_layers
-        self.w_avg_beta = w_avg_beta
-
-        if embed_features is None:
-            embed_features = w_dim
-        if c_dim == 0:
-            embed_features = 0
-        if layer_features is None:
-            layer_features = w_dim
-        features_list = [z_dim + embed_features] + [layer_features] * (num_layers - 1) + [w_dim]
-
-        if c_dim > 0:
-            self.embed = FullyConnectedLayer(c_dim, embed_features)
-        for idx in range(num_layers):
-            in_features = features_list[idx]
-            out_features = features_list[idx + 1]
-            layer = FullyConnectedLayer(in_features, out_features, activation=activation, lr_multiplier=lr_multiplier)
-            setattr(self, f'fc{idx}', layer)
-
-        if num_ws is not None and w_avg_beta is not None:
-            self.register_buffer('w_avg', torch.zeros([w_dim]))
-
-    def forward(self, z, c, truncation_psi=1, truncation_cutoff=None, skip_w_avg_update=False):
-        # Embed, normalize, and concat inputs.
-        x = None
-        if self.z_dim > 0:
-            # misc.assert_shape(z, [None, self.z_dim])
-            x = normalize_2nd_moment(z.to(torch.float32))
-        if self.c_dim > 0:
-            # misc.assert_shape(c, [None, self.c_dim])
-            y = normalize_2nd_moment(self.embed(c.to(torch.float32)))
-            x = torch.cat([x, y], dim=1) if x is not None else y
-
-        # Main layers.
-        for idx in range(self.num_layers):
-            layer = getattr(self, f'fc{idx}')
-            x = layer(x)
-
-        # Update moving average of W.
-        if self.w_avg_beta is not None and self.training and not skip_w_avg_update:
-            self.w_avg.copy_(x.detach().mean(dim=0).lerp(self.w_avg, self.w_avg_beta))
-
-        # Broadcast.
-        if self.num_ws is not None:
-            x = x.unsqueeze(1).repeat([1, self.num_ws, 1])
-
-        # Apply truncation.
-        if truncation_psi != 1:
-            assert self.w_avg_beta is not None
-            if self.num_ws is None or truncation_cutoff is None:
-                x = self.w_avg.lerp(x, truncation_psi)
-            else:
-                x[:, :truncation_cutoff] = self.w_avg.lerp(x[:, :truncation_cutoff], truncation_psi)
-        return x
-
-
-class FullyConnectedLayer(nn.Module):
-    def __init__(self,
-                 in_features,  # Number of input features.
-                 out_features,  # Number of output features.
-                 bias=True,  # Apply additive bias before the activation function?
-                 activation='linear',  # Activation function: 'relu', 'lrelu', etc.
-                 lr_multiplier=1,  # Learning rate multiplier.
-                 bias_init=0,  # Initial value for the additive bias.
-                 ):
-        super().__init__()
-        self.activation = activation
-        self.weight = torch.nn.Parameter(torch.randn([out_features, in_features]) / lr_multiplier)
-        self.bias = torch.nn.Parameter(torch.full([out_features], np.float32(bias_init))) if bias else None
-        self.weight_gain = lr_multiplier / np.sqrt(in_features)
-        self.bias_gain = lr_multiplier
-
-    def forward(self, x):
-        w = self.weight.to(x.dtype) * self.weight_gain
-        b = self.bias
-        if b is not None:
-            b = b.to(x.dtype)
-            if self.bias_gain != 1:
-                b = b * self.bias_gain
-
-        if self.activation == 'linear' and b is not None:
-            x = torch.addmm(b.unsqueeze(0), x, w.t())
-        else:
-            x = x.matmul(w.t())
-            x = bias_act(x, b, act=self.activation)
-        return x
-
-
-class SynthesisNetwork(nn.Module):
-    def __init__(self,
-                 w_dim,  # Intermediate latent (W) dimensionality.
-                 img_resolution,  # Output image resolution.
-                 img_channels,  # Number of color channels.
-                 channel_base=32768,  # Overall multiplier for the number of channels.
-                 channel_max=512,  # Maximum number of channels in any layer.
-                 num_fp16_res=0,  # Use FP16 for the N highest resolutions.
-                 **block_kwargs,  # Arguments for SynthesisBlock.
-                 ):
-        assert img_resolution >= 4 and img_resolution & (img_resolution - 1) == 0
-        super().__init__()
-        self.w_dim = w_dim
-        self.img_resolution = img_resolution
-        self.img_resolution_log2 = int(np.log2(img_resolution))
-        self.img_channels = img_channels
-        self.block_resolutions = [2 ** i for i in range(2, self.img_resolution_log2 + 1)]
-        channels_dict = {res: min(channel_base // res, channel_max) for res in self.block_resolutions}
-        fp16_resolution = max(2 ** (self.img_resolution_log2 + 1 - num_fp16_res), 8)
-
-        self.syn_list = nn.ModuleList()
-        self.num_ws = 0
-        for res in self.block_resolutions:
-            in_channels = channels_dict[res // 2] if res > 4 else 0
-            out_channels = channels_dict[res]
-            use_fp16 = (res >= fp16_resolution)
-            is_last = (res == self.img_resolution)
-            block = SynthesisBlock(in_channels, out_channels, w_dim=w_dim, resolution=res,
-                                   img_channels=img_channels, is_last=is_last, use_fp16=use_fp16, **block_kwargs)
-            self.num_ws += block.num_conv
-            if is_last:
-                self.num_ws += block.num_torgb
-            self.syn_list.append(block)
-
-    def forward(self, ws, **block_kwargs):
-        block_ws = []
-        ws = ws.to(torch.float32)
-        w_idx = 0
-        for block in self.syn_list:
-            block_ws.append(ws.narrow(1, w_idx, block.num_conv + block.num_torgb))
-            w_idx += block.num_conv
-
-        x = img = None
-        for block, cur_ws in zip(self.syn_list, block_ws):
-            x, img = block(x, img, cur_ws, **block_kwargs)
-        return img
-
-
-class SynthesisBlock(nn.Module):
-    def __init__(self,
-                 in_channels,  # Number of input channels, 0 = first block.
-                 out_channels,  # Number of output channels.
-                 w_dim,  # Intermediate latent (W) dimensionality.
-                 resolution,  # Resolution of this block.
-                 img_channels,  # Number of output color channels.
-                 is_last,  # Is this the last block?
-                 architecture='skip',  # Architecture: 'orig', 'skip', 'resnet'.
-                 resample_filter=[1, 3, 3, 1],  # Low-pass filter to apply when resampling activations.
-                 conv_clamp=None,  # Clamp the output of convolution layers to +-X, None = disable clamping.
-                 use_fp16=False,  # Use FP16 for this block?
-                 fp16_channels_last=False,  # Use channels-last memory format with FP16?
-                 **layer_kwargs,  # Arguments for SynthesisLayer.
-                 ):
-        assert architecture in ['orig', 'skip', 'resnet']
-        super().__init__()
-        self.in_channels = in_channels
-        self.w_dim = w_dim
-        self.resolution = resolution
-        self.img_channels = img_channels
-        self.is_last = is_last
-        self.architecture = architecture
-        self.use_fp16 = use_fp16
-        self.channels_last = (use_fp16 and fp16_channels_last)
-        self.register_buffer('resample_filter', upfirdn2d.setup_filter(resample_filter))
-        self.num_conv = 0
-        self.num_torgb = 0
-
-        if in_channels == 0:
-            self.const = torch.nn.Parameter(torch.randn([out_channels, resolution, resolution]))
-
-        if in_channels != 0:
-            self.conv0 = SynthesisLayer(in_channels, out_channels, w_dim=w_dim, resolution=resolution, up=2,
-                                        resample_filter=resample_filter, conv_clamp=conv_clamp, channels_last=self.channels_last, **layer_kwargs)
-            self.num_conv += 1
-
-        self.conv1 = SynthesisLayer(out_channels, out_channels, w_dim=w_dim, resolution=resolution,
-                                    conv_clamp=conv_clamp, channels_last=self.channels_last, **layer_kwargs)
-        self.num_conv += 1
-
-        if is_last or architecture == 'skip':
-            self.torgb = ToRGBLayer(out_channels, img_channels, w_dim=w_dim,
-                                    conv_clamp=conv_clamp, channels_last=self.channels_last)
-            self.num_torgb += 1
-
-        if in_channels != 0 and architecture == 'resnet':
-            self.skip = Conv2dLayer(in_channels, out_channels, kernel_size=1, bias=False, up=2,
-                                    resample_filter=resample_filter, channels_last=self.channels_last)
-
-    def forward(self, x, img, ws, force_fp32=False, fused_modconv=None, **layer_kwargs):
-        w_iter = iter(ws.unbind(dim=1))
-        dtype = torch.float16 if self.use_fp16 and not force_fp32 else torch.float32
-        if fused_modconv is None:
-            fused_modconv = (not self.training) and (dtype == torch.float32 or int(x.shape[0]) == 1)
-
-        # Input.
-        if self.in_channels == 0:
-            x = self.const.to(dtype=dtype)
-            x = x.unsqueeze(0).repeat([ws.shape[0], 1, 1, 1])
-        else:
-            x = x.to(dtype=dtype)
-
-        # Main layers.
-        if self.in_channels == 0:
-            x = self.conv1(x, next(w_iter), fused_modconv=fused_modconv, **layer_kwargs)
-        elif self.architecture == 'resnet':
-            y = self.skip(x, gain=np.sqrt(0.5))
-            x = self.conv0(x, next(w_iter), fused_modconv=fused_modconv, **layer_kwargs)
-            x = self.conv1(x, next(w_iter), fused_modconv=fused_modconv, gain=np.sqrt(0.5), **layer_kwargs)
-            x = y.add_(x)
-        else:
-            x = self.conv0(x, next(w_iter), fused_modconv=fused_modconv, **layer_kwargs)
-            x = self.conv1(x, next(w_iter), fused_modconv=fused_modconv, **layer_kwargs)
-
-        # ToRGB.
-        if img is not None:
-            img = upfirdn2d.upsample2d(img, self.resample_filter)
-        if self.is_last or self.architecture == 'skip':
-            y = self.torgb(x, next(w_iter), fused_modconv=fused_modconv)
-            y = y.to(dtype=torch.float32, memory_format=torch.contiguous_format)
-            img = img.add_(y) if img is not None else y
-
-        assert x.dtype == dtype
-        assert img is None or img.dtype == torch.float32
-        return x, img
-
-
-def modulated_conv2d(
-        x,  # Input tensor of shape [batch_size, in_channels, in_height, in_width].
-        weight,  # Weight tensor of shape [out_channels, in_channels, kernel_height, kernel_width].
-        styles,  # Modulation coefficients of shape [batch_size, in_channels].
-        noise=None,  # Optional noise tensor to add to the output activations.
-        up=1,  # Integer upsampling factor.
-        down=1,  # Integer downsampling factor.
-        padding=0,  # Padding with respect to the upsampled image.
-        resample_filter=None,  # Low-pass filter to apply when resampling activations. Must be prepared beforehand by calling upfirdn2d.setup_filter().
-        demodulate=True,  # Apply weight demodulation?
-        flip_weight=True,  # False = convolution, True = correlation (matches torch.nn.functional.conv2d).
-        fused_modconv=True,  # Perform modulation, convolution, and demodulation as a single fused operation?
-):
-    batch_size = x.shape[0]
-    out_channels, in_channels, kh, kw = weight.shape
-    # misc.assert_shape(weight, [out_channels, in_channels, kh, kw])  # [OIkk]
-    # misc.assert_shape(x, [batch_size, in_channels, None, None])  # [NIHW]
-    # misc.assert_shape(styles, [batch_size, in_channels])  # [NI]
-
-    # Pre-normalize inputs to avoid FP16 overflow.
-    if x.dtype == torch.float16 and demodulate:
-        weight = weight * (1 / np.sqrt(in_channels * kh * kw) / weight.norm(float('inf'), dim=[1, 2, 3], keepdim=True))  # max_Ikk
-        styles = styles / styles.norm(float('inf'), dim=1, keepdim=True)  # max_I
-
-    # Calculate per-sample weights and demodulation coefficients.
-    w = None
-    dcoefs = None
-    if demodulate or fused_modconv:
-        w = weight.unsqueeze(0)  # [NOIkk]
-        w = w * styles.reshape(batch_size, 1, -1, 1, 1)  # [NOIkk]
-    if demodulate:
-        dcoefs = (w.square().sum(dim=[2, 3, 4]) + 1e-8).rsqrt()  # [NO]
-    if demodulate and fused_modconv:
-        w = w * dcoefs.reshape(batch_size, -1, 1, 1, 1)  # [NOIkk]
-
-    # Execute by scaling the activations before and after the convolution.
-    if not fused_modconv:
-        x = x * styles.to(x.dtype).reshape(batch_size, -1, 1, 1)
-        x = conv2d_resample.conv2d_resample(x=x, w=weight.to(x.dtype), f=resample_filter, up=up, down=down, padding=padding, flip_weight=flip_weight)
-        if demodulate and noise is not None:
-            x = fma.fma(x, dcoefs.to(x.dtype).reshape(batch_size, -1, 1, 1), noise.to(x.dtype))
-        elif demodulate:
-            x = x * dcoefs.to(x.dtype).reshape(batch_size, -1, 1, 1)
-        elif noise is not None:
-            x = x.add_(noise.to(x.dtype))
-        return x
-
-    # Execute as one fused op using grouped convolution.
-    batch_size = int(batch_size)
-    x = x.reshape(1, -1, *x.shape[2:])
-    w = w.reshape(-1, in_channels, kh, kw)
-    x = conv2d_resample.conv2d_resample(x=x, w=w.to(x.dtype), f=resample_filter, up=up, down=down, padding=padding, groups=batch_size, flip_weight=flip_weight)
-    x = x.reshape(batch_size, -1, *x.shape[2:])
-    if noise is not None:
-        x = x.add_(noise)
+def rand_brightness(x, scale):
+    x = x + (torch.rand(x.size(0), 1, 1, 1, dtype=x.dtype, device=x.device) - 0.5) * scale
     return x
 
 
-class SynthesisLayer(nn.Module):
-    def __init__(self,
-                 in_channels,  # Number of input channels.
-                 out_channels,  # Number of output channels.
-                 w_dim,  # Intermediate latent (W) dimensionality.
-                 resolution,  # Resolution of this layer.
-                 kernel_size=3,  # Convolution kernel size.
-                 up=1,  # Integer upsampling factor.
-                 use_noise=True,  # Enable noise input?
-                 activation='lrelu',  # Activation function: 'relu', 'lrelu', etc.
-                 resample_filter=[1, 3, 3, 1],  # Low-pass filter to apply when resampling activations.
-                 conv_clamp=None,  # Clamp the output of convolution layers to +-X, None = disable clamping.
-                 channels_last=False,  # Use channels_last format for the weights?
-                 ):
+def rand_saturation(x, scale):
+    x_mean = x.mean(dim=1, keepdim=True)
+    x = (x - x_mean) * (((torch.rand(x.size(0), 1, 1, 1, dtype=x.dtype, device=x.device) - 0.5) * 2.0 * scale) + 1.0) + x_mean
+    return x
+
+
+def rand_contrast(x, scale):
+    x_mean = x.mean(dim=[1, 2, 3], keepdim=True)
+    x = (x - x_mean) * (((torch.rand(x.size(0), 1, 1, 1, dtype=x.dtype, device=x.device) - 0.5) * 2.0 * scale) + 1.0) + x_mean
+    return x
+
+
+def rand_translation(x, ratio=0.125):
+    shift_x, shift_y = int(x.size(2) * ratio + 0.5), int(x.size(3) * ratio + 0.5)
+    translation_x = torch.randint(-shift_x, shift_x + 1, size=[x.size(0), 1, 1], device=x.device)
+    translation_y = torch.randint(-shift_y, shift_y + 1, size=[x.size(0), 1, 1], device=x.device)
+    grid_batch, grid_x, grid_y = torch.meshgrid(
+        torch.arange(x.size(0), dtype=torch.long, device=x.device),
+        torch.arange(x.size(2), dtype=torch.long, device=x.device),
+        torch.arange(x.size(3), dtype=torch.long, device=x.device),
+    )
+    grid_x = torch.clamp(grid_x + translation_x + 1, 0, x.size(2) + 1)
+    grid_y = torch.clamp(grid_y + translation_y + 1, 0, x.size(3) + 1)
+    x_pad = F.pad(x, [1, 1, 1, 1, 0, 0, 0, 0])
+    x = x_pad.permute(0, 2, 3, 1).contiguous()[grid_batch, grid_x, grid_y].permute(0, 3, 1, 2)
+    return x
+
+
+def rand_offset(x, ratio=1, ratio_h=1, ratio_v=1):
+    w, h = x.size(2), x.size(3)
+
+    imgs = []
+    for img in x.unbind(dim=0):
+        max_h = int(w * ratio * ratio_h)
+        max_v = int(h * ratio * ratio_v)
+
+        value_h = random.randint(0, max_h) * 2 - max_h
+        value_v = random.randint(0, max_v) * 2 - max_v
+
+        if abs(value_h) > 0:
+            img = torch.roll(img, value_h, 2)
+
+        if abs(value_v) > 0:
+            img = torch.roll(img, value_v, 1)
+
+        imgs.append(img)
+
+    return torch.stack(imgs)
+
+
+def rand_offset_h(x, ratio=1):
+    return rand_offset(x, ratio=1, ratio_h=ratio, ratio_v=0)
+
+
+def rand_offset_v(x, ratio=1):
+    return rand_offset(x, ratio=1, ratio_h=0, ratio_v=ratio)
+
+
+def rand_cutout(x, ratio=0.5):
+    cutout_size = int(x.size(2) * ratio + 0.5), int(x.size(3) * ratio + 0.5)
+    offset_x = torch.randint(0, x.size(2) + (1 - cutout_size[0] % 2), size=[x.size(0), 1, 1], device=x.device)
+    offset_y = torch.randint(0, x.size(3) + (1 - cutout_size[1] % 2), size=[x.size(0), 1, 1], device=x.device)
+    grid_batch, grid_x, grid_y = torch.meshgrid(
+        torch.arange(x.size(0), dtype=torch.long, device=x.device),
+        torch.arange(cutout_size[0], dtype=torch.long, device=x.device),
+        torch.arange(cutout_size[1], dtype=torch.long, device=x.device),
+    )
+    grid_x = torch.clamp(grid_x + offset_x - cutout_size[0] // 2, min=0, max=x.size(2) - 1)
+    grid_y = torch.clamp(grid_y + offset_y - cutout_size[1] // 2, min=0, max=x.size(3) - 1)
+    mask = torch.ones(x.size(0), x.size(2), x.size(3), dtype=x.dtype, device=x.device)
+    mask[grid_batch, grid_x, grid_y] = 0
+    x = x * mask.unsqueeze(1)
+    return x
+
+
+AUGMENT_FNS = {
+    'brightness': [partial(rand_brightness, scale=1.)],
+    'lightbrightness': [partial(rand_brightness, scale=.65)],
+    'contrast': [partial(rand_contrast, scale=.5)],
+    'lightcontrast': [partial(rand_contrast, scale=.25)],
+    'saturation': [partial(rand_saturation, scale=1.)],
+    'lightsaturation': [partial(rand_saturation, scale=.5)],
+    'color': [partial(rand_brightness, scale=1.), partial(rand_saturation, scale=1.), partial(rand_contrast, scale=0.5)],
+    'lightcolor': [partial(rand_brightness, scale=0.65), partial(rand_saturation, scale=.5), partial(rand_contrast, scale=0.5)],
+    'offset': [rand_offset],
+    'offset_h': [rand_offset_h],
+    'offset_v': [rand_offset_v],
+    'translation': [rand_translation],
+    'cutout': [rand_cutout],
+}
+
+# constants
+
+NUM_CORES = multiprocessing.cpu_count()
+EXTS = ['jpg', 'jpeg', 'png']
+
+
+# helper classes
+
+
+class EMA():
+    def __init__(self, beta):
         super().__init__()
-        self.resolution = resolution
-        self.up = up
-        self.use_noise = use_noise
-        self.activation = activation
-        self.conv_clamp = conv_clamp
-        self.register_buffer('resample_filter', upfirdn2d.setup_filter(resample_filter))
-        self.padding = kernel_size // 2
-        self.act_gain = activation_funcs[activation].def_gain
+        self.beta = beta
 
-        self.affine = FullyConnectedLayer(w_dim, in_channels, bias_init=1)
-        memory_format = torch.channels_last if channels_last else torch.contiguous_format
-        self.weight = torch.nn.Parameter(torch.randn([out_channels, in_channels, kernel_size, kernel_size]).to(memory_format=memory_format))
-        if use_noise:
-            self.register_buffer('noise_const', torch.randn([resolution, resolution]))
-            self.noise_strength = torch.nn.Parameter(torch.zeros([]))
-        self.bias = torch.nn.Parameter(torch.zeros([out_channels]))
+    def update_average(self, old, new):
+        if not exists(old):
+            return new
+        return old * self.beta + (1 - self.beta) * new
 
-    def forward(self, x, w, noise_mode='random', fused_modconv=True, gain=1):
-        styles = self.affine(w)
 
-        noise = None
-        if self.use_noise and noise_mode == 'random':
-            noise = torch.randn([x.shape[0], 1, self.resolution, self.resolution], device=x.device) * self.noise_strength
-        if self.use_noise and noise_mode == 'const':
-            noise = self.noise_const * self.noise_strength
+class Flatten(nn.Module):
+    def forward(self, x):
+        return x.reshape(x.shape[0], -1)
 
-        flip_weight = (self.up == 1)  # slightly faster
-        x = modulated_conv2d(x=x, weight=self.weight, styles=styles, noise=noise, up=self.up,
-                             padding=self.padding, resample_filter=self.resample_filter, flip_weight=flip_weight, fused_modconv=fused_modconv)
 
-        act_gain = self.act_gain * gain
-        act_clamp = self.conv_clamp * gain if self.conv_clamp is not None else None
-        x = bias_act(x, self.bias.to(x.dtype), act=self.activation, gain=act_gain, clamp=act_clamp)
+class RandomApply(nn.Module):
+    def __init__(self, prob, fn, fn_else=lambda x: x):
+        super().__init__()
+        self.fn = fn
+        self.fn_else = fn_else
+        self.prob = prob
+
+    def forward(self, x):
+        fn = self.fn if random.random() < self.prob else self.fn_else
+        return fn(x)
+
+
+class ChanNorm(nn.Module):
+    def __init__(self, dim, eps=1e-5):
+        super().__init__()
+        self.eps = eps
+        self.g = nn.Parameter(torch.ones(1, dim, 1, 1))
+        self.b = nn.Parameter(torch.zeros(1, dim, 1, 1))
+
+    def forward(self, x):
+        var = torch.var(x, dim=1, unbiased=False, keepdim=True)
+        mean = torch.mean(x, dim=1, keepdim=True)
+        return (x - mean) / (var + self.eps).sqrt() * self.g + self.b
+
+
+class PermuteToFrom(nn.Module):
+    def __init__(self, fn):
+        super().__init__()
+        self.fn = fn
+
+    def forward(self, x):
+        x = x.permute(0, 2, 3, 1)
+        out, *_, loss = self.fn(x)
+        out = out.permute(0, 3, 1, 2)
+        return out, loss
+
+
+class Blur(nn.Module):
+    def __init__(self):
+        super().__init__()
+        f = torch.Tensor([1, 2, 1])
+        self.register_buffer('f', f)
+
+    def forward(self, x):
+        f = self.f
+        f = f[None, None, :] * f[None, :, None]
+        return filter2d(x, f, normalized=True)
+
+
+# helpers
+
+def exists(val):
+    return val is not None
+
+
+# augmentations
+
+def random_hflip(tensor, prob):
+    if prob < random.random():
+        return tensor
+    return torch.flip(tensor, dims=(3,))
+
+
+class AugWrapper(nn.Module):
+    def __init__(self, D, image_size):
+        super().__init__()
+        self.D = D
+
+    def forward(self, images, prob=0., types=[], detach=False):
+        if random.random() < prob:
+            images = random_hflip(images, prob=0.5)
+            images = DiffAugment(images, types=types)
+
+        if detach:
+            images = images.detach()
+
+        return self.D(images)
+
+
+# stylegan2 classes
+class StyleVectorizer(nn.Module):
+    def __init__(self, emb, depth, lr_mul=0.1):
+        super().__init__()
+
+        layers = []
+        for i in range(depth):
+            layers += [
+                EqualLinear(emb, emb, lr_mul),
+                nn.LeakyReLU(0.2, inplace=True)
+            ]
+
+        self.net = nn.Sequential(*layers)
+
+    def forward(self, x):
+        x = F.normalize(x, dim=1)
+        return self.net(x)
+
+
+class LinearAttention(nn.Module):
+    def __init__(self, in_ch, hidden_ch=64, heads=8):
+        super().__init__()
+        self.scale = hidden_ch ** -0.5
+        self.heads = heads
+        tmp_ch = hidden_ch * heads
+
+        self.to_q = nn.Conv2d(in_ch, tmp_ch, 1, bias=False)
+        self.to_kv = nn.Sequential(
+            nn.Conv2d(in_ch, in_ch, kernel_size=3, padding=1, groups=in_ch, stride=1, bias=False),
+            nn.Conv2d(in_ch, tmp_ch * 2, kernel_size=1, bias=False)
+        )
+
+        self.to_out = Conv(tmp_ch, in_ch, 1, act=nn.GELU(), is_norm=False, mode='ac')
+
+    def forward(self, fmap):
+        h, x, y = self.heads, *fmap.shape[-2:]
+        q, k, v = (self.to_q(fmap), *self.to_kv(fmap).chunk(2, dim=1))
+        q, k, v = map(lambda t: rearrange(t, 'b (h c) x y -> (b h) (x y) c', h=h), (q, k, v))
+
+        q = q.softmax(dim=-1)
+        k = k.softmax(dim=-2)
+
+        q = q * self.scale
+
+        context = einsum('b n d, b n e -> b d e', k, v)
+        out = einsum('b n d, b d e -> b n e', q, context)
+        out = rearrange(out, '(b h) (x y) d -> b (h d) x y', h=h, x=x, y=y)
+
+        return self.to_out(out)
+
+
+class AttentionBlock(nn.Sequential):
+    """one layer of self-attention and feedforward, for images"""
+
+    def __init__(self, in_ch):
+        super().__init__(
+            Residual(nn.Sequential(
+                ChanNorm(in_ch),
+                LinearAttention(in_ch)
+            )),
+            Residual(nn.Sequential(
+                ChanNorm(in_ch),
+                Conv(in_ch, in_ch * 2, 1, act=nn.LeakyReLU(0.2, inplace=True), is_norm=False),
+                Conv(in_ch * 2, in_ch, 1, is_act=False, is_norm=False),
+            ))
+        )
+
+
+class RGBBlock(nn.Module):
+    def __init__(self, latent_dim, in_ch, is_upsample, rgba=False):
+        super().__init__()
+        self.in_channels = in_ch
+        self.to_style = nn.Linear(latent_dim, in_ch)
+
+        out_filters = 3 if not rgba else 4
+        self.conv = Conv2DMod(in_ch, out_filters, 1, demod=False)
+
+        self.upsample = nn.Sequential(
+            nn.Upsample(scale_factor=2, mode='bilinear', align_corners=False),
+            Blur()
+        ) if is_upsample else nn.Identity()
+
+    def forward(self, x, prev_rgb, istyle):
+        style = self.to_style(istyle)
+        x = self.conv(x, style)
+
+        if prev_rgb is not None:
+            x = x + prev_rgb
+
+        x = self.upsample(x)
         return x
 
 
-class ToRGBLayer(nn.Module):
-    def __init__(self, in_channels, out_channels, w_dim, kernel_size=1, conv_clamp=None, channels_last=False):
+class GeneratorBlock(nn.Module):
+    def __init__(self, latent_dim, in_ch, filters, is_upsample=True, upsample_rgb=True, rgba=False):
         super().__init__()
-        self.conv_clamp = conv_clamp
-        self.affine = FullyConnectedLayer(w_dim, in_channels, bias_init=1)
-        memory_format = torch.channels_last if channels_last else torch.contiguous_format
-        self.weight = torch.nn.Parameter(torch.randn([out_channels, in_channels, kernel_size, kernel_size]).to(memory_format=memory_format))
-        self.bias = torch.nn.Parameter(torch.zeros([out_channels]))
-        self.weight_gain = 1 / np.sqrt(in_channels * (kernel_size ** 2))
+        self.upsample = nn.Upsample(scale_factor=2, mode='bilinear', align_corners=False) if is_upsample else nn.Identity()
 
-    def forward(self, x, w, fused_modconv=True):
-        styles = self.affine(w) * self.weight_gain
-        x = modulated_conv2d(x=x, weight=self.weight, styles=styles, demodulate=False, fused_modconv=fused_modconv)
-        x = bias_act(x, self.bias.to(x.dtype), clamp=self.conv_clamp)
-        return x
+        self.to_style1 = nn.Linear(latent_dim, in_ch)
+        self.to_noise1 = nn.Linear(1, filters)
+        self.conv1 = Conv2DMod(in_ch, filters, 3)
 
+        self.to_style2 = nn.Linear(latent_dim, filters)
+        self.to_noise2 = nn.Linear(1, filters)
+        self.conv2 = Conv2DMod(filters, filters, 3)
 
-class Discriminator(nn.Module):
-    def __init__(self,
-                 c_dim,  # Conditioning label (C) dimensionality.
-                 img_resolution,  # Input resolution.
-                 img_channels,  # Number of input color channels.
-                 architecture='resnet',  # Architecture: 'orig', 'skip', 'resnet'.
-                 channel_base=32768,  # Overall multiplier for the number of channels.
-                 channel_max=512,  # Maximum number of channels in any layer.
-                 num_fp16_res=0,  # Use FP16 for the N highest resolutions.
-                 conv_clamp=None,  # Clamp the output of convolution layers to +-X, None = disable clamping.
-                 cmap_dim=None,  # Dimensionality of mapped conditioning label, None = default.
-                 block_kwargs={},  # Arguments for DiscriminatorBlock.
-                 mapping_kwargs={},  # Arguments for MappingNetwork.
-                 epilogue_kwargs={},  # Arguments for DiscriminatorEpilogue.
-                 ):
-        super().__init__()
-        self.c_dim = c_dim
-        self.img_resolution = img_resolution
-        self.img_resolution_log2 = int(np.log2(img_resolution))
-        self.img_channels = img_channels
-        self.block_resolutions = [2 ** i for i in range(self.img_resolution_log2, 2, -1)]
-        channels_dict = {res: min(channel_base // res, channel_max) for res in self.block_resolutions + [4]}
-        fp16_resolution = max(2 ** (self.img_resolution_log2 + 1 - num_fp16_res), 8)
+        self.activation = nn.LeakyReLU(0.2, inplace=True)
+        self.to_rgb = RGBBlock(latent_dim, filters, upsample_rgb, rgba)
 
-        if cmap_dim is None:
-            cmap_dim = channels_dict[4]
-        if c_dim == 0:
-            cmap_dim = 0
+    def forward(self, x, prev_rgb, istyle, inoise):
+        x = self.upsample(x)
 
-        common_kwargs = dict(img_channels=img_channels, architecture=architecture, conv_clamp=conv_clamp)
-        cur_layer_idx = 0
-        for res in self.block_resolutions:
-            in_channels = channels_dict[res] if res < img_resolution else 0
-            tmp_channels = channels_dict[res]
-            out_channels = channels_dict[res // 2]
-            use_fp16 = (res >= fp16_resolution)
-            block = DiscriminatorBlock(in_channels, tmp_channels, out_channels, resolution=res,
-                                       first_layer_idx=cur_layer_idx, use_fp16=use_fp16, **block_kwargs, **common_kwargs)
-            setattr(self, f'b{res}', block)
-            cur_layer_idx += block.num_layers
-        if c_dim > 0:
-            self.mapping = MappingNetwork(z_dim=0, c_dim=c_dim, w_dim=cmap_dim, num_ws=None, w_avg_beta=None, **mapping_kwargs)
-        self.b4 = DiscriminatorEpilogue(channels_dict[4], cmap_dim=cmap_dim, resolution=4, **epilogue_kwargs, **common_kwargs)
+        inoise = inoise[:, :x.shape[2], :x.shape[3], :]
+        noise1 = self.to_noise1(inoise).permute((0, 3, 2, 1))
+        noise2 = self.to_noise2(inoise).permute((0, 3, 2, 1))
 
-    def forward(self, img, c, **block_kwargs):
-        x = None
-        for res in self.block_resolutions:
-            block = getattr(self, f'b{res}')
-            x, img = block(x, img, **block_kwargs)
+        style1 = self.to_style1(istyle)
+        x = self.conv1(x, style1)
+        x = self.activation(x + noise1)
 
-        cmap = None
-        if self.c_dim > 0:
-            cmap = self.mapping(None, c)
-        x = self.b4(x, img, cmap)
-        return x
+        style2 = self.to_style2(istyle)
+        x = self.conv2(x, style2)
+        x = self.activation(x + noise2)
+
+        rgb = self.to_rgb(x, prev_rgb, istyle)
+        return x, rgb
 
 
 class DiscriminatorBlock(nn.Module):
-    def __init__(self,
-                 in_channels,  # Number of input channels, 0 = first block.
-                 tmp_channels,  # Number of intermediate channels.
-                 out_channels,  # Number of output channels.
-                 resolution,  # Resolution of this block.
-                 img_channels,  # Number of input color channels.
-                 first_layer_idx,  # Index of the first layer.
-                 architecture='resnet',  # Architecture: 'orig', 'skip', 'resnet'.
-                 activation='lrelu',  # Activation function: 'relu', 'lrelu', etc.
-                 resample_filter=[1, 3, 3, 1],  # Low-pass filter to apply when resampling activations.
-                 conv_clamp=None,  # Clamp the output of convolution layers to +-X, None = disable clamping.
-                 use_fp16=False,  # Use FP16 for this block?
-                 fp16_channels_last=False,  # Use channels-last memory format with FP16?
-                 freeze_layers=0,  # Freeze-D: Number of layers to freeze.
-                 ):
-        assert in_channels in [0, tmp_channels]
-        assert architecture in ['orig', 'skip', 'resnet']
+    def __init__(self, in_ch, out_ch, is_downsample=True):
         super().__init__()
-        self.in_channels = in_channels
-        self.resolution = resolution
-        self.img_channels = img_channels
-        self.first_layer_idx = first_layer_idx
-        self.architecture = architecture
-        self.use_fp16 = use_fp16
-        self.channels_last = (use_fp16 and fp16_channels_last)
-        self.register_buffer('resample_filter', upfirdn2d.setup_filter(resample_filter))
+        self.conv_res = nn.Conv2d(in_ch, out_ch, 1, stride=(2 if is_downsample else 1))
 
-        self.num_layers = 0
+        self.conv_seq = nn.Sequential(
+            Conv(in_ch, out_ch, 3, act=nn.LeakyReLU(0.2, inplace=True), is_norm=False),
+            Conv(out_ch, out_ch, 3, act=nn.LeakyReLU(0.2, inplace=True), is_norm=False),
+        )
 
-        def trainable_gen():
-            while True:
-                layer_idx = self.first_layer_idx + self.num_layers
-                trainable = (layer_idx >= freeze_layers)
-                self.num_layers += 1
-                yield trainable
-
-        trainable_iter = trainable_gen()
-
-        if in_channels == 0 or architecture == 'skip':
-            self.fromrgb = Conv2dLayer(img_channels, tmp_channels, kernel_size=1, activation=activation,
-                                       trainable=next(trainable_iter), conv_clamp=conv_clamp, channels_last=self.channels_last)
-
-        self.conv0 = Conv2dLayer(tmp_channels, tmp_channels, kernel_size=3, activation=activation,
-                                 trainable=next(trainable_iter), conv_clamp=conv_clamp, channels_last=self.channels_last)
-
-        self.conv1 = Conv2dLayer(tmp_channels, out_channels, kernel_size=3, activation=activation, down=2,
-                                 trainable=next(trainable_iter), resample_filter=resample_filter, conv_clamp=conv_clamp, channels_last=self.channels_last)
-
-        if architecture == 'resnet':
-            self.skip = Conv2dLayer(tmp_channels, out_channels, kernel_size=1, bias=False, down=2,
-                                    trainable=next(trainable_iter), resample_filter=resample_filter, channels_last=self.channels_last)
-
-    def forward(self, x, img, force_fp32=False):
-        dtype = torch.float16 if self.use_fp16 and not force_fp32 else torch.float32
-        memory_format = torch.channels_last if self.channels_last and not force_fp32 else torch.contiguous_format
-
-        # Input.
-        if x is not None:
-            x = x.to(dtype=dtype, memory_format=memory_format)
-
-        # FromRGB.
-        if self.in_channels == 0 or self.architecture == 'skip':
-            img = img.to(dtype=dtype, memory_format=memory_format)
-            y = self.fromrgb(img)
-            x = x + y if x is not None else y
-            img = upfirdn2d.downsample2d(img, self.resample_filter) if self.architecture == 'skip' else None
-
-        # Main layers.
-        if self.architecture == 'resnet':
-            y = self.skip(x, gain=np.sqrt(0.5))
-            x = self.conv0(x)
-            x = self.conv1(x, gain=np.sqrt(0.5))
-            x = y.add_(x)
-        else:
-            x = self.conv0(x)
-            x = self.conv1(x)
-
-        assert x.dtype == dtype
-        return x, img
-
-
-class Conv2dLayer(nn.Module):
-    def __init__(self,
-                 in_channels,  # Number of input channels.
-                 out_channels,  # Number of output channels.
-                 kernel_size,  # Width and height of the convolution kernel.
-                 bias=True,  # Apply additive bias before the activation function?
-                 activation='linear',  # Activation function: 'relu', 'lrelu', etc.
-                 up=1,  # Integer upsampling factor.
-                 down=1,  # Integer downsampling factor.
-                 resample_filter=[1, 3, 3, 1],  # Low-pass filter to apply when resampling activations.
-                 conv_clamp=None,  # Clamp the output to +-X, None = disable clamping.
-                 channels_last=False,  # Expect the input to have memory_format=channels_last?
-                 trainable=True,  # Update the weights of this layer during training?
-                 ):
-        super().__init__()
-        self.activation = activation
-        self.up = up
-        self.down = down
-        self.conv_clamp = conv_clamp
-        self.register_buffer('resample_filter', upfirdn2d.setup_filter(resample_filter))
-        self.padding = kernel_size // 2
-        self.weight_gain = 1 / np.sqrt(in_channels * (kernel_size ** 2))
-        self.act_gain = activation_funcs[activation].def_gain
-
-        memory_format = torch.channels_last if channels_last else torch.contiguous_format
-        weight = torch.randn([out_channels, in_channels, kernel_size, kernel_size]).to(memory_format=memory_format)
-        bias = torch.zeros([out_channels]) if bias else None
-        if trainable:
-            self.weight = torch.nn.Parameter(weight)
-            self.bias = torch.nn.Parameter(bias) if bias is not None else None
-        else:
-            self.register_buffer('weight', weight)
-            if bias is not None:
-                self.register_buffer('bias', bias)
-            else:
-                self.bias = None
-
-    def forward(self, x, gain=1):
-        w = self.weight * self.weight_gain
-        b = self.bias.to(x.dtype) if self.bias is not None else None
-        flip_weight = (self.up == 1)  # slightly faster
-        x = conv2d_resample.conv2d_resample(x=x, w=w.to(x.dtype), f=self.resample_filter, up=self.up, down=self.down, padding=self.padding, flip_weight=flip_weight)
-
-        act_gain = self.act_gain * gain
-        act_clamp = self.conv_clamp * gain if self.conv_clamp is not None else None
-        x = bias_act(x, b, act=self.activation, gain=act_gain, clamp=act_clamp)
-        return x
-
-
-class DiscriminatorEpilogue(nn.Module):
-    def __init__(self,
-                 in_channels,  # Number of input channels.
-                 cmap_dim,  # Dimensionality of mapped conditioning label, 0 = no label.
-                 resolution,  # Resolution of this block.
-                 img_channels,  # Number of input color channels.
-                 architecture='resnet',  # Architecture: 'orig', 'skip', 'resnet'.
-                 mbstd_group_size=4,  # Group size for the minibatch standard deviation layer, None = entire minibatch.
-                 mbstd_num_channels=1,  # Number of features for the minibatch standard deviation layer, 0 = disable.
-                 activation='lrelu',  # Activation function: 'relu', 'lrelu', etc.
-                 conv_clamp=None,  # Clamp the output of convolution layers to +-X, None = disable clamping.
-                 ):
-        assert architecture in ['orig', 'skip', 'resnet']
-        super().__init__()
-        self.in_channels = in_channels
-        self.cmap_dim = cmap_dim
-        self.resolution = resolution
-        self.img_channels = img_channels
-        self.architecture = architecture
-
-        if architecture == 'skip':
-            self.fromrgb = Conv2dLayer(img_channels, in_channels, kernel_size=1, activation=activation)
-        self.mbstd = MinibatchStdLayer(group_size=mbstd_group_size, num_channels=mbstd_num_channels) if mbstd_num_channels > 0 else None
-        self.conv = Conv2dLayer(in_channels + mbstd_num_channels, in_channels, kernel_size=3, activation=activation, conv_clamp=conv_clamp)
-        self.fc = FullyConnectedLayer(in_channels * (resolution ** 2), in_channels, activation=activation)
-        self.out = FullyConnectedLayer(in_channels, 1 if cmap_dim == 0 else cmap_dim)
-
-    def forward(self, x, img, cmap, force_fp32=False):
-        _ = force_fp32  # unused
-        dtype = torch.float32
-        memory_format = torch.contiguous_format
-
-        # FromRGB.
-        x = x.to(dtype=dtype, memory_format=memory_format)
-        if self.architecture == 'skip':
-            img = img.to(dtype=dtype, memory_format=memory_format)
-            x = x + self.fromrgb(img)
-
-        # Main layers.
-        if self.mbstd is not None:
-            x = self.mbstd(x)
-        x = self.conv(x)
-        x = self.fc(x.flatten(1))
-        x = self.out(x)
-
-        # Conditioning.
-        if self.cmap_dim > 0:
-            x = (x * cmap).sum(dim=1, keepdim=True) * (1 / np.sqrt(self.cmap_dim))
-
-        assert x.dtype == dtype
-        return x
-
-
-class MinibatchStdLayer(nn.Module):
-    def __init__(self, group_size, num_channels=1):
-        super().__init__()
-        self.group_size = group_size
-        self.num_channels = num_channels
+        self.downsample = nn.Sequential(
+            Blur(),
+            nn.Conv2d(out_ch, out_ch, 3, padding=1, stride=2)
+        ) if is_downsample else nn.Identity()
 
     def forward(self, x):
-        N, C, H, W = x.shape
-        G = torch.min(torch.as_tensor(self.group_size), torch.as_tensor(N)) if self.group_size is not None else N
-        F = self.num_channels
-        c = C // F
-
-        y = x.reshape(G, -1, F, c, H, W)  # [GnFcHW] Split minibatch N into n groups of size G, and channels C into F groups of size c.
-        y = y - y.mean(dim=0)  # [GnFcHW] Subtract mean over group.
-        y = y.square().mean(dim=0)  # [nFcHW]  Calc variance over group.
-        y = (y + 1e-8).sqrt()  # [nFcHW]  Calc stddev over group.
-        y = y.mean(dim=[2, 3, 4])  # [nF]     Take average over channels and pixels.
-        y = y.reshape(-1, F, 1, 1)  # [nF11]   Add missing dimensions.
-        y = y.repeat(G, 1, H, W)  # [NFHW]   Replicate over group and pixels.
-        x = torch.cat([x, y], dim=1)  # [NCHW]   Append to input as new channels.
+        res = self.conv_res(x)
+        x = self.conv_seq(x)
+        x = self.downsample(x)
+        x = (x + res) * (1 / math.sqrt(2))
         return x
 
 
-def bias_act(x, b=None, dim=1, act='linear', alpha=None, gain=None, clamp=None, impl='cuda'):
-    r"""Fused bias and activation function.
+class Generator(nn.Module):
+    def __init__(self, image_size, latent_dim, network_capacity=16, transparent=False, attn_layers=[], no_const=False, fmap_max=512):
+        super().__init__()
+        self.image_size = image_size
+        self.latent_dim = latent_dim
+        self.num_layers = int(log2(image_size) - 1)
 
-    Adds bias `b` to activation tensor `x`, evaluates activation function `act`,
-    and scales the result by `gain`. Each of the steps is optional. In most cases,
-    the fused op is considerably more efficient than performing the same calculation
-    using standard PyTorch ops. It supports first and second order gradients,
-    but not third order gradients.
+        out_ches = [network_capacity * (2 ** (i + 1)) for i in range(self.num_layers)][::-1]
 
-    Args:
-        x:      Input activation tensor. Can be of any shape.
-        b:      Bias vector, or `None` to disable. Must be a 1D tensor of the same type
-                as `x`. The shape must be known, and it must match the dimension of `x`
-                corresponding to `dim`.
-        dim:    The dimension in `x` corresponding to the elements of `b`.
-                The value of `dim` is ignored if `b` is not specified.
-        act:    Name of the activation function to evaluate, or `"linear"` to disable.
-                Can be e.g. `"relu"`, `"lrelu"`, `"tanh"`, `"sigmoid"`, `"swish"`, etc.
-                See `activation_funcs` for a full list. `None` is not allowed.
-        alpha:  Shape parameter for the activation function, or `None` to use the default.
-        gain:   Scaling factor for the output tensor, or `None` to use default.
-                See `activation_funcs` for the default scaling of each activation function.
-                If unsure, consider specifying 1.
-        clamp:  Clamp the output values to `[-clamp, +clamp]`, or `None` to disable
-                the clamping (default).
-        impl:   Name of the implementation to use. Can be `"ref"` or `"cuda"` (default).
+        set_fmap_max = partial(min, fmap_max)
+        out_ches = list(map(set_fmap_max, out_ches))
+        in_ch = out_ches[0]
 
-    Returns:
-        Tensor of the same shape and datatype as `x`.
-    """
-    assert isinstance(x, torch.Tensor)
-    assert impl in ['ref', 'cuda']
-    if impl == 'cuda' and x.device.type == 'cuda' and _init():
-        return _bias_act_cuda(dim=dim, act=act, alpha=alpha, gain=gain, clamp=clamp).apply(x, b)
-    return _bias_act_ref(x=x, b=b, dim=dim, act=act, alpha=alpha, gain=gain, clamp=clamp)
+        # in_out_pairs = zip(filters[:-1], filters[1:])
+        self.no_const = no_const
 
+        if no_const:
+            self.to_initial_block = nn.ConvTranspose2d(latent_dim, in_ch, 4, 1, 0, bias=False)
+        else:
+            self.initial_block = nn.Parameter(torch.randn((1, in_ch, 4, 4)))
 
-def _bias_act_ref(x, b=None, dim=1, act='linear', alpha=None, gain=None, clamp=None):
-    """Slow reference implementation of `bias_act()` using standard TensorFlow ops.
-    """
-    assert isinstance(x, torch.Tensor)
-    assert clamp is None or clamp >= 0
-    spec = activation_funcs[act]
-    alpha = float(alpha if alpha is not None else spec.def_alpha)
-    gain = float(gain if gain is not None else spec.def_gain)
-    clamp = float(clamp if clamp is not None else -1)
+        self.initial_conv = nn.Conv2d(in_ch, in_ch, 3, padding=1)
+        self.blocks = nn.ModuleList([])
+        self.attns = nn.ModuleList([])
 
-    # Add bias.
-    if b is not None:
-        assert isinstance(b, torch.Tensor) and b.ndim == 1
-        assert 0 <= dim < x.ndim
-        assert b.shape[0] == x.shape[dim]
-        x = x + b.reshape([-1 if i == dim else 1 for i in range(x.ndim)])
+        # for ind, (in_chan, out_chan) in enumerate(in_out_pairs):
+        for i, out_ch in enumerate(out_ches):
+            not_first = i != 0
+            not_last = i != (self.num_layers - 1)
+            num_layer = self.num_layers - i
 
-    # Evaluate activation function.
-    alpha = float(alpha)
-    x = spec.func(x, alpha=alpha)
+            attn_fn = AttentionBlock(in_ch) if num_layer in attn_layers else None
+            self.attns.append(attn_fn)
 
-    # Scale by gain.
-    gain = float(gain)
-    if gain != 1:
-        x = x * gain
+            block = GeneratorBlock(
+                latent_dim,
+                in_ch,
+                out_ch,
+                is_upsample=not_first,
+                upsample_rgb=not_last,
+                rgba=transparent
+            )
+            self.blocks.append(block)
 
-    # Clamp.
-    if clamp >= 0:
-        x = x.clamp(-clamp, clamp)  # pylint: disable=invalid-unary-operand-type
-    return x
+            in_ch = out_ch
+
+    def forward(self, styles, input_noise):
+        batch_size = styles.shape[0]
+
+        if self.no_const:
+            avg_style = styles.mean(dim=1)[:, :, None, None]
+            x = self.to_initial_block(avg_style)
+        else:
+            x = self.initial_block.expand(batch_size, -1, -1, -1)
+
+        rgb = None
+        styles = styles.transpose(0, 1)
+        x = self.initial_conv(x)
+
+        for style, block, attn in zip(styles, self.blocks, self.attns):
+            if exists(attn):
+                x = attn(x)
+            x, rgb = block(x, rgb, style, input_noise)
+
+        return rgb
 
 
-_bias_act_cuda_cache = dict()
+class Discriminator(nn.Module):
+    def __init__(self, image_size, network_capacity=16, fq_layers=[], fq_dict_size=256, attn_layers=[], transparent=False, fmap_max=512):
+        super().__init__()
+        num_layers = int(log2(image_size) - 1)
+        in_ch = 3 if not transparent else 4
+
+        out_ches = [(network_capacity * 4) * (2 ** i) for i in range(num_layers + 1)]
+
+        set_fmap_max = partial(min, fmap_max)
+        out_ches = list(map(set_fmap_max, out_ches))
+
+        blocks = []
+        attn_blocks = []
+        quantize_blocks = []
+
+        for i, out_ch in enumerate(out_ches):
+            num_layer = i + 1
+            is_not_last = i != (len(out_ches) - 1)
+
+            block = DiscriminatorBlock(in_ch, out_ch, is_downsample=is_not_last)
+            blocks.append(block)
+
+            # attn_fn = attn_and_ff(out_ch) if num_layer in attn_layers else None
+            attn_fn = AttentionBlock(out_ch) if num_layer in attn_layers else None
+
+            attn_blocks.append(attn_fn)
+
+            quantize_fn = PermuteToFrom(VectorQuantize(out_ch, fq_dict_size)) if num_layer in fq_layers else None
+            quantize_blocks.append(quantize_fn)
+            in_ch = out_ch
+
+        self.blocks = nn.ModuleList(blocks)
+        self.attn_blocks = nn.ModuleList(attn_blocks)
+        self.quantize_blocks = nn.ModuleList(quantize_blocks)
+
+        chan_last = out_ches[-1]
+        latent_dim = 2 * 2 * chan_last
+
+        self.final_conv = nn.Conv2d(chan_last, chan_last, 3, padding=1)
+        self.flatten = Flatten()
+        self.to_logit = nn.Linear(latent_dim, 1)
+
+    def forward(self, x):
+        b, *_ = x.shape
+
+        quantize_loss = torch.zeros(1).to(x)
+
+        for (block, attn_block, q_block) in zip(self.blocks, self.attn_blocks, self.quantize_blocks):
+            x = block(x)
+
+            if exists(attn_block):
+                x = attn_block(x)
+
+            if exists(q_block):
+                x, loss = q_block(x)
+                quantize_loss += loss
+
+        x = self.final_conv(x)
+        x = self.flatten(x)
+        x = self.to_logit(x)
+        return x.squeeze(), quantize_loss
 
 
-def _bias_act_cuda(dim=1, act='linear', alpha=None, gain=None, clamp=None):
-    """Fast CUDA implementation of `bias_act()` using custom ops.
-    """
-    # Parse arguments.
-    assert clamp is None or clamp >= 0
-    spec = activation_funcs[act]
-    alpha = float(alpha if alpha is not None else spec.def_alpha)
-    gain = float(gain if gain is not None else spec.def_gain)
-    clamp = float(clamp if clamp is not None else -1)
+class Model(nn.ModuleList):
+    def __init__(self, image_size, latent_dim=512, fmap_max=512, style_depth=8, network_capacity=16, transparent=False,
+                 fq_layers=[], fq_dict_size=256, attn_layers=[], no_const=False,
+                 lr_mlp=0.1):
+        super().__init__()
+        # self.ema_updater = EMA(0.995)
+        self.image_size = image_size
+        self.latent_dim = latent_dim
+        self.num_layers = 6
 
-    # Lookup from cache.
-    key = (dim, act, alpha, gain, clamp)
-    if key in _bias_act_cuda_cache:
-        return _bias_act_cuda_cache[key]
+        self.net_s = StyleVectorizer(latent_dim, style_depth, lr_mul=lr_mlp)
+        self.net_g = Generator(image_size, latent_dim, network_capacity, transparent=transparent, attn_layers=attn_layers, no_const=no_const, fmap_max=fmap_max)
+        self.net_d = Discriminator(image_size, network_capacity, fq_layers=fq_layers, fq_dict_size=fq_dict_size, attn_layers=attn_layers, transparent=transparent, fmap_max=fmap_max)
 
-    # Forward op.
-    class BiasActCuda(torch.autograd.Function):
-        @staticmethod
-        def forward(ctx, x, b):  # pylint: disable=arguments-differ
-            ctx.memory_format = torch.channels_last if x.ndim > 2 and x.stride()[1] == 1 else torch.contiguous_format
-            x = x.contiguous(memory_format=ctx.memory_format)
-            b = b.contiguous() if b is not None else _null_tensor
-            y = x
-            if act != 'linear' or gain != 1 or clamp >= 0 or b is not _null_tensor:
-                y = _plugin.bias_act(x, b, _null_tensor, _null_tensor, _null_tensor, 0, dim, spec.cuda_idx, alpha, gain, clamp)
-            ctx.save_for_backward(
-                x if 'x' in spec.ref or spec.has_2nd_grad else _null_tensor,
-                b if 'x' in spec.ref or spec.has_2nd_grad else _null_tensor,
-                y if 'y' in spec.ref else _null_tensor)
-            return y
+        # self.SE = StyleVectorizer(latent_dim, style_depth, lr_mul=lr_mlp)
+        # self.GE = Generator(image_size, latent_dim, network_capacity, transparent=transparent, attn_layers=attn_layers, no_const=no_const)
+        #
+        # self.D_cl = None
+        #
+        # if cl_reg:
+        #     from contrastive_learner import ContrastiveLearner
+        #     # experimental contrastive loss discriminator regularization
+        #     assert not transparent, 'contrastive loss regularization does not work with transparent images yet'
+        #     self.D_cl = ContrastiveLearner(self.D, image_size, hidden_layer='flatten')
 
-        @staticmethod
-        def backward(ctx, dy):  # pylint: disable=arguments-differ
-            dy = dy.contiguous(memory_format=ctx.memory_format)
-            x, b, y = ctx.saved_tensors
-            dx = None
-            db = None
+        # wrapper for augmenting all images going into the discriminator
+        self.D_aug = AugWrapper(self.net_d, image_size)
 
-            if ctx.needs_input_grad[0] or ctx.needs_input_grad[1]:
-                dx = dy
-                if act != 'linear' or gain != 1 or clamp >= 0:
-                    dx = BiasActCudaGrad.apply(dy, x, b, y)
+        # # turn off grad for exponential moving averages
+        # self.SE.requires_grad_(False)
+        # self.GE.requires_grad_(False)
 
-            if ctx.needs_input_grad[1]:
-                db = dx.sum([i for i in range(dx.ndim) if i != dim])
+        # init weights
+        self._init_weights()
+        # self.reset_parameter_averaging()
 
-            return dx, db
+        # # startup apex mixed precision
+        # self.fp16 = fp16
+        # if fp16:
+        #     (self.S, self.G, self.D, self.SE, self.GE), (self.G_opt, self.D_opt) = \
+        #         amp.initialize([self.S, self.G, self.D, self.SE, self.GE], [self.G_opt, self.D_opt], opt_level='O1', num_losses=3)
 
-    # Backward op.
-    class BiasActCudaGrad(torch.autograd.Function):
-        @staticmethod
-        def forward(ctx, dy, x, b, y):  # pylint: disable=arguments-differ
-            ctx.memory_format = torch.channels_last if dy.ndim > 2 and dy.stride()[1] == 1 else torch.contiguous_format
-            dx = _plugin.bias_act(dy, b, x, y, _null_tensor, 1, dim, spec.cuda_idx, alpha, gain, clamp)
-            ctx.save_for_backward(
-                dy if spec.has_2nd_grad else _null_tensor,
-                x, b, y)
-            return dx
+    def _init_weights(self):
+        for m in self.modules():
+            if type(m) in {nn.Conv2d, nn.Linear}:
+                nn.init.kaiming_normal_(m.weight, a=0, mode='fan_in', nonlinearity='leaky_relu')
 
-        @staticmethod
-        def backward(ctx, d_dx):  # pylint: disable=arguments-differ
-            d_dx = d_dx.contiguous(memory_format=ctx.memory_format)
-            dy, x, b, y = ctx.saved_tensors
-            d_dy = None
-            d_x = None
-            d_b = None
-            d_y = None
+        for block in self.net_g.blocks:
+            nn.init.zeros_(block.to_noise1.weight)
+            nn.init.zeros_(block.to_noise2.weight)
+            nn.init.zeros_(block.to_noise1.bias)
+            nn.init.zeros_(block.to_noise2.bias)
 
-            if ctx.needs_input_grad[0]:
-                d_dy = BiasActCudaGrad.apply(d_dx, x, b, y)
+    # def EMA(self):
+    #     def update_moving_average(ma_model, current_model):
+    #         for current_params, ma_params in zip(current_model.parameters(), ma_model.parameters()):
+    #             old_weight, up_weight = ma_params.data, current_params.data
+    #             ma_params.data = self.ema_updater.update_average(old_weight, up_weight)
+    #
+    #     update_moving_average(self.SE, self.S)
+    #     update_moving_average(self.GE, self.G)
+    #
+    # def reset_parameter_averaging(self):
+    #     self.SE.load_state_dict(self.S.state_dict())
+    #     self.GE.load_state_dict(self.G.state_dict())
 
-            if spec.has_2nd_grad and (ctx.needs_input_grad[1] or ctx.needs_input_grad[2]):
-                d_x = _plugin.bias_act(d_dx, b, x, y, dy, 2, dim, spec.cuda_idx, alpha, gain, clamp)
+    def loss_d(self, real_x):
+        aug_kwargs = {'prob': 0.0, 'types': ['translation', 'cutout']}
 
-            if spec.has_2nd_grad and ctx.needs_input_grad[2]:
-                d_b = d_x.sum([i for i in range(d_x.ndim) if i != dim])
+        batch_size = real_x.shape[0]
 
-            return d_dy, d_x, d_b, d_y
+        noise_x = torch.FloatTensor(batch_size, self.image_size, self.image_size, 1).uniform_(0., 1.).to(real_x.device)
+        w_styles = self.gen_styles(self.gen_rand_noise_z_list(batch_size, real_x.device))
 
-    # Add to cache.
-    _bias_act_cuda_cache[key] = BiasActCuda
-    return BiasActCuda
+        fake_x = self.net_g(w_styles, noise_x)
+        fake_y, fake_q_loss = self.D_aug(fake_x.clone().detach(), detach=True, **aug_kwargs)
+
+        real_x.requires_grad_(True)
+        real_y, real_q_loss = self.D_aug(real_x, **aug_kwargs)
+
+        return (F.relu(1 + real_y) + F.relu(1 - fake_y)).mean()
+
+    def loss_g(self, real_x):
+        aug_kwargs = {'prob': 0.0, 'types': ['translation', 'cutout']}
+        batch_size = real_x.shape[0]
+
+        noise_x = self.gen_noise_image(batch_size, real_x.device)
+        w_styles = self.gen_styles(self.gen_rand_noise_z_list(batch_size, real_x.device))
+
+        fake_x = self.net_g(w_styles, noise_x)
+        fake_y, _ = self.D_aug(fake_x, **aug_kwargs)
+        return fake_y.mean()
+
+    def gen_rand_noise_z_list(self, batch_size, device):
+        tt = int(torch.rand(()).numpy() * self.num_layers)
+        return [
+            (self.gen_noise_z(batch_size, device), tt),
+            (self.gen_noise_z(batch_size, device), self.num_layers - tt),
+        ]
+
+    def gen_same_noise_z_list(self, batch_size, device):
+        return [(self.gen_noise_z(batch_size, device), self.num_layers)]
+
+    def gen_styles(self, noise_z):
+        w = [(self.net_s(z), num_layers) for z, num_layers in noise_z]
+        return torch.cat([t[:, None, :].expand(-1, n, -1) for t, n in w], dim=1)
+
+    def gen_noise_z(self, batch_size, device):
+        return torch.randn(batch_size, self.latent_dim).to(device)
+
+    def gen_noise_image(self, batch_size, device):
+        return torch.FloatTensor(batch_size, self.image_size, self.image_size, 1).uniform_(0., 1.).to(device)
+
+    # def styles_def_to_tensor(self, styles_def):
+    #     return torch.cat([t[:, None, :].expand(-1, n, -1) for t, n in styles_def], dim=1)
+    #
+    # def latent_to_w(self, latent_descr):
+    #     return [(self.S(z), num_layers) for z, num_layers in latent_descr]
