@@ -33,11 +33,11 @@ class ModuleInfo:
 
     @staticmethod
     def profile_params(module):
-        return sum(x.numel() for x in module.parameters())
+        return sum(x.numel() for x in module.parameters() if not isinstance(x, nn.UninitializedParameter))
 
     @staticmethod
     def profile_grads(module):
-        return sum(x.numel() for x in module.parameters() if x.requires_grad)
+        return sum(x.numel() for x in module.parameters() if x.requires_grad and not isinstance(x, nn.UninitializedParameter))
 
     @staticmethod
     def profile_args(module):
@@ -110,16 +110,16 @@ def initialize_layers(module, init_gain=0.02, init_type='normal'):
 
             elif t in [nn.Conv2d, nn.Linear]:
                 if init_type == 'normal':
-                    nn.init.normal_(m.weight.data, 0.0, init_gain)
+                    nn.init.normal_(m.weight, 0.0, init_gain)
                 elif init_type == 'xavier':
-                    nn.init.xavier_normal_(m.weight.data, gain=init_gain)
+                    nn.init.xavier_normal_(m.weight, gain=init_gain)
                 elif init_type == 'kaiming':
-                    nn.init.kaiming_normal_(m.weight.data, a=0)
+                    nn.init.kaiming_normal_(m.weight, a=0)
                 elif init_type == 'orthogonal':
-                    nn.init.orthogonal_(m.weight.data, gain=init_gain)
+                    nn.init.orthogonal_(m.weight, gain=init_gain)
 
                 if hasattr(m, 'bias') and m.bias is not None:
-                    nn.init.constant_(m.bias.data, 0.0)
+                    nn.init.constant_(m.bias, 0.0)
 
             elif t in [nn.ConvTranspose2d]:
                 m.weight.data.copy_(bilinear_kernel(m.in_channels, m.out_channels, m.kernel_size[0]))
