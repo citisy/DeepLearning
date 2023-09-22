@@ -2,7 +2,7 @@ import os
 import cv2
 import pandas as pd
 from pathlib import Path
-from utils import converter
+from utils import cv_utils
 from .base import DataLoader, DataRegister, get_image
 
 
@@ -101,7 +101,7 @@ class Loader(DataLoader):
 
         image = get_image(image_path, image_type)
         xywh = list(bbox_df.loc[_id])
-        bbox = converter.CoordinateConvert.top_xywh2top_xyxy(xywh)
+        bbox = cv_utils.CoordinateConvert.top_xywh2top_xyxy(xywh)
         attr = list(attr_df.loc[_id])
         identity = identity_df.loc[_id][1]
         landmarks = list(landmarks_df.loc[_id])

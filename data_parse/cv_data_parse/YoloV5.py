@@ -33,7 +33,7 @@ class Loader(DataLoader):
             def convert_func(ret):
                 if isinstance(ret['image'], np.ndarray):
                     h, w, c = ret['image'].shape
-                    ret['bboxes'] = converter.CoordinateConvert.mid_xywh2top_xyxy(ret['bboxes'], wh=(w, h), blow_up=True)
+                    ret['bboxes'] = cv_utils.CoordinateConvert.mid_xywh2top_xyxy(ret['bboxes'], wh=(w, h), blow_up=True)
 
                 return ret
 
@@ -41,7 +41,7 @@ class Loader(DataLoader):
                 x = Path(ret['image'])
                 if x.stem in filter_list:
                     image = os_lib.loader.load_img(str(x))
-                    # ret['bboxes'] = converter.CoordinateConvert.mid_xywh2top_xyxy(ret['bboxes'], wh=(image.shape[1], image.shape[0]), blow_up=True)
+                    # ret['bboxes'] = cv_utils.CoordinateConvert.mid_xywh2top_xyxy(ret['bboxes'], wh=(image.shape[1], image.shape[0]), blow_up=True)
                     checkout_visualizer([ret], cls_alias=cls_alias)
                     return False
 
@@ -86,11 +86,11 @@ class Loader(DataLoader):
         """
 
         if set_type == DataRegister.MIX:
-            return self.load_full(**gen_kwargs)
+            return self.load_mix(**gen_kwargs)
         else:
             return self.load_set(set_type=set_type, **gen_kwargs)
 
-    def load_full(self, task='', **gen_kwargs):
+    def load_mix(self, task='', **gen_kwargs):
         """
 
         Args:
@@ -219,7 +219,7 @@ class Saver(DataSaver):
             def convert_func(ret):
                 if isinstance(ret['image'], np.ndarray):
                     h, w, c = ret['image'].shape
-                    ret['bboxes'] = converter.CoordinateConvert.top_xyxy2mid_xywh(ret['bboxes'], wh=(w, h), blow_up=False)
+                    ret['bboxes'] = cv_utils.CoordinateConvert.top_xyxy2mid_xywh(ret['bboxes'], wh=(w, h), blow_up=False)
 
                 return ret
 

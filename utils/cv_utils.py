@@ -4,11 +4,178 @@ from collections import Counter
 from typing import Callable
 
 
-def detect_continuous_axis(image, tol=0, region_thres=0, binary_thres=200, axis=1):
+class CoordinateConvert:
+    @staticmethod
+    def _call(bbox, wh, blow_up, convert_func):
+        tmp_bbox = np.array(bbox)
+        flag = len(tmp_bbox.shape) == 1
+
+        bbox = np.array(bbox).reshape((-1, 4))
+        convert_bbox = np.zeros_like(bbox)
+
+        if wh is None:
+            wh = (1, 1)
+
+        wh = np.array(wh)
+
+        if not blow_up:
+            wh = 1 / wh
+
+        wh = np.r_[wh, wh]
+
+        convert_bbox = convert_func(bbox, convert_bbox) * wh
+
+        if flag:
+            convert_bbox = convert_bbox[0]
+
+        return convert_bbox
+
+    @classmethod
+    def mid_xywh2top_xyxy(cls, bbox, wh=None, blow_up=True):
+        """中心点xywh转换成顶点xyxy
+
+        Args:
+            bbox: xywh, xy, middle coordinate, wh, width and height of object
+            wh(tuple): 原始图片宽高，如果传入，则根据blow_up进行转换
+            blow_up(bool): 是否放大
+
+        Returns:
+            xyxy(tuple): 左上右下顶点xy坐标
+        """
+
+        def convert_func(bbox, convert_bbox):
+            convert_bbox[:, 0:2] = bbox[:, 0:2] - bbox[:, 2:4] / 2
+            convert_bbox[:, 2:4] = bbox[:, 0:2] + bbox[:, 2:4] / 2
+            return convert_bbox
+
+        return cls._call(bbox, wh, blow_up, convert_func)
+
+    @classmethod
+    def top_xywh2top_xyxy(cls, bbox, wh=None, blow_up=True):
+        """顶点xywh转换成顶点xyxy
+
+        Args:
+            bbox: xywh, xy, left top coordinate, wh, width and height of object
+            wh(tuple): 原始图片宽高，如果传入，则根据blow_up进行转换
+            blow_up(bool): 是否放大
+
+        Returns:
+            xyxy(tuple): 左上右下顶点xy坐标
+        """
+
+        def convert_func(bbox, convert_bbox):
+            convert_bbox[:, 0:2] = bbox[:, 0:2]
+            convert_bbox[:, 2:4] = bbox[:, 0:2] + bbox[:, 2:4]
+            return convert_bbox
+
+        return cls._call(bbox, wh, blow_up, convert_func)
+
+    @classmethod
+    def top_xywh2mid_xywh(cls, bbox, wh=None, blow_up=True):
+        """顶点xywh转中心点xywh
+
+        Args:
+            bbox: xywh, xy, left top coordinate, wh, width and height of object
+            wh(tuple): 原始图片宽高，如果传入，则根据blow_up进行转换
+            blow_up(bool): 是否放大
+
+        Returns:
+            xywh(tuple): xy -> 中心点坐标, wh -> 目标宽高
+        """
+
+        def convert_func(bbox, convert_bbox):
+            convert_bbox[:, 0:2] = bbox[:, 0:2] + bbox[:, 2:4] / 2
+            convert_bbox[:, 2:4] = bbox[:, 2:4]
+            return convert_bbox
+
+        return cls._call(bbox, wh, blow_up, convert_func)
+
+    @classmethod
+    def top_xyxy2top_xywh(cls, bbox, wh=None, blow_up=True):
+        """顶点xyxy转顶点xywh
+
+        Args:
+            bbox: xyxy, left top and right down
+            wh(tuple): 原始图片宽高，如果传入，则根据blow_up进行转换
+            blow_up(bool): 是否放大
+
+        Returns:
+            xywh(tuple): xy -> 左上顶点坐标, wh -> 目标宽高
+        """
+
+        def convert_func(bbox, convert_bbox):
+            convert_bbox[:, 2:4] = bbox[:, 2:4] - bbox[:, 0:2]
+            convert_bbox[:, 0:2] = bbox[:, 0:2]
+            return convert_bbox
+
+        return cls._call(bbox, wh, blow_up, convert_func)
+
+    @classmethod
+    def top_xyxy2mid_xywh(cls, bbox, wh=None, blow_up=True):
+        """顶点xyxy转换成中心点xywh
+
+        Args:
+            bbox: xyxy, left top and right down
+            wh(tuple): 原始图片宽高，如果传入，则根据blow_up进行转换
+            blow_up(bool): 是否放大
+
+        Returns:
+            xywh(tuple): xy -> 中心点点坐标, wh -> 目标宽高
+        """
+
+        def convert_func(bbox, convert_bbox):
+            convert_bbox[:, 0:2] = (bbox[:, 0:2] + bbox[:, 2:4]) / 2
+            convert_bbox[:, 2:4] = bbox[:, 2:4] - bbox[:, 0:2]
+            return convert_bbox
+
+        return cls._call(bbox, wh, blow_up, convert_func)
+
+    @staticmethod
+    def rect2box(boxes) -> np.ndarray:
+        """rec(-1, 4, 2) convert to box(-1, 4)"""
+        boxes = np.array(boxes)
+
+        if boxes.size == 0:
+            return np.zeros((0, 4))
+
+        rects = np.zeros((len(boxes), 4))
+        rects[:, :2] = boxes[:, 0]
+        rects[:, 2:] = boxes[:, 2]
+        return rects
+
+    @staticmethod
+    def box2rect(rects) -> np.ndarray:
+        """box(-1, 4) convert to rec(-1, 4, 2)"""
+        rects = np.array(rects)
+
+        if rects.size == 0:
+            return np.zeros((0, 0, 2))
+
+        boxes = np.zeros((len(rects), 4, 2))
+        boxes[:, 0] = rects[:, :2]
+        boxes[:, 1] = rects[:, (2, 1)]
+        boxes[:, 2] = rects[:, 2:]
+        boxes[:, 3] = rects[:, (0, 3)]
+        return boxes
+
+
+def detect_continuous_lines(image, tol=0, region_thres=0, binary_thres=200, axis=1):
+    """detect vertical or horizontal lines which have continuous pixels
+
+    Args:
+        image: 3-D array(h, w, c) or 2-D array(h, w)
+        tol(int): num of blank pixels lower than tol will be treated as one line
+        region_thres(int): filter lines whose length is lower than region_thres
+        binary_thres(int): binary images threshold, fall in [0, 255]
+        axis: 0 for y-axis lines, 1 for x-axis lines
+
+    Returns:
+        lines: 2-D array, (m, 2)
+    """
     if len(image.shape) == 3:
         # binary
         image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-        _, image = cv2.threshold(image, binary_thres, 255, cv2.THRESH_BINARY_INV)
+        _, image = cv2.threshold(image, binary_thres, 1, cv2.THRESH_BINARY_INV)
 
     projection = np.any(image, axis=axis)
 
@@ -35,17 +202,29 @@ def detect_continuous_axis(image, tol=0, region_thres=0, binary_thres=200, axis=
 
 
 def detect_continuous_areas(image, x_tol=20, y_tol=20, region_thres=0, binary_thres=200):
+    """detect rectangles which have continuous pixels
+
+    Args:
+        image: 3-D array(h, w, c) or 2-D array(h, w)
+        x_tol: see also `detect_continuous_lines()`
+        y_tol: see also `detect_continuous_lines()`
+        region_thres: see also `detect_continuous_lines()`
+        binary_thres: see also `detect_continuous_lines()`
+
+    Returns:
+
+    """
     if len(image.shape) == 3:
         # binary
         image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
         _, image = cv2.threshold(image, binary_thres, 255, cv2.THRESH_BINARY_INV)
 
-    y_lines = detect_continuous_axis(image, y_tol, region_thres, binary_thres, axis=1)
+    y_lines = detect_continuous_lines(image, y_tol, region_thres, binary_thres, axis=1)
 
     bboxes = []
 
     for y_line in y_lines:
-        x_lines = detect_continuous_axis(image[y_line[0]: y_line[1]], x_tol, region_thres, binary_thres, axis=0)
+        x_lines = detect_continuous_lines(image[y_line[0]: y_line[1]], x_tol, region_thres, binary_thres, axis=0)
         bbox = np.zeros((len(x_lines), 4), dtype=int)
         bbox[:, 0::2] = x_lines
         bbox[:, 1::2] = y_line
@@ -69,7 +248,7 @@ class PixBox:
 
     @staticmethod
     def pixel_to_box(pix_image, min_area=400, ignore_class=None, convert_func=None):
-        """
+        """generate detection bboxes from pixel image
 
         Args:
             pix_image: 2-d array
@@ -107,7 +286,7 @@ class PixBox:
 
     @staticmethod
     def batch_pixel_to_box(pix_images, thres=0.5, min_area=400, ignore_class=None, convert_func=None):
-        """
+        """generate detection bboxes from pixel images
 
         Args:
             pix_images: 3-d array, (c, h, w), c gives the classes
@@ -143,6 +322,17 @@ class PixBox:
 
     @staticmethod
     def box_to_pixel(images, bboxes, classes, add_edge=False):
+        """generate pixel area from image with detection bboxes
+
+        Args:
+            images:
+            bboxes:
+            classes:
+            add_edge:
+
+        Returns:
+
+        """
         h, w = images.shape[:2]
         pix_image = np.zeros((h, w), dtype=images.dtype)
 
@@ -258,3 +448,118 @@ def non_max_suppression(boxes, conf, iou_method, threshold=0.6):
         index = index[inds + 1]
 
     return keep
+
+
+def grid_lines_to_cells(cols, rows, w, h):
+    """
+
+    Args:
+        cols: (nx, )
+        rows: (ny, )
+        w: weight of grid
+        h: height of grid
+
+    Returns:
+        cells: 2-D array(nx+1, ny+1)
+    """
+    cols = np.sort(cols)
+    col1 = np.r_[0, cols]
+    col2 = np.r_[cols, w]
+
+    rows = np.sort(rows)
+    row1 = np.r_[0, rows]
+    row2 = np.r_[rows, h]
+
+    grid1 = np.meshgrid(col1, row1)
+    grid2 = np.meshgrid(col2, row2)
+
+    grid = np.stack(grid1 + grid2)
+    grid = np.transpose(grid, (1, 2, 0))
+    cells = np.reshape(grid, (-1, 4))
+    return cells
+
+
+def box_inside_grid_cells(bboxes, cells):
+    """distinguish the bboxes belong to the giving grid cells
+
+    Args:
+        bboxes: (m, 4)
+        cells: (n, 4)
+
+    Returns:
+        arg: 1-D array(m, ), m for the index of bboxes, the value for the index of cells
+    """
+    from metrics.object_detection import Iou
+    iou = Iou().u_iou(cells, bboxes)
+    arg = np.argmax(iou, axis=1)
+    return arg
+
+
+def box_inside_grid_lines(bboxes, cols, rows, w, h):
+    """distinguish the bboxes belong to the giving grid lines
+
+    Args:
+        bboxes: (m, 4)
+        cols: (nx, 2)
+        rows: (ny, 2)
+        w:
+        h:
+
+    Returns:
+
+    """
+    cells = grid_lines_to_cells(cols, rows, w, h)
+    return box_inside_grid_cells(bboxes, cells)
+
+
+def box_include_grid_cells(bboxes, cells, iou_thres=0.1):
+    """distinguish the bboxes include giving grid cells
+
+    Args:
+        bboxes: (m, 4)
+        cells: (n, 4)
+        iou_thres:
+
+    Returns:
+        arg: 2-D array(m, n),m for index of bboxes, n for the index of cells
+    """
+    from metrics.object_detection import Iou
+    iou = Iou().u_iou(cells, bboxes)
+    arg = iou > iou_thres
+    return arg
+
+
+def box_include_grid_lines(bboxes, cols, rows, w, h):
+    """distinguish the bboxes include giving grid lines
+
+    Args:
+        bboxes:
+        cols:
+        rows:
+        w:
+        h:
+
+    Returns:
+
+    """
+    cells = grid_lines_to_cells(cols, rows, w, h)
+    return box_include_grid_cells(bboxes, cells)
+
+
+# def lines_to_boxes(lines, thres=0):
+#     """giving the lines, combine them to the bboxes
+#
+#     Args:
+#         lines: (n, 4), 2 for (x1, y1, x2, y2)
+#
+#     Returns:
+#
+#     """
+#     from metrics.object_detection import Overlap
+#     flag = Overlap.line2D(lines, lines)
+#     n_points = np.sum(flag, axis=0)
+#     idx = np.where(n_points >= 2)[0]
+#
+#     for a in idx:
+#         b = np.where(flag[a])[0]
+

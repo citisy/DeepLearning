@@ -3,7 +3,7 @@ import json
 import cv2
 import shutil
 import numpy as np
-from utils import os_lib, converter
+from utils import os_lib, cv_utils
 from .base import DataRegister, DataLoader, DataSaver, get_image, save_image
 from tqdm import tqdm
 from pathlib import Path
@@ -44,7 +44,7 @@ class Loader(DataLoader):
 
         bboxes = np.array(bboxes)
         bboxes /= 100
-        bboxes = converter.CoordinateConvert.top_xywh2top_xyxy(bboxes, wh=(size[1], size[0]), blow_up=True)
+        bboxes = cv_utils.CoordinateConvert.top_xywh2top_xyxy(bboxes, wh=(size[1], size[0]), blow_up=True)
         classes = np.array(classes)
 
         return dict(
@@ -79,7 +79,7 @@ class Saver(DataSaver):
                 raise 'must be set size or make image the type of np.ndarray'
 
             bboxes = np.array(dic['bboxes']).reshape(-1, 4)
-            bboxes = converter.CoordinateConvert.top_xyxy2top_xywh(bboxes, wh=(size[1], size[0]), blow_up=False)
+            bboxes = cv_utils.CoordinateConvert.top_xyxy2top_xywh(bboxes, wh=(size[1], size[0]), blow_up=False)
             bboxes *= 100
             bboxes = bboxes.tolist()
             classes = dic['classes']

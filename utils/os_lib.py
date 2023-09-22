@@ -13,6 +13,98 @@ from pathlib import Path
 from typing import List, Any
 
 
+class IgnoreException:
+    """
+    Usage:
+        .. code-block:: python
+
+            from utils.os_lib import AutoLog
+            ignore_exception = IgnoreException()
+
+            class SimpleClass:
+                @ignore_exception.add_ignore()
+                @ignore_exception.add_ignore(error_message='there is an error')
+                @ignore_exception.add_ignore(err_type=Exception)
+                def func(self):
+                    ...
+    """
+
+    def __init__(self, verbose=True, stdout_method=print):
+        self.stdout_method = stdout_method if verbose else FakeIo()
+
+    def add_ignore(
+            self,
+            error_message='',
+            err_type=(ConnectionError, TimeoutError)
+    ):
+        def wrap2(func):
+            @wraps(func)
+            def wrap(*args, **kwargs):
+                try:
+                    return func(*args, **kwargs)
+
+                except err_type as e:
+                    msg = error_message or f'Something error occur: {e}'
+                    self.stdout_method(msg)
+
+            return wrap
+
+        return wrap2
+
+
+class Retry:
+    """
+    Usage:
+        .. code-block:: python
+
+            from utils.os_lib import Retry
+            retry = Retry()
+
+            class SimpleClass:
+                @retry.add_try()
+                @retry.add_try(error_message='there is an error, sleep %d seconds')
+                @retry.add_try(err_type=Exception)
+                def func(self):
+                    ...
+    """
+
+    def __init__(self, verbose=True, stdout_method=print, count=3, wait=15):
+        self.verbose = verbose
+        self.stdout_method = stdout_method if verbose else FakeIo()
+        self.count = count
+        self.wait = wait
+
+    def add_try(
+            self,
+            error_message='',
+            err_type=(ConnectionError, TimeoutError)
+    ):
+        def wrap2(func):
+            @wraps(func)
+            def wrap(*args, **kwargs):
+                for i in range(self.count):
+                    try:
+                        return func(*args, **kwargs)
+
+                    except err_type as e:
+                        if i >= self.count - 1:
+                            raise e
+
+                        msg = error_message or f'Something error occur, sleep %d seconds, and then retry'
+                        msg = msg % self.wait
+                        self.stdout_method(msg)
+                        time.sleep(self.wait)
+                        self.stdout_method(f'{i + 2}th try!')
+
+            return wrap
+
+        return wrap2
+
+
+ignore_exception = IgnoreException()
+retry = Retry()
+
+
 def mk_dir(dir_path):
     dir_path = Path(dir_path)
 
@@ -41,11 +133,11 @@ def auto_suffix(obj):
 
 
 class Saver:
-    def __init__(self, verbose=True, stdout_method=print, stdout_fmt='Save to %s successful!', stderr_method=print, stderr_fmt='Save to %s failed!'):
+    def __init__(self, verbose=True, stdout_method=print, stdout_fmt='Succeed to save to %s !', stderr_method=print, stderr_fmt='Fail to save to %s !'):
         self.verbose = verbose
         self.stdout_method = stdout_method if verbose else FakeIo()
         self.stdout_fmt = stdout_fmt
-        self.stderr_method = stderr_method if verbose else FakeIo()
+        self.stderr_method = stderr_method
         self.stderr_fmt = stderr_fmt
 
     def stdout(self, path):
@@ -54,48 +146,48 @@ class Saver:
     def stderr(self, path):
         self.stderr_method(self.stderr_fmt % path)
 
-    def auto_save(self, obj, path: str):
+    def auto_save(self, obj, path: str, **kwargs):
         suffix = Path(path).suffix.lower()
         mk_parent_dir(path)
 
         if suffix in ('.js', '.json'):
-            self.save_json(obj, path)
+            self.save_json(obj, path, **kwargs)
         elif suffix in ('.txt',):
-            self.save_txt(obj, path)
+            self.save_txt(obj, path, **kwargs)
         elif suffix in ('.pkl',):
-            self.save_pkl(obj, path)
-        elif suffix in ('.png', '.jpg', '.jpeg', 'tiff'):
-            self.save_img(obj, path)
-        elif suffix in ('.csv',):
-            self.save_csv(obj, path)
+            self.save_pkl(obj, path, **kwargs)
+        elif suffix in ('.png', '.jpg', '.jpeg', '.tiff'):
+            self.save_img(obj, path, **kwargs)
+        elif suffix in ('.csv', '.tsv'):
+            self.save_csv(obj, path, **kwargs)
         else:
-            self.save_bytes(obj, path)
+            self.save_bytes(obj, path, **kwargs)
 
-    def save_json(self, obj: dict, path):
-        with open(path, 'w', encoding='utf8') as f:
-            json.dump(obj, f, ensure_ascii=False, indent=4)
+    def save_json(self, obj: dict, path, **kwargs):
+        with open(path, 'w', encoding='utf8', errors='ignore') as f:
+            json.dump(obj, f, ensure_ascii=False, indent=4, **kwargs)
 
         self.stdout(path)
 
-    def save_txt(self, obj: iter, path, sep='\n'):
-        with open(path, 'w', encoding='utf8') as f:
+    def save_txt(self, obj: iter, path, sep='\n', **kwargs):
+        with open(path, 'w', encoding='utf8', errors='ignore') as f:
             f.write(sep.join(obj))
 
         self.stdout(path)
 
-    def save_pkl(self, obj, path):
+    def save_pkl(self, obj, path, **kwargs):
         with open(path, 'wb') as f:
-            pickle.dump(obj, f)
+            pickle.dump(obj, f, **kwargs)
 
         self.stdout(path)
 
-    def save_bytes(self, obj: bytes, path):
+    def save_bytes(self, obj: bytes, path, **kwargs):
         with open(path, 'wb') as f:
             f.write(obj)
 
         self.stdout(path)
 
-    def save_img(self, obj: np.ndarray, path):
+    def save_img(self, obj: np.ndarray, path, **kwargs):
         # it will error with chinese path in low version of cv2
         # it has fixed in high version already
         # cv2.imencode('.png', obj)[1].tofile(path)
@@ -105,8 +197,12 @@ class Saver:
         else:
             self.stderr(path)
 
-    def save_csv(self, obj: pd.DataFrame, path):
-        obj.to_csv(path)
+    def save_np_array(self, obj: np.ndarray, path, **kwargs):
+        np.savetxt(path, obj, **kwargs)
+        self.stdout(path)
+
+    def save_csv(self, obj: pd.DataFrame, path, **kwargs):
+        obj.to_csv(path, **kwargs)
         self.stdout(path)
 
     def save_pdf_to_img(self, path, page=None, image_dir=None, scale_ratio=1.33):
@@ -276,9 +372,40 @@ class Loader:
         return images
 
 
+class Cacher:
+    def __init__(self, saver=None, loader=None, deleter=None, max_size=None):
+        self.saver = saver
+        self.loader = loader
+        self.deleter = deleter
+        self.max_size = max_size
+
+    def __call__(self, *args, **kwargs):
+        return self.cache_one(*args, **kwargs)
+
+    def cache_one(self, obj):
+        self.delete_over_range()
+        return self.saver(obj)
+
+    def cache_batch(self, objs):
+        return [self.cache_one(obj) for obj in objs]
+
+    def delete_over_range(self):
+        if not self.max_size:
+            return
+
+        if len(self.saver) >= self.max_size:
+            self.deleter()
+
+    def get_one(self, _id=None):
+        return self.loader(_id)
+
+    def get_batch(self, _ids=()):
+        return [self.get_one(_id) for _id in _ids]
+
+
 class MemoryCacher:
     def __init__(self, max_size=None,
-                 verbose=True, stdout_method=print, stdout_fmt='Save to %s successful!',
+                 verbose=True, stdout_method=print,
                  **saver_kwargs
                  ):
         self.max_size = max_size
@@ -286,40 +413,47 @@ class MemoryCacher:
         self.stdout_method = stdout_method if verbose else FakeIo()
         self.cache = {}
 
-    def cache_one(self, obj):
+    def __call__(self, *args, **kwargs):
+        return self.cache_one(*args, **kwargs)
+
+    def cache_one(self, obj, stdout_fmt='Save (%s, %s) successful!'):
         time_str = time.time()
         uid = str(uuid.uuid1())
         _id = (uid, time_str)
-        self.delete_over_range()
+        self.delete_over_range(stdout_fmt.replace('Save', 'Delete'))
         self.cache[_id] = obj
+        self.stdout_method(stdout_fmt % _id)
         return _id
 
-    def cache_batch(self, objs):
+    def cache_batch(self, objs, stdout_fmt='Save (%s, %s) successful!'):
         _ids = []
         for obj in objs:
-            _id = self.cache_one(obj)
+            _id = self.cache_one(obj, stdout_fmt=stdout_fmt)
             _ids.append(_id)
         return _ids
 
-    def delete_over_range(self):
+    def delete_over_range(self, stdout_fmt='Delete (%s, %s) successful!'):
         if not self.max_size:
             return
 
         if len(self.cache) >= self.max_size:
             key = min(self.cache.keys(), key=lambda x: x[1])
             self.cache.pop(key)
+            self.stdout_method(stdout_fmt % key)
 
-    def get_one(self, _id=None):
+    def get_one(self, _id=None, stdout_fmt='Get (%s, %s) successful!'):
         if _id is None:
             _id = random.choice(list(self.cache.keys()))
+        self.stdout_method(stdout_fmt % _id)
         return self.cache[_id]
 
-    def get_batch(self, _ids=None, size=None):
+    def get_batch(self, _ids=None, size=None, stdout_fmt='Get %s successful!'):
         if _ids is None:
             keys = list(self.cache.keys())
             _ids = np.random.choice(range(len(keys)), size, replace=False)
             _ids = [keys[_] for _ in _ids]
 
+        self.stdout_method(stdout_fmt % str(_ids))
         return [self.cache[_id] for _id in _ids]
 
 
@@ -336,8 +470,11 @@ class FileCacher:
         self.saver = Saver(verbose, stdout_method, **saver_kwargs)
         self.loader = Loader(verbose, stdout_method, **loader_kwargs)
 
+    def __call__(self, *args, **kwargs):
+        return self.cache_one(*args, **kwargs)
+
     def cache_one(self, obj, file_name=None):
-        file_name = file_name or str(uuid.uuid1()) + auto_suffix(obj)
+        file_name = (file_name or str(uuid.uuid1())) + auto_suffix(obj)
         path = f'{self.cache_dir}/{file_name}'
         self.delete_over_range(suffix=Path(path).suffix)
         self.saver.auto_save(obj, path)
@@ -404,6 +541,9 @@ class MongoDBCacher:
         self.verbose = verbose
         self.stdout_method = stdout_method if verbose else FakeIo()
         self.stdout_fmt = stdout_fmt
+
+    def __call__(self, *args, **kwargs):
+        return self.cache_one(*args, **kwargs)
 
     def cache_one(self, obj: dict, _id=None):
         self.delete_over_range()
@@ -472,7 +612,7 @@ class FakeIo:
     """
 
     def __init__(self, *args, **kwargs):
-        pass
+        self.__dict__.update(**kwargs)
 
     def write(self, *args, **kwargs):
         pass
@@ -492,7 +632,8 @@ class FakeIo:
 
 class FakeWandb:
     def __init__(self, *args, **kwargs):
-        pass
+        self.id = None
+        self.__dict__.update(**kwargs)
 
     def init(self, *args, **kwargs):
         return self
@@ -510,207 +651,5 @@ class FakeWandb:
         pass
 
 
-class Retry:
-    def __init__(self, verbose=True, stdout_method=print, count=3, wait=15):
-        self.verbose = verbose
-        self.stdout_method = stdout_method if verbose else FakeIo()
-        self.count = count
-        self.wait = wait
-
-    def add_try(
-            self,
-            error_message='',
-            err_type=(ConnectionError, TimeoutError)
-    ):
-        def wrap2(func):
-            @wraps(func)
-            def wrap(*args, **kwargs):
-                for i in range(self.count):
-                    try:
-                        return func(*args, **kwargs)
-
-                    except err_type as e:
-                        if i >= self.count - 1:
-                            raise e
-
-                        msg = error_message or f'Something error occur, sleep {self.wait} seconds, and then retry'
-                        self.stdout_method(msg)
-                        time.sleep(self.wait)
-                        self.stdout_method(f'{i + 2}th try!')
-
-            return wrap
-
-        return wrap2
-
-
-class IgnoreException:
-    def __init__(self, verbose=True, stdout_method=print):
-        self.stdout_method = stdout_method if verbose else FakeIo()
-
-    def add_ignore(
-            self,
-            error_message='',
-            err_type=(ConnectionError, TimeoutError)
-    ):
-        def wrap2(func):
-            @wraps(func)
-            def wrap(*args, **kwargs):
-                try:
-                    return func(*args, **kwargs)
-
-                except err_type as e:
-                    msg = error_message or f'Something error occur: {e}'
-                    self.stdout_method(msg)
-
-            return wrap
-
-        return wrap2
-
-
-class AutoLog:
-    """
-    Examples
-        .. code-block:: python
-
-            from utils.os_lib import AutoLog
-            auto_log = AutoLog()
-
-            class SimpleClass:
-                @auto_log.memory_log('success')
-                @auto_log.memory_log()
-                @auto_log.time_log()
-                def func(self):
-                    ...
-    """
-
-    def __init__(self, verbose=True, stdout_method=print, is_simple_log=True, is_time_log=True, is_memory_log=True):
-        self.stdout_method = stdout_method if verbose else FakeIo()
-        self.is_simple_log = is_simple_log
-        self.is_time_log = is_time_log
-        self.is_memory_log = is_memory_log
-
-    def simple_log(self, string):
-        def wrap2(func):
-            @wraps(func)
-            def wrap(*args, **kwargs):
-                r = func(*args, **kwargs)
-                if self.is_simple_log:
-                    self.stdout_method(string)
-                return r
-
-            return wrap
-
-        return wrap2
-
-    def time_log(self, prefix_string=''):
-        def wrap2(func):
-            @wraps(func)
-            def wrap(*args, **kwargs):
-                if self.is_time_log:
-                    st = time.time()
-                    r = func(*args, **kwargs)
-                    et = time.time()
-                    self.stdout_method(f'{prefix_string} - elapse[{et - st:.3f}s]!')
-                else:
-                    r = func(*args, **kwargs)
-                return r
-
-            return wrap
-
-        return wrap2
-
-    def memory_log(self, prefix_string=''):
-        def wrap2(func):
-            @wraps(func)
-            def wrap(*args, **kwargs):
-                if self.is_memory_log:
-                    a = MemoryInfo.get_process_mem_info()
-                    r = func(*args, **kwargs)
-                    b = MemoryInfo.get_process_mem_info()
-                    self.stdout_method(f'{prefix_string}\nbefore: {a}\nafter: {b}')
-                else:
-                    r = func(*args, **kwargs)
-                return r
-
-            return wrap
-
-        return wrap2
-
-
-class MemoryInfo:
-    from .visualize import TextVisualize
-
-    @classmethod
-    def get_process_mem_info(cls, pretty_output=True):
-        """
-        uss, 进程独立占用的物理内存（不包含共享库占用的内存）
-        rss, 该进程实际使用物理内存（包含共享库占用的全部内存）
-        vms, 虚拟内存总量
-        """
-        pid = os.getpid()
-        p = psutil.Process(pid)
-        info = p.memory_full_info()
-        info = {
-            'pid': str(pid),
-            'uss': info.uss,
-            'rss': info.rss,
-            'vms': info.vms,
-        }
-
-        if pretty_output:
-            for k, v in info.items():
-                if k != 'pid':
-                    info[k] = cls.TextVisualize.num_to_human_readable_str(v)
-
-        return info
-
-    @classmethod
-    def get_cpu_mem_info(cls, pretty_output=True):
-        """
-        percent, 实际已经使用的内存占比
-        total, 内存总的大小
-        available, 还可以使用的内存
-        free, 剩余的内存
-        used, 已经使用的内存
-        """
-        info = dict(psutil.virtual_memory()._asdict())
-        if pretty_output:
-            for k, v in info.items():
-                if k != 'percent':
-                    info[k] = cls.TextVisualize.num_to_human_readable_str(v)
-
-        return info
-
-    @classmethod
-    def get_gpu_mem_info(cls, device=0, pretty_output=True):
-        import pynvml
-        pynvml.nvmlInit()
-        handle = pynvml.nvmlDeviceGetHandleByIndex(device)
-        info = pynvml.nvmlDeviceGetMemoryInfo(handle)
-        info = dict(
-            total=info.free,
-            used=info.used,
-            free=info.free,
-        )
-        if pretty_output:
-            for k, v in info.items():
-                info[k] = cls.TextVisualize.num_to_human_readable_str(v)
-
-        return info
-
-    @classmethod
-    def get_mem_info(cls, pretty_output=True):
-        info = dict(
-            process_mem=cls.get_process_mem_info(pretty_output),
-            env_mem=cls.get_cpu_mem_info(pretty_output),
-            gpu_mem=cls.get_gpu_mem_info(pretty_output),
-        )
-
-        return info
-
-
 saver = Saver()
 loader = Loader()
-retry = Retry()
-auto_log = AutoLog()
-ignore_exception = IgnoreException()

@@ -7,7 +7,7 @@ from torch import nn, optim
 import numpy as np
 from pathlib import Path
 from torch.utils.data import Dataset, DataLoader
-from utils import os_lib, converter, configs, visualize
+from utils import os_lib, converter, configs, visualize, log_utils
 from utils.torch_utils import EarlyStopping, ModuleInfo, Export
 from data_parse.cv_data_parse.data_augmentation import crop, scale, geometry, pixel_perturbation, RandomApply, Apply, channel
 from typing import List
@@ -85,8 +85,8 @@ class Process:
         self.save_result_dir = f'cache_data/{self.model_version}/{self.dataset_version}'
         os_lib.mk_dir(self.work_dir)
 
-        configs.logger_init(log_dir)
-        self.logger = logging.getLogger()
+        log_utils.logger_init(log_dir)
+        self.logger = log_utils.get_logger()
 
         if use_wandb:
             try:

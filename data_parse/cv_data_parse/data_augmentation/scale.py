@@ -19,9 +19,10 @@ class Proportion:
     """proportional scale the choice edge to destination size
     See Also `torchvision.transforms.Resize` or `albumentations.Resize`"""
 
-    def __init__(self, interpolation=0, choice_edge=SHORTEST):
+    def __init__(self, interpolation=0, choice_edge=SHORTEST, max_ratio=None):
         self.interpolation = interpolation_mode[interpolation]
         self.choice_edge = choice_edge
+        self.max_ratio = max_ratio
 
     def get_params(self, dst, w, h):
         if self.choice_edge == SHORTEST:
@@ -35,6 +36,9 @@ class Proportion:
         else:
             raise ValueError(f'dont support {self.choice_edge = }')
 
+        if self.max_ratio:
+            # set in [1 / (1 + self.max_ratio), 1 + self.max_ratio]
+            p = max(min(p, 1 + self.max_ratio), 1 / (1 + self.max_ratio))
         return p
 
     def get_add_params(self, p):
@@ -130,8 +134,8 @@ class Rectangle:
 class LetterBox:
     """resize, crop, and pad"""
 
-    def __init__(self, interpolation=0, **pad_kwargs):
-        self.resize = Proportion(choice_edge=2, interpolation=interpolation)  # scale to longest edge
+    def __init__(self, interpolation=0, max_ratio=None, **pad_kwargs):
+        self.resize = Proportion(choice_edge=LONGEST, interpolation=interpolation, max_ratio=max_ratio)  # scale to longest edge
         self.crop = crop.Center(is_pad=True, pad_type=2, **pad_kwargs)
 
     def __call__(self, image, dst, bboxes=None, **kwargs):

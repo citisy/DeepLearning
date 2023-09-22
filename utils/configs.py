@@ -235,153 +235,11 @@ class MultiProcessTimedRotatingFileHandler(TimedRotatingFileHandler):
         self.rolloverAt = new_rollover_at
 
 
-def logger_init(log_dir=None, **custom_config):
-    """logging配置
-    默认loggers：['', 'basic', 'service_standard', 'service', '__main__']
-
-    Usage:
-        .. code-block:: python
-
-            import logging
-            from utils.configs import logger_init
-
-            # default init
-            logger_init()
-
-            # log print to file
-            logger_init('logs')
-
-            # add custom config
-            logger_init(handlers={...}, loggers={...})
-
-            logger = logging.getLogger('service')
-            logger.info('')
-
-    """
-
-    default_config = {
-        'version': 1,
-        'disable_existing_loggers': True,
-        'formatters': {
-            'standard': {
-                'format': '[ %(asctime)s ] [%(levelname)s] [%(name)s]: %(message)s',
-                'datefmt': '%Y-%m-%d %H:%M:%S'
-            },
-            'precise': {
-                'format': '[ %(asctime)s ] [%(levelname)s] [%(name)s:%(filename)s:%(funcName)s:%(lineno)d]: %(message)s',
-                'datefmt': '%Y-%m-%d %H:%M:%S'
-            }
-        },
-        'handlers': {
-            # 屏幕输出流
-            'default': {
-                'level': 'DEBUG',
-                'formatter': 'standard',
-                'class': 'logging.StreamHandler',
-                'stream': 'ext://sys.stderr',
-            },
-
-            # 简单的无格式屏幕输出流
-            'print': {
-                'level': 'DEBUG',
-                'class': 'logging.StreamHandler',
-                'stream': 'ext://sys.stderr',
-            },
-        },
-        'loggers': {
-            # root logger
-            '': {
-                'handlers': ['default'],
-                'level': 'INFO',
-                'propagate': False
-            },
-
-            # 简单的无格式屏幕输出流
-            'print': {
-                'handlers': ['print'],
-                'level': 'INFO',
-                'propagate': False
-            }
-        }
-    }
-
-    if log_dir is not None:  # add file handles
-        os_lib.mk_dir(log_dir)
-        add_config = {
-            'handlers': {
-                # 简略信息info
-                'info_standard': {
-                    'level': 'INFO',
-                    'formatter': 'standard',
-                    'class': 'utils.configs.MultiProcessTimedRotatingFileHandler',
-                    'filename': f'{log_dir}/info_standard.log',
-                    'when': 'W0',
-                    'backupCount': 5,
-                },
-
-                # 详细信息info
-                'info': {
-                    'level': 'INFO',
-                    'formatter': 'precise',
-                    'class': 'utils.configs.MultiProcessTimedRotatingFileHandler',
-                    'filename': f'{log_dir}/info.log',
-                    'when': 'D',
-                    'backupCount': 15,
-                },
-
-                # 详细信息error
-                'error': {
-                    'level': 'ERROR',
-                    'formatter': 'precise',
-                    'class': 'utils.configs.MultiProcessTimedRotatingFileHandler',
-                    'filename': f'{log_dir}/error.log',
-                    'when': 'W0',
-                    'backupCount': 5,
-                },
-            },
-
-            'loggers': {
-                # root logger
-                '': {
-                    'handlers': ['default', 'info_standard', 'error'],
-                    'level': 'INFO',
-                    'propagate': False
-                },
-
-                # 简单的无格式屏幕输出流
-                'print': {
-                    'handlers': ['print', 'info_standard', 'error'],
-                    'level': 'INFO',
-                    'propagate': False
-                },
-
-                'service': {
-                    'handlers': ['default', 'info', 'error'],
-                    'level': 'INFO',
-                    'propagate': False
-                },
-            }
-
-        }
-        default_config = merge_dict(default_config, add_config)
-
-    default_config = merge_dict(default_config, custom_config)
-    logging.config.dictConfig(default_config)
-    return default_config
 
 
-def wandb_init(**custom_config):
-    import wandb
-    default_config = {
-
-    }
-    default_config = merge_dict(default_config, custom_config)
-
-    wandb.init(project='test')
-    return default_config
 
 
-def parse_params_example() -> dict:
+def parse_params_example(path, parser) -> dict:
     """an example for parse parameters"""
 
     def params_params_from_file(path) -> dict:
@@ -404,21 +262,29 @@ def parse_params_example() -> dict:
 
         return config
 
-    def params_params_from_arg() -> dict:
-        """local params, high priority"""
+    def params_params_from_arg(parser) -> dict:
+        """local params, high priority
+        # parser will be created like that
         import argparse
 
         parser = argparse.ArgumentParser()
-        parser.add_argument('--key1', type=str, default='value1', help='note of key1')
-        parser.add_argument('--key2', action='store_true', help='note of key2')
-        parser.add_argument('--key3', nargs='+', default=[], type=str, help='note of key3')  # return a list
         ...
+        parser.add_argument('-c', '--config', nargs='+', default=[], help='global config')
+        """
 
         args = parser.parse_args()
-        return expand_dict(vars(args))
+        _config = args.config
+        if _config:
+            _config = dict(s.split('=') for s in _config)
+            _config = expand_dict(_config)
+            _config = converter.DataConvert.str_value_to_constant(_config)
+        else:
+            _config = {}
 
-    config = params_params_from_file('your config path')
+        return _config
+
+    config = params_params_from_file(path)
     config = merge_dict(config, params_params_from_env())
-    config = merge_dict(config, params_params_from_arg())
+    config = merge_dict(config, params_params_from_arg(parser))
 
     return config

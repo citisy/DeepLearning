@@ -2,7 +2,7 @@ import os
 import json
 import cv2
 import numpy as np
-from utils import converter
+from utils import cv_utils
 from .base import DataLoader, DataRegister, get_image
 
 
@@ -92,7 +92,7 @@ class Loader(DataLoader):
         classes = []
         for label in labels:
             # [x, y, w, h]
-            bboxes.append(converter.CoordinateConvert.top_xywh2top_xyxy(label['bboxes']))
+            bboxes.append(cv_utils.CoordinateConvert.top_xywh2top_xyxy(label['bboxes']))
             classes.append(int(label['category_id']))
 
         bboxes = np.array(bboxes, dtype=int)

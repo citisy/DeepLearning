@@ -1,6 +1,6 @@
 import re
 import numpy as np
-from utils import os_lib, converter
+from utils import os_lib, cv_utils
 from .base import DataRegister, DataLoader, DataSaver
 from pathlib import Path
 from tqdm import tqdm
@@ -136,7 +136,7 @@ class Loader(DataLoader):
 
         segmentations_ = [(i * scale_ratio).astype(int) for i in segmentations_]
         segmentations = np.array(segmentations) * scale_ratio
-        segmentations = converter.CoordinateConvert.rect2box(segmentations)
+        segmentations = cv_utils.CoordinateConvert.rect2box(segmentations)
         segmentations = segmentations.astype(int)
 
         if segmentations.size == 0:
