@@ -122,20 +122,37 @@ class Process:
 
         self.__dict__.update(kwargs)
 
-    def model_info(self, depth=None, human_readable=True):
-        profile = ModuleInfo.profile_per_layer(self.model, depth=depth)
-        s = f'module info: \n{"name":<20}{"module":<40}{"params":>10}{"grads":>10}  {"args"}\n'
+    def model_info(self, **kwargs):
+        return self._model_info(self.model, **kwargs)
 
+    def _model_info(self, model, depth=None, human_readable=True):
+        profile = ModuleInfo.profile_per_layer(model, depth=depth)
+        cols = ('name', 'module', 'params', 'grads', 'args')
+        lens = [-1] * len(cols)
+        infos = []
         for p in profile:
-            params = p[2]["params"]
-            grads = p[2]["grads"]
-            args = p[2]["args"]
-            if human_readable:
-                params = visualize.TextVisualize.num_to_human_readable_str(params)
-                grads = visualize.TextVisualize.num_to_human_readable_str(grads)
-                args = visualize.TextVisualize.dict_to_str(args)
-                args = args or '-'
-            s += f'{p[0]:<20}{p[1]:<40}{params:>10}{grads:>10}  {args}\n'
+            info = (
+                p[0],
+                p[1],
+                visualize.TextVisualize.num_to_human_readable_str(p[2]["params"]) if human_readable else p[2]["params"],
+                visualize.TextVisualize.num_to_human_readable_str(p[2]["grads"]) if human_readable else p[2]["grads"],
+                visualize.TextVisualize.dict_to_str(p[2]["args"])
+            )
+            infos.append(info)
+            for i, s in enumerate(info):
+                l = len(str(s))
+                if lens[i] < l:
+                    lens[i] = l
+
+        template = ''
+        for l in lens:
+            template += f'%-{l + 3}s'
+
+        s = 'module info: \n'
+        s += template % cols + '\n'
+
+        for info in infos:
+            s += template % info + '\n'
 
         params = sum([p[2]["params"] for p in profile])
         grads = sum([p[2]["grads"] for p in profile])
@@ -143,9 +160,9 @@ class Process:
             params = visualize.TextVisualize.num_to_human_readable_str(params)
             grads = visualize.TextVisualize.num_to_human_readable_str(grads)
 
-        s += f'{"sum":<20}{"":<40}{params:>10}{grads:>10}\n'
-
+        s += template % ('', '', params, grads, '')
         self.logger.info(s)
+        return infos
 
     def run(self, max_epoch=100, train_batch_size=16, predict_batch_size=None, save_period=None, fit_kwargs=dict(), metric_kwargs=dict()):
         self.model_info()
@@ -197,7 +214,7 @@ class Process:
         """predict large image. Tear picture to pieces to predict, and then merge the results"""
         raise NotImplementedError
 
-    def on_train_start(self, batch_size, metric_kwargs=dict(), **dataloader_kwargs):
+    def on_train_start(self, batch_size, metric_kwargs=dict(), return_val_dataloader=True, **dataloader_kwargs):
         metric_kwargs = configs.merge_dict(dataloader_kwargs, metric_kwargs)
         metric_kwargs.setdefault('batch_size', batch_size)
 
@@ -228,15 +245,18 @@ class Process:
             **dataloader_kwargs
         )
 
-        val_data = self.get_val_data()
-        val_dataset = self.dataset(val_data, augment_func=self.val_data_augment)
+        if return_val_dataloader:
+            val_data = self.get_val_data()
+            val_dataset = self.dataset(val_data, augment_func=self.val_data_augment)
 
-        val_dataloader = DataLoader(
-            val_dataset,
-            batch_size=batch_size,
-            collate_fn=val_dataset.collate_fn,
-            **dataloader_kwargs
-        )
+            val_dataloader = DataLoader(
+                val_dataset,
+                batch_size=batch_size,
+                collate_fn=val_dataset.collate_fn,
+                **dataloader_kwargs
+            )
+        else:
+            val_dataloader = None
 
         self.model.to(self.device)
 

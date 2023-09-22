@@ -34,20 +34,15 @@ class IgProcess(Process):
     dataset = BaseDataset
     total_nums = 0
 
-    def model_info(self, depth=None, **kwargs):
+    def model_info(self, **kwargs):
         modules = dict(
             d=self.model.net_d,
             g=self.model.net_g,
         )
 
         for key, module in modules.items():
-            profile = ModuleInfo.profile_per_layer(module, depth=depth)
-            s = f'net {key} module info: \n{"name":<20}{"module":<40}{"params":>10}{"grads":>10}\n'
-
-            for p in profile:
-                s += f'{p[0]:<20}{p[1]:<40}{p[2]["params"]:>10}{p[2]["grads"]:>10}\n'
-
-            self.logger.info(s)
+            self.logger.info(f'net {key} module info:')
+            self._model_info(module, **kwargs)
 
     def on_train_epoch_end(self, total_nums, save_period, val_dataloader, train_batch_size,
                            mean_loss=None, max_size=None, **metric_kwargs):
@@ -101,26 +96,11 @@ class Mnist(Process):
         channel.Gray2BGR(),
         scale.Proportion(),
         pixel_perturbation.MinMax(),
-        pixel_perturbation.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]),
+        # pixel_perturbation.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]),
         channel.HWC2CHW()
     ])
 
     def data_augment(self, ret):
-        ret.update(dst=self.input_size)
-        ret.update(self.aug(**ret))
-
-        return ret
-
-    def get_val_data(self, *args, **kwargs):
-        from data_parse.cv_data_parse.Mnist import Loader
-
-        # loader = Loader(f'data/mnist')
-        loader = Loader(f'data/fashion')
-        data = loader(set_type=DataRegister.TEST, image_type=DataRegister.ARRAY, generator=False)[0]
-
-        return data
-
-    def val_data_augment(self, ret):
         ret.update(dst=self.input_size)
         ret.update(self.aug(**ret))
 
@@ -155,7 +135,7 @@ class WGAN(IgProcess):
         )
 
     def fit(self, max_epoch, batch_size, save_period=None, save_maxsize=None, metric_kwargs=dict(), **dataloader_kwargs):
-        train_dataloader, val_dataloader, metric_kwargs = self.on_train_start(batch_size, metric_kwargs, **dataloader_kwargs)
+        train_dataloader, _, metric_kwargs = self.on_train_start(batch_size, metric_kwargs, return_val_dataloader=True, **dataloader_kwargs)
 
         self.model.to(self.device)
         optimizer_d, optimizer_g = self.optimizer.optimizer_d, self.optimizer.optimizer_g
@@ -233,7 +213,7 @@ class WGAN(IgProcess):
             if n > 0:
                 ret = []
                 for name, images in vis_image.items():
-                    images = images.data.mul(0.5).add(0.5).mul(255).clamp_(0, 255).permute(0, 2, 3, 1).to("cpu", torch.uint8).numpy()
+                    images = images.data.mul(255).clamp_(0, 255).permute(0, 2, 3, 1).to("cpu", torch.uint8).numpy()
                     ret.append([{'image': image, '_id': f'{name}.png'} for image in images])
 
                 ret = [r for r in zip(*ret)]
@@ -464,13 +444,8 @@ class CycleGan(IgProcess):
         )
 
         for key, module in modules.items():
-            profile = ModuleInfo.profile_per_layer(module, depth=depth)
-            s = f'net {key} module info: \n{"name":<20}{"module":<40}{"params":>10}{"grads":>10}\n'
-
-            for p in profile:
-                s += f'{p[0]:<20}{p[1]:<40}{p[2]["params"]:>10}{p[2]["grads"]:>10}\n'
-
-            self.logger.info(s)
+            self.logger.info(f'net {key} module info:')
+            self._model_info(module, depth, **kwargs)
 
     def fit(self, max_epoch, batch_size, save_period=None, save_maxsize=None, metric_kwargs=dict(), **dataloader_kwargs):
         train_dataloader, val_dataloader, metric_kwargs = self.on_train_start(batch_size, metric_kwargs, **dataloader_kwargs)
@@ -611,4 +586,232 @@ class CycleGan_facade(CycleGan, Facade):
     """
 
     def __init__(self, dataset_version='facade', **kwargs):
+        super().__init__(dataset_version=dataset_version, **kwargs)
+
+
+class Lsun(IgProcess):
+    def get_train_data(self, *args, **kwargs):
+        from data_parse.cv_data_parse.lsun import Loader
+
+        loader = Loader(f'data/lsun')
+        return loader.load(set_type=DataRegister.MIX, image_type=DataRegister.ARRAY, generator=False,
+                           task='cat',
+                           max_size=10000
+                           )[0]
+
+    def data_augment(self, ret) -> dict:
+        aug = Apply([
+            scale.Proportion(),
+            crop.Random(is_pad=False),
+            pixel_perturbation.MinMax(),
+            # pixel_perturbation.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]),
+            channel.HWC2CHW()
+        ])
+
+        ret.update(dst=self.input_size)
+        ret.update(aug(**ret))
+
+        return ret
+
+
+class StyleGan(IgProcess):
+    def __init__(self,
+                 model_version='StyleGAN',
+                 input_size=128,
+                 in_ch=3,
+                 **kwargs
+                 ):
+        from models.image_generate.StyleGAN import Model
+
+        model = Model(
+            img_ch=in_ch,
+            image_size=input_size,
+        )
+
+        generator_params = list(model.net_g.parameters()) + list(model.net_s.parameters())
+        optimizer_g = optim.Adam(generator_params, lr=0.0001, betas=(0.5, 0.9))
+        optimizer_d = optim.Adam(model.net_d.parameters(), lr=0.0001 * 2, betas=(0.5, 0.9))
+
+        super().__init__(
+            model=model,
+            optimizer=IgOptimizer(optimizer_d, optimizer_g),
+            model_version=model_version,
+            input_size=input_size,
+            **kwargs
+        )
+
+    def model_info(self, **kwargs):
+        modules = dict(
+            s=self.model.net_s,
+            d=self.model.net_d,
+            g=self.model.net_g,
+        )
+
+        for key, module in modules.items():
+            self.logger.info(f'net {key} module info:')
+            self._model_info(module, **kwargs)
+
+    def fit(self, max_epoch, batch_size, save_period=None, save_maxsize=None, metric_kwargs=dict(), **dataloader_kwargs):
+        train_dataloader, _, metric_kwargs = self.on_train_start(batch_size, metric_kwargs, return_val_dataloader=False, **dataloader_kwargs)
+
+        optimizer_d, optimizer_g = self.optimizer.optimizer_d, self.optimizer.optimizer_g
+
+        steps = 0
+        num_batch = 64 * 8
+        val_obj = (self.model.gen_noise_image(num_batch, self.device),
+                   self.model.gen_same_noise_z_list(num_batch, self.device))
+        for i in range(max_epoch):
+            self.model.train()
+            pbar = tqdm(train_dataloader, desc=f'train {i}/{max_epoch}')
+            total_nums = 0
+            total_loss_g = 0
+            total_loss_d = 0
+
+            for rets in pbar:
+                images = [torch.from_numpy(ret.pop('image')).to(self.device, non_blocking=True, dtype=torch.float) for ret in rets]
+                images = torch.stack(images)
+
+                # train discriminator
+                optimizer_d.zero_grad()
+                loss_d = self.model.loss_d(images)
+
+                loss_d.backward()
+                optimizer_d.step()
+
+                # train generator
+                optimizer_g.zero_grad()
+                loss_g = self.model.loss_g(images)
+                loss_g.backward()
+                optimizer_g.step()
+
+                steps += 1
+                self.total_nums += len(rets)
+                total_nums += len(rets)
+                total_loss_g += loss_g.item()
+                total_loss_d += loss_d.item()
+                mean_loss_g = total_loss_g / total_nums
+                mean_loss_d = total_loss_d / total_nums
+
+                pbar.set_postfix({
+                    'total_nums': self.total_nums,
+                    'loss_g': f'{loss_g.item():.06}',
+                    'loss_d': f'{loss_d.item():.06}',
+                    'mean_loss_g': f'{mean_loss_g:.06}',
+                    'mean_loss_d': f'{mean_loss_d:.06}',
+                    # 'cpu_info': MemoryInfo.get_process_mem_info(),
+                    # 'gpu_info': MemoryInfo.get_gpu_mem_info()
+                })
+
+                if self.on_train_epoch_end(self.total_nums, save_period, val_obj, batch_size,
+                                           mean_loss=(mean_loss_g, mean_loss_d),
+                                           save_maxsize=save_maxsize,
+                                           **metric_kwargs):
+                    break
+
+    def on_train_epoch_end(self, total_nums, save_period, val_obj, train_batch_size,
+                           mean_loss=None, max_size=None, **metric_kwargs):
+        mean_loss_g, mean_loss_d = mean_loss
+        if save_period and total_nums % save_period < train_batch_size:
+            self.log_info = {'total_nums': total_nums, 'mean_loss_g': mean_loss_g, 'mean_loss_d': mean_loss_d}
+            self.metric(val_obj, cur_epoch=total_nums, **metric_kwargs)
+            self.model.train()
+
+            ckpt = {
+                'total_nums': total_nums,
+                'wandb_id': self.wandb_run.id,
+                'date': datetime.now().isoformat()
+            }
+
+            self.save(f'{self.work_dir}/{total_nums}.pth', save_type=WEIGHT, **ckpt)
+            os_lib.FileCacher(f'{self.work_dir}/', max_size=max_size, stdout_method=self.logger.info).delete_over_range(suffix='pth')
+
+            self.wandb.log(self.log_info)
+
+    @torch.no_grad()
+    def predict(self, val_obj=(None, None), trunc_psi=0.6, batch_size=16,
+                cur_epoch=-1, model=None, visualize=False, max_vis_num=None, vis_batch_size=64,
+                save_ret_func=None, **dataloader_kwargs):
+        self.model.eval()
+
+        noise_xs, noise_zs = val_obj
+        noise_xs = noise_xs if noise_xs is not None else self.model.gen_noise_image(batch_size, self.device)
+        noise_zs = noise_zs if noise_zs is not None else self.model.gen_same_noise_z_list(batch_size, self.device)
+        num_batch = noise_xs.shape[0]
+
+        _w_styles = []
+        for z, num_layer in noise_zs:
+            # truncate_style
+            num_z = 2000
+            _noise_zs = self.model.gen_noise_z(num_z, self.device)
+            _w_style = [self.model.net_s(_noise_zs[i: i + batch_size]) for i in range(0, num_z, batch_size)]
+            _w_style = torch.cat(_w_style, dim=0)
+            _w_style = _w_style.mean(0).unsqueeze(0)
+
+            w_style = self.model.net_s(z)
+            w_style = trunc_psi * (w_style - _w_style) + _w_style
+            _w_styles.append((w_style, num_layer))
+        w_styles = _w_styles
+        w_styles = torch.cat([t[:, None, :].expand(-1, n, -1) for t, n in w_styles], dim=1)
+
+        max_vis_num = max_vis_num or float('inf')
+        cur_vis_num = 0
+        fake_xs = []
+        for i in range(0, num_batch, batch_size):
+            noise_x = noise_xs[i: i + batch_size]
+            w_style = w_styles[i: i + batch_size]
+            fake_x = self.model.net_g(w_style, noise_x)
+            fake_xs.append(fake_x)
+
+        fake_xs = torch.cat(fake_xs, 0)
+
+        for i in range(0, num_batch, vis_batch_size):
+            fake_x = fake_xs[i: i + vis_batch_size]
+            vis_image = dict(
+                fake=fake_x,
+            )
+
+            cur_vis_num = self.on_val_step_end(vis_image, cur_epoch, visualize, vis_batch_size, max_vis_num, cur_vis_num)
+
+    def on_val_step_end(self, vis_image, cur_epoch, visualize, batch_size, max_vis_num, cur_vis_num):
+        if visualize:
+            n = min(batch_size, max_vis_num - cur_vis_num)
+            if n > 0:
+                rets = []
+                for name, images in vis_image.items():
+                    images = images.data.mul(255).clamp_(0, 255).permute(0, 2, 3, 1).to("cpu", torch.uint8).numpy()
+                    rets.append([{'image': image, '_id': f'{name}.{cur_vis_num}.png'} for image in images])
+
+                rets = [r for r in zip(*rets)]
+                cache_dir = f'{self.save_result_dir}/{cur_epoch}'
+                cache_image = DataVisualizer(cache_dir, verbose=False, stdout_method=self.logger.info)(*rets[:n], return_image=True)
+                self.log_info.setdefault('val_image', []).extend([self.wandb.Image(img, caption=Path(r['_id']).stem) for img, r in zip(cache_image, rets[0])])
+                cur_vis_num += n
+        return cur_vis_num
+
+
+class StyleGan_Mnist(StyleGan, Mnist):
+    """
+    Usage:
+        .. code-block:: python
+
+            from examples.image_generate import StyleGan_Mnist as Process
+
+            Process().run(max_epoch=2000, train_batch_size=64, save_period=20000)
+    """
+
+    def __init__(self, dataset_version='Mnist', input_size=32, **kwargs):
+        super().__init__(dataset_version=dataset_version, input_size=input_size, **kwargs)
+
+
+class StyleGan_Lsun(StyleGan, Lsun):
+    """
+    Usage:
+        .. code-block:: python
+
+            from examples.image_generate import StyleGan_Lsun as Process
+
+            Process().run(max_epoch=2000, train_batch_size=32, save_period=20000)
+    """
+
+    def __init__(self, dataset_version='lsun', **kwargs):
         super().__init__(dataset_version=dataset_version, **kwargs)

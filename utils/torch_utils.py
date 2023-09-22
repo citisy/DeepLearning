@@ -9,12 +9,15 @@ class ModuleInfo:
     def profile_per_layer(cls, module: nn.Module, depth=None):
         profiles = []
 
-        def cur(current_m, dep):
+        def cur(current_m, dep, prev_name=''):
             for name, m in current_m._modules.items():
+                if m is None:
+                    continue
                 if dep <= 1 or len(m._modules) == 0:
+                    name = f'{prev_name}.{name}'[1:]
                     profiles.append((name, str(type(m))[8:-2], cls.profile(m)))
                 else:
-                    cur(m, dep - 1)
+                    cur(m, dep - 1, f'{prev_name}.{name}')
 
         depth = depth or float('inf')
         cur(module, depth)
@@ -80,6 +83,67 @@ class ModuleInfo:
         return flops
 
 
+def initialize_layers(module, init_gain=0.02, init_type='normal'):
+    def cur(current_m):
+        for name, m in current_m._modules.items():
+            if m is None:
+                continue
+
+            if hasattr(m, 'initialize_layers'):
+                m.initialize_layers()
+                continue
+
+            t = type(m)
+
+            if t is nn.BatchNorm2d:
+                m.eps = 1e-3
+                m.momentum = 0.03
+                m.weight.data.normal_(1.0, init_gain)
+                m.bias.data.fill_(0.)
+
+            elif t is nn.LayerNorm:
+                nn.init.constant_(m.bias, 0)
+                nn.init.constant_(m.weight, 1.0)
+
+            elif t in [nn.Hardswish, nn.LeakyReLU, nn.ReLU, nn.ReLU6, nn.SiLU]:
+                m.inplace = True
+
+            elif t in [nn.Conv2d, nn.Linear]:
+                if init_type == 'normal':
+                    nn.init.normal_(m.weight.data, 0.0, init_gain)
+                elif init_type == 'xavier':
+                    nn.init.xavier_normal_(m.weight.data, gain=init_gain)
+                elif init_type == 'kaiming':
+                    nn.init.kaiming_normal_(m.weight.data, a=0)
+                elif init_type == 'orthogonal':
+                    nn.init.orthogonal_(m.weight.data, gain=init_gain)
+
+                if hasattr(m, 'bias') and m.bias is not None:
+                    nn.init.constant_(m.bias.data, 0.0)
+
+            elif t in [nn.ConvTranspose2d]:
+                m.weight.data.copy_(bilinear_kernel(m.in_channels, m.out_channels, m.kernel_size[0]))
+
+            if len(m._modules) != 0:
+                cur(m)
+
+    cur(module)
+
+
+def bilinear_kernel(in_channels, out_channels, kernel_size):
+    factor = (kernel_size + 1) // 2
+    if kernel_size % 2 == 1:
+        center = factor - 1
+    else:
+        center = factor - 0.5
+    og = (torch.arange(kernel_size).reshape(-1, 1), torch.arange(kernel_size).reshape(1, -1))
+    f = (1 - torch.abs(og[0] - center) / factor) * (1 - torch.abs(og[1] - center) / factor)
+    weight = torch.zeros((in_channels, out_channels, kernel_size, kernel_size))
+    ch = min(in_channels, out_channels)
+    weight[range(ch), range(ch), :, :] = f
+    return weight
+
+
 class EarlyStopping:
     def __init__(self, thres=0.005, patience=float('inf'), min_epoch=0, verbose=True, stdout_method=print):
         self.thres = thres
@@ -111,68 +175,24 @@ class EarlyStopping:
         return stop
 
 
-def initialize_layers(module, init_gain=0.02, init_type='normal'):
-    for m in module.modules():
-        t = type(m)
-
-        if t is nn.BatchNorm2d:
-            m.eps = 1e-3
-            m.momentum = 0.03
-            m.weight.data.normal_(1.0, init_gain)
-            m.bias.data.fill_(0.)
-
-        elif t is nn.LayerNorm:
-            nn.init.constant_(m.bias, 0)
-            nn.init.constant_(m.weight, 1.0)
-
-        elif t in [nn.Hardswish, nn.LeakyReLU, nn.ReLU, nn.ReLU6, nn.SiLU]:
-            m.inplace = True
-
-        elif t in [nn.Conv2d, nn.Linear]:
-            if init_type == 'normal':
-                nn.init.normal_(m.weight.data, 0.0, init_gain)
-            elif init_type == 'xavier':
-                nn.init.xavier_normal_(m.weight.data, gain=init_gain)
-            elif init_type == 'kaiming':
-                nn.init.kaiming_normal_(m.weight.data, a=0, mode='fan_in')
-            elif init_type == 'orthogonal':
-                nn.init.orthogonal_(m.weight.data, gain=init_gain)
-
-            if hasattr(m, 'bias') and m.bias is not None:
-                nn.init.constant_(m.bias.data, 0.0)
-
-        elif t in [nn.ConvTranspose2d]:
-            m.weight.data.copy_(bilinear_kernel(m.in_channels, m.out_channels, m.kernel_size[0]))
-
-
-def bilinear_kernel(in_channels, out_channels, kernel_size):
-    factor = (kernel_size + 1) // 2
-    if kernel_size % 2 == 1:
-        center = factor - 1
-    else:
-        center = factor - 0.5
-    og = (torch.arange(kernel_size).reshape(-1, 1), torch.arange(kernel_size).reshape(1, -1))
-    f = (1 - torch.abs(og[0] - center) / factor) * (1 - torch.abs(og[1] - center) / factor)
-    weight = torch.zeros((in_channels, out_channels, kernel_size, kernel_size))
-    ch = min(in_channels, out_channels)
-    weight[range(ch), range(ch), :, :] = f
-    return weight
-
-
 class Export:
     @staticmethod
     def to_pickle(model):
         pass
 
     @staticmethod
-    def to_jit(model, trace_input):
+    def to_jit(model, *trace_input, **export_kwargs):
         with torch.no_grad():
             model.eval()
             # warmup, make sure that the model is initialized right
-            model(trace_input)
-            jit_model = torch.jit.trace(model, trace_input)
+            model(*trace_input)
+            jit_model = torch.jit.trace(model, trace_input, **export_kwargs)
 
         return jit_model
+
+    @staticmethod
+    def to_onnx(model, *trace_input, **export_kwargs):
+        torch.onnx.export(model=model, args=trace_input, **export_kwargs)
 
 
 def is_parallel(model):

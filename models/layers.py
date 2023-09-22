@@ -235,19 +235,22 @@ class ConvT(nn.Sequential):
 
 
 class Conv2DMod(nn.Module):
-    def __init__(self, in_chan, out_chan, kernel, demod=True, stride=1, dilation=1, eps=1e-8, **kwargs):
+    def __init__(self, in_ch, out_ch, k, stride=1, dilation=1, demod=True, eps=1e-8, **kwargs):
         super().__init__()
-        self.filters = out_chan
-        self.demod = demod
-        self.kernel = kernel
+        self.in_channels = in_ch
+        self.out_channels = out_ch
+        self.k = k
         self.stride = stride
         self.dilation = dilation
-        self.weight = nn.Parameter(torch.randn((out_chan, in_chan, kernel, kernel)))
+        self.demod = demod
+        self.weight = nn.Parameter(torch.randn((out_ch, in_ch, k, k)))
         self.eps = eps
+
+    def initialize_layers(self):
         nn.init.kaiming_normal_(self.weight, a=0, mode='fan_in', nonlinearity='leaky_relu')
 
-    def _get_same_padding(self, size, kernel, dilation, stride):
-        return ((size - 1) * (stride - 1) + dilation * (kernel - 1)) // 2
+    def _get_same_padding(self, size):
+        return ((size - 1) * (self.stride - 1) + self.dilation * (self.k - 1)) // 2
 
     def forward(self, x, y):
         b, c, h, w = x.shape
@@ -263,18 +266,22 @@ class Conv2DMod(nn.Module):
         x = x.reshape(1, -1, h, w)
 
         _, _, *ws = weights.shape
-        weights = weights.reshape(b * self.filters, *ws)
+        weights = weights.reshape(b * self.out_channels, *ws)
 
-        padding = self._get_same_padding(h, self.kernel, self.dilation, self.stride)
+        padding = self._get_same_padding(h)
         x = F.conv2d(x, weights, padding=padding, groups=b)
-
-        x = x.reshape(-1, self.filters, h, w)
+        x = x.reshape(-1, self.out_channels, h, w)
         return x
 
 
 class Linear(nn.Sequential):
     def __init__(self, in_features, out_features,
-                 is_act=True, act=None, is_norm=True, bn=None, is_drop=False, drop_prob=0.7):
+                 linear=None,
+                 is_act=True, act=None,
+                 is_norm=True, norm=None,
+                 is_drop=False, drop_prob=0.7,
+                 **linear_kwargs
+                 ):
         self.is_act = is_act
         self.is_norm = is_norm
         self.is_drop = is_drop
@@ -284,24 +291,30 @@ class Linear(nn.Sequential):
         if self.is_drop:
             layers.append(nn.Dropout(drop_prob))
 
-        layers.append(nn.Linear(in_features, out_features))
+        if linear is None:
+            linear = nn.Linear
+
+        layers.append(linear(in_features, out_features, **linear_kwargs))
 
         if self.is_norm:
-            layers.append(bn or nn.BatchNorm1d(out_features))
+            layers.append(norm or nn.BatchNorm1d(out_features))
 
         if self.is_act:
             layers.append(act or nn.Sigmoid())
 
+        self.in_features = in_features
         self.out_features = out_features
         super().__init__(*layers)
 
 
 class EqualLinear(nn.Module):
-    def __init__(self, in_dim, out_dim, lr_mul=1, bias=True):
+    def __init__(self, in_features, out_features, lr_mul=1, bias=True):
         super().__init__()
-        self.weight = nn.Parameter(torch.randn(out_dim, in_dim))
+        self.in_features = in_features
+        self.out_features = out_features
+        self.weight = nn.Parameter(torch.randn(out_features, in_features))
         if bias:
-            self.bias = nn.Parameter(torch.zeros(out_dim))
+            self.bias = nn.Parameter(torch.zeros(out_features))
 
         self.lr_mul = lr_mul
 

@@ -15,6 +15,10 @@ class Loader(DataLoader):
         ├── [task]_val_lmdb     # val data
         │   ├── data.lmdb
         │   └── lock.lmdb
+        ├── ...
+        ├── [task]              # mix dataset, refer to http://dl.yf.io/lsun/objects/ to get task
+        │   ├── data.lmdb
+        │   └── lock.lmdb
         └── ...
 
     Usage:
@@ -51,7 +55,10 @@ class Loader(DataLoader):
                 classes: a list
         """
 
-        db_path = f'{self.data_dir}/{task}_{set_type.value}_lmdb'
+        if set_type == DataRegister.MIX:
+            db_path = f'{self.data_dir}/{task}'
+        else:
+            db_path = f'{self.data_dir}/{task}_{set_type.value}_lmdb'
         env = lmdb.open(db_path, map_size=1099511627776, max_readers=100, readonly=True)
 
         txn = env.begin(write=False)

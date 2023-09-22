@@ -6,6 +6,8 @@ from kornia.filters import filter2d
 import torch
 import torch.nn.functional as F
 from ..layers import Linear, Conv, ConvT, EqualLinear, Conv2DMod, Residual
+from utils.torch_utils import initialize_layers
+
 
 net_s_config = dict(
     n_layers=8,
@@ -35,28 +37,17 @@ class Model(nn.ModuleList):
         self.net_g_in_ch = net_g_in_ch
         self.num_layers = int(log2(image_size)) - 1
 
-        self.net_s = StyleVectorizer(net_g_in_ch, **net_s_config)
+        self.net_s = StyleMap(net_g_in_ch, **net_s_config)
         self.net_g = Generator(net_g_in_ch, out_ch=img_ch, num_layers=self.num_layers, **net_g_config)
         self.net_d = Discriminator(img_ch, num_layers=self.num_layers, **net_d_config)
 
         # init weights
-        self.initialize_layers()
-
-    def initialize_layers(self):
-        for m in self.modules():
-            if type(m) in {nn.Conv2d, nn.Linear}:
-                nn.init.kaiming_normal_(m.weight, a=0, mode='fan_in', nonlinearity='leaky_relu')
-
-        for block in self.net_g.blocks:
-            nn.init.zeros_(block.to_noise1.weight)
-            nn.init.zeros_(block.to_noise2.weight)
-            nn.init.zeros_(block.to_noise1.bias)
-            nn.init.zeros_(block.to_noise2.bias)
+        initialize_layers(self, init_type='kaiming')
 
     def loss_d(self, real_x):
         batch_size = real_x.shape[0]
 
-        noise_x = torch.FloatTensor(batch_size, self.image_size, self.image_size, 1).uniform_(0., 1.).to(real_x.device)
+        noise_x = self.gen_noise_image(batch_size, real_x.device)
         styles = self.gen_styles(self.gen_rand_noise_z_list(batch_size, real_x.device))
 
         fake_x = self.net_g(styles, noise_x)
@@ -65,7 +56,7 @@ class Model(nn.ModuleList):
         real_x.requires_grad_(True)
         real_y, real_q_loss = self.net_d(real_x)
 
-        return (F.relu(1 + real_y) + F.relu(1 - fake_y)).mean()  # + (fake_q_loss + real_q_loss).mean()
+        return (F.relu(1 + real_y) + F.relu(1 - fake_y)).mean() + (fake_q_loss + real_q_loss).mean()
 
     def loss_g(self, real_x):
         batch_size = real_x.shape[0]
@@ -102,14 +93,12 @@ class Model(nn.ModuleList):
         return torch.FloatTensor(batch_size, self.image_size, self.image_size, 1).uniform_(0., 1.).to(device)
 
 
-class StyleVectorizer(nn.Module):
+class StyleMap(nn.Module):
     def __init__(self, in_features, n_layers, lr_mul=0.1):
         super().__init__()
         self.in_features = in_features
 
-        layers = [
-            # nn.BatchNorm1d(emb)
-        ]
+        layers = []
         for i in range(n_layers):
             layers.append(Linear(
                 in_features, in_features,
@@ -159,18 +148,6 @@ class Generator(nn.Module):
                 is_last=i == (num_layers - 1),
             ))
 
-            # blocks.append(nn.Sequential(
-            #     AttentionBlock(in_ch) if i in attn_layers else nn.Identity(),
-            #     GeneratorBlock(
-            #         self.in_channels,
-            #         in_ch,
-            #         out_ch,
-            #         self.out_channels,
-            #         is_first=i == 0,
-            #         is_last=i == (num_layers - 1),
-            #     )
-            # ))
-
             in_ch = out_ch
 
         self.attention_blocks = nn.ModuleList(attention_blocks)
@@ -213,6 +190,7 @@ class GeneratorBlock(nn.Module):
         self.gen_block = GenBlock(in_features, hidden_ch, not is_last, out_ch)
 
     def initialize_layers(self):
+        initialize_layers(self, init_type='kaiming')
         nn.init.zeros_(self.to_noise1.weight)
         nn.init.zeros_(self.to_noise2.weight)
         nn.init.zeros_(self.to_noise1.bias)
@@ -271,28 +249,22 @@ class Discriminator(nn.Module):
         out_ches = [min(in_ch * 4, out_ch) for out_ch in out_ches]
 
         blocks = []
-        attention_blocks = []
         quantize_blocks = []
         for i, out_ch in enumerate(out_ches):
-            blocks.append(DiscriminatorBlock(in_ch, out_ch, is_last=i == (len(out_ches) - 1)))
-            attention_blocks.append(AttentionBlock(out_ch) if i in attn_layers else nn.Identity())
-
-            # blocks.append(nn.Sequential(
-            #     DiscriminatorBlock(in_ch, out_ch, is_last=i == (len(out_ches) - 1)),
-            #     AttentionBlock(out_ch) if i in attn_layers else nn.Identity()
-            # ))
+            blocks.append(nn.Sequential(
+                DiscriminatorBlock(in_ch, out_ch, is_last=i == (len(out_ches) - 1)),
+                AttentionBlock(out_ch) if i in attn_layers else nn.Identity()
+            ))
 
             quantize_fn = None
             if i in fq_layers:
                 from vector_quantize_pytorch import VectorQuantize
-                # quantize_fn = PermuteToFrom(VectorQuantize(out_ch, fq_dict_size, accept_image_fmap=True))
                 quantize_fn = VectorQuantize(out_ch, fq_dict_size, accept_image_fmap=True)
             quantize_blocks.append(quantize_fn)
 
             in_ch = out_ch
 
         self.blocks = nn.ModuleList(blocks)
-        self.attention_blocks = nn.ModuleList(attention_blocks)
         self.quantize_blocks = nn.ModuleList(quantize_blocks)
 
         in_features = 2 * 2 * in_ch
@@ -310,9 +282,8 @@ class Discriminator(nn.Module):
 
         quantize_loss = torch.zeros(1).to(x)
 
-        for (block, attn_block, q_block) in zip(self.blocks, self.attention_blocks, self.quantize_blocks):
+        for (block, q_block) in zip(self.blocks, self.quantize_blocks):
             x = block(x)
-            x = attn_block(x)
 
             if q_block is not None:
                 x, *_, loss = q_block(x)
@@ -394,8 +365,8 @@ class ConvAttention(nn.Module):
 
         self.to_q = nn.Conv2d(in_ch, tmp_ch, 1, bias=False)
         self.to_kv = nn.Sequential(
-            nn.Conv2d(in_ch, in_ch, kernel_size=3, padding=1, groups=in_ch, stride=1, bias=False),
-            nn.Conv2d(in_ch, tmp_ch * 2, kernel_size=1, bias=False)
+            nn.Conv2d(in_ch, in_ch, 3, padding=1, groups=in_ch, stride=1, bias=False),
+            nn.Conv2d(in_ch, tmp_ch * 2, 1, bias=False)
         )
 
         self.to_out = Conv(tmp_ch, in_ch, 1, act=nn.GELU(), is_norm=False, mode='ac')

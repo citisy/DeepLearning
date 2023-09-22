@@ -175,7 +175,7 @@ class DataLoader:
         """
         raise NotImplementedError
 
-    def gen_data(self, gen_func, max_size=float('inf'), **get_kwargs):
+    def gen_data(self, gen_func, max_size=None, **get_kwargs):
         """
 
         Args:
@@ -188,6 +188,7 @@ class DataLoader:
             a dict of result data
 
         """
+        max_size = max_size or float('inf')
         i = 0
         for obj in gen_func:
             if i >= max_size:
@@ -209,6 +210,9 @@ class DataLoader:
 
             i += 1
             yield ret
+
+        if hasattr(gen_func, 'close'):
+            gen_func.close()
 
     def get_ret(self, obj, image_type=DataRegister.PATH, **kwargs) -> dict:
         raise NotImplementedError
