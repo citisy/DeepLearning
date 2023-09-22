@@ -8,7 +8,7 @@ from tqdm import tqdm
 from utils.torch_utils import EarlyStopping, ModuleInfo, Export
 from utils import os_lib, configs
 from data_parse.cv_data_parse.base import DataRegister, DataVisualizer
-from data_parse.cv_data_parse.data_augmentation import crop, scale, geometry, pixel_perturbation, RandomApply, Apply, channel
+from data_parse.cv_data_parse.data_augmentation import crop, scale, geometry, pixel_perturbation, RandomApply, Apply, channel, RandomChoice
 from pathlib import Path
 import numpy as np
 from datetime import datetime
@@ -228,15 +228,35 @@ class Lsun(IgProcess):
         from data_parse.cv_data_parse.lsun import Loader
 
         loader = Loader(f'data/lsun')
-        return loader.load(set_type=DataRegister.MIX, image_type=DataRegister.ARRAY, generator=False,
-                           task='cat',
-                           max_size=10000
-                           )[0]
+        iter_data = loader.load(
+            set_type=DataRegister.MIX, image_type=DataRegister.ARRAY, generator=False,
+            task='cat',
+            max_size=10000
+        )[0]
+
+        # iter_data = loader.load(
+        #     set_type=DataRegister.TRAIN, image_type=DataRegister.ARRAY, generator=False,
+        #     task='church_outdoor',
+        #     max_size=10000
+        # )[0]
+
+        return iter_data
 
     def data_augment(self, ret) -> dict:
+        aug = RandomApply([
+            RandomChoice([
+                pixel_perturbation.GaussNoise(),
+                pixel_perturbation.SaltNoise(),
+            ]),
+            geometry.HFlip(),
+            geometry.VFlip()
+        ], probs=[0.2, 0.5, 0.2])
+        ret.update(aug(**ret))
+
         aug = Apply([
             scale.Proportion(),
             crop.Random(is_pad=False),
+            # scale.LetterBox(),
             pixel_perturbation.MinMax(),
             # pixel_perturbation.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]),
             channel.HWC2CHW()
@@ -263,8 +283,8 @@ class StyleGan(IgProcess):
         )
 
         generator_params = list(model.net_g.parameters()) + list(model.net_s.parameters())
-        optimizer_g = optim.Adam(generator_params, lr=0.0001, betas=(0.5, 0.9))
-        optimizer_d = optim.Adam(model.net_d.parameters(), lr=0.0001 * 2, betas=(0.5, 0.9))
+        optimizer_g = optim.Adam(generator_params, lr=0.0002, betas=(0.5, 0.9))
+        optimizer_d = optim.Adam(model.net_d.parameters(), lr=0.0002 * 2, betas=(0.5, 0.9))
 
         super().__init__(
             model=model,
@@ -308,7 +328,6 @@ class StyleGan(IgProcess):
                 # train discriminator
                 optimizer_d.zero_grad()
                 loss_d = self.model.loss_d(images)
-
                 loss_d.backward()
                 optimizer_d.step()
 

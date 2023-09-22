@@ -13,11 +13,13 @@ class Model(nn.ModuleList):
     code:
         - https://github.com/martinarjovsky/WassersteinGAN
     """
-    def __init__(self, input_size, in_ch, hidden_ch, n_conv=0):
+    def __init__(self, input_size, in_ch, hidden_ch,
+                 net_g=None, net_d=None,
+                 n_conv=0):
         super().__init__()
 
-        self.net_d = DcganD(input_size, in_ch, n_conv)
-        self.net_g = DcganG(input_size, hidden_ch, in_ch, n_conv)
+        self.net_d = net_d if net_d is not None else DcganD(input_size, in_ch, n_conv)
+        self.net_g = net_g if net_g is not None else DcganG(input_size, hidden_ch, in_ch, n_conv)
 
         initialize_layers(self)
 

@@ -439,7 +439,7 @@ class Yolov5Dataset(Process):
     def get_train_data(self):
         from data_parse.cv_data_parse.YoloV5 import Loader, DataRegister
 
-        convert_func = lambda ret: converter.CoordinateConvert.mid_xywh2top_xyxy(
+        convert_func = lambda ret: cv_utils.CoordinateConvert.mid_xywh2top_xyxy(
             ret['bboxes'],
             wh=(ret['image'].shape[1], ret['image'].shape[0]),
             blow_up=True
@@ -454,7 +454,7 @@ class Yolov5Dataset(Process):
     def get_val_data(self):
         from data_parse.cv_data_parse.YoloV5 import Loader, DataRegister
 
-        convert_func = lambda ret: converter.CoordinateConvert.mid_xywh2top_xyxy(
+        convert_func = lambda ret: cv_utils.CoordinateConvert.mid_xywh2top_xyxy(
             ret['bboxes'],
             wh=(ret['image'].shape[1], ret['image'].shape[0]),
             blow_up=True

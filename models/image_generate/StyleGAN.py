@@ -16,15 +16,15 @@ net_s_config = dict(
 
 net_g_config = dict(
     network_capacity=16,
-    attn_layers=[1, 2],
+    attn_layers=[4, 5],
     no_const=False
 )
 
 net_d_config = dict(
     network_capacity=16,
-    fq_layers=[1, 2],
+    fq_layers=[4, 5],
     fq_dict_size=512,
-    attn_layers=[1, 2]
+    attn_layers=[4, 5]
 )
 
 
@@ -104,7 +104,7 @@ class StyleMap(nn.Module):
                 in_features, in_features,
                 linear=EqualLinear,
                 lr_mul=lr_mul,
-                act=nn.LeakyReLU(0.2, inplace=True),
+                act=nn.LeakyReLU(0.2),
                 is_norm=False
             ))
 
@@ -122,7 +122,7 @@ class Generator(nn.Module):
         self.out_channels = out_ch
 
         out_ches = [network_capacity * (2 ** (i + 1)) for i in range(num_layers)][::-1]
-        out_ches = [min(in_ch * 4, out_ch) for out_ch in out_ches]
+        out_ches = [min(network_capacity * 64, out_ch) for out_ch in out_ches]
         out_ch = out_ches[0]
 
         self.no_const = no_const
@@ -245,8 +245,8 @@ class Discriminator(nn.Module):
         super().__init__()
         self.in_channels = in_ch
 
-        out_ches = [(network_capacity * 4) * (2 ** i) for i in range(num_layers + 1)]
-        out_ches = [min(in_ch * 4, out_ch) for out_ch in out_ches]
+        out_ches = [(network_capacity * 4) * (2 ** i) for i in range(num_layers)]
+        out_ches = [min(network_capacity * 64, out_ch) for out_ch in out_ches]
 
         blocks = []
         quantize_blocks = []
@@ -267,13 +267,12 @@ class Discriminator(nn.Module):
         self.blocks = nn.ModuleList(blocks)
         self.quantize_blocks = nn.ModuleList(quantize_blocks)
 
-        in_features = 2 * 2 * in_ch
         out_features = 1
 
         self.out = nn.Sequential(
             nn.Conv2d(in_ch, in_ch, 3, padding=1),
             nn.Flatten(),
-            nn.Linear(in_features, out_features)
+            nn.LazyLinear(out_features)
         )
         self.out_features = out_features
 
@@ -298,8 +297,8 @@ class DiscriminatorBlock(nn.Module):
         super().__init__()
         self.conv = nn.Conv2d(in_ch, out_ch, 1, stride=(2 if not is_last else 1))
         self.conv_seq = nn.Sequential(
-            Conv(in_ch, out_ch, 3, act=nn.LeakyReLU(0.2, inplace=True), is_norm=False),
-            Conv(out_ch, out_ch, 3, act=nn.LeakyReLU(0.2, inplace=True), is_norm=False),
+            Conv(in_ch, out_ch, 3, act=nn.LeakyReLU(0.2), is_norm=False),
+            Conv(out_ch, out_ch, 3, act=nn.LeakyReLU(0.2), is_norm=False),
         )
 
         self.down_sample = nn.Sequential(
