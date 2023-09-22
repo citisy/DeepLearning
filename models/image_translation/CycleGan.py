@@ -2,9 +2,9 @@ import random
 import torch
 import torch.nn as nn
 from ..layers import Conv, ConvT
-from utils.torch_utils import initialize_layers
 from .pix2pix import NetD, net_d_config
 from ..image_classifier.ResNet import ResBlock
+from utils.torch_utils import initialize_layers
 
 net_g_config = dict(
     n_res_blocks=9
