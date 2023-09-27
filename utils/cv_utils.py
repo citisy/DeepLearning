@@ -131,32 +131,34 @@ class CoordinateConvert:
         return cls._call(bbox, wh, blow_up, convert_func)
 
     @staticmethod
-    def rect2box(boxes) -> np.ndarray:
-        """rec(-1, 4, 2) convert to box(-1, 4)"""
-        boxes = np.array(boxes)
-
-        if boxes.size == 0:
-            return np.zeros((0, 4))
-
-        rects = np.zeros((len(boxes), 4))
-        rects[:, :2] = boxes[:, 0]
-        rects[:, 2:] = boxes[:, 2]
-        return rects
-
-    @staticmethod
-    def box2rect(rects) -> np.ndarray:
-        """box(-1, 4) convert to rec(-1, 4, 2)"""
+    def rect2box(rects) -> np.ndarray:
+        """rects(-1, 4, 2) convert to boxes(-1, 4)"""
         rects = np.array(rects)
 
         if rects.size == 0:
+            return np.zeros((0, 4))
+
+        x1 = np.min(rects[:, :, 0], axis=1)
+        y1 = np.min(rects[:, :, 1], axis=1)
+        x2 = np.max(rects[:, :, 0], axis=1)
+        y2 = np.max(rects[:, :, 1], axis=1)
+        boxes = np.c_[x1, y1, x2, y2]
+        return boxes
+
+    @staticmethod
+    def box2rect(boxes) -> np.ndarray:
+        """boxes(-1, 4) convert to rects(-1, 4, 2)"""
+        boxes = np.array(boxes)
+
+        if boxes.size == 0:
             return np.zeros((0, 0, 2))
 
-        boxes = np.zeros((len(rects), 4, 2))
-        boxes[:, 0] = rects[:, :2]
-        boxes[:, 1] = rects[:, (2, 1)]
-        boxes[:, 2] = rects[:, 2:]
-        boxes[:, 3] = rects[:, (0, 3)]
-        return boxes
+        rects = np.zeros((len(boxes), 4, 2))
+        rects[:, 0] = boxes[:, :2]
+        rects[:, 1] = boxes[:, (2, 1)]
+        rects[:, 2] = boxes[:, 2:]
+        rects[:, 3] = boxes[:, (0, 3)]
+        return rects
 
 
 def detect_continuous_lines(image, tol=0, region_thres=0, binary_thres=200, axis=1):
@@ -546,20 +548,68 @@ def box_include_grid_lines(bboxes, cols, rows, w, h):
     return box_include_grid_cells(bboxes, cells)
 
 
-# def lines_to_boxes(lines, thres=0):
-#     """giving the lines, combine them to the bboxes
-#
-#     Args:
-#         lines: (n, 4), 2 for (x1, y1, x2, y2)
-#
-#     Returns:
-#
-#     """
-#     from metrics.object_detection import Overlap
-#     flag = Overlap.line2D(lines, lines)
-#     n_points = np.sum(flag, axis=0)
-#     idx = np.where(n_points >= 2)[0]
-#
-#     for a in idx:
-#         b = np.where(flag[a])[0]
+def lines_to_boxes(lines, oblique=True):
+    """giving the lines, combine them to the bboxes
 
+    Args:
+        lines: (n, 4), 2 for (x1, y1, x2, y2)
+        oblique:
+            False, all lines perpendicular to axis
+            True, any directional lines
+    Returns:
+
+    """
+    from metrics.object_detection import Overlap
+
+    def cur(points, cur_points=[], dep=0):
+        if dep == 3:
+            for p in points:
+                if p == cur_points[0]:
+                    a = set(cur_points)
+                    b = {(cur_points[0], cur_points[1]),
+                         (cur_points[1], cur_points[2]),
+                         (cur_points[2], cur_points[3]),
+                         (cur_points[3], cur_points[0])}
+                    if a not in all_points:
+                        all_points.append(a)
+                        all_edges.append(b)
+                    break
+
+        for p in points:
+            if p in cur_points:
+                continue
+
+            cur(dic[p], cur_points + [p], dep + 1)
+
+    obj = Overlap.line2D(lines, lines, return_insert_point=oblique)
+    if oblique:
+        flag, p = obj
+        idx = np.where(flag)
+    else:
+        flag = obj
+        idx = np.where(flag)
+        la = lines[idx[0]]
+        lb = lines[idx[1]]
+        p = np.zeros((*flag.shape, 2))
+        p[idx] = np.where(la[:, 0] == la[:, 2], (la[:, 0], lb[:, 1]), (lb[:, 0], la[:, 1])).T
+
+    dic = {}
+    for i, j in zip(*idx):
+        dic.setdefault(i, []).append(j)
+
+    all_points = []
+    all_edges = []
+
+    for k, v in dic.items():
+        cur(dic[k], [k])
+
+    all_points = [list(p) for p in all_points]
+    all_edges = [list(zip(*edges)) for edges in all_edges]
+    rect = []
+    for edges in all_edges:
+        rect.append(p[edges])
+
+    rect = np.stack(rect)
+    bboxes = CoordinateConvert.rect2box(rect)
+
+    return bboxes

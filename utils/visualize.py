@@ -238,7 +238,7 @@ class TextVisualize:
     def highlight_subtext(
             cls,
             text, span, wing_length=None,
-            types='blue', start='', end=''
+            types=('blue', 'bold'), start='', end=''
     ):
         """highlight a string where giving by span of a text
         See Also `TextVisualize.highlight_str`
@@ -277,7 +277,7 @@ class TextVisualize:
     def highlight_subtexts(
             cls,
             text, spans,
-            types='blue', start='', end=''
+            types=('blue', 'bold'), start='', end=''
 
     ):
         """highlight multiple strings where giving by spans of a text

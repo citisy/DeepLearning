@@ -4,7 +4,6 @@ import hashlib
 import numpy as np
 from pathlib import Path
 from .os_lib import IgnoreException, FakeIo
-from distutils.util import strtobool
 
 
 ignore_exception = IgnoreException(stdout_method=FakeIo())
@@ -146,7 +145,13 @@ class DataConvert:
     @staticmethod
     @ignore_exception.add_ignore(err_type=ValueError)
     def str_to_bool(obj):
-        return strtobool(obj)
+        obj = obj.lower()
+        if obj in ('y', 'yes', 't', 'true', 'on', '1'):
+            return True
+        elif obj in ('n', 'no', 'f', 'false', 'off', '0'):
+            return False
+        else:
+            raise ValueError("invalid truth value %r" % (obj,))
 
     @classmethod
     def obj_to_md5(cls, obj):

@@ -10,7 +10,6 @@ cmap = {
     'Orange': {'alias': '橙色', 'code': '#FFA500', 'array': (255, 165, 0)},
     'Pink': {'alias': '粉红', 'code': '#FFC0CB', 'array': (255, 192, 203)},
     'Crimson': {'alias': '深红(猩红)', 'code': '#DC143C', 'array': (220, 20, 60)},
-    'LavenderBlush': {'alias': '淡紫红', 'code': '#FFF0F5', 'array': (255, 240, 245)},
     'PaleVioletRed': {'alias': '弱紫罗兰红', 'code': '#DB7093', 'array': (219, 112, 147)},
     'HotPink': {'alias': '热情的粉红', 'code': '#FF69B4', 'array': (255, 105, 180)},
     'DeepPink': {'alias': '深粉红', 'code': '#FF1493', 'array': (255, 20, 147)},
@@ -138,6 +137,7 @@ cmap = {
     'DarkGray': {'alias': '深灰色', 'code': '#A9A9A9', 'array': (169, 169, 169)},
     'Gray': {'alias': '灰色', 'code': '#808080', 'array': (128, 128, 128)},
     'DimGray': {'alias': '暗淡的灰色', 'code': '#696969', 'array': (105, 105, 105)},
+    'LavenderBlush': {'alias': '淡紫红', 'code': '#FFF0F5', 'array': (255, 240, 245)},
     'Red': {'alias': '纯红', 'code': '#FF0000', 'array': (255, 0, 0)},
 }
 

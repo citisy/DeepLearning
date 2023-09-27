@@ -1,37 +1,53 @@
-import numpy as np
 from typing import List
 import re
+from collections import defaultdict
+from .excluded import convert_dict
 
 
-def cut_word_by_jieba(segments, filter_blank=True):
-    """
+class Cutter:
+    @staticmethod
+    def cut_word_to_char(segments, filter_blank=True):
+        _segments = []
+        for line in segments:
+            if filter_blank:
+                line = line.split()
+            else:
+                line = list(line)
+            _segments.append(line)
 
-    Args:
-        segments (List[str]):
-        filter_blank (bool):
+        return _segments
 
-    Returns:
+    @staticmethod
+    def cut_word_by_jieba(segments, filter_blank=True) -> List[List[str]]:
+        """
 
-    """
-    import jieba
+        Args:
+            segments (List[str]):
+            filter_blank (bool):
 
-    segments = map(jieba.lcut, segments)
+        Returns:
 
-    if filter_blank:
-        segments = map(lambda x: ' '.join(x).split(), segments)
+        """
+        import jieba
 
-    return list(segments)
+        segments = map(jieba.lcut, segments)
+
+        if filter_blank:
+            segments = map(lambda x: ' '.join(x).split(), segments)
+
+        return list(segments)
 
 
-class Sequence:
-    """[ROUGE: A Package for Automatic Evaluation of Summaries](https://aclanthology.org/W04-1013.pdf)"""
+class Sequencer:
+    """make the single words to the sentence sequence
+    refer to [ROUGE: A Package for Automatic Evaluation of Summaries](https://aclanthology.org/W04-1013.pdf)"""
 
     @staticmethod
     def n_grams(segments, n_gram=2):
         """n grams
 
         Args:
-            segments (List[list]): should be cut
+            segments (List[List[str]]): should be cut
             n_gram (int):
 
         Returns:
@@ -109,12 +125,14 @@ class Sequence:
         )
 
 
-class LevelGeneration:
+class FineGrainedSpliter:
+    """article type split to different fine-grained type
+
+    article (str): all lines fatten to a string
+    paragraphs (List[List[str]]):
+    chunks (List[List[str]]): each line has the same length possibly
     """
-    article: '...', all lines fatten to a string
-    paragraphs: [[], [], ....]
-    chunks: [[], [], ....], each line has the same length possibly
-    """
+
     def __init__(self, max_length=512, line_end='\n'):
         self.max_length = max_length
         self.line_end = line_end
@@ -201,58 +219,26 @@ class LevelGeneration:
 
 
 class IdMapper:
+    """label text with ids, use key pairs of (acid, ), (pid, pcid) or (cid, ccid) to position a char,
+    easy to search chars from different fine-grained text type
+
+    article (str): all lines fatten to a string
+    paragraphs (List[List[str]]):
+    chunks (List[List[str]]): each line has the same length possibly
+
+    acid: article char id
+    pid: paragraph line id
+    pcid: paragraph char id
+    cid: chunk line id
+    ccid: chunk char id
     """
-    article: '...', all lines fatten to a string
-    paragraphs: [[], [], ....]
-    chunks: [[], [], ....], each line has the same length possibly
 
-    acid: id of article
-    pid: id of paragraph line
-    pcid: id of paragraph char
-    cid: id of chunk line
-    ccid: id of chunk char
-    """
-
-    def gen_full_ids(self, paragraphs, chunks):
-        r = dict()
-        r.update(self.gen_article_paragraphs_ids(paragraphs))
-        r.update(self.gen_article_chunks_ids(chunks))
-
-        return r
-
-    def gen_article_paragraphs_ids(self, paragraphs):
-        acid2pid_pcid = self._gen(paragraphs)
-        pid_pcid2acid = {v: k for k, v in acid2pid_pcid.items()}
-
-        return dict(
-            acid2pid_pcid=acid2pid_pcid,
-            pid_pcid2acid=pid_pcid2acid
-        )
-
-    def gen_article_chunks_ids(self, chunks):
-        acid2cid_ccid = self._gen(chunks)
-        cid_ccid2acid = {v: k for k, v in acid2cid_ccid.items()}
-
-        return dict(
-            acid2cid_ccid=acid2cid_ccid,
-            cid_ccid2acid=cid_ccid2acid
-        )
-
-    def _gen(self, lines):
-        id_dic = {}
-        base_id = 0
-        for line_id, p in enumerate(lines):
-            for char_id, _ in enumerate(p):
-                id_dic[base_id] = (line_id, char_id)
-                base_id += 1
-
-        return id_dic
-
+    @staticmethod
     def get_full_id(
-            self,
             acid=None, pid_pcid=None, cid_ccid=None,
             acid2pid_pcid=None, acid2cid_ccid=None, pid_pcid2acid=None, cid_ccid2acid=None,
     ):
+        """input one id pairs of article, paragraphs or chunks, output full id pairs of others"""
         if acid:
             pid_pcid = acid2pid_pcid[acid]
             cid_ccid = acid2cid_ccid[acid]
@@ -270,3 +256,115 @@ class IdMapper:
             pid_pcid=pid_pcid,
             cid_ccid=cid_ccid
         )
+
+    @classmethod
+    def full_id_pairs(cls, paragraphs, chunks):
+        r = dict()
+        r.update(cls.article_paragraphs_id_pairs(paragraphs))
+        r.update(cls.article_chunks_id_pairs(chunks))
+        r.update(cls.paragraphs_chunks_id_pairs(paragraphs, chunks, r['acid2pid_pcid'], r['acid2cid_ccid']))
+
+        return r
+
+    @classmethod
+    def article_paragraphs_id_pairs(cls, paragraphs):
+        acid2pid_pcid = cls._gen(paragraphs)
+        pid_pcid2acid = {v: k for k, v in acid2pid_pcid.items()}
+
+        return dict(
+            acid2pid_pcid=acid2pid_pcid,
+            pid_pcid2acid=pid_pcid2acid
+        )
+
+    @classmethod
+    def article_chunks_id_pairs(cls, chunks):
+        acid2cid_ccid = cls._gen(chunks)
+        cid_ccid2acid = {v: k for k, v in acid2cid_ccid.items()}
+
+        return dict(
+            acid2cid_ccid=acid2cid_ccid,
+            cid_ccid2acid=cid_ccid2acid
+        )
+
+    @classmethod
+    def paragraphs_chunks_id_pairs(cls, paragraphs, chunks, acid2pid_pcid=None, acid2cid_ccid=None):
+        if acid2pid_pcid is None:
+            r = cls.article_paragraphs_id_pairs(paragraphs)
+            acid2pid_pcid = r['acid2pid_pcid']
+
+        if acid2cid_ccid is None:
+            r = cls.article_chunks_id_pairs(chunks)
+            acid2cid_ccid = r['acid2cid_ccid']
+
+        pid_pcid2cid_ccid = {}
+        cid_ccid2pid_pcid = {}
+        for k in acid2pid_pcid:
+            pid_pcid = acid2pid_pcid[k]
+            cid_ccid = acid2cid_ccid[k]
+            pid_pcid2cid_ccid[pid_pcid] = cid_ccid
+            cid_ccid2pid_pcid[cid_ccid] = pid_pcid
+
+        return dict(
+            pid_pcid2cid_ccid=pid_pcid2cid_ccid,
+            cid_ccid2pid_pcid=cid_ccid2pid_pcid
+        )
+
+    @staticmethod
+    def _gen(lines):
+        id_dic = {}
+        base_id = 0
+        for line_id, p in enumerate(lines):
+            for char_id, _ in enumerate(p):
+                id_dic[base_id] = (line_id, char_id)
+                base_id += 1
+
+        return id_dic
+
+
+class DictMaker:
+    @staticmethod
+    def word_id_dict(segments):
+        word_dict = dict()
+        for line in segments:
+            for word in line:
+                if word not in word_dict:
+                    # start with 1, and reserve 0 for unknown word usually
+                    word_dict[word] = len(word_dict) + 1
+
+        return word_dict
+
+    @staticmethod
+    def word_count_dict(segments):
+        word_dict = defaultdict(int)
+        for line in segments:
+            for word in line:
+                word_dict[word] += 1
+        return word_dict
+
+
+class Encoder:
+    @staticmethod
+    def simple(segments, word_dict):
+        pass
+
+    @staticmethod
+    def one_hot(segments, word_id_dict):
+        pass
+
+
+class Converter:
+    @staticmethod
+    def num(s):
+        pass
+
+    @staticmethod
+    def round_to_half_punctuation(s: str):
+        for a, b in convert_dict.round_to_half_punctuation.items():
+            s = s.replace(a, b)
+        return s
+
+    @staticmethod
+    def _convert(s: str, d: dict):
+        for a, b in convert_dict.round_to_half_punctuation.items():
+            s = s.replace(a, b)
+        return s
