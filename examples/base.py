@@ -282,7 +282,7 @@ class Process:
             'date': datetime.now().isoformat()
         }
 
-        self.save(f'{self.model_dir}/{self.dataset_version}/last.pth', save_type=WEIGHT, **ckpt)
+        self.save(f'{self.model_dir}/{self.dataset_version}/last.pth', save_type=WEIGHT, only_model=False, **ckpt)
 
         if save_period and epoch % save_period == save_period - 1:
             result = self.metric(val_dataloader, cur_epoch=epoch, **metric_kwargs)
@@ -291,7 +291,7 @@ class Process:
             self.logger.info(f"val log: epoch: {epoch}, score: {score}")
 
             if score > self.stopper.best_score:
-                self.save(f'{self.model_dir}/{self.dataset_version}/best.pth', save_type=WEIGHT, **ckpt)
+                self.save(f'{self.model_dir}/{self.dataset_version}/best.pth', save_type=WEIGHT, only_model=False, **ckpt)
 
             if self.stopper(epoch=epoch, score=score):
                 return True
@@ -332,18 +332,25 @@ class Process:
     def val_data_restore(self, ret) -> dict:
         raise NotImplementedError
 
-    def save(self, save_path, save_type=WEIGHT, verbose=True, **kwargs):
+    def save(self, save_path, save_type=WEIGHT, verbose=True, only_model=True, **kwargs):
         os_lib.mk_dir(Path(save_path).parent)
 
         if save_type == MODEL:
-            torch.save(self.model, save_path)
+            if only_model:
+                torch.save(self.model, save_path)
+            else:
+                torch.save(self.model, save_path['model'])
+                torch.save(self.optimizer, save_path['optimizer'])
 
         elif save_type == WEIGHT:
             ckpt = dict(
                 model=self.model.state_dict(),
-                optimizer=self.optimizer.state_dict(),
-                **kwargs
             )
+            if not only_model:
+                ckpt.update(
+                    optimizer=self.optimizer.state_dict(),
+                    **kwargs
+                )
             torch.save(ckpt, save_path)
 
         elif save_type == JIT:
@@ -367,13 +374,15 @@ class Process:
         elif save_type == WEIGHT:
             ckpt = torch.load(save_path, map_location=self.device)
 
-            if self.model is None:
-                self.model = self.callable_model(**ckpt['model_config'])
-            self.model.load_state_dict(ckpt.pop('model'), strict=False)
+            if 'model' in ckpt:
+                if self.model is None:
+                    self.model = self.callable_model(**ckpt['model_config'])
+                self.model.load_state_dict(ckpt.pop('model'), strict=False)
 
-            if self.optimizer is None:
-                self.optimizer = self.callable_optimizer(**ckpt['optimizer_config'])
-            self.optimizer.load_state_dict(ckpt.pop('optimizer'))
+            if 'optimizer' in ckpt:
+                if self.optimizer is None:
+                    self.optimizer = self.callable_optimizer(**ckpt['optimizer_config'])
+                self.optimizer.load_state_dict(ckpt.pop('optimizer'))
 
             self.__dict__.update(ckpt)
 

@@ -45,10 +45,10 @@ class IgProcess(Process):
             self._model_info(module, **kwargs)
 
     def on_train_epoch_end(self, total_nums, save_period, val_obj, train_batch_size,
-                           mean_loss=None, max_size=None, **metric_kwargs):
+                           mean_loss=None, max_num=None, **metric_kwargs):
         mean_loss_g, mean_loss_d = mean_loss
         if save_period and total_nums % save_period < train_batch_size:
-            self.wandb.log_info = {'total_nums': total_nums, 'mean_loss_g': mean_loss_g, 'mean_loss_d': mean_loss_d}
+            self.log_info = {'total_nums': total_nums, 'mean_loss_g': mean_loss_g, 'mean_loss_d': mean_loss_d}
             self.metric(val_obj, cur_epoch=total_nums, **metric_kwargs)
             self.model.train()
 
@@ -58,10 +58,10 @@ class IgProcess(Process):
                 'date': datetime.now().isoformat()
             }
 
-            self.save(f'{self.work_dir}/{total_nums}.pth', save_type=WEIGHT, **ckpt)
-            os_lib.FileCacher(f'{self.work_dir}/', max_size=max_size, stdout_method=self.logger.info).delete_over_range(suffix='pth')
+            self.save(f'{self.work_dir}/{total_nums}.pth', save_type=WEIGHT, only_model=False, **ckpt)
+            os_lib.FileCacher(f'{self.work_dir}/', max_size=max_num, stdout_method=self.logger.info).delete_over_range(suffix='pth')
 
-            self.wandb.log(self.wandb.log_info)
+            self.wandb.log(self.log_info)
 
     def metric(self, *args, **kwargs):
         self.predict(*args, **kwargs)
@@ -73,9 +73,7 @@ class Mnist(Process):
 
         # loader = Loader(f'data/mnist')
         loader = Loader(f'data/fashion')
-        data = loader(set_type=DataRegister.TRAIN, image_type=DataRegister.ARRAY, generator=False)[0]
-
-        return data
+        return loader(set_type=DataRegister.TRAIN, image_type=DataRegister.ARRAY, generator=False)[0]
 
     aug = Apply([
         channel.Gray2BGR(),
@@ -119,7 +117,7 @@ class WGAN(IgProcess):
             **kwargs
         )
 
-    def fit(self, max_epoch, batch_size, save_period=None, save_maxsize=None, metric_kwargs=dict(), **dataloader_kwargs):
+    def fit(self, max_epoch, batch_size, save_period=None, max_save_num=None, metric_kwargs=dict(), **dataloader_kwargs):
         train_dataloader, _, metric_kwargs = self.on_train_start(batch_size, metric_kwargs, return_val_dataloader=True, **dataloader_kwargs)
 
         self.model.to(self.device)
@@ -127,6 +125,7 @@ class WGAN(IgProcess):
 
         val_noise = torch.normal(mean=0., std=1., size=(64, self.model.hidden_ch, 1, 1), device=self.device)
         if save_period:
+            # consider iter_gap
             save_period = int(np.ceil(save_period / 3000)) * 3000
 
         for i in range(max_epoch):
@@ -173,7 +172,7 @@ class WGAN(IgProcess):
                     })
 
                     if self.on_train_epoch_end(self.total_nums, save_period, val_noise, batch_size,
-                                               mean_loss=(mean_loss_g, mean_loss_d), save_maxsize=save_maxsize,
+                                               mean_loss=(mean_loss_g, mean_loss_d), max_num=max_save_num,
                                                **metric_kwargs):
                         break
 
@@ -216,14 +215,14 @@ class WGAN_Mnist(WGAN, Mnist):
 
             from examples.image_generate import WGAN_Mnist as Process
 
-            Process().run(max_epoch=1000, train_batch_size=64, save_period=10000, metric_kwargs=dict(visualize=True, max_vis_num=64))
+            Process().run(max_epoch=1000, train_batch_size=64, save_period=10000, save_maxsize=10, num_workers=16, metric_kwargs=dict(visualize=True))
     """
 
     def __init__(self, dataset_version='fashion', **kwargs):
         super().__init__(dataset_version=dataset_version, **kwargs)
 
 
-class Lsun(IgProcess):
+class Lsun(Process):
     def get_train_data(self, *args, **kwargs):
         from data_parse.cv_data_parse.lsun import Loader
 
@@ -231,7 +230,7 @@ class Lsun(IgProcess):
         iter_data = loader.load(
             set_type=DataRegister.MIX, image_type=DataRegister.ARRAY, generator=False,
             task='cat',
-            max_size=10000
+            max_size=20000
         )[0]
 
         # iter_data = loader.load(
@@ -244,13 +243,9 @@ class Lsun(IgProcess):
 
     def data_augment(self, ret) -> dict:
         aug = RandomApply([
-            RandomChoice([
-                pixel_perturbation.GaussNoise(),
-                pixel_perturbation.SaltNoise(),
-            ]),
+            pixel_perturbation.CutOut([0.25] * 4),
             geometry.HFlip(),
-            geometry.VFlip()
-        ], probs=[0.2, 0.5, 0.2])
+        ], probs=[0.2, 0.5])
         ret.update(aug(**ret))
 
         aug = Apply([
@@ -258,7 +253,39 @@ class Lsun(IgProcess):
             crop.Random(is_pad=False),
             # scale.LetterBox(),
             pixel_perturbation.MinMax(),
-            # pixel_perturbation.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]),
+            channel.HWC2CHW()
+        ])
+
+        ret.update(dst=self.input_size)
+        ret.update(aug(**ret))
+
+        return ret
+
+
+class CelebA(Process):
+    def get_train_data(self, *args, **kwargs):
+        from data_parse.cv_data_parse.CelebA import ZipLoader as Loader
+
+        loader = Loader(f'data/CelebA')
+        iter_data = loader.load(
+            image_type=DataRegister.ARRAY, generator=False,
+            img_task='align',
+            max_size=40000
+        )[0]
+        return iter_data
+
+    def data_augment(self, ret) -> dict:
+        aug = RandomApply([
+            pixel_perturbation.CutOut([0.25] * 4),
+            geometry.HFlip(),
+        ], probs=[0.2, 0.5])
+        ret.update(aug(**ret))
+
+        aug = Apply([
+            scale.Proportion(),
+            crop.Random(is_pad=False),
+            # scale.LetterBox(),
+            pixel_perturbation.MinMax(),
             channel.HWC2CHW()
         ])
 
@@ -305,15 +332,18 @@ class StyleGan(IgProcess):
             self.logger.info(f'net {key} module info:')
             self._model_info(module, **kwargs)
 
-    def fit(self, max_epoch, batch_size, save_period=None, save_maxsize=None, metric_kwargs=dict(), **dataloader_kwargs):
+    def fit(self, max_epoch, batch_size, save_period=None, max_save_num=None, metric_kwargs=dict(), **dataloader_kwargs):
         train_dataloader, _, metric_kwargs = self.on_train_start(batch_size, metric_kwargs, return_val_dataloader=False, **dataloader_kwargs)
 
         optimizer_d, optimizer_g = self.optimizer.optimizer_d, self.optimizer.optimizer_g
 
         steps = 0
-        num_batch = 64 * 8
-        val_obj = (self.model.gen_noise_image(num_batch, self.device),
-                   self.model.gen_same_noise_z_list(num_batch, self.device))
+        vis_num = 64 * 8
+        num_truncate_z = 2000
+        val_obj = (self.model.gen_noise_image(vis_num, self.device),
+                   self.model.gen_same_noise_z_list(vis_num, self.device),
+                   self.model.gen_noise_z(num_truncate_z, self.device)
+                   )
         for i in range(max_epoch):
             self.model.train()
             pbar = tqdm(train_dataloader, desc=f'train {i}/{max_epoch}')
@@ -357,34 +387,30 @@ class StyleGan(IgProcess):
 
                 if self.on_train_epoch_end(self.total_nums, save_period, val_obj, batch_size,
                                            mean_loss=(mean_loss_g, mean_loss_d),
-                                           save_maxsize=save_maxsize,
+                                           max_num=max_save_num,
                                            **metric_kwargs):
                     break
 
     @torch.no_grad()
-    def predict(self, val_obj=(None, None), trunc_psi=0.6, batch_size=16,
+    def predict(self, val_obj=(None, None, None), trunc_psi=0.6, batch_size=16,
                 cur_epoch=-1, model=None, visualize=False, max_vis_num=None, vis_batch_size=64,
                 save_ret_func=None, **dataloader_kwargs):
         self.model.eval()
 
-        noise_xs, noise_zs = val_obj
-        noise_xs = noise_xs if noise_xs is not None else self.model.gen_noise_image(batch_size, self.device)
-        noise_zs = noise_zs if noise_zs is not None else self.model.gen_same_noise_z_list(batch_size, self.device)
+        noise_xs, noise_zs, truncate_zs = val_obj
+        noise_xs = noise_xs if noise_xs is not None else self.model.gen_noise_image(vis_batch_size, self.device)
+        noise_zs = noise_zs if noise_zs is not None else self.model.gen_same_noise_z_list(vis_batch_size, self.device)
+        truncate_zs = truncate_zs if truncate_zs is not None else self.model.gen_noise_z(2000, self.device)
         num_batch = noise_xs.shape[0]
 
-        _w_styles = []
+        w_styles = []
         for z, num_layer in noise_zs:
             # truncate_style
-            num_z = 2000
-            _noise_zs = self.model.gen_noise_z(num_z, self.device)
-            _w_style = [self.model.net_s(_noise_zs[i: i + batch_size]) for i in range(0, num_z, batch_size)]
-            _w_style = torch.cat(_w_style, dim=0)
-            _w_style = _w_style.mean(0).unsqueeze(0)
-
+            truncate_w_style = [self.model.net_s(truncate_zs[i: i + batch_size]) for i in range(0, len(truncate_zs), batch_size)]
+            truncate_w_style = torch.cat(truncate_w_style, dim=0).mean(0).unsqueeze(0)
             w_style = self.model.net_s(z)
-            w_style = trunc_psi * (w_style - _w_style) + _w_style
-            _w_styles.append((w_style, num_layer))
-        w_styles = _w_styles
+            w_style = trunc_psi * (w_style - truncate_w_style) + truncate_w_style
+            w_styles.append((w_style, num_layer))
         w_styles = torch.cat([t[:, None, :].expand(-1, n, -1) for t, n in w_styles], dim=1)
 
         max_vis_num = max_vis_num or float('inf')
@@ -417,7 +443,7 @@ class StyleGan(IgProcess):
 
                 rets = [r for r in zip(*rets)]
                 cache_dir = f'{self.save_result_dir}/{cur_epoch}'
-                cache_image = DataVisualizer(cache_dir, verbose=False, stdout_method=self.logger.info)(*rets[:n], return_image=True)
+                cache_image = DataVisualizer(cache_dir, verbose=False, pbar=False, stdout_method=self.logger.info)(*rets[:n], return_image=True)
                 self.log_info.setdefault('val_image', []).extend([self.wandb.Image(img, caption=Path(r['_id']).stem) for img, r in zip(cache_image, rets[0])])
                 cur_vis_num += n
         return cur_vis_num
@@ -430,7 +456,7 @@ class StyleGan_Mnist(StyleGan, Mnist):
 
             from examples.image_generate import StyleGan_Mnist as Process
 
-            Process().run(max_epoch=2000, train_batch_size=64, save_period=20000)
+            Process().run(max_epoch=2000, train_batch_size=64, save_period=20000, save_maxsize=10, num_workers=16, metric_kwargs=dict(visualize=True))
     """
 
     def __init__(self, dataset_version='Mnist', input_size=32, **kwargs):
@@ -444,8 +470,22 @@ class StyleGan_Lsun(StyleGan, Lsun):
 
             from examples.image_generate import StyleGan_Lsun as Process
 
-            Process().run(max_epoch=2000, train_batch_size=32, save_period=20000)
+            Process().run(max_epoch=2000, train_batch_size=32, save_period=20000, save_maxsize=10, num_workers=16, metric_kwargs=dict(visualize=True))
     """
 
     def __init__(self, dataset_version='lsun', **kwargs):
+        super().__init__(dataset_version=dataset_version, **kwargs)
+
+
+class StyleGan_CelebA(StyleGan, CelebA):
+    """
+    Usage:
+        .. code-block:: python
+
+            from examples.image_generate import StyleGan_CelebA as Process
+
+            Process().run(max_epoch=2000, train_batch_size=32, save_period=20000, save_maxsize=10, num_workers=16, metric_kwargs=dict(visualize=True))
+    """
+
+    def __init__(self, dataset_version='CelebA', **kwargs):
         super().__init__(dataset_version=dataset_version, **kwargs)

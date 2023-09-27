@@ -543,8 +543,8 @@ class CutOut:
     See Also `albumentations.Cutout`
     """
 
-    def __init__(self, iou_thres=0.6):
-        self.scales = [0.5] * 1 + [0.25] * 2 + [0.125] * 4 + [0.0625] * 8 + [0.03125] * 16  # image size fraction
+    def __init__(self, scales=None, iou_thres=0.6):
+        self.scales = scales or [0.5] * 1 + [0.25] * 2 + [0.125] * 4 + [0.0625] * 8 + [0.03125] * 16  # image size fraction
         self.iou_thres = iou_thres
 
     def __call__(self, image, bboxes=None, classes=None, **kwargs):

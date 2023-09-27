@@ -5,9 +5,8 @@ from einops import rearrange, repeat
 from kornia.filters import filter2d
 import torch
 import torch.nn.functional as F
-from ..layers import Linear, Conv, ConvT, EqualLinear, Conv2DMod, Residual
+from ..layers import Linear, Conv, EqualLinear, Residual
 from utils.torch_utils import initialize_layers
-
 
 net_s_config = dict(
     n_layers=8,
@@ -17,7 +16,7 @@ net_s_config = dict(
 net_g_config = dict(
     network_capacity=16,
     attn_layers=[4, 5],
-    no_const=False
+    const_input=True
 )
 
 net_d_config = dict(
@@ -48,8 +47,10 @@ class Model(nn.ModuleList):
         batch_size = real_x.shape[0]
 
         noise_x = self.gen_noise_image(batch_size, real_x.device)
+        # z -> w > net_s -> styles
         styles = self.gen_styles(self.gen_rand_noise_z_list(batch_size, real_x.device))
 
+        # styles + noise_x -> net_g -> fake_x
         fake_x = self.net_g(styles, noise_x)
         fake_y, fake_q_loss = self.net_d(fake_x.clone().detach())
 
@@ -116,7 +117,7 @@ class StyleMap(nn.Module):
 
 
 class Generator(nn.Module):
-    def __init__(self, in_ch, out_ch=3, num_layers=6, network_capacity=16, attn_layers=[], no_const=False):
+    def __init__(self, in_ch, out_ch=3, num_layers=6, network_capacity=16, attn_layers=[], const_input=True):
         super().__init__()
         self.in_channels = in_ch
         self.out_channels = out_ch
@@ -125,12 +126,12 @@ class Generator(nn.Module):
         out_ches = [min(network_capacity * 64, out_ch) for out_ch in out_ches]
         out_ch = out_ches[0]
 
-        self.no_const = no_const
+        self.const_input = const_input
 
-        if no_const:
-            self.to_initial_block = nn.ConvTranspose2d(in_ch, out_ch, 4, 1, 0, bias=False)
-        else:
+        if const_input:
             self.initial_block = nn.Parameter(torch.randn((1, out_ch, 4, 4)))
+        else:
+            self.initial_block = nn.ConvTranspose2d(in_ch, out_ch, 4, 1, 0, bias=False)
 
         in_ch = out_ch
         self.conv = nn.Conv2d(in_ch, in_ch, 3, padding=1)
@@ -139,7 +140,7 @@ class Generator(nn.Module):
         blocks = []
         for i, out_ch in enumerate(out_ches):
             attention_blocks.append(AttentionBlock(in_ch) if i in attn_layers else nn.Identity())
-            blocks.append(GeneratorBlock(
+            blocks.append(SynthesisBlock(
                 self.in_channels,
                 in_ch,
                 out_ch,
@@ -156,11 +157,12 @@ class Generator(nn.Module):
     def forward(self, styles, noise):
         batch_size = styles.shape[0]
 
-        if self.no_const:
-            avg_style = styles.mean(dim=1)[:, :, None, None]
-            x = self.to_initial_block(avg_style)
-        else:
+        if self.const_input:
             x = self.initial_block.expand(batch_size, -1, -1, -1)
+        else:
+            # use style to initial the input
+            avg_style = styles.mean(dim=1)[:, :, None, None]
+            x = self.initial_block(avg_style)
 
         img = None
         styles = styles.transpose(0, 1)  # (b, n, c) > (n, b, c)
@@ -173,21 +175,21 @@ class Generator(nn.Module):
         return img
 
 
-class GeneratorBlock(nn.Module):
+class SynthesisBlock(nn.Module):
     def __init__(self, in_features, in_ch, hidden_ch, out_ch=3, is_first=True, is_last=True):
         super().__init__()
         self.upsample = nn.Upsample(scale_factor=2, mode='bilinear', align_corners=False) if not is_first else nn.Identity()
 
         self.to_style1 = nn.Linear(in_features, in_ch)
-        self.conv1 = Conv2DMod(in_ch, hidden_ch, 3)
+        self.combine1 = Conv2DMod(in_ch, hidden_ch, 3)
         self.to_noise1 = nn.Linear(1, hidden_ch)
 
         self.to_style2 = nn.Linear(in_features, hidden_ch)
-        self.conv2 = Conv2DMod(hidden_ch, hidden_ch, 3)
+        self.combine2 = Conv2DMod(hidden_ch, hidden_ch, 3)
         self.to_noise2 = nn.Linear(1, hidden_ch)
 
         self.act = nn.LeakyReLU(0.2, inplace=True)
-        self.gen_block = GenBlock(in_features, hidden_ch, not is_last, out_ch)
+        self.head = Head(in_features, hidden_ch, not is_last, out_ch)
 
     def initialize_layers(self):
         initialize_layers(self, init_type='kaiming')
@@ -201,29 +203,35 @@ class GeneratorBlock(nn.Module):
         noise = noise[:, :x.shape[2], :x.shape[3], :]
 
         style1 = self.to_style1(style)
-        x = self.conv1(x, style1)
+        x = self.combine1(x, style1)
 
         noise1 = self.to_noise1(noise).permute((0, 3, 2, 1))
         x = self.act(x + noise1)
 
         style2 = self.to_style2(style)
-        x = self.conv2(x, style2)
+        x = self.combine2(x, style2)
 
         noise2 = self.to_noise2(noise).permute((0, 3, 2, 1))
         x = self.act(x + noise2)
 
-        img = self.gen_block(x, prev_img, style)
+        img = self.head(x, prev_img, style)
         return x, img
 
 
-class GenBlock(nn.Module):
+class Head(nn.Module):
     def __init__(self, in_features, in_ch, is_upsample, out_ch=3):
         super().__init__()
         self.in_features = in_features
         self.in_channels = in_ch
 
+        # self.to_style = EqualLinear(in_features, in_ch)
+        # self.combine = nn.Sequential(
+        #     AdaIN(in_ch),
+        #     nn.Conv2d(in_ch, out_ch, 1)
+        # )
+
         self.to_style = nn.Linear(in_features, in_ch)
-        self.conv = Conv2DMod(in_ch, out_ch, 1, demod=False)
+        self.combine = Conv2DMod(in_ch, out_ch, 1, demod=False)
         self.upsample = nn.Sequential(
             nn.Upsample(scale_factor=2, mode='bilinear', align_corners=False),
             Blur()
@@ -231,12 +239,68 @@ class GenBlock(nn.Module):
 
     def forward(self, x, prev_img, style):
         style = self.to_style(style)
-        x = self.conv(x, style)
+        img = self.combine(x, style)
 
         if prev_img is not None:
-            x = x + prev_img
+            img = img + prev_img
 
-        x = self.upsample(x)
+        img = self.upsample(img)
+        return img
+
+
+class AdaIN(nn.Module):
+    def __init__(self, in_ch):
+        super().__init__()
+        self.in_channels = in_ch
+        self.norm = nn.InstanceNorm2d(in_ch)
+
+    def forward(self, x, y):
+        y = y.unsqueeze(2).unsqueeze(3)
+        gamma, beta = y.chunk(2, 1)
+
+        x = self.norm(x)
+        x = gamma * x + beta
+
+        return x
+
+
+class Conv2DMod(nn.Module):
+    def __init__(self, in_ch, out_ch, k, stride=1, dilation=1, demod=True, eps=1e-8, **kwargs):
+        super().__init__()
+        self.in_channels = in_ch
+        self.out_channels = out_ch
+        self.k = k
+        self.stride = stride
+        self.dilation = dilation
+        self.demod = demod
+        self.weight = nn.Parameter(torch.randn((out_ch, in_ch, k, k)))
+        self.eps = eps
+
+    def initialize_layers(self):
+        nn.init.kaiming_normal_(self.weight, a=0, mode='fan_in', nonlinearity='leaky_relu')
+
+    def _get_same_padding(self, size):
+        return ((size - 1) * (self.stride - 1) + self.dilation * (self.k - 1)) // 2
+
+    def forward(self, x, y):
+        b, c, h, w = x.shape
+
+        y = y[:, None, :, None, None]
+        weight = self.weight[None, :, :, :, :]
+        weights = weight * (y + 1)
+
+        if self.demod:
+            d = torch.rsqrt((weights ** 2).sum(dim=(2, 3, 4), keepdim=True) + self.eps)
+            weights = weights * d
+
+        x = x.reshape(1, -1, h, w)
+
+        _, _, *ws = weights.shape
+        weights = weights.reshape(b * self.out_channels, *ws)
+
+        padding = self._get_same_padding(h)
+        x = F.conv2d(x, weights, padding=padding, groups=b)
+        x = x.reshape(-1, self.out_channels, h, w)
         return x
 
 
@@ -317,12 +381,12 @@ class DiscriminatorBlock(nn.Module):
 class Blur(nn.Module):
     def __init__(self):
         super().__init__()
-        self.register_buffer('f', torch.Tensor([1, 2, 1]))
+        self.register_buffer('weight', torch.Tensor([1, 2, 1]))
 
     def forward(self, x):
-        f = self.f
-        f = f[None, None, :] * f[None, :, None]
-        return filter2d(x, f, normalized=True)
+        w = self.weight
+        w = w[None, None, :] * w[None, :, None]
+        return filter2d(x, w, normalized=True)
 
 
 class AttentionBlock(nn.Sequential):

@@ -12,7 +12,7 @@ class BaseImgClsModel(nn.Module):
             self,
             in_ch=3, input_size=None, out_features=None,
             in_module=None, backbone=None, neck=None, head=None, out_module=None,
-            backbone_in_ch=3, backbone_input_size=224, head_hidden_features=1000, drop_prob=0.4
+            backbone_in_ch=None, backbone_input_size=None, head_hidden_features=1000, drop_prob=0.4
     ):
         super().__init__()
 
@@ -21,6 +21,7 @@ class BaseImgClsModel(nn.Module):
         self.out_features = out_features
 
         # `bool(nn.Sequential()) = False`, so do not ues `input = in_module or ConvInModule()`
+        # if in_module is None, in_ch and input_size must be set
         self.input = in_module if in_module is not None else ConvInModule(in_ch, input_size, out_ch=backbone_in_ch, output_size=backbone_input_size)
         self.backbone = backbone
         self.neck = neck if neck is not None else nn.Sequential(
@@ -232,46 +233,6 @@ class ConvT(nn.Sequential):
             input_size=224, k=4, s=2 if output_size=224*s=448, p=(k-s)/2=1
         """
         return int(np.ceil((k - s) / 2)) if k > s else 0
-
-
-class Conv2DMod(nn.Module):
-    def __init__(self, in_ch, out_ch, k, stride=1, dilation=1, demod=True, eps=1e-8, **kwargs):
-        super().__init__()
-        self.in_channels = in_ch
-        self.out_channels = out_ch
-        self.k = k
-        self.stride = stride
-        self.dilation = dilation
-        self.demod = demod
-        self.weight = nn.Parameter(torch.randn((out_ch, in_ch, k, k)))
-        self.eps = eps
-
-    def initialize_layers(self):
-        nn.init.kaiming_normal_(self.weight, a=0, mode='fan_in', nonlinearity='leaky_relu')
-
-    def _get_same_padding(self, size):
-        return ((size - 1) * (self.stride - 1) + self.dilation * (self.k - 1)) // 2
-
-    def forward(self, x, y):
-        b, c, h, w = x.shape
-
-        w1 = y[:, None, :, None, None]
-        w2 = self.weight[None, :, :, :, :]
-        weights = w2 * (w1 + 1)
-
-        if self.demod:
-            d = torch.rsqrt((weights ** 2).sum(dim=(2, 3, 4), keepdim=True) + self.eps)
-            weights = weights * d
-
-        x = x.reshape(1, -1, h, w)
-
-        _, _, *ws = weights.shape
-        weights = weights.reshape(b * self.out_channels, *ws)
-
-        padding = self._get_same_padding(h)
-        x = F.conv2d(x, weights, padding=padding, groups=b)
-        x = x.reshape(-1, self.out_channels, h, w)
-        return x
 
 
 class Linear(nn.Sequential):
