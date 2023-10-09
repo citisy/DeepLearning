@@ -10,7 +10,7 @@ from pathlib import Path
 from data_parse.cv_data_parse.data_augmentation import crop, scale, geometry, pixel_perturbation, RandomApply, Apply, channel, complex
 from data_parse.cv_data_parse.base import DataRegister, DataVisualizer
 from .base import Process, BaseDataset
-from utils import configs, os_lib, converter, cv_utils
+from utils import configs, os_lib, converter, cv_utils, log_utils
 from utils.torch_utils import EMA
 from metrics import object_detection
 from typing import List
@@ -34,16 +34,17 @@ class OdDataset(BaseDataset):
 
 
 class OdProcess(Process):
+    lrf = 0.01
+
+    def lf(self, x, max_epoch, lrf):
+        # return (1 - x / max_epoch) * (1.0 - lrf) + lrf
+        return ((1 - math.cos(x * math.pi / max_epoch)) / 2) * (lrf - 1) + 1  # cos_lr
+
     def fit(self, max_epoch=100, batch_size=16, save_period=None, metric_kwargs=dict(), **dataloader_kwargs):
         train_dataloader, val_dataloader, metric_kwargs = self.on_train_start(batch_size, metric_kwargs, **dataloader_kwargs)
         # ema = EMA(self.model, step_start_ema=0, tau=2000)
 
-        lrf = 0.01
-
-        # lf = lambda x: (1 - x / max_epoch) * (1.0 - lrf) + lrf
-        lf = lambda x: ((1 - math.cos(x * math.pi / max_epoch)) / 2) * (lrf - 1) + 1  # cos_lr
-
-        scheduler = optim.lr_scheduler.LambdaLR(self.optimizer, lr_lambda=lf)
+        scheduler = optim.lr_scheduler.LambdaLR(self.optimizer, lr_lambda=lambda x: self.lf(x, max_epoch, self.lrf))
         scheduler.last_epoch = -1
 
         scaler = torch.cuda.amp.GradScaler(enabled=True)
@@ -56,7 +57,7 @@ class OdProcess(Process):
             pbar = tqdm(train_dataloader, desc=f'train {i}/{max_epoch}')
             total_loss = 0
             total_batch = 0
-            mean_loss = 0
+            losses = None
             epoch_start_time = time.time()
 
             for rets in pbar:
@@ -91,17 +92,25 @@ class OdProcess(Process):
                 total_batch += len(rets)
                 mean_loss = total_loss / total_batch
 
+                losses = {'mean_loss': mean_loss}
+                for k, v in output.items():
+                    if k.startswith('loss'):
+                        losses[k] = v.item()
+
+                # mem_info = {
+                #     'cpu_info': log_utils.MemoryInfo.get_process_mem_info(),
+                #     'gpu_info': log_utils.MemoryInfo.get_gpu_mem_info()
+                # }
+
                 pbar.set_postfix({
-                    'loss': f'{loss.item():.06}',
-                    'mean_loss': f'{mean_loss:.06}',
-                    # 'cpu_info': MemoryInfo.get_process_mem_info(),
-                    # 'gpu_info': MemoryInfo.get_gpu_mem_info()
+                    **losses,
+                    # **mem_info
                 })
 
             scheduler.step()
 
             if self.on_train_epoch_end(i, save_period, val_dataloader,
-                                       mean_loss=mean_loss,
+                                       losses=losses,
                                        epoch_start_time=epoch_start_time,
                                        # model=ema.ema_model,
                                        **metric_kwargs):
@@ -110,6 +119,16 @@ class OdProcess(Process):
     def metric(self, *args, **kwargs):
         gt_rets, det_rets = self.predict(*args, **kwargs)
         df = object_detection.EasyMetric(verbose=False).quick_metric(gt_rets, det_rets, save_path=f'{self.model_dir}/{self.dataset_version}/result.csv')
+
+        # self.log_info['table'] = self.wandb.Table(dataframe=df)
+        for i in df.index:
+            name = i
+            if hasattr(self, 'cls_alias'):
+                try:
+                    name = self.cls_alias[i]
+                except:
+                    pass
+            self.log_info[f'metrics/{name}'] = df['ap'][i]
 
         result = dict(
             per_class_result=df,
@@ -256,27 +275,30 @@ class OdProcess(Process):
 
 class Voc(Process):
     dataset = OdDataset
+    data_dir = 'data/VOC2012'
+    train_data_num = None
+    val_data_num = None
 
     def get_train_data(self):
         from data_parse.cv_data_parse.Voc import Loader
 
-        loader = Loader(f'data/VOC2012')
+        loader = Loader(self.data_dir)
         self.cls_alias = loader.classes
 
         return loader(set_type=DataRegister.TRAIN, image_type=DataRegister.PATH, generator=False,
                       task='',
-                      # max_size=8,
+                      max_size=self.train_data_num
                       )[0]
 
     def get_val_data(self):
         from data_parse.cv_data_parse.Voc import Loader
 
-        loader = Loader(f'data/VOC2012')
+        loader = Loader(self.data_dir)
         self.cls_alias = loader.classes
 
         return loader(set_type=DataRegister.VAL, image_type=DataRegister.PATH, generator=False,
                       task='',
-                      # max_size=8,
+                      max_size=self.val_data_num,
                       )[0]
 
     aug = Apply([
@@ -383,7 +405,7 @@ class YoloV5(OdProcess):
         )
 
 
-class Voc4Yolov5(Voc):
+class VocWithYolov5Aug(Voc):
     def data_augment(self, ret):
         ret.update(RandomApply([geometry.HFlip()])(**ret))
         return ret
@@ -420,7 +442,7 @@ class Voc4Yolov5(Voc):
         return ret
 
 
-class YoloV5_Voc(YoloV5, Voc4Yolov5):
+class YoloV5_Voc(YoloV5, VocWithYolov5Aug):
     """
     Usage:
         .. code-block:: python
@@ -436,6 +458,8 @@ class YoloV5_Voc(YoloV5, Voc4Yolov5):
 
 
 class Yolov5Dataset(Process):
+    data_dir = 'yolov5/data_mapping'
+
     def get_train_data(self):
         from data_parse.cv_data_parse.YoloV5 import Loader, DataRegister
 
@@ -445,7 +469,7 @@ class Yolov5Dataset(Process):
             blow_up=True
         )
 
-        loader = Loader('yolov5/data_mapping')
+        loader = Loader(self.data_dir)
         loader.on_end_convert = convert_func
         data = loader(set_type=DataRegister.TRAIN, image_type=DataRegister.PATH, generator=False, sub_dir='')[0]
 
@@ -460,7 +484,7 @@ class Yolov5Dataset(Process):
             blow_up=True
         )
 
-        loader = Loader('yolov5/data_mapping')
+        loader = Loader(self.data_dir)
         loader.on_end_convert = convert_func
         data = loader(set_type=DataRegister.VAL, image_type=DataRegister.PATH, generator=False, sub_dir='')[0]
 

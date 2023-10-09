@@ -45,10 +45,14 @@ class IgProcess(Process):
             self._model_info(module, **kwargs)
 
     def on_train_epoch_end(self, total_nums, save_period, val_obj, train_batch_size,
-                           mean_loss=None, max_num=None, **metric_kwargs):
-        mean_loss_g, mean_loss_d = mean_loss
+                           losses=None, max_num=None, **metric_kwargs):
         if save_period and total_nums % save_period < train_batch_size:
-            self.log_info = {'total_nums': total_nums, 'mean_loss_g': mean_loss_g, 'mean_loss_d': mean_loss_d}
+            self.log_info = {'total_nums': total_nums}
+
+            if losses is not None:
+                for k, v in losses:
+                    self.log_info[f'loss/{k}'] = v
+
             self.metric(val_obj, cur_epoch=total_nums, **metric_kwargs)
             self.model.train()
 
@@ -68,11 +72,13 @@ class IgProcess(Process):
 
 
 class Mnist(Process):
+    # use `Process(data_dir='data/mnist')` to use digital mnist dataset
+    data_dir = 'data/fashion'
+
     def get_train_data(self):
         from data_parse.cv_data_parse.Mnist import Loader
 
-        # loader = Loader(f'data/mnist')
-        loader = Loader(f'data/fashion')
+        loader = Loader(self.data_dir)
         return loader(set_type=DataRegister.TRAIN, image_type=DataRegister.ARRAY, generator=False)[0]
 
     aug = Apply([
@@ -163,16 +169,22 @@ class WGAN(IgProcess):
                     mean_loss_g = total_loss_g / total_nums
                     mean_loss_d = total_loss_d / total_nums
 
+                    losses = {
+                        'mean_loss_d': mean_loss_d,
+                        'mean_loss_g': mean_loss_g,
+                    }
+                    # mem_info = {
+                    #     'cpu_info': log_utils.MemoryInfo.get_process_mem_info(),
+                    #     'gpu_info': log_utils.MemoryInfo.get_gpu_mem_info()
+                    # }
+
                     pbar.set_postfix({
-                        'total_nums': self.total_nums,
-                        'mean_loss_d': f'{mean_loss_d:.06}',
-                        'mean_loss_g': f'{mean_loss_g:.06}',
-                        # 'cpu_info': MemoryInfo.get_process_mem_info(),
-                        # 'gpu_info': MemoryInfo.get_gpu_mem_info()
+                        **losses,
+                        # **mem_info
                     })
 
                     if self.on_train_epoch_end(self.total_nums, save_period, val_noise, batch_size,
-                                               mean_loss=(mean_loss_g, mean_loss_d), max_num=max_save_num,
+                                               losses=losses, max_num=max_save_num,
                                                **metric_kwargs):
                         break
 
@@ -223,14 +235,17 @@ class WGAN_Mnist(WGAN, Mnist):
 
 
 class Lsun(Process):
+    data_dir = 'data/lsun'
+    train_data_num = 20000
+
     def get_train_data(self, *args, **kwargs):
         from data_parse.cv_data_parse.lsun import Loader
 
-        loader = Loader(f'data/lsun')
+        loader = Loader(self.data_dir)
         iter_data = loader.load(
             set_type=DataRegister.MIX, image_type=DataRegister.ARRAY, generator=False,
             task='cat',
-            max_size=20000
+            max_size=self.train_data_num
         )[0]
 
         # iter_data = loader.load(
@@ -263,14 +278,17 @@ class Lsun(Process):
 
 
 class CelebA(Process):
+    data_dir = 'data/CelebA'
+    train_data_num = 40000
+
     def get_train_data(self, *args, **kwargs):
         from data_parse.cv_data_parse.CelebA import ZipLoader as Loader
 
-        loader = Loader(f'data/CelebA')
+        loader = Loader(self.data_dir)
         iter_data = loader.load(
             image_type=DataRegister.ARRAY, generator=False,
             img_task='align',
-            max_size=40000
+            max_size=self.train_data_num
         )[0]
         return iter_data
 
@@ -375,18 +393,24 @@ class StyleGan(IgProcess):
                 mean_loss_g = total_loss_g / total_nums
                 mean_loss_d = total_loss_d / total_nums
 
+                losses = {
+                    'loss_g': loss_g.item(),
+                    'loss_d': loss_d.item(),
+                    'mean_loss_d': mean_loss_d,
+                    'mean_loss_g': mean_loss_g,
+                }
+                # mem_info = {
+                #     'cpu_info': log_utils.MemoryInfo.get_process_mem_info(),
+                #     'gpu_info': log_utils.MemoryInfo.get_gpu_mem_info()
+                # }
+
                 pbar.set_postfix({
-                    'total_nums': self.total_nums,
-                    'loss_g': f'{loss_g.item():.06}',
-                    'loss_d': f'{loss_d.item():.06}',
-                    'mean_loss_g': f'{mean_loss_g:.06}',
-                    'mean_loss_d': f'{mean_loss_d:.06}',
-                    # 'cpu_info': MemoryInfo.get_process_mem_info(),
-                    # 'gpu_info': MemoryInfo.get_gpu_mem_info()
+                    **losses,
+                    # **mem_info
                 })
 
                 if self.on_train_epoch_end(self.total_nums, save_period, val_obj, batch_size,
-                                           mean_loss=(mean_loss_g, mean_loss_d),
+                                           losses=losses,
                                            max_num=max_save_num,
                                            **metric_kwargs):
                     break

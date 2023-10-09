@@ -22,12 +22,12 @@ class Backbone(nn.Module):
 
         for i, n in enumerate(n_conv):
             out_ch = in_ch * 2
-            m = nn.Sequential(
+            m = [
                 Conv(in_ch, out_ch, 3, 2, act=nn.SiLU()),
                 C3(out_ch, out_ch, n=n)
-            )
+            ]
 
-            layers.append(m)
+            layers += m
             if i in cache_block_idx:
                 layers.append(Cache())
 
@@ -52,11 +52,13 @@ class Backbone(nn.Module):
 
 
 class C3(nn.Module):
-    # note that, to distinguish C3 and ResBlock.
-    # C3 gives y = a(cat(x, f(x)))
-    # and ResBlock gives y = a(x + f(x))
+    """note that, to distinguish C3 and ResBlock.
+    C3 gives y = a(cat(x, f(x)))
+    and ResBlock gives y = a(x + f(x))"""
     def __init__(self, in_ch, out_ch, n=1, shortcut=True, g=1, e=0.5):  # ch_in, ch_out, number, shortcut, groups, expansion
         super().__init__()
+        self.in_channels = in_ch
+        self.out_channels = out_ch
         hidden_ch = int(out_ch * e)
         self.seq1 = nn.Sequential(
             Conv(in_ch, hidden_ch, 1, 1, act=nn.SiLU()),
@@ -77,7 +79,7 @@ class Bottleneck(nn.Module):
         super().__init__()
         c_ = int(out_ch * e)  # hidden channels
         self.cv1 = Conv(in_ch, c_, 1, 1, act=nn.SiLU())
-        self.cv2 = Conv(c_, out_ch, 3, 1,  act=nn.SiLU(), groups=g)
+        self.cv2 = Conv(c_, out_ch, 3, 1, act=nn.SiLU(), groups=g)
         self.add = shortcut and in_ch == out_ch
 
     def forward(self, x):
@@ -85,7 +87,7 @@ class Bottleneck(nn.Module):
 
 
 class SPPF(nn.Module):
-    # Spatial Pyramid Pooling - Fast (SPPF) layer for YOLOv5 by Glenn Jocher
+    """Spatial Pyramid Pooling - Fast (SPPF) layer for YOLOv5 by Glenn Jocher"""
     def __init__(self, in_ch, out_ch, k=5):  # equivalent to SPP(k=(5, 9, 13))
         super().__init__()
         c_ = in_ch // 2  # hidden channels

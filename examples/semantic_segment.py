@@ -8,7 +8,6 @@ from torch.utils.data import DataLoader
 from PIL import Image
 from tqdm import tqdm
 from pathlib import Path
-from utils.os_lib import MemoryInfo
 from utils.visualize import get_color_array
 from .base import Process, BaseDataset
 from metrics import classifier, mulit_classifier
@@ -59,7 +58,7 @@ class SegProcess(Process):
             pbar = tqdm(train_dataloader, desc=f'train {i}/{max_epoch}')
             total_loss = 0
             total_batch = 0
-            mean_loss = 0
+            losses = None
 
             for rets in pbar:
                 images = [torch.from_numpy(ret.pop('image')).to(self.device, non_blocking=True, dtype=torch.float) for ret in rets]
@@ -87,16 +86,23 @@ class SegProcess(Process):
                 total_batch += len(rets)
                 mean_loss = total_loss / total_batch
 
+                losses = {
+                    'loss': loss.item(),
+                    'mean_loss': mean_loss,
+                }
+                # mem_info = {
+                #     'cpu_info': log_utils.MemoryInfo.get_process_mem_info(),
+                #     'gpu_info': log_utils.MemoryInfo.get_gpu_mem_info()
+                # }
+
                 pbar.set_postfix({
-                    'loss': f'{loss.item():.06}',
-                    'mean_loss': f'{mean_loss:.06}',
-                    # 'cpu_info': MemoryInfo.get_process_mem_info(),
-                    # 'gpu_info': MemoryInfo.get_gpu_mem_info()
+                    **losses,
+                    # **mem_info
                 })
 
             scheduler.step()
             if self.on_train_epoch_end(i, save_period, val_dataloader,
-                                       mean_loss=None,
+                                       losses=losses,
                                        **metric_kwargs):
                 break
 
@@ -176,6 +182,8 @@ class SegProcess(Process):
 
 
 class Voc(Process):
+    data_dir = 'data/VOC2012'
+
     def data_augment(self, ret):
         random_aug = RandomApply([
             geometry.HFlip(),
@@ -205,7 +213,7 @@ class Voc(Process):
     def get_train_data(self):
         from data_parse.cv_data_parse.Voc import Loader, DataRegister, SEG_CLS
 
-        loader = Loader('data/VOC2012')
+        loader = Loader(self.data_dir)
         return loader(set_type=DataRegister.TRAIN, generator=False, image_type=DataRegister.PATH, set_task=SEG_CLS)[0]
 
     def val_data_augment(self, ret):
@@ -228,7 +236,7 @@ class Voc(Process):
     def get_val_data(self):
         from data_parse.cv_data_parse.Voc import Loader, DataRegister, SEG_CLS
 
-        loader = Loader('data/VOC2012')
+        loader = Loader(self.data_dir)
         return loader(set_type=DataRegister.VAL, generator=False, image_type=DataRegister.PATH, set_task=SEG_CLS)[0]
 
 

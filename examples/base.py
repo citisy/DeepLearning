@@ -150,6 +150,7 @@ class Process:
 
         s = 'module info: \n'
         s += template % cols + '\n'
+        s += template % tuple('-' * l for l in lens) + '\n'
 
         for info in infos:
             s += template % info + '\n'
@@ -160,7 +161,8 @@ class Process:
             params = visualize.TextVisualize.num_to_human_readable_str(params)
             grads = visualize.TextVisualize.num_to_human_readable_str(grads)
 
-        s += template % ('', '', params, grads, '')
+        s += template % tuple('-' * l for l in lens) + '\n'
+        s += template % ('sum', '', params, grads, '')
         self.logger.info(s)
         return infos
 
@@ -266,11 +268,12 @@ class Process:
         raise NotImplementedError
 
     def on_train_epoch_end(self, epoch, save_period=None, val_dataloader=None,
-                           mean_loss=None, epoch_start_time=None, **metric_kwargs):
+                           losses=None, epoch_start_time=None, **metric_kwargs):
         self.log_info = {'epoch': epoch}
 
-        if mean_loss is not None:
-            self.log_info['mean_loss'] = mean_loss
+        if losses is not None:
+            for k, v in losses.items():
+                self.log_info[f'loss/{k}'] = v
 
         if epoch_start_time is not None:
             self.log_info['time_consume'] = (time.time() - epoch_start_time) / 60
@@ -284,6 +287,8 @@ class Process:
 
         self.save(f'{self.model_dir}/{self.dataset_version}/last.pth', save_type=WEIGHT, only_model=False, **ckpt)
 
+        end_flag = False
+
         if save_period and epoch % save_period == save_period - 1:
             result = self.metric(val_dataloader, cur_epoch=epoch, **metric_kwargs)
             score = result['score']
@@ -293,10 +298,10 @@ class Process:
             if score > self.stopper.best_score:
                 self.save(f'{self.model_dir}/{self.dataset_version}/best.pth', save_type=WEIGHT, only_model=False, **ckpt)
 
-            if self.stopper(epoch=epoch, score=score):
-                return True
+            end_flag = self.stopper(epoch=epoch, score=score)
 
         self.wandb.log(self.log_info)
+        return end_flag
 
     def on_train_end(self, *args, **kwargs):
         raise NotImplementedError
@@ -415,19 +420,25 @@ class ParamsSearch:
                     model=dict(
                         instance=Model,
                         const=dict(in_ch=3, out_features=2),
-                        var=dict(input_size=(224, 256))
+                        var=dict(input_size=(224, 256, 320))
                     ),
                     callable_optimizer=dict(
                         instance=lambda **kwargs: lambda params: optim.Adam(params, **kwargs),
                         var=dict(lr=(0.001, 0.01))
                     ),
+                    sys=dict(
+                        var=dict(lf=[
+                            lambda x, max_epoch, lrf: (1 - x / max_epoch) * (1.0 - lrf) + lrf,
+                            lambda x, max_epoch, lrf: ((1 - math.cos(x * math.pi / max_epoch)) / 2) * (lrf - 1) + 1,
+                        ])
+                    )
                 ),
                 run_kwargs=dict(max_epoch=100, save_period=4),
                 process_kwargs=dict(use_wandb=True),
                 model_version='ResNet',
                 dataset_version='ImageNet2012.ps',
             )
-            # there is 4 test group
+            # there is 3*2*2 test group
             params_search.run()
 
             ######## example 2 ########
@@ -445,10 +456,15 @@ class ParamsSearch:
                         var=[
                             {k: [v] for k, v in make_config(**default_model_multiple['yolov5n']).items()},
                             {k: [v] for k, v in make_config(**default_model_multiple['yolov5s']).items()},
-                            dict(
-                                anchor_t=[3, 4, 5]
-                            )
+                            {'head_config.anchor_t': [3, 4, 5]}
                         ]
+                    ),
+                    sys=dict(
+                        const=dict(
+                            input_size=None,
+                            device=0,
+                            cls_alias=classes
+                        ),
                     )
                 ),
                 run_kwargs=dict(max_epoch=100, save_period=4, metric_kwargs=dict(visualize=True, max_vis_num=8)),
@@ -456,7 +472,7 @@ class ParamsSearch:
                 model_version='yolov5-test',
                 dataset_version='Voc.ps',
             )
-            # there is 5 test group
+            # there are 5 test groups
             params_search.run()
 
     """
@@ -477,11 +493,11 @@ class ParamsSearch:
         self.var_params = {k: configs.permute_obj(var_p) for k, var_p in var_params.items()}
         self.const_params = {k: v['const'] for k, v in params.items() if 'const' in v}
         self.var_instance = {k: v['instance'] for k, v in params.items() if 'instance' in v}
-        keys = []
         self.total_params = [[]]
-        for k, var_ps in self.var_params.items():
+        keys = set(self.var_params.keys()) | set(self.const_params.keys())
+        for k in keys:
+            var_ps = self.var_params.get(k, [{}])
             const_p = self.const_params.get(k, {})
-            keys.append(k)
             self.total_params = [_ + [(var_p, const_p)] for _ in self.total_params for var_p in var_ps]
 
         self.keys = keys
@@ -501,6 +517,7 @@ class ParamsSearch:
                         sub_version += f'{k}={v};'
                     info_msg += f'{k}={v};'
 
+                var_p = configs.expand_dict(var_p)
                 params = configs.merge_dict(var_p, const_p)
                 if key in self.var_instance:
                     ins = self.var_instance[key]

@@ -29,10 +29,12 @@ class ItProcess(IgProcess):
 
 
 class Facade(Process):
+    data_dir = 'data/cmp_facade'
+
     def get_train_data(self):
         from data_parse.cv_data_parse.cmp_facade import Loader
 
-        loader = Loader(f'data/cmp_facade')
+        loader = Loader(self.data_dir)
         data = loader(set_type=DataRegister.TRAIN, image_type=DataRegister.ARRAY, generator=False)[0]
 
         return data
@@ -56,7 +58,7 @@ class Facade(Process):
     def get_val_data(self, *args, **kwargs):
         from data_parse.cv_data_parse.cmp_facade import Loader
 
-        loader = Loader(f'data/cmp_facade')
+        loader = Loader(self.data_dir)
         data = loader(set_type=DataRegister.TEST, image_type=DataRegister.ARRAY, generator=False)[0]
 
         return data
@@ -100,7 +102,7 @@ class Pix2pix(ItProcess):
             **kwargs
         )
 
-    def fit(self, max_epoch, batch_size, save_period=None, save_maxsize=None, metric_kwargs=dict(), **dataloader_kwargs):
+    def fit(self, max_epoch, batch_size, save_period=None, max_save_num=None, metric_kwargs=dict(), **dataloader_kwargs):
         train_dataloader, val_dataloader, metric_kwargs = self.on_train_start(batch_size, metric_kwargs, **dataloader_kwargs)
 
         optimizer_d, optimizer_g = self.optimizer.optimizer_d, self.optimizer.optimizer_g
@@ -142,18 +144,24 @@ class Pix2pix(ItProcess):
                 mean_loss_g = total_loss_g / total_nums
                 mean_loss_d = total_loss_d / total_nums
 
+                losses = {
+                    'loss_g': loss_g.item(),
+                    'loss_d': loss_d.item(),
+                    'mean_loss_d': mean_loss_d,
+                    'mean_loss_g': mean_loss_g,
+                }
+                # mem_info = {
+                #     'cpu_info': log_utils.MemoryInfo.get_process_mem_info(),
+                #     'gpu_info': log_utils.MemoryInfo.get_gpu_mem_info()
+                # }
+
                 pbar.set_postfix({
-                    'total_nums': self.total_nums,
-                    'loss_g': f'{loss_g.item():.06}',
-                    'loss_d': f'{loss_d.item():.06}',
-                    'mean_loss_g': f'{mean_loss_g:.06}',
-                    'mean_loss_d': f'{mean_loss_d:.06}',
-                    # 'cpu_info': MemoryInfo.get_process_mem_info(),
-                    # 'gpu_info': MemoryInfo.get_gpu_mem_info()
+                    **losses,
+                    # **mem_info
                 })
 
                 if self.on_train_epoch_end(self.total_nums, save_period, val_dataloader, batch_size,
-                                           mean_loss=(mean_loss_g, mean_loss_d), save_maxsize=save_maxsize,
+                                           losses=losses, max_num=max_save_num,
                                            **metric_kwargs):
                     break
 
@@ -237,7 +245,7 @@ class CycleGan(ItProcess):
             self.logger.info(f'net {key} module info:')
             self._model_info(module, depth, **kwargs)
 
-    def fit(self, max_epoch, batch_size, save_period=None, save_maxsize=None, metric_kwargs=dict(), **dataloader_kwargs):
+    def fit(self, max_epoch, batch_size, save_period=None, max_save_num=None, metric_kwargs=dict(), **dataloader_kwargs):
         train_dataloader, val_dataloader, metric_kwargs = self.on_train_start(batch_size, metric_kwargs, **dataloader_kwargs)
 
         optimizer_d, optimizer_g = self.optimizer
@@ -293,18 +301,24 @@ class CycleGan(ItProcess):
                 mean_loss_g = total_loss_g / total_nums
                 mean_loss_d = total_loss_d / total_nums
 
+                losses = {
+                    'loss_g': loss_g.item(),
+                    'loss_d': loss_d.item(),
+                    'mean_loss_d': mean_loss_d,
+                    'mean_loss_g': mean_loss_g,
+                }
+                # mem_info = {
+                #     'cpu_info': log_utils.MemoryInfo.get_process_mem_info(),
+                #     'gpu_info': log_utils.MemoryInfo.get_gpu_mem_info()
+                # }
+
                 pbar.set_postfix({
-                    'total_nums': self.total_nums,
-                    'loss_g': f'{loss_g.item():.06}',
-                    'loss_d': f'{loss_d.item():.06}',
-                    'mean_loss_g': f'{mean_loss_g:.06}',
-                    'mean_loss_d': f'{mean_loss_d:.06}',
-                    # 'cpu_info': MemoryInfo.get_process_mem_info(),
-                    # 'gpu_info': MemoryInfo.get_gpu_mem_info()
+                    **losses,
+                    # **mem_info
                 })
 
                 if self.on_train_epoch_end(self.total_nums, save_period, val_dataloader, batch_size,
-                                           mean_loss=(mean_loss_g, mean_loss_d), save_maxsize=save_maxsize,
+                                           losses=losses, max_num=max_save_num,
                                            **metric_kwargs):
                     break
 

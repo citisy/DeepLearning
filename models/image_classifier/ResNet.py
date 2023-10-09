@@ -1,5 +1,5 @@
 from torch import nn
-from ..layers import Conv, Linear, ConvInModule, OutModule, BaseImgClsModel
+from ..layers import Conv, Linear, ConvInModule, OutModule, BaseImgClsModel, Residual
 
 # refer to table 1
 # (n_res, out_ch, n_conv)
@@ -54,19 +54,18 @@ class Backbone(nn.Sequential):
         super().__init__(*layers)
 
 
-class ResBlock(nn.Module):
+class ResBlock(Residual):
     def __init__(self, in_ch, out_ch, n_conv=2, s=1,
                  add_block: nn.Module = None, **block_config):
-        super().__init__()
         self.in_channels = in_ch
         if n_conv == 2:
-            self.conv_seq = nn.Sequential(
+            conv_seq = nn.Sequential(
                 Conv(in_ch, out_ch, k=3, s=s),
                 Conv(out_ch, out_ch, k=1, s=1, is_act=False),
             )
         elif n_conv == 3:  # use bottleneck
             hidden_ch = out_ch // 4
-            self.conv_seq = nn.Sequential(
+            conv_seq = nn.Sequential(
                 Conv(in_ch, hidden_ch, k=1, s=s),
                 Conv(hidden_ch, hidden_ch, k=3),
                 Conv(hidden_ch, out_ch, k=1, s=1, is_act=False),
@@ -76,19 +75,13 @@ class ResBlock(nn.Module):
             raise ValueError(f'Not supported {n_conv = }')
 
         if add_block:
-            self.conv_seq.append(add_block(out_ch, **block_config))
+            conv_seq.append(add_block(out_ch, **block_config))
 
-        self.is_projection_x = in_ch != out_ch
-        if self.is_projection_x:
-            self.conv_x = Conv(in_ch, out_ch, k=1, s=s)
-        else:
-            self.conv_x = nn.Sequential()
-
-        self.act = nn.ReLU()
+        conv_x = Conv(in_ch, out_ch, k=1, s=s) if in_ch != out_ch else nn.Identity()
         self.out_channels = out_ch
 
-    def forward(self, x):
-        x1 = self.conv_seq(x)
-        x2 = self.conv_x(x)
-        x = self.act(x1 + x2)
-        return x
+        super().__init__(
+            fn=conv_seq,
+            project_fn=conv_x
+        )
+

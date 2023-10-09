@@ -102,7 +102,6 @@ class Model(nn.Module):
         self.stride = self.head.stride
 
         initialize_layers(self)
-        self.head.initialize_biases()
 
     def forward(self, x, gt_boxes=None, gt_cls=None):
         x = self.input(x)
@@ -112,12 +111,12 @@ class Model(nn.Module):
         if isinstance(features, torch.Tensor):
             features = [features]
 
-        preds, loss = self.head(features, gt_boxes, gt_cls, self.input_size)
+        preds, losses = self.head(features, gt_boxes, gt_cls, self.input_size)
 
         if self.training:
             return dict(
                 preds=preds,
-                loss=loss
+                **losses
             )
         else:
             return self.post_process(preds)
@@ -297,7 +296,7 @@ class Head(nn.Module):
         self.sort_obj_iou = sort_obj_iou
         self.anchor_t = anchor_t
 
-    def initialize_biases(self, cf=None):
+    def initialize_layers(self, cf=None):
         """refer to https://arxiv.org/abs/1708.02002 section 3.3"""
         for mi, s in zip(self.conv_list, self.stride):  # from
             b = mi.bias.view(self.n_anchors, -1).detach()  # conv.bias(255) to (3,85)
@@ -329,11 +328,11 @@ class Head(nn.Module):
             wh = (2 * wh.sigmoid()) ** 2 * self.anchor_grid[i]
             features[i] = torch.cat([xy, wh, _], -1)
 
-        loss = None
+        losses = None
 
         if self.training:
-            loss = self.loss(features, gt_boxes, gt_cls, image_size)
-        return features, loss
+            losses = self.loss(features, gt_boxes, gt_cls, image_size)
+        return features, losses
 
     def loss(self, features, gt_boxes, gt_cls, image_size):  # predictions, targets
         """
@@ -459,7 +458,12 @@ class Head(nn.Module):
         cls_loss *= self.cls_gain
         bs = obj_loss.shape[0]  # batch size
 
-        return (reg_loss + obj_loss + cls_loss) * bs
+        return {
+            'loss.reg': reg_loss,
+            'loss.obj': obj_loss,
+            'loss.cls': cls_loss,
+            'loss': (reg_loss + obj_loss + cls_loss) * bs
+        }
 
 
 class AutoAnchor:
@@ -524,7 +528,7 @@ class AutoAnchor:
                     anchors = new_anchors
 
         anchors = np.round(anchors)
-        self.stdout_method(f'anchors = {anchors}')
+        self.stdout_method(f'anchors = {anchors.tolist()}')
         return anchors
 
     def kmean_anchors(self, n=9, gen=1000):

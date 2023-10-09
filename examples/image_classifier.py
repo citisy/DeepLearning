@@ -4,7 +4,6 @@ from torch import nn, optim
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 from models.layers import SimpleInModule
-from utils.os_lib import MemoryInfo
 from utils.torch_utils import EMA
 from utils import configs
 from metrics import classifier
@@ -27,7 +26,7 @@ class ClsProcess(Process):
             pbar = tqdm(train_dataloader, desc=f'train {i}/{max_epoch}')
             total_loss = 0
             total_batch = 0
-            mean_loss = 0
+            losses = None
 
             for rets in pbar:
                 images = [torch.from_numpy(ret.pop('image')).to(self.device, non_blocking=True, dtype=torch.float) for ret in rets]
@@ -48,15 +47,23 @@ class ClsProcess(Process):
                 total_batch += len(rets)
 
                 mean_loss = total_loss / total_batch
+
+                losses = {
+                    'loss': loss.item(),
+                    'mean_loss': mean_loss,
+                }
+                # mem_info = {
+                #     'cpu_info': log_utils.MemoryInfo.get_process_mem_info(),
+                #     'gpu_info': log_utils.MemoryInfo.get_gpu_mem_info()
+                # }
+
                 pbar.set_postfix({
-                    'loss': f'{loss.item():.06}',
-                    'mean_loss': f'{mean_loss:.06}',
-                    # 'cpu_info': MemoryInfo.get_process_mem_info(),
-                    # 'gpu_info': MemoryInfo.get_gpu_mem_info()
+                    **losses,
+                    # **mem_info
                 })
 
             if self.on_train_epoch_end(i, save_period, val_dataloader,
-                                       mean_loss=mean_loss,
+                                       losses=losses,
                                        # model=ema.ema_model,
                                        **metric_kwargs):
                 break
@@ -109,7 +116,7 @@ class ClsProcess(Process):
             if n > 0:
                 for ret, _p in zip(rets, outputs['pred']):
                     _id = Path(ret['_id'])
-                    ret['_id'] = f'{_id.stem}(t={ret["_class"]},p={_p}){_id.suffix}'
+                    ret['_id'] = f'{_id.stem}({ret["_class"]}_{_p}){_id.suffix}'
                     ret['image'] = ret['ori_image']
                 DataVisualizer(f'{self.save_result_dir}/{cur_epoch}', verbose=False, pbar=False)(rets[:n])
                 self.log_info.setdefault('val_image', []).extend([self.wandb.Image(ret['image'], caption=ret['_id']) for ret in rets[:n]])
@@ -119,16 +126,18 @@ class ClsProcess(Process):
 
 
 class Mnist(Process):
+    data_dir = 'data/mnist'
+
     def get_train_data(self):
         from data_parse.cv_data_parse.Mnist import Loader
 
-        loader = Loader('data/mnist')
+        loader = Loader(self.data_dir)
         return loader(set_type=DataRegister.TRAIN, image_type=DataRegister.ARRAY, generator=False)[0]
 
     def get_val_data(self):
         from data_parse.cv_data_parse.Mnist import Loader
 
-        loader = Loader('data/mnist')
+        loader = Loader(self.data_dir)
         return loader(set_type=DataRegister.TEST, image_type=DataRegister.ARRAY, generator=False)[0]
 
     def data_augment(self, ret):
@@ -149,20 +158,24 @@ class Mnist(Process):
 
 
 class Cifar(Process):
+    data_dir = 'data/cifar-10-batches-py'
+
     def get_train_data(self):
         from data_parse.cv_data_parse.Cifar import Loader
 
-        loader = Loader('data/cifar-10-batches-py')
+        loader = Loader(self.data_dir)
         return loader(set_type=DataRegister.TRAIN, image_type=DataRegister.ARRAY, generator=False)[0]
 
     def get_val_data(self):
         from data_parse.cv_data_parse.Cifar import Loader
 
-        loader = Loader('data/cifar-10-batches-py')
+        loader = Loader(self.data_dir)
         return loader(set_type=DataRegister.TEST, image_type=DataRegister.ARRAY, generator=False)[0]
 
 
 class ImageNet(Process):
+    data_dir = 'data/ImageNet2012'
+
     def data_augment(self, ret):
         ret.update(scale.Proportion()(**ret, dst=256))
         ret.update(dst=self.input_size)
@@ -186,7 +199,7 @@ class ImageNet(Process):
             ret['_class'] = convert_class[ret['_class']]
             return ret
 
-        loader = Loader(f'data/ImageNet2012')
+        loader = Loader(self.data_dir)
         loader.on_end_convert = convert_func
 
         data = loader(set_type=DataRegister.TRAIN, image_type=DataRegister.ARRAY, generator=False,
@@ -220,7 +233,7 @@ class ImageNet(Process):
             if ret['_class'] in [7, 40]:
                 return True
 
-        loader = Loader(f'data/ImageNet2012')
+        loader = Loader(self.data_dir)
         loader.on_end_filter = filter_func
 
         data = loader(set_type=DataRegister.VAL, image_type=DataRegister.PATH, generator=False)[0]
