@@ -324,6 +324,14 @@ class IdMapper:
 class DictMaker:
     @staticmethod
     def word_id_dict(segments):
+        """
+
+        Args:
+            segments (List[List[str]]):
+
+        Returns:
+            a dict like {word: id}
+        """
         word_dict = dict()
         for line in segments:
             for word in line:
@@ -335,6 +343,14 @@ class DictMaker:
 
     @staticmethod
     def word_count_dict(segments):
+        """
+
+        Args:
+            segments (List[List[str]]):
+
+        Returns:
+            a dict like {word: count}
+        """
         word_dict = defaultdict(int)
         for line in segments:
             for word in line:
@@ -365,6 +381,6 @@ class Converter:
 
     @staticmethod
     def _convert(s: str, d: dict):
-        for a, b in convert_dict.round_to_half_punctuation.items():
+        for a, b in d.items():
             s = s.replace(a, b)
         return s

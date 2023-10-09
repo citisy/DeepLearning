@@ -100,29 +100,52 @@ class Overlap:
     """only judge whether 2 object is overlap or not"""
 
     @staticmethod
-    def line(line1, line2):
+    def line(lines1, lines2):
         """line1 = (a1, a2), line2 = (b1, b2),
         2 lines do not overlap means that
            a1 after b2 (a1 > b2)
         or a2 before b1 (a2 < b1)
         """
-        a1, a2 = line1.T
-        b1, b2 = line2.T
+        a1, a2 = lines1.T
+        b1, b2 = lines2.T
 
         f = (a1[:, None] > b2[None, :]) | (a2[:, None] < b1[None, :])
 
         return ~f
 
     @staticmethod
-    def box(box1, box2):
+    def line2D(lines1, lines2, return_insert_point=False):
+        """line1 = (xa1, ya1, xa2, ya2), line2 = (xb1, yb1, xb2, yb2)
+        """
+        ab = np.repeat((lines1[:, (2, 3)] - lines1[:, (0, 1)])[None, :], len(lines1), axis=0)
+        cd = np.repeat((lines2[:, (2, 3)] - lines2[:, (0, 1)])[:, None], len(lines2), axis=1)
+        ac = lines2[:, None, (0, 1)] - lines1[None, :, (0, 1)]
+
+        v1 = np.cross(cd, ac)
+        v2 = np.cross(ab, ac)
+        v3 = np.cross(cd, ab)
+
+        t = v1 / v3
+        u = v2 / v3
+
+        flag = (t >= 0) & (t <= 1) & (u >= 0) & (u <= 1)
+        if return_insert_point:
+            p = lines1[:, (0, 1)][None, :] + ab * t[:, :, None]
+            return flag, p
+
+        else:
+            return flag
+
+    @staticmethod
+    def box(boxes1, boxes2):
         """box1 = (xa1, ya1, xa2, ya2), box2 = (xb1, yb1, xb2, yb2)
         2 boxes do not overlap means that
-           point 'a1' in the right down of box2 (xa1 > xb2 | ya1 > yb2)
-        or point 'a2' in the left top of box2 (xa2 < xb1 | ya2 < yb1)
+           point 'a1' at the right or down of box2 (xa1 > xb2 | ya1 > yb2)
+        or point 'a2' at the left or top of box2 (xa2 < xb1 | ya2 < yb1)
         """
 
-        xa1, ya1, xa2, ya2 = box1.T
-        xb1, yb1, xb2, yb2 = box2.T
+        xa1, ya1, xa2, ya2 = boxes1.T
+        xb1, yb1, xb2, yb2 = boxes2.T
 
         f1 = (xa1[:, None] > xb2[None, :]) | (ya1[:, None] > yb2[None, :])
         f2 = (xa2[:, None] < xb1[None, :]) | (ya2[:, None] < yb1[None, :])

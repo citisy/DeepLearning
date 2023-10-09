@@ -76,14 +76,14 @@ class Loader(DataLoader):
                     for image_path in image_paths:
                         yield image_path, transcription, conf
 
-        return self.gen_data(gen_func, **kwargs)
+        return self.gen_data(gen_func(), **kwargs)
 
     def get_ret(self, obj, image_type=DataRegister.PATH, **kwargs) -> dict:
         image_path, transcription, conf = obj
         image_path = os.path.abspath(image_path)
         image = get_image(image_path, image_type)
 
-        yield dict(
+        return dict(
             _id=Path(image_path).name,
             image=image,
             transcription=transcription,

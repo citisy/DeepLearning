@@ -43,9 +43,9 @@ class WordConfusionMatrix:
 
     def make_n_grams(self, lines):
         if not self.is_cut:
-            lines = nlp_utils.cut_word_by_jieba(lines, self.filter_blank)
+            lines = nlp_utils.Cutter.cut_word_by_jieba(lines, self.filter_blank)
 
-        return nlp_utils.Sequence.n_grams(lines, n_gram=self.n_gram)
+        return nlp_utils.Sequencer.n_grams(lines, n_gram=self.n_gram)
 
     def tp(self, true=None, pred=None, true_with_n_grams=None, pred_with_n_grams=None, **kwargs):
         """
@@ -111,11 +111,11 @@ class WordLCSConfusionMatrix:
     def __init__(self, is_cut=False, filter_blank=True, lcs_method=None):
         self.is_cut = is_cut
         self.filter_blank = filter_blank
-        self.lcs = lcs_method or nlp_utils.Sequence.longest_common_subsequence
+        self.lcs = lcs_method or nlp_utils.Sequencer.longest_common_subsequence
 
     def tp(self, true=None, pred=None, true_cut=None, pred_cut=None, tp=None, **kwargs):
-        true_cut = true_cut or nlp_utils.cut_word_by_jieba(true, self.filter_blank) if not self.is_cut else true
-        pred_cut = pred_cut or nlp_utils.cut_word_by_jieba(pred, self.filter_blank) if not self.is_cut else pred
+        true_cut = true_cut or nlp_utils.Cutter.cut_word_by_jieba(true, self.filter_blank) if not self.is_cut else true
+        pred_cut = pred_cut or nlp_utils.Cutter.cut_word_by_jieba(pred, self.filter_blank) if not self.is_cut else pred
         tp = tp if tp is not None else [self.lcs(t, p)['score'] for t, p in zip(true_cut, pred_cut)]
 
         return dict(
@@ -126,7 +126,7 @@ class WordLCSConfusionMatrix:
         )
 
     def cp(self, true=None, true_cut=None, **kwargs):
-        true_cut = true_cut or nlp_utils.cut_word_by_jieba(true, self.filter_blank) if not self.is_cut else true
+        true_cut = true_cut or nlp_utils.Cutter.cut_word_by_jieba(true, self.filter_blank) if not self.is_cut else true
         cp = [len(t) for t in true_cut]
 
         return dict(
@@ -136,7 +136,7 @@ class WordLCSConfusionMatrix:
         )
 
     def op(self, pred=None, pred_cut=None, **kwargs):
-        pred_cut = pred_cut or nlp_utils.cut_word_by_jieba(pred, self.filter_blank) if not self.is_cut else pred
+        pred_cut = pred_cut or nlp_utils.Cutter.cut_word_by_jieba(pred, self.filter_blank) if not self.is_cut else pred
         op = [len(p) for p in pred_cut]
 
         return dict(

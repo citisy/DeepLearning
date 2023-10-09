@@ -127,11 +127,11 @@ class EasyMetric:
             'ROUGE-2': text_generation.TopMetric(confusion_method=text_generation.WordConfusionMatrix, n_gram=2, is_cut=True),
             'ROUGE-3': text_generation.TopMetric(confusion_method=text_generation.WordConfusionMatrix, n_gram=3, is_cut=True),
             'ROUGE-L': text_generation.TopMetric(confusion_method=text_generation.WordLCSConfusionMatrix, is_cut=True),
-            'ROUGE-W': text_generation.TopMetric(confusion_method=text_generation.WordLCSConfusionMatrix, lcs_method=nlp_utils.Sequence.weighted_longest_common_subsequence, is_cut=True),
+            'ROUGE-W': text_generation.TopMetric(confusion_method=text_generation.WordLCSConfusionMatrix, lcs_method=nlp_utils.Sequencer.weighted_longest_common_subsequence, is_cut=True),
         }
 
-        det_cut_text = nlp_utils.cut_word_by_jieba(det_text)
-        gt_cut_text = nlp_utils.cut_word_by_jieba(gt_text)
+        det_cut_text = nlp_utils.Cutter.cut_word_by_jieba(det_text)
+        gt_cut_text = nlp_utils.Cutter.cut_word_by_jieba(gt_text)
 
         ret.update({k: v.f_measure(det_cut_text, gt_cut_text) for k, v in _ret.items()})
 
@@ -196,6 +196,7 @@ class EasyMetric:
         cp = np.array(cm.cp(gt_text)['cp'])
         idx = np.where(tp != cp)[0]
 
+        ret = []
         for i in idx:
             _id = _ids[i]
             image = os_lib.loader.load_img(f'{image_dir}/{_id}')
@@ -213,6 +214,14 @@ class EasyMetric:
             image = np.concatenate([image, gt_image, det_image], axis=0)
             os_lib.Saver(verbose=self.verbose, stdout_method=self.stdout_method).auto_save(image, f'{save_res_dir}/{_id}')
 
+            ret.append(dict(
+                _id=_id,
+                gt=gt_text[i],
+                det=det_text[i]
+            ))
             self.stdout_method(gt_text[i])
             self.stdout_method(det_text[i])
             self.stdout_method('------------')
+
+        os_lib.saver.save_json(ret, f'{save_res_dir}/result.json')
+        return ret
