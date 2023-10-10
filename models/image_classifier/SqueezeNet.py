@@ -1,6 +1,7 @@
 import torch
 from torch import nn
-from ..layers import Conv, Linear, ConvInModule, OutModule, BaseImgClsModel
+from . import BaseImgClsModel
+from ..layers import Conv, Linear, ConvInModule, OutModule
 
 # (sq_ch, ex1_ch, ex3_ch)
 default_config = (

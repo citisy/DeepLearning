@@ -1,5 +1,6 @@
 from torch import nn
-from ..layers import Conv, Linear, ConvInModule, OutModule, BaseImgClsModel, Residual
+from . import BaseImgClsModel
+from ..layers import Conv, Linear, ConvInModule, OutModule, Residual
 
 # refer to table 1
 # (n_res, out_ch, n_conv)

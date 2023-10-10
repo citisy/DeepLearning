@@ -1,6 +1,7 @@
 import torch
 from torch import nn
-from ..layers import OutModule, BaseImgClsModel
+from . import BaseImgClsModel
+from ..layers import OutModule
 from einops.layers.torch import Rearrange
 
 default_config = dict(

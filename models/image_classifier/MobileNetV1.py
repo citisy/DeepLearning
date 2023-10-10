@@ -1,5 +1,6 @@
 from torch import nn
-from ..layers import Conv, Linear, ConvInModule, OutModule, BaseImgClsModel
+from . import BaseImgClsModel
+from ..layers import Conv, Linear, ConvInModule, OutModule
 
 # (conv_type, out_ch, k, s)
 # 0: conv 1: dw

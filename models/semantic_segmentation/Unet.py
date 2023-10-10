@@ -1,7 +1,8 @@
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
-from ..layers import Conv, ConvInModule, ConvT, BaseSemanticSegmentationModel
+from . import BaseSemSegModel
+from ..layers import Conv, ConvInModule, ConvT
 from utils.torch_utils import initialize_layers
 
 # top(outer) -> bottom(inner)
@@ -13,7 +14,7 @@ unet256_config = (
 )
 
 
-class Model(BaseSemanticSegmentationModel):
+class Model(BaseSemSegModel):
     """refer to [U-Net: Convolutional Networks for Biomedical Image Segmentation](https://arxiv.org/pdf/1505.04597.pdf)"""
 
     def __init__(self, in_ch, out_features, conv_config=unet256_config, **kwargs):

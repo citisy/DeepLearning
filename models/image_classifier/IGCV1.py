@@ -1,5 +1,6 @@
 from torch import nn
-from ..layers import Conv, Linear, ConvInModule, OutModule, BaseImgClsModel
+from . import BaseImgClsModel
+from ..layers import Conv, Linear, ConvInModule, OutModule
 from .ShuffleNetV1 import shuffle
 
 # (l, m, b)

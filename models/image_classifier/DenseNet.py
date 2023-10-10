@@ -1,6 +1,7 @@
 import torch
 from torch import nn
-from ..layers import Conv, Linear, ConvInModule, OutModule, BaseImgClsModel
+from . import BaseImgClsModel
+from ..layers import Conv, Linear, ConvInModule, OutModule
 
 # refer to table 1
 # (n_conv, growth_rate)

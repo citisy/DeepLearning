@@ -1,95 +1,7 @@
 import torch
 from torch import nn
 import torch.nn.functional as F
-from utils.torch_utils import initialize_layers
 import numpy as np
-
-
-class BaseImgClsModel(nn.Module):
-    """a template to make a image classifier model by yourself"""
-
-    def __init__(
-            self,
-            in_ch=3, input_size=None, out_features=None,
-            in_module=None, backbone=None, neck=None, head=None, out_module=None,
-            backbone_in_ch=None, backbone_input_size=None, head_hidden_features=1000, drop_prob=0.4
-    ):
-        super().__init__()
-
-        self.in_channels = in_ch
-        self.input_size = input_size
-        self.out_features = out_features
-
-        # `bool(nn.Sequential()) = False`, so do not ues `input = in_module or ConvInModule()`
-        # if in_module is None, in_ch and input_size must be set
-        self.input = in_module if in_module is not None else ConvInModule(in_ch, input_size, out_ch=backbone_in_ch, output_size=backbone_input_size)
-        self.backbone = backbone
-        self.neck = neck if neck is not None else nn.Sequential(
-            nn.AdaptiveAvgPool2d(1),
-            nn.Flatten()
-        )
-        self.head = head if head is not None else nn.Sequential(
-            Linear(self.backbone.out_channels, head_hidden_features, is_drop=True, drop_prob=drop_prob),
-            out_module or OutModule(out_features, in_features=head_hidden_features)
-        )
-
-        initialize_layers(self)
-
-    def forward(self, x, true_label=None):
-        x = self.input(x)
-        x = self.backbone(x)
-        x = self.neck(x)
-        x = self.head(x)
-
-        loss = None
-        if self.training:
-            loss = self.loss(pred_label=x, true_label=true_label)
-
-        return {'pred': x, 'loss': loss}
-
-    def loss(self, pred_label, true_label):
-        return F.cross_entropy(pred_label, true_label)
-
-
-class BaseObjectDetectionModel(nn.Sequential):
-    """a template to make a object detection model by yourself"""
-
-    def __init__(
-            self, n_classes,
-            in_module=None, backbone=None, neck=None, head=None,
-            in_module_config=dict(), backbone_config=dict(),
-            neck_config=dict(), head_config=dict(),
-            **kwargs
-    ):
-        super().__init__()
-        self.input = in_module(**in_module_config)
-        self.backbone = backbone(**backbone_config)
-        self.neck = neck(**neck_config)
-        self.head = head(**head_config)
-
-
-class BaseSemanticSegmentationModel(nn.Module):
-    def forward(self, x, pix_images=None):
-        if self.training and pix_images is not None:
-            return dict(
-                preds=x,
-                loss=self.loss(x, pix_images)
-            )
-        else:
-            return self.post_process(x)
-
-    def post_process(self, preds):
-        return preds.argmax(1)
-
-    def loss(self, preds, pix_images):
-        """
-        Args:
-            preds: [b, out_features + 1, h, w]
-            pix_images: [b, h, w]
-
-        """
-        # value=255 is the padding or edge areas
-        return F.cross_entropy(preds, pix_images, ignore_index=255)
 
 
 class SimpleInModule(nn.Sequential):
@@ -111,11 +23,14 @@ class ConvInModule(nn.Sequential):
         self.out_channels = out_ch
         self.input_size = input_size
 
-        # in_ch -> out_ch
-        # input_size -> output_size
-        super().__init__(
-            nn.Conv2d(in_ch, out_ch, (input_size - output_size) + 1)
-        )
+        if in_ch == out_ch and input_size == output_size:
+            projection = nn.Identity()
+        else:
+            # in_ch -> out_ch
+            # input_size -> output_size
+            projection = nn.Conv2d(in_ch, out_ch, (input_size - output_size) + 1)
+
+        super().__init__(projection)
 
 
 class OutModule(nn.Sequential):

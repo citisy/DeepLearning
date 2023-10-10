@@ -1,6 +1,7 @@
 import torch
 from torch import nn
-from ..layers import Conv, Linear, ConvInModule, OutModule, BaseImgClsModel
+from . import BaseImgClsModel
+from ..layers import Conv, Linear, ConvInModule, OutModule
 
 # from table 1
 # (1*1 out_ch, 3*3 in_ch, 3*3 out_ch, 5*5 in_ch, 5*5 out_ch, pool out_ch)

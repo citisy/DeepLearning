@@ -3,6 +3,23 @@ from torch import nn
 import torchvision
 
 
+class BaseObjDetModel(nn.Sequential):
+    """a template to make a object detection model by yourself"""
+
+    def __init__(
+            self, n_classes,
+            in_module=None, backbone=None, neck=None, head=None,
+            in_module_config=dict(), backbone_config=dict(),
+            neck_config=dict(), head_config=dict(),
+            **kwargs
+    ):
+        super().__init__()
+        self.input = in_module(**in_module_config)
+        self.backbone = backbone(**backbone_config)
+        self.neck = neck(**neck_config)
+        self.head = head(**head_config)
+
+
 def cls_nms(bboxes, scores, classes, nms_method=torchvision.ops.nms, **nms_kwargs):
     max_coordinate = bboxes.max()
     offsets = classes.to(bboxes) * (max_coordinate + 1)
