@@ -27,14 +27,15 @@ class MixUp:
     """
 
     def __init__(self, alpha=32., beta=32.):
+        self.name = __name__.split('.')[-1] + '.' + self.__class__.__name__
         self.alpha = alpha
         self.beta = beta
 
     def get_add_params(self, r):
-        return {'complex.MixUp': dict(r=r)}
+        return {self.name: dict(r=r)}
 
     def parse_add_params(self, ret):
-        return ret['complex.MixUp']['r']
+        return ret[self.name]['r']
 
     def get_params(self):
         return np.random.beta(self.alpha, self.beta)  # mixup ratio, default alpha=beta=32.0
@@ -100,14 +101,15 @@ class CutMix:
 
 class Mosaic4:
     def __init__(self, img_size=640):
+        self.name = __name__.split('.')[-1] + '.' + self.__class__.__name__
         self.img_size = img_size
         self.border = [img_size // 2, img_size // 2]
 
     def get_add_params(self, coors):
-        return {'complex.Mosaic4': dict(coors=coors)}
+        return {self.name: dict(coors=coors)}
 
     def parse_add_params(self, ret):
-        return ret['complex.Mosaic4']['coors']
+        return ret[self.name]['coors']
 
     def get_params(self, image_list):
         s = self.img_size
@@ -176,14 +178,15 @@ class Mosaic4:
 
 class Mosaic9:
     def __init__(self, img_size=640):
+        self.name = __name__.split('.')[-1] + '.' + self.__class__.__name__
         self.img_size = img_size
         self.border = [img_size // 2, img_size // 2]
 
     def get_add_params(self, coors, yc, xc):
-        return {'complex.Mosaic4': dict(coors=coors, yc=yc, xc=xc)}
+        return {self.name: dict(coors=coors, yc=yc, xc=xc)}
 
     def parse_add_params(self, ret):
-        info = ret['complex.Mosaic4']
+        info = ret[self.name]
         return info['coors'], info['yc'], info['xc']
 
     def get_params(self, image_list):

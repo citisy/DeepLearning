@@ -163,10 +163,12 @@ class RandomVShift:
 class RandomHShift(RandomVShift):
     def __call__(self, image, bboxes, classes=None, **kwargs):
         ret = dict(image=image, bboxes=bboxes, classes=classes)
-        ret.update(SimpleRotate(90)(**ret))
+        rotate = SimpleRotate(90)
+        ret.update(rotate(**ret))
         ret.update(super().__call__(**ret))
-        ret.update(SimpleRotate(-90)(**ret))
-        ret.pop('geo.Rotate')
+        rotate = SimpleRotate(-90)
+        ret.update(rotate(**ret))
+        ret.pop(rotate.name)
 
         return ret
 
@@ -175,31 +177,39 @@ class SimpleRotate:
     """only rotates the image by a multiple of angle, and could be change the shape of image"""
 
     def __init__(self, angle=90):
+        self.name = __name__.split('.')[-1] + '.' + self.__class__.__name__
         self.angle = angle
+
+    def get_add_params(self, h, w):
+        k = self.get_params()
+        return {self.name: dict(k=k, h=h, w=w)}
+
+    def parse_add_params(self, ret):
+        info = ret[self.name]
+        return info['k'], info['h'], info['w']
 
     def get_params(self):
         return round(self.angle / 90) % 4
 
     def __call__(self, image, bboxes=None, **kwargs):
         h, w = image.shape[:2]
-        k = self.get_params()
-        image = self.apply_image(image, k)
-        bboxes = self.apply_bboxes(bboxes, k, h, w)
+        add_params = self.get_add_params(h, w)
 
         return {
-            'image': image,
-            'bboxes': bboxes,
-            'geo.Rotate': dict(
-                k=k
-            )}
+            'image': self.apply_image(image, add_params),
+            'bboxes': self.apply_bboxes(bboxes, add_params),
+            **add_params
+        }
 
-    def apply_image(self, image, k):
+    def apply_image(self, image, ret):
+        k, _, _ = self.parse_add_params(ret)
         image = np.rot90(image, k)
         image = np.ascontiguousarray(image)
         return image
 
-    def apply_bboxes(self, bboxes, k, h, w):
+    def apply_bboxes(self, bboxes, ret):
         if bboxes is not None:
+            k, h, w = self.parse_add_params(ret)
             if k == 1:
                 bboxes = bboxes[:, (1, 2, 3, 0)]
                 bboxes[:, 1::2] = h - bboxes[:, 1::2]
@@ -237,11 +247,20 @@ class Rotate:
     """
 
     def __init__(self, angle=90, interpolation=0, expand=False, center=None, fill=0):
+        self.name = __name__.split('.')[-1] + '.' + self.__class__.__name__
         self.angle = angle
         self.interpolation = interpolation_mode[interpolation]
         self.expand = expand
         self.center = center
         self.fill = fill
+
+    def get_add_params(self, h, w):
+        angle, center, M = self.get_params(w, h)
+        return {self.name: dict(angle=angle, center=center, M=M, h=h, w=w)}
+
+    def parse_add_params(self, ret):
+        info = ret[self.name]
+        return info['angle'], info['center'], info['M'], info['h'], info['w']
 
     def get_params(self, w, h):
         angle = self.angle
@@ -257,21 +276,16 @@ class Rotate:
 
     def __call__(self, image, bboxes=None, **kwargs):
         h, w, c = image.shape
-        angle, center, M = self.get_params(w, h)
-        image = self.apply_image(image, angle, center, M)
-        bboxes = self.apply_bboxes(bboxes, M, w, h)
+        add_params = self.get_add_params(h, w)
 
         return {
-            'image': image,
-            'bboxes': bboxes,
-            'geo.Rotate': dict(
-                angle=angle,
-                center=center,
-                M=M
-            )}
+            'image': self.apply_image(image, add_params),
+            'bboxes': self.apply_bboxes(bboxes, add_params),
+            **add_params
+        }
 
-    def apply_image(self, image, angle, center, M):
-        h, w, c = image.shape
+    def apply_image(self, image, ret):
+        angle, center, M, h, w = self.parse_add_params(ret)
 
         if self.expand:
             # calculate output size
@@ -315,8 +329,9 @@ class Rotate:
         )
         return image
 
-    def apply_bboxes(self, bboxes, M, w, h):
+    def apply_bboxes(self, bboxes, ret):
         if bboxes is not None:
+            angle, center, M, h, w = self.parse_add_params(ret)
             n = len(bboxes)
             xy = np.ones((n * 4, 3))
             xy[:, :2] = bboxes[:, [0, 1, 2, 3, 0, 3, 2, 1]].reshape(n * 4, 2)  # x1y1, x2y2, x1y2, x2y1
@@ -355,12 +370,45 @@ class Affine:
     """rotate, scale and shift the image"""
 
     def __init__(self, angle=45, translate=(0., 0.), interpolation=0, fill_type=0, scale=1., shear=0.):
+        self.name = __name__.split('.')[-1] + '.' + self.__class__.__name__
         self.angle = angle
         self.translate = translate
         self.interpolation = interpolation_mode[interpolation]
         self.fill_type = fill_mode[fill_type]
         self.scale = scale
         self.shear = shear
+
+    def get_add_params(self, h, w):
+        angle, translate, scale, shear = self.get_params()
+        M = self._get_inverse_affine_matrix((w / 2, h / 2), angle, (0, 0), scale, shear)
+        M = np.array(M).reshape(2, 3)
+
+        startpoints = [(0, 0), (w - 1, 0), (w - 1, h - 1), (0, h - 1)]
+        project = lambda x, y, a, b, c: int(a * x + b * y + c)
+        endpoints = [(project(x, y, *M[0]), project(x, y, *M[1])) for x, y in startpoints]
+
+        rect = cv2.minAreaRect(np.array(endpoints))
+        bbox = cv2.boxPoints(rect).astype(int)
+        max_x, max_y = bbox[:, 0].max(), bbox[:, 1].max()
+        min_x, min_y = bbox[:, 0].min(), bbox[:, 1].min()
+
+        dst_w = int(max_x - min_x)
+        dst_h = int(max_y - min_y)
+        M[0, 2] += (dst_w - w) / 2
+        M[1, 2] += (dst_h - h) / 2
+
+        # add translate
+        dst_w += int(abs(translate[0]))
+        dst_h += int(abs(translate[1]))
+        if translate[0] < 0:
+            M[0, 2] += abs(translate[0])
+        if translate[1] < 0:
+            M[1, 2] += abs(translate[1])
+        return {self.name: dict(M=M, dst_w=dst_w, dst_h=dst_h)}
+
+    def parse_add_params(self, ret):
+        info = ret[self.name]
+        return info['M'], info['dst_w'], info['dst_h']
 
     def get_params(self):
         return self.angle, self.translate, self.scale, self.shear
@@ -398,34 +446,17 @@ class Affine:
 
     def __call__(self, image, bboxes=None, **kwargs):
         h, w = image.shape[:2]
-        angle, translate, scale, shear = self.get_params()
+        add_params = self.get_add_params(h, w)
 
-        M = self._get_inverse_affine_matrix((w / 2, h / 2), angle, (0, 0), scale, shear)
-        M = np.array(M).reshape(2, 3)
+        return {
+            'image': self.apply_image(image, add_params),
+            'bboxes': self.apply_bboxes(bboxes, add_params),
+            **kwargs
+        }
 
-        startpoints = [(0, 0), (w - 1, 0), (w - 1, h - 1), (0, h - 1)]
-        project = lambda x, y, a, b, c: int(a * x + b * y + c)
-        endpoints = [(project(x, y, *M[0]), project(x, y, *M[1])) for x, y in startpoints]
-
-        rect = cv2.minAreaRect(np.array(endpoints))
-        bbox = cv2.boxPoints(rect).astype(int)
-        max_x, max_y = bbox[:, 0].max(), bbox[:, 1].max()
-        min_x, min_y = bbox[:, 0].min(), bbox[:, 1].min()
-
-        dst_w = int(max_x - min_x)
-        dst_h = int(max_y - min_y)
-        M[0, 2] += (dst_w - w) / 2
-        M[1, 2] += (dst_h - h) / 2
-
-        # add translate
-        dst_w += int(abs(translate[0]))
-        dst_h += int(abs(translate[1]))
-        if translate[0] < 0:
-            M[0, 2] += abs(translate[0])
-        if translate[1] < 0:
-            M[1, 2] += abs(translate[1])
-
-        image = cv2.warpAffine(
+    def apply_image(self, image, ret):
+        M, dst_w, dst_h = self.parse_add_params(ret)
+        return cv2.warpAffine(
             image,
             M, (dst_w, dst_h),
             flags=self.interpolation,
@@ -433,7 +464,9 @@ class Affine:
             borderValue=(114, 114, 114)
         )
 
+    def apply_bboxes(self, bboxes, ret):
         if bboxes is not None:
+            M, dst_w, dst_h = self.parse_add_params(ret)
             n = len(bboxes)
             xy = np.ones((n * 4, 3))
             xy[:, :2] = bboxes[:, [0, 1, 2, 3, 0, 3, 2, 1]].reshape(n * 4, 2)  # x1y1, x2y2, x1y2, x2y1
@@ -451,15 +484,7 @@ class Affine:
 
             bboxes = new
 
-        return {
-            'image': image,
-            'bboxes': bboxes,
-            'geo.Affine': dict(
-                angle=angle,
-                translate=translate,
-                scale=scale,
-                shear=shear
-            )}
+        return bboxes
 
 
 class RandomAffine(Affine):
@@ -483,10 +508,19 @@ class RandomAffine(Affine):
 
 class Perspective:
     def __init__(self, distortion=0.25, interpolation=0, fill_type=0, keep_shape=True):
+        self.name = __name__.split('.')[-1] + '.' + self.__class__.__name__
         self.distortion = distortion
         self.interpolation = interpolation_mode[interpolation]
         self.fill_type = fill_mode[fill_type]
         self.keep_shape = keep_shape
+
+    def get_add_params(self, h, w):
+        end_points, M = self.get_params(h, w)
+        return {self.name: dict(end_points=end_points, M=M, h=h, w=w)}
+
+    def parse_add_params(self, ret):
+        info = ret[self.name]
+        return info['end_points'], info['M'], info['h'], info['w']
 
     def get_params(self, h, w):
         offset_h = self.distortion * h
@@ -505,20 +539,16 @@ class Perspective:
 
     def __call__(self, image, bboxes=None, **kwargs):
         h, w = image.shape[:2]
-        end_points, M = self.get_params(h, w)
-        image = self.apply_image(image, end_points, M)
-        bboxes = self.apply_bboxes(bboxes, M, w, h)
+        add_params = self.get_add_params(h, w)
 
         return {
-            'image': image,
-            'bboxes': bboxes,
-            'geo.Perspective': dict(
-                end_points=end_points,
-                M=M
-            )}
+            'image': self.apply_image(image, add_params),
+            'bboxes': self.apply_bboxes(bboxes, add_params),
+            **kwargs
+        }
 
-    def apply_image(self, image, end_points, M):
-        h, w = image.shape[:2]
+    def apply_image(self, image, ret):
+        end_points, M, h, w = self.parse_add_params(ret)
         image = cv2.warpPerspective(
             image,
             M, (w, h),
@@ -537,8 +567,9 @@ class Perspective:
 
         return image
 
-    def apply_bboxes(self, bboxes, M, w, h):
+    def apply_bboxes(self, bboxes, ret):
         if bboxes is not None:
+            end_points, M, h, w = self.parse_add_params(ret)
             n = len(bboxes)
             xy = np.ones((n * 4, 3))
             xy[:, :2] = bboxes[:, [0, 1, 2, 3, 0, 3, 2, 1]].reshape(n * 4, 2)  # x1y1, x2y2, x1y2, x2y1

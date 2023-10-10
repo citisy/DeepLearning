@@ -41,6 +41,7 @@ class Pad:
     def __init__(self, pad_type=CENTER, fill_type=0, fill=(114, 114, 114)):
         if isinstance(pad_type, int):
             pad_type = (pad_type, pad_type)
+        self.name = __name__.split('.')[-1] + '.' + self.__class__.__name__
         self.pad_type = pad_type
         self.fill_type = fill_type
         self.fill = fill
@@ -96,10 +97,10 @@ class Pad:
         )
 
     def get_add_params(self, dst, w, h):
-        return {'crop.Pad': self.get_params(dst, w, h)}
+        return {self.name: self.get_params(dst, w, h)}
 
     def parse_add_params(self, ret):
-        pad_info = ret['crop.Pad']
+        pad_info = ret[self.name]
         t = pad_info.get('t', 0)
         d = pad_info.get('d', 0)
         l = pad_info.get('l', 0)
@@ -126,7 +127,7 @@ class Pad:
         }
 
     def apply_image(self, image, ret):
-        if 'crop.Pad' in ret:
+        if self.name in ret:
             t, d, l, r = self.parse_add_params(ret)
             return cv2.copyMakeBorder(
                 image, t, d, l, r,
@@ -137,7 +138,7 @@ class Pad:
             return image
 
     def apply_bboxes(self, bboxes, ret):
-        if bboxes is not None and 'crop.Pad' in ret:
+        if bboxes is not None and self.name in ret:
             t, d, l, r = self.parse_add_params(ret)
             bboxes = np.array(bboxes)
             shift = np.array([l, t, l, t])
@@ -146,7 +147,7 @@ class Pad:
         return bboxes
 
     def restore(self, ret):
-        if 'crop.Pad' in ret:
+        if self.name in ret:
             t, d, l, r = self.parse_add_params(ret)
 
             if 'image' in ret and ret['image'] is not None:
@@ -170,12 +171,15 @@ class Pad:
 
 
 class Crop:
+    def __init__(self):
+        self.name = __name__.split('.')[-1] + '.' + self.__class__.__name__
+
     def get_add_params(self, dst_coor, w, h):
         x1, x2, y1, y2 = dst_coor
-        return {'crop.Crop': dict(x1=x1, x2=x2, y1=y1, y2=y2, w=w, h=h)}
+        return {self.name: dict(x1=x1, x2=x2, y1=y1, y2=y2, w=w, h=h)}
 
     def parse_add_params(self, ret):
-        info = ret['crop.Crop']
+        info = ret[self.name]
         x1 = info.get('x1', 0)
         x2 = info.get('x2', 0)
         y1 = info.get('y1', 0)
@@ -225,8 +229,9 @@ class Crop:
 
         if 'image' in ret and ret['image'] is not None:
             # irreversible restore
+            pad = Pad()
             image = ret['image']
-            image = Pad().apply_image(image, {'crop.Pad': dict(t=y1, d=h - y2, l=x1, r=w - x2)})
+            image = pad.apply_image(image, {pad.name: dict(t=y1, d=h - y2, l=x1, r=w - x2)})
             ret['image'] = image
 
         if 'bboxes' in ret and ret['bboxes'] is not None:

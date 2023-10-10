@@ -20,6 +20,7 @@ class Proportion:
     See Also `torchvision.transforms.Resize` or `albumentations.Resize`"""
 
     def __init__(self, interpolation=0, choice_edge=SHORTEST, max_ratio=None):
+        self.name = __name__.split('.')[-1] + '.' + self.__class__.__name__
         self.interpolation = interpolation_mode[interpolation]
         self.choice_edge = choice_edge
         self.max_ratio = max_ratio
@@ -43,10 +44,10 @@ class Proportion:
 
     def get_add_params(self, dst, w, h):
         p = self.get_params(dst, w, h)
-        return {'scale.Proportion': dict(p=p)}
+        return {self.name: dict(p=p)}
 
     def parse_add_params(self, ret):
-        return ret['scale.Proportion']['p']
+        return ret[self.name]['p']
 
     def __call__(self, image, dst, bboxes=None, **kwargs):
         h, w, c = image.shape
@@ -90,6 +91,7 @@ class Rectangle:
     See Also `torchvision.transforms.Resize` or `albumentations.Resize`"""
 
     def __init__(self, interpolation=0):
+        self.name = __name__.split('.')[-1] + '.' + self.__class__.__name__
         self.interpolation = interpolation_mode[interpolation]
 
     def get_params(self, dst, w, h):
@@ -97,10 +99,10 @@ class Rectangle:
 
     def get_add_params(self, dst, w, h):
         pw, ph = self.get_params(dst, w, h)
-        return {'scale.Rectangle': dict(pw=pw, ph=ph)}
+        return {self.name: dict(pw=pw, ph=ph)}
 
     def parse_add_params(self, ret):
-        info = ret['scale.Proportion']
+        info = ret[self.name]
         return info['pw'], info['ph']
 
     def __call__(self, image, dst, bboxes=None, **kwargs):
@@ -191,15 +193,16 @@ class Jitter:
             interpolation:
             **pad_kwargs:
         """
+        self.name = __name__.split('.')[-1] + '.' + self.__class__.__name__
         self.size_range = size_range
         self.resize = Proportion(choice_edge=2, interpolation=interpolation)
         self.crop = crop.Random(is_pad=True, pad_type=2, **pad_kwargs)
 
     def get_add_params(self, hidden_dst):
-        return {'scale.Jitter': dict(dst=hidden_dst)}
+        return {self.name: dict(dst=hidden_dst)}
 
     def parse_add_params(self, ret):
-        return ret['scale.Jitter']['dst']
+        return ret[self.name]['dst']
 
     def get_params(self, dst):
         size_range = self.size_range if self.size_range else (int(dst * 1.14), int(dst * 1.71))

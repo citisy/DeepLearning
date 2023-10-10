@@ -108,6 +108,7 @@ class Normalize:
     """
 
     def __init__(self, mean=None, std=None):
+        self.name = __name__.split('.')[-1] + '.' + self.__class__.__name__
         self.mean = mean
         self.std = std
 
@@ -119,18 +120,17 @@ class Normalize:
 
     def get_add_params(self, image):
         mean, std = self.get_params(image)
-        return {'pixel.Normalize': dict(mean=mean, std=std)}
+        return {self.name: dict(mean=mean, std=std)}
 
     def parse_add_params(self, ret):
-        info = ret['pixel.Normalize']
+        info = ret[self.name]
         return info['mean'], info['std']
 
     def __call__(self, image, **kwargs):
         add_params = self.get_add_params(image)
-        image = self.apply_image(image, add_params)
 
         return {
-            'image': image,
+            'image': self.apply_image(image, add_params),
             **add_params
         }
 
@@ -378,6 +378,7 @@ class GaussianBlur:
     """see also `torchvision.transforms.GaussianBlur` or `albumentations.GaussianBlur`"""
 
     def __init__(self, ksize=None, sigma=(.5, .5)):
+        self.name = __name__.split('.')[-1] + '.' + self.__class__.__name__
         self.ksize = ksize
         self.sigma = sigma
 
@@ -391,10 +392,10 @@ class GaussianBlur:
 
     def get_add_params(self, w, h):
         ksize = self.get_params(w, h)
-        return {'pixel.GaussianBlur': dict(ksize=ksize)}
+        return {self.name: dict(ksize=ksize)}
 
     def parse_add_params(self, ret):
-        info = ret['pixel.GaussianBlur']
+        info = ret[self.name]
         return info['ksize']
 
     def __call__(self, image, **kwargs):
@@ -415,6 +416,7 @@ class MotionBlur:
     """see also `albumentations.MotionBlur`"""
 
     def __init__(self, degree=12, angle=90):
+        self.name = __name__.split('.')[-1] + '.' + self.__class__.__name__
         self.degree = degree
         self.angle = angle
 
@@ -423,14 +425,14 @@ class MotionBlur:
 
     def get_add_params(self):
         degree, angle = self.get_params()
-        return {'pixel.MotionBlur': dict(
+        return {self.name: dict(
             degree=degree,
             angle=angle
         )}
 
     def parse_add_params(self, ret):
-        info = ret['pixel.MotionBlur']
-        return info['ksize']
+        info = ret[self.name]
+        return info['degree'], info['angle']
 
     def __call__(self, image, degree=None, angle=None, **kwargs):
         add_params = self.get_add_params()
@@ -466,6 +468,7 @@ class RandomMotionBlur(MotionBlur):
 
 class Erase:
     def __init__(self, scale=0.1, ratio=1., fill=None, max_iter=10):
+        self.name = __name__.split('.')[-1] + '.' + self.__class__.__name__
         self.scale = scale
         self.ratio = ratio
         self.fill = fill if fill is not None else np.random.randint(100, 125, size=3)
@@ -478,13 +481,13 @@ class Erase:
 
     def get_add_params(self):
         scales, ratios = self.get_params()
-        return {'pixel.Erase': dict(
+        return {self.name: dict(
             scales=scales,
             ratios=ratios
         )}
 
     def parse_add_params(self, ret):
-        info = ret['pixel.Erase']
+        info = ret[self.name]
         return info['scales'], info['ratios']
 
     def __call__(self, image, **kwargs):
