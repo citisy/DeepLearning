@@ -41,7 +41,8 @@ class Proportion:
             p = max(min(p, 1 + self.max_ratio), 1 / (1 + self.max_ratio))
         return p
 
-    def get_add_params(self, p):
+    def get_add_params(self, dst, w, h):
+        p = self.get_params(dst, w, h)
         return {'scale.Proportion': dict(p=p)}
 
     def parse_add_params(self, ret):
@@ -49,14 +50,11 @@ class Proportion:
 
     def __call__(self, image, dst, bboxes=None, **kwargs):
         h, w, c = image.shape
-        p = self.get_params(dst, w, h)
-        add_params = self.get_add_params(p)
-        image = self.apply_image(image, add_params)
-        bboxes = self.apply_bboxes(bboxes, add_params)
+        add_params = self.get_add_params(dst, w, h)
 
         return {
-            'image': image,
-            'bboxes': bboxes,
+            'image': self.apply_image(image, add_params),
+            'bboxes': self.apply_bboxes(image, add_params),
             **add_params
         }
 
@@ -88,7 +86,7 @@ class Proportion:
 
 
 class Rectangle:
-    """scale to special dst * dst
+    """scale h * w to dst * dst
     See Also `torchvision.transforms.Resize` or `albumentations.Resize`"""
 
     def __init__(self, interpolation=0):
@@ -97,38 +95,62 @@ class Rectangle:
     def get_params(self, dst, w, h):
         return dst / w, dst / h
 
+    def get_add_params(self, dst, w, h):
+        pw, ph = self.get_params(dst, w, h)
+        return {'scale.Rectangle': dict(pw=pw, ph=ph)}
+
+    def parse_add_params(self, ret):
+        info = ret['scale.Proportion']
+        return info['pw'], info['ph']
+
     def __call__(self, image, dst, bboxes=None, **kwargs):
         h, w, c = image.shape
-        pw, ph = self.get_params(dst, w, h)
-        image = self.apply_image(image, dst)
-        bboxes = self.apply_bboxes(image, pw, ph)
+        add_params = self.get_add_params(dst, w, h)
 
         return {
-            'image': image,
-            'bboxes': bboxes,
-            'scale.Rectangle': dict(pw=pw, ph=ph)
+            'image': self.apply_image(image, add_params),
+            'bboxes': self.apply_bboxes(image, add_params),
+            **add_params
         }
 
-    def apply_image(self, image, dst):
-        return cv2.resize(image, (dst, dst), interpolation=self.interpolation)
+    def apply_image(self, image, ret):
+        pw, ph = self.parse_add_params(ret)
+        return cv2.resize(image, None, fx=pw, fy=ph, interpolation=self.interpolation)
 
-    def apply_bboxes(self, bboxes, pw, ph):
+    def apply_bboxes(self, bboxes, ret):
         if bboxes is not None:
+            pw, ph = self.parse_add_params(ret)
             bboxes = np.array(bboxes, dtype=float) * np.array([pw, ph, pw, ph])
             bboxes = bboxes.astype(int)
 
         return bboxes
 
-    @staticmethod
-    def restore(ret):
-        params = ret.get('scale.Rectangle')
-        bboxes = ret['bboxes']
-        pw, ph = params['pw'], params['ph']
-        bboxes = np.array(bboxes, dtype=float) / np.array([pw, ph, pw, ph])
-        bboxes = bboxes.astype(int)
-        ret['bboxes'] = bboxes
+    def restore(self, ret):
+        pw, ph = self.parse_add_params(ret)
+        if 'image' in ret and ret['image'] is not None:
+            image = ret['image']
+            image = cv2.resize(image, None, fx=1 / pw, fy=1 / ph, interpolation=self.interpolation)
+            ret['image'] = image
+
+        if 'bboxes' in ret and ret['bboxes'] is not None:
+            bboxes = ret['bboxes']
+            bboxes = np.array(bboxes, dtype=float) / np.array([pw, ph, pw, ph])
+            bboxes = bboxes.astype(int)
+            ret['bboxes'] = bboxes
 
         return ret
+
+
+class UnrestrictedRectangle(Rectangle):
+    """scale h * w to dst_h * dst_w
+    See Also `torchvision.transforms.Resize` or `albumentations.Resize`"""
+
+    def get_params(self, dst_w, dst_h, w, h):
+        return dst_w / w, dst_h / h
+
+    def get_add_params(self, dst_w, dst_h, w, h):
+        pw, ph = self.get_params(dst_w, dst_h, w, h)
+        return {'scale.UnrestrictedRectangle': dict(pw=pw, ph=ph)}
 
 
 class LetterBox:
