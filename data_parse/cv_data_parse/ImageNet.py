@@ -104,7 +104,7 @@ class Loader(DataLoader):
                 image_path = os.path.abspath(img_fp)
                 yield image_path, _class
 
-        return self.gen_data(gen_func, **kwargs)
+        return self.gen_data(gen_func(), **kwargs)
 
     def load_val(self, **kwargs):
         with open(f'{self.data_dir}/ILSVRC2012_devkit_t12/data/ILSVRC2012_validation_ground_truth.txt', 'r') as f:
@@ -115,7 +115,7 @@ class Loader(DataLoader):
                 image_path = os.path.abspath(f'{self.data_dir}/ILSVRC2012_img_val/ILSVRC2012_val_{i + 1:08d}.{self.image_suffix}')
                 yield image_path, int(_class) - 1
 
-        return self.gen_data(gen_func, **kwargs)
+        return self.gen_data(gen_func(), **kwargs)
 
     def get_ret(self, obj, image_type=DataRegister.PATH, **kwargs) -> dict:
         image_path, _class = obj

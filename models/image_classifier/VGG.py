@@ -41,9 +41,8 @@ class Model(BaseImgClsModel):
 
 
 class Backbone(nn.Sequential):
-    def __init__(self, backbone_config=VGG11_config, **conv_config):
+    def __init__(self, in_ch=3, backbone_config=VGG11_config, **conv_config):
         layers = []
-        in_ch, out_ch = 3, 3
 
         for n_conv, out_ch in backbone_config:
             layers.append(VGGBlock(in_ch, out_ch, n_conv, **conv_config))
@@ -61,5 +60,5 @@ class VGGBlock(nn.Sequential):
             layers.append(Conv(in_ch, out_ch, 3, **conv_config))
             in_ch = out_ch
 
-        self.pool = nn.MaxPool2d(2)
+        layers.append(nn.MaxPool2d(2))
         super().__init__(*layers)
