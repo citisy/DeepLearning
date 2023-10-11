@@ -55,7 +55,7 @@ class Proportion:
 
         return {
             'image': self.apply_image(image, add_params),
-            'bboxes': self.apply_bboxes(image, add_params),
+            'bboxes': self.apply_bboxes(bboxes, add_params),
             **add_params
         }
 
@@ -86,19 +86,18 @@ class Proportion:
         return ret
 
 
-class Rectangle:
-    """scale h * w to dst * dst
-    See Also `torchvision.transforms.Resize` or `albumentations.Resize`"""
+class UnrestrictedRectangle:
+    """scale h * w to dst_h * dst_w"""
 
     def __init__(self, interpolation=0):
         self.name = __name__.split('.')[-1] + '.' + self.__class__.__name__
         self.interpolation = interpolation_mode[interpolation]
 
-    def get_params(self, dst, w, h):
-        return dst / w, dst / h
+    def get_params(self, dst_w, dst_h, w, h):
+        return dst_w / w, dst_h / h
 
-    def get_add_params(self, dst, w, h):
-        pw, ph = self.get_params(dst, w, h)
+    def get_add_params(self, dst_w, dst_h, w, h):
+        pw, ph = self.get_params(dst_w, dst_h, w, h)
         return {self.name: dict(pw=pw, ph=ph)}
 
     def parse_add_params(self, ret):
@@ -107,11 +106,12 @@ class Rectangle:
 
     def __call__(self, image, dst, bboxes=None, **kwargs):
         h, w, c = image.shape
-        add_params = self.get_add_params(dst, w, h)
+        dst_w, dst_h = dst
+        add_params = self.get_add_params(dst_w, dst_h, w, h)
 
         return {
             'image': self.apply_image(image, add_params),
-            'bboxes': self.apply_bboxes(image, add_params),
+            'bboxes': self.apply_bboxes(bboxes, add_params),
             **add_params
         }
 
@@ -143,16 +143,12 @@ class Rectangle:
         return ret
 
 
-class UnrestrictedRectangle(Rectangle):
-    """scale h * w to dst_h * dst_w
+class Rectangle(UnrestrictedRectangle):
+    """scale h * w to dst * dst
     See Also `torchvision.transforms.Resize` or `albumentations.Resize`"""
 
-    def get_params(self, dst_w, dst_h, w, h):
-        return dst_w / w, dst_h / h
-
-    def get_add_params(self, dst_w, dst_h, w, h):
-        pw, ph = self.get_params(dst_w, dst_h, w, h)
-        return {'scale.UnrestrictedRectangle': dict(pw=pw, ph=ph)}
+    def __call__(self, image, dst, bboxes=None, **kwargs):
+        super().__call__(image, (dst, dst), bboxes=bboxes, **kwargs)
 
 
 class LetterBox:

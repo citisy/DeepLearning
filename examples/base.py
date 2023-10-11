@@ -113,7 +113,7 @@ class Process:
         model_params = model_params or self.model.parameters()
         self.optimizer = optimizer or callable_optimizer(model_params)
         self.callable_optimizer = callable_optimizer
-        self.stopper = EarlyStopping(patience=10, min_epoch=10, stdout_method=self.logger.info)
+        self.stopper = EarlyStopping(patience=10, min_epoch=10, ignore_min_score=0.1, stdout_method=self.logger.info)
 
         self.input_size = input_size or self.model.input_size
         self.out_features = out_features
@@ -269,11 +269,15 @@ class Process:
 
     def on_train_epoch_end(self, epoch, save_period=None, val_dataloader=None,
                            losses=None, epoch_start_time=None, **metric_kwargs):
+        end_flag = False
         self.log_info = {'epoch': epoch}
 
         if losses is not None:
             for k, v in losses.items():
                 self.log_info[f'loss/{k}'] = v
+                if np.isnan(v) or np.isinf(v):
+                    end_flag = True
+                    self.logger.info(f'Train will be stop soon, got {v} value from {k}')
 
         if epoch_start_time is not None:
             self.log_info['time_consume'] = (time.time() - epoch_start_time) / 60
@@ -287,8 +291,6 @@ class Process:
 
         self.save(f'{self.model_dir}/{self.dataset_version}/last.pth', save_type=WEIGHT, only_model=False, **ckpt)
 
-        end_flag = False
-
         if save_period and epoch % save_period == save_period - 1:
             result = self.metric(val_dataloader, cur_epoch=epoch, **metric_kwargs)
             score = result['score']
@@ -298,7 +300,7 @@ class Process:
             if score > self.stopper.best_score:
                 self.save(f'{self.model_dir}/{self.dataset_version}/best.pth', save_type=WEIGHT, only_model=False, **ckpt)
 
-            end_flag = self.stopper(epoch=epoch, score=score)
+            end_flag = end_flag or self.stopper(epoch=epoch, score=score)
 
         self.wandb.log(self.log_info)
         return end_flag

@@ -50,6 +50,17 @@ class Gray2BGR:
         return image
 
 
+class BGR2Gray:
+    def __call__(self, image, **kwargs):
+        return dict(
+            image=self.apply_image(image)
+        )
+
+    def apply_image(self, image, *args):
+        image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)[:, :, None]
+        return image
+
+
 class AddXY:
     def __init__(self, axis=-1):
         # y = -cot(x)

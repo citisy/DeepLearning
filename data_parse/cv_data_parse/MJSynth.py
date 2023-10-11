@@ -31,6 +31,8 @@ class Loader(DataLoader):
     """
 
     _dir = 'mnt/ramdisk/max/90kDICT32px'
+    char_list = [chr(i) for i in list(range(48, 58)) + list(range(65, 91)) + list(range(97, 123))]    # 0-9 + A-Z + a-z
+    lower_char_list = [chr(i) for i in list(range(48, 58)) + list(range(97, 123))]    # 0-9 + a-z
 
     def _call(self, set_type=DataRegister.TRAIN, **gen_kwargs):
         if set_type == DataRegister.MIX:
@@ -49,7 +51,7 @@ class Loader(DataLoader):
         transcription = fp.stem.split('_')[1]
 
         if return_lower:
-            transcription.lower()
+            transcription = transcription.lower()
 
         return dict(
             _id=fp.name,

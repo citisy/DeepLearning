@@ -145,12 +145,14 @@ def bilinear_kernel(in_channels, out_channels, kernel_size):
 
 
 class EarlyStopping:
-    def __init__(self, thres=0.005, patience=float('inf'), min_epoch=0, verbose=True, stdout_method=print):
+    def __init__(self, thres=0.005, patience=float('inf'), min_epoch=0, ignore_min_score=-1,
+                 verbose=True, stdout_method=print):
         self.thres = thres
         self.best_score = -1
         self.best_epoch = 0
         self.acc_epoch = 0
         self.min_epoch = min_epoch
+        self.ignore_min_score = ignore_min_score
         self.last_epoch = self.min_epoch
         self.patience = patience
         self.verbose = verbose
@@ -158,6 +160,9 @@ class EarlyStopping:
 
     def __call__(self, epoch, score):
         if epoch < self.min_epoch:
+            return False
+
+        if score < self.ignore_min_score:
             return False
 
         if score - self.best_score > self.thres:
