@@ -3,6 +3,7 @@ from torch import nn
 import torch.nn.functional as F
 from einops.layers.torch import Rearrange
 from ..layers import Conv, Linear, ConvInModule, OutModule
+from utils import nlp_utils
 from utils.torch_utils import initialize_layers
 
 
@@ -12,7 +13,7 @@ class Model(nn.Module):
             in_ch=3, input_size=None, out_features=None,
             in_module=None, backbone=None, neck=None, head=None,
             neck_in_features=64, neck_out_features=256,
-            char2id={}, max_len=40, pad=0
+            char2id={}, pad=0
     ):
         super().__init__()
         self.in_channels = in_ch
@@ -20,7 +21,6 @@ class Model(nn.Module):
         self.out_features = out_features + 1  # 1 gives the blank or unknown char
         self.char2id = char2id
         self.id2char = {v: k for k, v in char2id.items()}
-        self.max_len = max_len
         self.pad = pad
 
         self.input = in_module if in_module is not None else nn.Identity()
@@ -35,8 +35,6 @@ class Model(nn.Module):
         lens = []
         for text in context:
             label = [self.char2id.get(char, 0) for char in text]
-
-            label = label[:self.max_len]
             lens.append(len(label))
             labels.append(torch.tensor(label))
 
@@ -47,6 +45,7 @@ class Model(nn.Module):
         x = self.backbone(x)
         x = self.neck(x)
         x = self.head(x)
+        x = F.log_softmax(x, dim=2)
 
         if self.training:
             loss = self.loss(pred_label=x, true_label=true_label)
@@ -58,8 +57,6 @@ class Model(nn.Module):
         device = pred_label.device
         # (b, ) in {w}
         pred_label_lens = torch.full(size=(pred_label.shape[1],), fill_value=pred_label.shape[0], dtype=torch.long, device=device)
-        # (w, b, o)
-        pred_label = F.log_softmax(pred_label, dim=2)
         # (\sum l, ), (b, ) \in [0, L]
         true_label, true_label_lens = self.embedding(true_label)
         true_label = torch.cat(true_label).to(device).long()
@@ -68,17 +65,25 @@ class Model(nn.Module):
         return self.criterion(pred_label, true_label, pred_label_lens, true_label_lens)
 
     def post_process(self, x):
-        preds = x.max(2)[1]  # (w, b)
-        preds = preds.permute(1, 0)
+        x = x.permute(1, 0, 2)
+        preds, probs = nlp_utils.Decoder.beam_search(x, beam_size=10)
         words = []
-        for pred in preds:
-            word = []
-            for p in pred:
-                p = int(p)
-                if p == 0:
-                    continue
-                word.append(self.id2char[p])
-            words.append(''.join(word))
+        for b in range(x.shape[0]):
+            seq = {}
+            for pred, prob in zip(preds[b], probs[b]):
+                # note that, filter the duplicate chars can raise the accuracy obviously,
+                # but it would filter the right result while there are duplicate chars in the true labels
+                diff = torch.diff(pred)
+                diff = torch.cat([torch.tensor([-1]).to(diff), diff])
+                pred = pred[diff != 0]
+                pred = pred[pred != 0]
+                pred = tuple(pred)
+                seq[pred] = torch.log(torch.exp(prob) + (torch.exp(seq[pred]) if pred in seq else 0))
+
+            chars = max(seq.items(), key=lambda x: x[1])[0]
+            chars = [self.id2char[int(c)] for c in chars]
+            words.append(''.join(chars))
+
         return {'pred': words}
 
 

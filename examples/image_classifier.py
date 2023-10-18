@@ -15,8 +15,6 @@ from pathlib import Path
 
 
 class ClsProcess(Process):
-    dataset = BaseDataset
-
     def fit(self, max_epoch=100, batch_size=16, save_period=None, metric_kwargs=dict(), **dataloader_kwargs):
         train_dataloader, val_dataloader, metric_kwargs = self.on_train_start(batch_size, metric_kwargs, **dataloader_kwargs)
         # ema = EMA(self.model, step_start_ema=0)

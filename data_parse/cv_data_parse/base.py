@@ -16,6 +16,8 @@ def get_image(obj: str, image_type):
         image = obj
     elif image_type == DataRegister.ARRAY:
         image = cv2.imread(obj)
+    elif image_type == DataRegister.GRAY_ARRAY:
+        image = cv2.imread(obj, cv2.IMREAD_GRAYSCALE)
     elif image_type == DataRegister.BASE64:
         image = cv2.imread(obj)
         image = converter.DataConvert.image_to_base64(image)

@@ -274,7 +274,6 @@ class OdProcess(Process):
 
 
 class Voc(Process):
-    dataset = OdDataset
     data_dir = 'data/VOC2012'
     train_data_num = None
     val_data_num = None

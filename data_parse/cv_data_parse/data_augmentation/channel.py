@@ -61,6 +61,22 @@ class BGR2Gray:
         return image
 
 
+class Keep3Dims:
+    """input an array which have any(2, 3 or 4) dims, output an array which have 3-dims"""
+    def __call__(self, image, **kwargs):
+        return dict(
+            image=self.apply_image(image)
+        )
+
+    def apply_image(self, image, *args):
+        shape = image.shape
+        if len(shape) == 2:
+            image = image[:, :, None]
+        elif len(shape) == 4:
+            pass
+        return image
+
+
 class AddXY:
     def __init__(self, axis=-1):
         # y = -cot(x)

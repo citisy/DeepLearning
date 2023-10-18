@@ -31,7 +31,6 @@ class IgOptimizer:
 
 
 class IgProcess(Process):
-    dataset = BaseDataset
     total_nums = 0
 
     def model_info(self, **kwargs):

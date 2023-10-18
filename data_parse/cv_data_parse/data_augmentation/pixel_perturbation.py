@@ -17,6 +17,10 @@ class MinMax:
     def apply_image(self, image, *args):
         return image / 255.
 
+    def restore(self, ret):
+        ret['image'] = ret['image'] * 255
+        return ret
+
 
 class GaussNoise:
     """添加高斯噪声
@@ -37,8 +41,7 @@ class GaussNoise:
 
     def apply_image(self, image, *args):
         gauss = np.random.normal(self.mean, self.sigma, image.shape)
-        image = image + gauss
-        image = np.clip(image, a_min=0, a_max=255)
+        image = (image + gauss).clip(min=0, max=255).astype(image.dtype)
 
         return image
 

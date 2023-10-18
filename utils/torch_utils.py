@@ -166,12 +166,14 @@ class EarlyStopping:
             return False
 
         if score - self.best_score > self.thres:
-            self.best_epoch = epoch
-            self.best_score = score
             self.acc_epoch = 0
 
         elif abs(self.best_score - score) <= self.thres:
             self.acc_epoch += epoch - self.last_epoch
+
+        if score > self.best_score:
+            self.best_epoch = epoch
+            self.best_score = score
 
         self.last_epoch = epoch
         stop = self.acc_epoch >= self.patience

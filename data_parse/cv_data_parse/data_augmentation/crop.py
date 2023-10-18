@@ -46,14 +46,12 @@ class Pad:
         self.fill_type = fill_type
         self.fill = fill
 
-    def get_params(self, dst, w, h):
-        if isinstance(dst, int):
-            dst = (dst, dst)
+    def get_params(self, dst_w, dst_h, w, h):
         pad_info = {}
-        if dst[0] > w:
-            pad_info.update(self.get_lr_params(dst[0], w))
-        if dst[1] > h:
-            pad_info.update(self.get_td_params(dst[1], h))
+        if dst_w > w:
+            pad_info.update(self.get_lr_params(dst_w, w))
+        if dst_h > h:
+            pad_info.update(self.get_td_params(dst_h, h))
         return pad_info
 
     def get_lr_params(self, dst, w):
@@ -96,8 +94,8 @@ class Pad:
             d=pad_down
         )
 
-    def get_add_params(self, dst, w, h):
-        return {self.name: self.get_params(dst, w, h)}
+    def get_add_params(self, dst_w, dst_h, w, h):
+        return {self.name: self.get_params(dst_w, dst_h, w, h)}
 
     def parse_add_params(self, ret):
         pad_info = ret[self.name]
@@ -115,8 +113,11 @@ class Pad:
             dst: padding to destination size
 
         """
-        h, w, c = image.shape
-        add_params = self.get_add_params(dst, w, h)
+        if isinstance(dst, int):
+            dst = (dst, dst)
+        dst_w, dst_h = dst
+        h, w = image.shape[:2]
+        add_params = self.get_add_params(dst_w, dst_h, w, h)
         image = self.apply_image(image, add_params)
         bboxes = self.apply_bboxes(bboxes, add_params)
 
@@ -189,7 +190,7 @@ class Crop:
         return x1, x2, y1, y2, w, h
 
     def __call__(self, image, dst_coor, bboxes=None, classes=None, **kwargs):
-        h, w, c = image.shape
+        h, w = image.shape[:2]
         add_params = self.get_add_params(dst_coor, w, h)
         image = self.apply_image(image, add_params)
         bboxes, classes = self.apply_bboxes_classes(bboxes, classes, add_params)
@@ -251,7 +252,7 @@ class PadCrop:
 
     def __call__(self, image, dst_coor, bboxes=None, classes=None, **kwargs):
         x1, x2, y1, y2 = dst_coor
-        h, w, c = image.shape
+        h, w = image.shape[:2]
 
         assert x1 >= 0 and y1 >= 0, ValueError(f'{x1 = } and {y1 = } must not be smaller than 0')
 
@@ -284,12 +285,15 @@ class Random(PadCrop):
 
     def __call__(self, image, dst, **kwargs):
         """(w, h) -> (dst, dst)"""
+        if isinstance(dst, int):
+            dst = (dst, dst)
+        dst_w, dst_h = dst
         h, w, c = image.shape
 
-        w_ = np.random.randint(w - dst) if w > dst else 0
-        h_ = np.random.randint(h - dst) if h > dst else 0
+        w_ = np.random.randint(w - dst_w) if w > dst else 0
+        h_ = np.random.randint(h - dst_h) if h > dst else 0
 
-        return super().__call__(image, (w_, w_ + dst, h_, h_ + dst), **kwargs)
+        return super().__call__(image, (w_, w_ + dst_w, h_, h_ + dst_h), **kwargs)
 
 
 class Corner(PadCrop):
@@ -298,20 +302,23 @@ class Corner(PadCrop):
         super().__init__(is_pad=is_pad, **pad_kwargs)
 
     def __call__(self, image, dst, **kwargs):
+        if isinstance(dst, int):
+            dst = (dst, dst)
+        dst_w, dst_h = dst
         h, w, c = image.shape
 
         if self.pos == (LEFT, TOP):
             w_, h_ = 0, 0
         elif self.pos == (RIGHT, TOP):
-            w_, h_ = 0, max(h - dst, 0)
+            w_, h_ = 0, max(h - dst_h, 0)
         elif self.pos == (LEFT, DOWN):
-            w_, h_ = max(w - dst, 0), 0
+            w_, h_ = max(w - dst_w, 0), 0
         elif self.pos == (RIGHT, DOWN):
-            w_, h_ = max(w - dst, 0), max(h - dst, 0)
+            w_, h_ = max(w - dst_w, 0), max(h - dst_h, 0)
         else:
             raise ValueError(f'dont support {self.pos = }')
 
-        return super().__call__(image, (w_, w_ + dst, h_, h_ + dst), **kwargs)
+        return super().__call__(image, (w_, w_ + dst_w, h_, h_ + dst_h), **kwargs)
 
 
 class FiveCrop:
@@ -358,9 +365,12 @@ class Center(PadCrop):
     """See Also `torchvision.transforms.CenterCrop` or `albumentations.CenterCrop`"""
 
     def __call__(self, image, dst, **kwargs):
-        h, w, c = image.shape
+        if isinstance(dst, int):
+            dst = (dst, dst)
+        dst_w, dst_h = dst
+        h, w = image.shape[:2]
 
-        w_ = max(w - dst, 0) // 2
-        h_ = max(h - dst, 0) // 2
+        w_ = max(w - dst_w, 0) // 2
+        h_ = max(h - dst_h, 0) // 2
 
-        return super().__call__(image, (w_, w_ + dst, h_, h_ + dst), **kwargs)
+        return super().__call__(image, (w_, w_ + dst_w, h_, h_ + dst_h), **kwargs)

@@ -16,5 +16,6 @@ class DataRegister(Enum):
     # image type
     PATH = 1
     ARRAY = 2
+    GRAY_ARRAY = 2.1
     BASE64 = 3
     Zip = 4

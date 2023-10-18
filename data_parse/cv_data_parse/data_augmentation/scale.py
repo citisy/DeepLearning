@@ -12,30 +12,35 @@ interpolation_mode = [
 ]
 
 SHORTEST, LONGEST = 1, 2
-AUTO = 3
+MAX, MIN = 3, 4
+AUTO = 0
 
 
 class Proportion:
-    """proportional scale the choice edge to destination size
+    """choice an edge, count the scale ratio, and then scale the image proportional
     See Also `torchvision.transforms.Resize` or `albumentations.Resize`"""
 
-    def __init__(self, interpolation=0, choice_edge=SHORTEST, max_ratio=None):
+    def __init__(self, interpolation=0, choice_type=MIN, max_ratio=None):
         self.name = __name__.split('.')[-1] + '.' + self.__class__.__name__
         self.interpolation = interpolation_mode[interpolation]
-        self.choice_edge = choice_edge
+        self.choice_type = choice_type
         self.max_ratio = max_ratio
 
-    def get_params(self, dst, w, h):
-        if self.choice_edge == SHORTEST:
-            p = dst / min(w, h)
-        elif self.choice_edge == LONGEST:
-            p = dst / max(w, h)
-        elif self.choice_edge == AUTO:  # choice the min scale factor
-            p1 = abs(dst - w) / w
-            p2 = abs(dst - h) / h
-            p = dst / w if p1 < p2 else dst / h
+    def get_params(self, dst_w, dst_h, w, h):
+        if self.choice_type == MIN:     # choice the most min scale factor
+            p = min(dst_w / w, dst_h / h)
+        elif self.choice_type == MAX:   # choice the most max scale factor
+            p = max(dst_w / w, dst_h / h)
+        elif self.choice_type == SHORTEST:  # choice the shortest edge
+            p = min((w, dst_w / w), (h, dst_h / h), key=lambda x: x[0])[1]
+        elif self.choice_type == LONGEST:   # choice the longest edge
+            p = max((w, dst_w / w), (h, dst_h / h), key=lambda x: x[0])[1]
+        elif self.choice_type == AUTO:  # choice the most min scale factor
+            p1 = abs(dst_w - w) / w
+            p2 = abs(dst_h - h) / h
+            p = dst_w / w if p1 < p2 else dst_h / h
         else:
-            raise ValueError(f'dont support {self.choice_edge = }')
+            raise ValueError(f'dont support {self.choice_type = }')
 
         if self.max_ratio:
             # set in [1 / (1 + self.max_ratio), 1 + self.max_ratio]
@@ -43,14 +48,17 @@ class Proportion:
         return p
 
     def get_add_params(self, dst, w, h):
-        p = self.get_params(dst, w, h)
+        if isinstance(dst, int):
+            dst = (dst, dst)
+        dst_w, dst_h = dst
+        p = self.get_params(dst_w, dst_h, w, h)
         return {self.name: dict(p=p)}
 
     def parse_add_params(self, ret):
         return ret[self.name]['p']
 
     def __call__(self, image, dst, bboxes=None, **kwargs):
-        h, w, c = image.shape
+        h, w = image.shape[:2]
         add_params = self.get_add_params(dst, w, h)
 
         return {
@@ -86,8 +94,9 @@ class Proportion:
         return ret
 
 
-class UnrestrictedRectangle:
-    """scale h * w to dst_h * dst_w"""
+class Rectangle:
+    """scale h * w to dst_h * dst_w
+    See Also `torchvision.transforms.Resize` or `albumentations.Resize`"""
 
     def __init__(self, interpolation=0):
         self.name = __name__.split('.')[-1] + '.' + self.__class__.__name__
@@ -105,6 +114,9 @@ class UnrestrictedRectangle:
         return info['pw'], info['ph']
 
     def __call__(self, image, dst, bboxes=None, **kwargs):
+        if isinstance(dst, int):
+            dst = (dst, dst)
+
         h, w, c = image.shape
         dst_w, dst_h = dst
         add_params = self.get_add_params(dst_w, dst_h, w, h)
@@ -143,35 +155,27 @@ class UnrestrictedRectangle:
         return ret
 
 
-class Rectangle(UnrestrictedRectangle):
-    """scale h * w to dst * dst
-    See Also `torchvision.transforms.Resize` or `albumentations.Resize`"""
-
-    def __call__(self, image, dst, bboxes=None, **kwargs):
-        super().__call__(image, (dst, dst), bboxes=bboxes, **kwargs)
-
-
 class LetterBox:
-    """resize, crop, and pad"""
+    """resize, and pad"""
 
     def __init__(self, interpolation=0, max_ratio=None, **pad_kwargs):
-        self.resize = Proportion(choice_edge=LONGEST, interpolation=interpolation, max_ratio=max_ratio)  # scale to longest edge
-        self.crop = crop.Center(is_pad=True, pad_type=2, **pad_kwargs)
+        self.resize = Proportion(choice_type=MIN, interpolation=interpolation, max_ratio=max_ratio)  # choice the min scale factor
+        self.pad = crop.Pad(**pad_kwargs)
 
     def __call__(self, image, dst, bboxes=None, **kwargs):
         ret = dict(image=image, bboxes=bboxes, dst=dst, **kwargs)
         ret.update(self.resize(**ret))
-        ret.update(self.crop(**ret))
+        ret.update(self.pad(**ret))
 
         return ret
 
     def apply_image(self, image, ret):
         image = self.resize.apply_image(image, ret)
-        image = self.crop.apply_image(image, ret)
+        image = self.pad.apply_image(image, ret)
         return image
 
     def restore(self, ret):
-        ret = self.crop.restore(ret)
+        ret = self.pad.restore(ret)
         ret = self.resize.restore(ret)
 
         return ret
@@ -191,7 +195,7 @@ class Jitter:
         """
         self.name = __name__.split('.')[-1] + '.' + self.__class__.__name__
         self.size_range = size_range
-        self.resize = Proportion(choice_edge=2, interpolation=interpolation)
+        self.resize = Proportion(choice_type=2, interpolation=interpolation)
         self.crop = crop.Random(is_pad=True, pad_type=2, **pad_kwargs)
 
     def get_add_params(self, hidden_dst):

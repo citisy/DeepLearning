@@ -42,7 +42,8 @@ class BaseDataset(Dataset):
     def __getitem__(self, idx):
         if self.complex_augment_func:
             return self.complex_augment_func(idx, self.data, self.process_one)
-        return self.process_one(idx)
+        else:
+            return self.process_one(idx)
 
     def process_one(self, idx):
         ret = copy.deepcopy(self.data[idx])
@@ -66,8 +67,51 @@ class BaseDataset(Dataset):
         return list(batch)
 
 
+class IterDataset(BaseDataset):
+    length = None
+
+    def process_one(self, *args):
+        ret = next(self.data)
+        if isinstance(ret['image'], str):
+            ret['image_path'] = ret['image']
+            ret['image'] = self.loader.load_img(ret['image'])
+
+        ret['ori_image'] = ret['image']
+
+        if self.augment_func:
+            ret = self.augment_func(ret)
+
+        return ret
+
+    def __len__(self):
+        return self.length
+
+
+class MixDataset(Dataset):
+    def __init__(self, obj, **kwargs):
+        self.datasets = []
+        for data, dataset_instance in obj:
+            self.datasets.append(dataset_instance(data, **kwargs))
+
+        self.nums = [len(_) for _ in self.datasets]
+
+    def __getitem__(self, idx):
+        for n, dataset in zip(self.nums, self.datasets):
+            idx -= n
+            if idx < 0:
+                return dataset[idx]
+
+    def __len__(self):
+        return sum(self.nums)
+
+    @staticmethod
+    def collate_fn(batch):
+        return list(batch)
+
+
 class Process:
-    dataset = BaseDataset
+    train_dataset_ins = BaseDataset
+    val_dataset_ins = BaseDataset
     setup_seed()
 
     def __init__(
@@ -231,7 +275,7 @@ class Process:
 
         train_data = self.get_train_data()
 
-        train_dataset = self.dataset(
+        train_dataset = self.train_dataset_ins(
             train_data,
             augment_func=self.data_augment,
             complex_augment_func=self.complex_data_augment if hasattr(self, 'complex_data_augment') else None
@@ -249,7 +293,7 @@ class Process:
 
         if return_val_dataloader:
             val_data = self.get_val_data()
-            val_dataset = self.dataset(val_data, augment_func=self.val_data_augment)
+            val_dataset = self.val_dataset_ins(val_data, augment_func=self.val_data_augment)
 
             val_dataloader = DataLoader(
                 val_dataset,
@@ -310,7 +354,7 @@ class Process:
 
     def on_val_start(self, batch_size, **dataloader_kwargs):
         val_data = self.get_val_data()
-        val_dataset = self.dataset(val_data, augment_func=self.val_data_augment)
+        val_dataset = self.train_dataset_ins(val_data, augment_func=self.val_data_augment)
 
         val_dataloader = DataLoader(
             val_dataset,

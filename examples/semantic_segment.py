@@ -36,8 +36,6 @@ class SegDataset(BaseDataset):
 
 
 class SegProcess(Process):
-    dataset = SegDataset
-
     def fit(self, max_epoch, batch_size, save_period=None, metric_kwargs=dict(), **dataloader_kwargs):
         train_dataloader, val_dataloader, metric_kwargs = self.on_train_start(batch_size, metric_kwargs, **dataloader_kwargs)
 

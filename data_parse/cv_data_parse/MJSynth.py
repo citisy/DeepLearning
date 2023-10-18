@@ -7,7 +7,9 @@ class Loader(DataLoader):
 
     Data structure:
         ./mnt/ramdisk/max/90kDICT32px
-        ├── [i]/[j]/*.jpg           # i <= 4000, j <= 7
+        ├── [i]                     # i <= 4000
+        │   └── [j]                 # j <= 7
+        │       └── *.jpg
         ├── annotation.txt          # 8919273 items
         ├── annotation_train.txt    # 7224612 items
         ├── annotation_test.txt     # 891927 items
@@ -22,12 +24,12 @@ class Loader(DataLoader):
             from data_parse.cv_data_parse.MJSynth import DataRegister, CelebALoader as Loader
             from data_parse.cv_data_parse.base import DataVisualizer
 
-            loader = Loader('data/CelebA')
+            loader = Loader('data/MJSynth')
             data = loader(set_type=DataRegister.FULL, generator=True, image_type=DataRegister.ARRAY)
             r = next(data[0])
 
             # visual
-            DataVisualizer('data/CelebAData/visuals', verbose=False, pbar=False)(data[0])
+            DataVisualizer('data/MJSynth/visuals', verbose=False, pbar=False)(data[0])
     """
 
     _dir = 'mnt/ramdisk/max/90kDICT32px'

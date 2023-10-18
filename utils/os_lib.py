@@ -281,7 +281,7 @@ class Loader:
 
     def load_txt(self, path) -> iter:
         with open(path, 'r', encoding='utf8') as f:
-            obj = f.read().strip().split('\n')
+            obj = f.read().rstrip().split('\n')
 
         self.stdout(path)
         return obj

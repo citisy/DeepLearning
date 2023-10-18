@@ -2,6 +2,8 @@ from typing import List
 import re
 from collections import defaultdict
 from .excluded import convert_dict
+import numpy as np
+import torch
 
 
 class Cutter:
@@ -384,3 +386,53 @@ class Converter:
         for a, b in d.items():
             s = s.replace(a, b)
         return s
+
+
+class Decoder:
+    @staticmethod
+    def enum_search(x):
+        pass
+
+    @staticmethod
+    def greedy_search(x):
+        """
+
+        Args:
+            x (torch.Tensor): (batch_size, seq_length, vocab_size) after log softmax
+
+        Returns:
+            preds: (batch_size, beam_size, seq_length)
+            probs: (batch_size, beam_size)
+
+        """
+        probs, preds = x.max(2)
+        return preds, probs
+
+    @staticmethod
+    def beam_search(x, beam_size=4):
+        """
+
+        Args:
+            x (torch.Tensor): (batch_size, seq_length, vocab_size) after log softmax
+            beam_size:
+
+        Returns:
+            preds: (batch_size, beam_size, seq_length)
+            probs: (batch_size, beam_size)
+
+        """
+        batch, seq_len, vocab_size = x.shape
+        probs, pred = x[:, 0, :].topk(beam_size, sorted=True)
+        preds = pred.unsqueeze(-1)
+        for i in range(1, seq_len):
+            probs = probs.unsqueeze(-1) + x[:, i, :].unsqueeze(1).repeat(1, beam_size, 1)
+            probs, pred = probs.view(batch, -1).topk(beam_size, sorted=True)
+            idx = torch.div(pred, vocab_size, rounding_mode='trunc')
+            pred = pred % vocab_size
+            preds = torch.gather(preds, 1, idx.unsqueeze(-1).repeat(1, 1, i))
+            preds = torch.cat([preds, pred.unsqueeze(-1)], dim=-1)
+        return preds, probs
+
+    @staticmethod
+    def prefix_beam_search(x):
+        pass

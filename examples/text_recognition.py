@@ -1,111 +1,18 @@
-from .base import Process, BaseDataset, WEIGHT
-import random
-import itertools
+from .base import Process, MixDataset, BaseDataset, IterDataset
 import torch
 from torch import nn, optim
-from torch.utils.data import Dataset, DataLoader
 from tqdm import tqdm
-from utils.torch_utils import EarlyStopping, ModuleInfo, Export
-from utils import os_lib, configs
 from data_parse.cv_data_parse.base import DataRegister, DataVisualizer
 from data_parse.cv_data_parse.data_augmentation import crop, scale, geometry, pixel_perturbation, RandomApply, Apply, channel, RandomChoice
 from pathlib import Path
-import numpy as np
-from datetime import datetime
 import time
 from metrics import text_generation
+from utils import os_lib
 
 
-class MJSynth(Process):
-    data_dir = 'data/MJSynth'
-
-    train_data_num = int(5e5)
-    val_data_num = int(5e4)
-
-    def get_train_data(self, *args, **kwargs):
-        from data_parse.cv_data_parse.MJSynth import Loader
-
-        loader = Loader(self.data_dir)
-        iter_data = loader.load(
-            set_type=DataRegister.TRAIN, image_type=DataRegister.ARRAY, generator=False,
-            return_lower=True,
-            max_size=self.train_data_num,
-        )[0]
-
-        self.char_dict = {c: i + 1 for i, c in enumerate(loader.lower_char_list)}
-
-        return iter_data
-
-    def get_val_data(self, *args, **kwargs):
-        from data_parse.cv_data_parse.MJSynth import Loader
-
-        loader = Loader(self.data_dir)
-        iter_data = loader.load(
-            set_type=DataRegister.VAL, image_type=DataRegister.ARRAY, generator=False,
-            return_lower=True,
-            max_size=self.val_data_num,
-        )[0]
-
-        return iter_data
-
-    aug = Apply([
-        scale.UnrestrictedRectangle(),
-        channel.BGR2Gray(),
-        pixel_perturbation.MinMax(),
-        channel.HWC2CHW()
-    ])
-
-    def data_augment(self, ret) -> dict:
-        ret.update(dst=self.input_size)
-        ret.update(self.aug(**ret))
-
-        return ret
-
-    def val_data_augment(self, ret) -> dict:
-        ret.update(dst=self.input_size)
-        ret.update(self.aug(**ret))
-
-        return ret
-
-
-class CRNN(Process):
-    def __init__(self,
-                 model_version='CRNN',
-                 input_size=(100, 32),
-                 in_ch=1,
-                 max_len=40,
-                 out_features=36,  # 26 for a-z + 10 for 0-9
-                 **kwargs
-                 ):
-        from models.text_recognition.crnn import Model
-
-        model = Model(
-            in_ch=in_ch,
-            input_size=input_size,
-            max_len=max_len,
-            out_features=out_features
-        )
-
-        super().__init__(
-            model=model,
-            optimizer=optim.Adam(model.parameters(), lr=0.001),
-            model_version=model_version,
-            **kwargs
-        )
-
+class TrProcess(Process):
     def fit(self, max_epoch=100, batch_size=16, save_period=None, metric_kwargs=dict(), **dataloader_kwargs):
         train_dataloader, val_dataloader, metric_kwargs = self.on_train_start(batch_size, metric_kwargs, **dataloader_kwargs)
-
-        self.model.char2id = self.char_dict
-        self.model.id2char = {v: k for k, v in self.char_dict.items()}
-
-        # scheduler = optim.lr_scheduler.LambdaLR(self.optimizer, lr_lambda=lambda x: self.lf(x, max_epoch, self.lrf))
-        # scheduler.last_epoch = -1
-
-        # scaler = torch.cuda.amp.GradScaler(enabled=True)
-        #
-        # accumulate = 64 // batch_size
-        # j = 0
 
         for i in range(self.start_epoch, max_epoch):
             self.model.train()
@@ -126,7 +33,6 @@ class CRNN(Process):
                 loss = output['loss']
                 loss.backward()
                 self.optimizer.step()
-                # ema.step(self.model)
 
                 total_loss += loss.item()
                 total_batch += len(rets)
@@ -150,7 +56,6 @@ class CRNN(Process):
             if self.on_train_epoch_end(i, save_period, val_dataloader,
                                        losses=losses,
                                        epoch_start_time=epoch_start_time,
-                                       # model=ema.ema_model,
                                        **metric_kwargs):
                 break
 
@@ -208,6 +113,199 @@ class CRNN(Process):
         return vis_num
 
 
+class DataProcess(Process):
+    train_data_num = int(5e5)
+    val_data_num = int(5e4)
+
+    aug = Apply([
+        scale.LetterBox(pad_type=(crop.RIGHT, crop.CENTER)),
+        channel.Keep3Dims(),
+        # pixel_perturbation.MinMax(),
+        # pixel_perturbation.Normalize(0.5, 0.5),
+        pixel_perturbation.Normalize(127.5, 1),
+        channel.HWC2CHW()
+    ])
+
+    def data_augment(self, ret) -> dict:
+        ret.update(
+            RandomApply([
+                pixel_perturbation.GaussNoise(),
+            ], probs=[0.2])(**ret)
+        )
+        ret.update(dst=self.input_size)
+        ret.update(self.aug(**ret))
+
+        return ret
+
+    def val_data_augment(self, ret) -> dict:
+        ret.update(dst=self.input_size)
+        ret.update(self.aug(**ret))
+
+        return ret
+
+    def save_char_dict(self, char_dict):
+        saver = os_lib.Saver(stdout_method=self.logger.info)
+        saver.save_json(char_dict, f'{self.model_dir}/{self.dataset_version}/char_dict.json')
+
+    def load_char_dict(self):
+        loader = os_lib.Loader(stdout_method=self.logger.info)
+        return loader.load_json(f'{self.model_dir}/{self.dataset_version}/char_dict.json')
+
+
+class MJSynth(DataProcess):
+    data_dir = 'data/MJSynth'
+
+    def get_train_data(self, *args, **kwargs):
+        from data_parse.cv_data_parse.MJSynth import Loader
+
+        loader = Loader(self.data_dir)
+        iter_data = loader.load(
+            set_type=DataRegister.TRAIN, image_type=DataRegister.GRAY_ARRAY, generator=False,
+            return_lower=True,
+            max_size=self.train_data_num,
+        )[0]
+
+        char_dict = {c: i + 1 for i, c in enumerate(loader.lower_char_list)}
+        self.model.char2id = char_dict
+        self.model.id2char = {v: k for k, v in char_dict.items()}
+        self.save_char_dict(char_dict)
+
+        return iter_data
+
+    def get_val_data(self, *args, **kwargs):
+        from data_parse.cv_data_parse.MJSynth import Loader
+
+        loader = Loader(self.data_dir)
+        iter_data = loader.load(
+            set_type=DataRegister.VAL, image_type=DataRegister.GRAY_ARRAY, generator=False,
+            return_lower=True,
+            max_size=self.val_data_num,
+        )[0]
+
+        char_dict = self.load_char_dict()
+        self.model.char2id = char_dict
+        self.model.id2char = {v: k for k, v in char_dict.items()}
+
+        return iter_data
+
+
+class SynthText(DataProcess):
+    train_dataset_ins = IterDataset
+    train_dataset_ins.length = DataProcess.train_data_num
+    data_dir = 'data/SynthText'
+
+    def get_train_data(self, *args, **kwargs):
+        from data_parse.cv_data_parse.SynthOcrText import Loader
+
+        loader = Loader(self.data_dir, verbose=False)
+        iter_data = loader.load(
+            image_type=DataRegister.GRAY_ARRAY, generator=True,
+            max_size=self.train_data_num,
+        )[0]
+
+        char_list = loader.get_char_list()
+        char_list.remove(' ')
+        char_dict = {c: i + 1 for i, c in enumerate(char_list)}
+        self.model.char2id = char_dict
+        self.model.id2char = {v: k for k, v in char_dict.items()}
+        self.save_char_dict(char_dict)
+
+        return iter_data
+
+    def get_val_data(self, *args, **kwargs):
+        from data_parse.cv_data_parse.SynthOcrText import Loader
+
+        loader = Loader(self.data_dir)
+        iter_data = loader.load(
+            image_type=DataRegister.GRAY_ARRAY, generator=False,
+            max_size=self.val_data_num,
+        )[0]
+
+        char_dict = self.load_char_dict()
+        self.model.char2id = char_dict
+        self.model.id2char = {v: k for k, v in char_dict.items()}
+
+        return iter_data
+
+
+class MixMJSynthSynthText(DataProcess):
+    train_dataset_ins = MixDataset
+    data_dir1 = 'data/MJSynth'
+    data_dir2 = 'data/SynthText'
+    dataset_ratio = [0.5, 0.5]
+
+    def get_train_data(self, *args, **kwargs):
+        from data_parse.cv_data_parse.MJSynth import Loader
+
+        loader = Loader(self.data_dir1)
+        num = int(self.train_data_num * self.dataset_ratio[0])
+        iter_data1 = loader.load(
+            set_type=DataRegister.TRAIN, image_type=DataRegister.GRAY_ARRAY, generator=False,
+            max_size=num,
+        )[0]
+        char_set = set(loader.char_list)
+
+        from data_parse.cv_data_parse.SynthOcrText import Loader
+
+        loader = Loader(self.data_dir2)
+        num = int(self.train_data_num * self.dataset_ratio[1])
+        iter_data2 = loader.load(
+            image_type=DataRegister.GRAY_ARRAY, generator=True,
+            max_size=num,
+        )[0]
+        IterDataset.length = num
+        char_list = loader.get_char_list()
+        char_list.remove(' ')
+        char_set |= set(char_list)
+
+        char_dict = {c: i + 1 for i, c in enumerate(char_set)}
+        self.model.char2id = char_dict
+        self.model.id2char = {v: k for k, v in char_dict.items()}
+        self.save_char_dict(char_dict)
+
+        return (iter_data1, BaseDataset), (iter_data2, IterDataset)
+
+    def get_val_data(self, *args, **kwargs):
+        from data_parse.cv_data_parse.MJSynth import Loader
+
+        loader = Loader(self.data_dir1)
+        iter_data = loader.load(
+            set_type=DataRegister.VAL, image_type=DataRegister.GRAY_ARRAY, generator=False,
+            return_lower=True,
+            max_size=self.val_data_num,
+        )[0]
+
+        char_dict = self.load_char_dict()
+        self.model.char2id = char_dict
+        self.model.id2char = {v: k for k, v in char_dict.items()}
+
+        return iter_data
+
+
+class CRNN(TrProcess):
+    def __init__(self,
+                 model_version='CRNN',
+                 input_size=(100, 32),  # make sure that image_w / 4 - 1 > max_len
+                 in_ch=1,
+                 out_features=36,  # 26 for a-z + 10 for 0-9
+                 **kwargs
+                 ):
+        from models.text_recognition.crnn import Model
+
+        model = Model(
+            in_ch=in_ch,
+            input_size=input_size,
+            out_features=out_features
+        )
+
+        super().__init__(
+            model=model,
+            optimizer=optim.Adam(model.parameters(), lr=0.0005),
+            model_version=model_version,
+            **kwargs
+        )
+
+
 class CRNN_MJSynth(CRNN, MJSynth):
     """
     Usage:
@@ -216,8 +314,18 @@ class CRNN_MJSynth(CRNN, MJSynth):
             from examples.text_recognition import CRNN_MJSynth as Process
 
             Process().run(max_epoch=100, train_batch_size=256, predict_batch_size=256)
-            {'score': }
+            {'score': 0.7712}
     """
 
     def __init__(self, dataset_version='MJSynth', **kwargs):
         super().__init__(dataset_version=dataset_version, **kwargs)
+
+
+class CRNN_SynthText(CRNN, SynthText):
+    def __init__(self, dataset_version='SynthText', out_features=62, **kwargs):
+        super().__init__(dataset_version=dataset_version, out_features=out_features, **kwargs)
+
+
+class CRNN_MixMJSynthSynthText(CRNN, MixMJSynthSynthText):
+    def __init__(self, dataset_version='MixMJSynthSynthText', out_features=62, **kwargs):
+        super().__init__(dataset_version=dataset_version, out_features=out_features, **kwargs)
