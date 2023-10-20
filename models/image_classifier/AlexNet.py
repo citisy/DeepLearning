@@ -16,8 +16,8 @@ class Model(BaseImgClsModel):
         backbone = Backbone(**conv_config)
         neck = nn.Flatten()
         head = nn.Sequential(
-            Linear(backbone.out_channels * 6 * 6, 2048 * 2, is_drop=True, drop_prob=drop_prob),
-            Linear(2048 * 2, 2048 * 2, is_drop=True, drop_prob=drop_prob),
+            Linear(backbone.out_channels * 6 * 6, 2048 * 2, mode='dla', drop_prob=drop_prob),
+            Linear(2048 * 2, 2048 * 2, mode='dla', drop_prob=drop_prob),
             Linear(2048 * 2, 1000),
             out_module or OutModule(out_features, in_features=1000)
         )

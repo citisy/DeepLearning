@@ -165,7 +165,10 @@ class MJSynth(DataProcess):
             max_size=self.train_data_num,
         )[0]
 
-        char_dict = {c: i + 1 for i, c in enumerate(loader.lower_char_list)}
+        try:
+            char_dict = self.load_char_dict()
+        except:
+            char_dict = {c: i + 1 for i, c in enumerate(loader.lower_char_list)}
         self.model.char2id = char_dict
         self.model.id2char = {v: k for k, v in char_dict.items()}
         self.save_char_dict(char_dict)
@@ -203,9 +206,13 @@ class SynthText(DataProcess):
             max_size=self.train_data_num,
         )[0]
 
-        char_list = loader.get_char_list()
-        char_list.remove(' ')
-        char_dict = {c: i + 1 for i, c in enumerate(char_list)}
+        try:
+            char_dict = self.load_char_dict()
+        except:
+            char_list = loader.get_char_list()
+            char_list.remove(' ')
+            char_dict = {c: i + 1 for i, c in enumerate(char_list)}
+
         self.model.char2id = char_dict
         self.model.id2char = {v: k for k, v in char_dict.items()}
         self.save_char_dict(char_dict)
@@ -237,28 +244,32 @@ class MixMJSynthSynthText(DataProcess):
     def get_train_data(self, *args, **kwargs):
         from data_parse.cv_data_parse.MJSynth import Loader
 
-        loader = Loader(self.data_dir1)
+        loader1 = Loader(self.data_dir1)
         num = int(self.train_data_num * self.dataset_ratio[0])
-        iter_data1 = loader.load(
+        iter_data1 = loader1.load(
             set_type=DataRegister.TRAIN, image_type=DataRegister.GRAY_ARRAY, generator=False,
             max_size=num,
         )[0]
-        char_set = set(loader.char_list)
 
         from data_parse.cv_data_parse.SynthOcrText import Loader
 
-        loader = Loader(self.data_dir2)
+        loader2 = Loader(self.data_dir2, verbose=False)
         num = int(self.train_data_num * self.dataset_ratio[1])
-        iter_data2 = loader.load(
+        iter_data2 = loader2.load(
             image_type=DataRegister.GRAY_ARRAY, generator=True,
             max_size=num,
         )[0]
         IterDataset.length = num
-        char_list = loader.get_char_list()
-        char_list.remove(' ')
-        char_set |= set(char_list)
 
-        char_dict = {c: i + 1 for i, c in enumerate(char_set)}
+        try:
+            char_dict = self.load_char_dict()
+        except:
+            char_set = set(loader1.char_list)
+            char_list = loader2.get_char_list()
+            char_list.remove(' ')
+            char_set |= set(char_list)
+            char_dict = {c: i + 1 for i, c in enumerate(char_set)}
+
         self.model.char2id = char_dict
         self.model.id2char = {v: k for k, v in char_dict.items()}
         self.save_char_dict(char_dict)
@@ -288,6 +299,7 @@ class CRNN(TrProcess):
                  input_size=(100, 32),  # make sure that image_w / 4 - 1 > max_len
                  in_ch=1,
                  out_features=36,  # 26 for a-z + 10 for 0-9
+                 max_seq_len=25,
                  **kwargs
                  ):
         from models.text_recognition.crnn import Model
@@ -295,7 +307,8 @@ class CRNN(TrProcess):
         model = Model(
             in_ch=in_ch,
             input_size=input_size,
-            out_features=out_features
+            out_features=out_features,
+            max_seq_len=max_seq_len
         )
 
         super().__init__(
@@ -313,12 +326,12 @@ class CRNN_MJSynth(CRNN, MJSynth):
 
             from examples.text_recognition import CRNN_MJSynth as Process
 
-            Process().run(max_epoch=100, train_batch_size=256, predict_batch_size=256)
-            {'score': 0.7712}
+            Process().run(max_epoch=500, train_batch_size=256, predict_batch_size=256)
+            {'score': 0.7878}
     """
 
-    def __init__(self, dataset_version='MJSynth', **kwargs):
-        super().__init__(dataset_version=dataset_version, **kwargs)
+    def __init__(self, dataset_version='MJSynth', out_features=36, **kwargs):
+        super().__init__(dataset_version=dataset_version, out_features=out_features, **kwargs)
 
 
 class CRNN_SynthText(CRNN, SynthText):
@@ -328,4 +341,45 @@ class CRNN_SynthText(CRNN, SynthText):
 
 class CRNN_MixMJSynthSynthText(CRNN, MixMJSynthSynthText):
     def __init__(self, dataset_version='MixMJSynthSynthText', out_features=62, **kwargs):
+        super().__init__(dataset_version=dataset_version, out_features=out_features, **kwargs)
+
+
+class Svtr(TrProcess):
+    def __init__(self,
+                 model_version='Svtr',
+                 input_size=(100, 32),
+                 in_ch=1,
+                 out_features=36,  # 26 for a-z + 10 for 0-9
+                 max_seq_len=25,
+                 **kwargs
+                 ):
+        from models.text_recognition.svtr import Model
+
+        model = Model(
+            in_ch=in_ch,
+            input_size=input_size,
+            out_features=out_features,
+            max_seq_len=max_seq_len
+        )
+
+        super().__init__(
+            model=model,
+            optimizer=optim.Adam(model.parameters(), lr=0.0005),
+            model_version=model_version,
+            **kwargs
+        )
+
+
+class Svtr_MJSynth(Svtr, MJSynth):
+    """
+    Usage:
+        .. code-block:: python
+
+            from examples.text_recognition import Svtr_MJSynth as Process
+
+            Process().run(max_epoch=500, train_batch_size=256, predict_batch_size=256)
+            {'score': 0.7962}
+    """
+
+    def __init__(self, dataset_version='SynthText', out_features=36, **kwargs):
         super().__init__(dataset_version=dataset_version, out_features=out_features, **kwargs)

@@ -28,7 +28,7 @@ class BaseImgClsModel(nn.Module):
             nn.Flatten()
         )
         self.head = head if head is not None else nn.Sequential(
-            Linear(self.backbone.out_channels, head_hidden_features, is_drop=True, drop_prob=drop_prob),
+            Linear(self.backbone.out_channels, head_hidden_features, mode='dla', drop_prob=drop_prob),
             out_module or OutModule(out_features, in_features=head_hidden_features)
         )
 

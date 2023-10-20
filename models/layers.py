@@ -43,8 +43,10 @@ class OutModule(nn.Sequential):
 
 class Conv(nn.Sequential):
     def __init__(self, in_ch, out_ch, k, s=1, p=None, bias=False,
-                 is_act=True, act=None, is_norm=True, norm=None, mode='cna',
-                 **conv_kwargs):
+                 is_act=True, act=None,
+                 is_norm=True, norm=None,
+                 is_drop=True, drop_prob=0.7,
+                 mode='cna', **conv_kwargs):
         """
 
         Args:
@@ -79,6 +81,8 @@ class Conv(nn.Sequential):
                 layers.append(norm or nn.BatchNorm2d(out_ch))
             elif m == 'a' and is_act:
                 layers.append(act or nn.ReLU(True))
+            elif m == 'd' and is_drop:
+                layers.append(nn.Dropout(drop_prob))
 
         super().__init__(*layers)
 
@@ -94,7 +98,10 @@ class Conv(nn.Sequential):
 
 class ConvT(nn.Sequential):
     def __init__(self, in_ch, out_ch, k, s=1, p=None, bias=False,
-                 is_act=True, act=None, is_norm=True, norm=None, mode='cna', only_upsample=False,
+                 is_act=True, act=None,
+                 is_norm=True, norm=None,
+                 is_drop=True, drop_prob=0.7,
+                 mode='cna', only_upsample=False,
                  **conv_kwargs):
         """
 
@@ -137,6 +144,8 @@ class ConvT(nn.Sequential):
                     layers.append(norm or nn.BatchNorm2d(out_ch))
                 elif m == 'a' and is_act:
                     layers.append(act or nn.ReLU(True))
+                elif m == 'd' and is_drop:
+                    layers.append(nn.Dropout(drop_prob))
 
         super().__init__(*layers)
 
@@ -155,7 +164,8 @@ class Linear(nn.Sequential):
                  linear=None,
                  is_act=True, act=None,
                  is_norm=True, norm=None,
-                 is_drop=False, drop_prob=0.7,
+                 is_drop=True, drop_prob=0.7,
+                 mode='lna',
                  **linear_kwargs
                  ):
         self.is_act = is_act
@@ -164,19 +174,17 @@ class Linear(nn.Sequential):
 
         layers = []
 
-        if self.is_drop:
-            layers.append(nn.Dropout(drop_prob))
-
-        if linear is None:
-            linear = nn.Linear
-
-        layers.append(linear(in_features, out_features, **linear_kwargs))
-
-        if self.is_norm:
-            layers.append(norm or nn.BatchNorm1d(out_features))
-
-        if self.is_act:
-            layers.append(act or nn.Sigmoid())
+        for m in mode:
+            if m == 'l':
+                if linear is None:
+                    linear = nn.Linear
+                layers.append(linear(in_features, out_features, **linear_kwargs))
+            elif m == 'n' and is_norm:
+                layers.append(norm or nn.BatchNorm1d(out_features))
+            elif m == 'a' and is_act:
+                layers.append(act or nn.Sigmoid())
+            elif m == 'd' and is_drop:
+                layers.append(nn.Dropout(drop_prob))
 
         self.in_features = in_features
         self.out_features = out_features
