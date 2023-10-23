@@ -275,14 +275,14 @@ class Iou:
 
         return iou - a - b - c, ori_iou
 
-    def s_iou1D(self, box1, box2):
+    def s_iou1D(self, box1, box2, threshold=pow(2, 0.5) / 2):
         """Scylla Iou
         https://arxiv.org/pdf/2205.12740.pdf"""
         iou, ori_iou = self.iou1D(box1, box2)
         b1_x1, b1_y1, b1_x2, b1_y2 = box1.T
         b2_x1, b2_y1, b2_x2, b2_y2 = box2.T
-        ct_w = (b2_x1 + b2_x2 - b1_x1 - b1_x2) * 0.5  # center width
-        ct_h = (b2_y1 + b2_y2 - b1_y1 - b1_y2) * 0.5  # center height
+        ct_w = (b2_x1 + b2_x2 - b1_x1 - b1_x2) * 0.5 + self.eps  # center width
+        ct_h = (b2_y1 + b2_y2 - b1_y1 - b1_y2) * 0.5 + self.eps  # center height
 
         cw = torch.max(b1_x2, b2_x2) - torch.min(b1_x1, b2_x1)  # convex width
         ch = torch.max(b1_y2, b2_y2) - torch.min(b1_y1, b2_y1)  # convex height
@@ -293,7 +293,7 @@ class Iou:
         sigma = torch.pow(ct_w ** 2 + ct_h ** 2, 0.5)
         sin_alpha = torch.abs(ct_w) / sigma
         sin_beta = torch.abs(ct_h) / sigma
-        threshold = pow(2, 0.5) / 2
+
         sin_alpha = torch.where(sin_alpha > threshold, sin_beta, sin_alpha)
         angle_cost = torch.cos(torch.arcsin(sin_alpha) * 2 - torch.pi / 2)  # 1-2sin(x)^2=cos(2x)
 
@@ -306,7 +306,7 @@ class Iou:
         omiga_h = torch.abs(h1 - h2) / torch.max(h1, h2)
         shape_cost = torch.pow(1 - torch.exp(-1 * omiga_w), 4) + torch.pow(1 - torch.exp(-1 * omiga_h), 4)
 
-        return iou - (0.5 * (distance_cost + shape_cost)) ** self.alpha, ori_iou
+        return iou - torch.pow(0.5 * (distance_cost + shape_cost) + self.eps, self.alpha), ori_iou
 
     def w_iou1D(self, box1, box2):
         """Wise IoU v1
