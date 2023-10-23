@@ -580,3 +580,4 @@ class ParamsSearch:
             process = self.process(**kwargs)
             process.logger.info(info_msg)
             process.run(**self.run_kwargs)
+            torch.cuda.empty_cache()

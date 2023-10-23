@@ -15,7 +15,7 @@ ASPP_config = dict(
 
 
 class Model(BaseSemSegModel):
-    """
+    """https://arxiv.org/pdf/1706.05587.pdf
     see also `torchvision.models.segmentation.deeplabv3.deeplabv3_resnet50`
     """
     def __init__(

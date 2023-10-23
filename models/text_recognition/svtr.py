@@ -17,6 +17,8 @@ backbone_config = dict(in_ch_list=(64, 128, 256), num_heads_list=(2, 4, 8), mixe
 
 
 class Model(BaseTextRecModel):
+    """refer to: [SVTR: Scene Text Recognition with a Single Visual Model](https://arxiv.org/abs/2205.00159)"""
+
     def __init__(self, input_size, in_ch=3, neck_out_features=192, max_seq_len=25, out_features=None,
                  in_module_config=in_module_config, backbone_config=backbone_config, **kwargs):
         in_module = Embedding(in_ch, input_size, **in_module_config)
@@ -79,6 +81,7 @@ class Embedding(nn.Module):
 
         self.output_size = (input_size[0] // (2 ** n_layer), input_size[1] // (2 ** n_layer))
         self.pos_embed = nn.Parameter(torch.zeros([1, self.output_size[0] * self.output_size[1], out_ch], dtype=torch.float32), requires_grad=True)
+        truncated_normal_(self.pos_embed)
 
         self.drop = nn.Dropout(drop_prob)
 
@@ -113,7 +116,6 @@ class Backbone(nn.Sequential):
     def initialize_layers(self):
         # note that, it is very useful to raise the score
         self.apply(self._initialize_layers)
-        truncated_normal_(self.pos_embed)
 
     def _initialize_layers(self, m):
         if isinstance(m, nn.Linear):
@@ -270,7 +272,7 @@ class Head(nn.Sequential):
 
     def _initialize_layers(self, m):
         if isinstance(m, nn.Linear):
-            stdv = 1.0 / math.sqrt(self.in_channels * 1.0)
+            stdv = 1.0 / math.sqrt(self.in_features * 1.0)
             nn.init.uniform_(m.weight, -stdv, stdv)
             nn.init.uniform_(m.bias, -stdv, stdv)
 

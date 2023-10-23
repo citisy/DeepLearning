@@ -8,6 +8,7 @@ from utils import nlp_utils
 
 
 class Model(BaseTextRecModel):
+    """refer to: [An End-to-End Trainable Neural Network for Image-based Sequence Recognition and Its Application to Scene Text Recognition](https://arxiv.org/abs/1507.05717)"""
     def __init__(self, in_ch=3, neck_in_features=64, neck_out_features=512, **kwargs):
         super().__init__(
             backbone=Backbone(in_ch),

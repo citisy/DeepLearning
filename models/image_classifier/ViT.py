@@ -18,6 +18,15 @@ default_config = dict(
 
 
 class Model(BaseImgClsModel):
+    """refer to
+    paper:
+        - [An Image is Worth 16x16 Words: Transformers for Image Recognition at Scale](https://arxiv.org/pdf/2010.11929.pdf)
+    code:
+        - https://github.com/google-research/vision_transformer
+        - https://github.com/lucidrains/vit-pytorch
+
+    """
+
     def __init__(
             self,
             in_ch=None, input_size=None, out_features=None,

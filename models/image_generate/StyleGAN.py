@@ -28,6 +28,14 @@ net_d_config = dict(
 
 
 class Model(nn.ModuleList):
+    """refer to:
+    paper:
+        - [A Style-Based Generator Architecture for Generative Adversarial Networks](https://arxiv.org/pdf/1812.04948.pdf)
+    code:
+        - https://github.com/NVlabs/stylegan
+        - https://github.com/lucidrains/stylegan2-pytorch
+
+    """
     def __init__(self, img_ch, image_size, net_g_in_ch=512,
                  net_s_config=net_s_config, net_g_config=net_g_config, net_d_config=net_d_config,
                  ):
@@ -334,7 +342,7 @@ class Discriminator(nn.Module):
         out_features = 1
 
         self.out = nn.Sequential(
-            nn.Conv2d(in_ch, in_ch, 3, padding=1),
+            Conv(in_ch, in_ch, 3, padding=1, act=nn.LeakyReLU(0.2), is_norm=False),
             nn.Flatten(),
             nn.LazyLinear(out_features)
         )

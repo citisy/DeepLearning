@@ -9,7 +9,7 @@ from utils.torch_utils import initialize_layers
 
 
 class Model(BaseSemSegModel):
-    """
+    """http://arxiv.org/pdf/1411.4038
     see also `torchvision.models.segmentation.fcn.fcn_resnet50`
     """
 
