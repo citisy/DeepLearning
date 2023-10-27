@@ -152,8 +152,8 @@ class ZipLoader(Loader):
         if img_task == 'align':
             zip_file = ZipFile(f'{self.data_dir}/Img/{self.img_task_dict[img_task]}.zip', 'r')
         else:
-            import py7zr
-            zip_file = py7zr.SevenZipFile(f'{self.data_dir}/Img/{self.img_task_dict[img_task]}.7z', mode='r')
+            import py7zlib  # pip install pylzma
+            zip_file = py7zlib.Archive7z(open(f'{self.data_dir}/Img/{self.img_task_dict[img_task]}.7z', 'rb'))
 
         return super()._call(img_task=img_task, zip_file=zip_file, **kwargs)
 
@@ -170,19 +170,7 @@ class ZipLoader(Loader):
         if img_task == 'align':
             image = zip_file.open(p).read()
         else:
-            # todo: some bugs
-            from py7zr.py7zr import MemIO
-
-            for f in zip_file.files:
-                if f.filename == p:
-                    _buf = io.BytesIO()
-                    zip_file.worker.register_filelike(f.id, MemIO(_buf))
-
-                    zip_file.worker.extract(open(zip_file.filename, 'rb'), None, True)
-                    image = _buf.read()
-                    break
-            else:
-                raise
+            image = zip_file.getmember(p).read()
 
         image = converter.DataConvert.bytes_to_image(image)
 
