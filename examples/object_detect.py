@@ -225,11 +225,11 @@ class OdProcess(Process):
             self.model.eval()
             for i in range(0, len(images), batch_size):
                 rets = [self.val_data_augment({'image': image}) for image in images[i:i + batch_size]]
-                images = [torch.from_numpy(ret.pop('image')).to(self.device) for ret in rets]
-                images = torch.stack(images)
-                images = images / 255
+                batch_images = [torch.from_numpy(ret.pop('image')).to(self.device) for ret in rets]
+                batch_images = torch.stack(batch_images)
+                batch_images = batch_images / 255
 
-                outputs = self.model(images)
+                outputs = self.model(batch_images)
                 outputs = [{k: v.to('cpu').numpy() for k, v in t.items()} for t in outputs]
 
                 for ret, output in zip(rets, outputs):

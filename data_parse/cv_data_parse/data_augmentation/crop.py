@@ -263,7 +263,7 @@ class PadCrop:
                 ret.update(self.pad(dst=(x2, y2), **ret))
 
             else:
-                raise ValueError(f'image width = {w} and height = {h} must be greater than {x2 = } and {y2 = } or set pad=True')
+                raise ValueError(f'image width = {w} and height = {h} must be greater than {x2 = } and {y2 = } or set `is_pad=True`')
 
         ret.update(self.crop(**ret, dst_coor=dst_coor))
         return ret
@@ -290,8 +290,8 @@ class Random(PadCrop):
         dst_w, dst_h = dst
         h, w, c = image.shape
 
-        w_ = np.random.randint(w - dst_w) if w > dst else 0
-        h_ = np.random.randint(h - dst_h) if h > dst else 0
+        w_ = np.random.randint(w - dst_w) if w > dst_w else 0
+        h_ = np.random.randint(h - dst_h) if h > dst_h else 0
 
         return super().__call__(image, (w_, w_ + dst_w, h_, h_ + dst_h), **kwargs)
 

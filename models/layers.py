@@ -42,7 +42,7 @@ class OutModule(nn.Sequential):
 
 
 class Conv(nn.Sequential):
-    def __init__(self, in_ch, out_ch, k, s=1, p=None, bias=False,
+    def __init__(self, in_ch, out_ch, k, s=1, p=None,
                  is_act=True, act=None,
                  is_norm=True, norm=None,
                  is_drop=True, drop_prob=0.7,
@@ -76,7 +76,7 @@ class Conv(nn.Sequential):
 
         for m in mode:
             if m == 'c':
-                layers.append(nn.Conv2d(in_ch, out_ch, k, s, p, bias=bias, **conv_kwargs))
+                layers.append(nn.Conv2d(in_ch, out_ch, k, s, p, **conv_kwargs))
             elif m == 'n' and is_norm:
                 layers.append(norm or nn.BatchNorm2d(out_ch))
             elif m == 'a' and is_act:
@@ -97,7 +97,7 @@ class Conv(nn.Sequential):
 
 
 class ConvT(nn.Sequential):
-    def __init__(self, in_ch, out_ch, k, s=1, p=None, bias=False,
+    def __init__(self, in_ch, out_ch, k, s=1, p=None,
                  is_act=True, act=None,
                  is_norm=True, norm=None,
                  is_drop=True, drop_prob=0.7,
@@ -139,7 +139,7 @@ class ConvT(nn.Sequential):
 
             for m in mode:
                 if m == 'c':
-                    layers.append(nn.ConvTranspose2d(in_ch, out_ch, k, s, p, bias=bias, **conv_kwargs))
+                    layers.append(nn.ConvTranspose2d(in_ch, out_ch, k, s, p, **conv_kwargs))
                 elif m == 'n' and is_norm:
                     layers.append(norm or nn.BatchNorm2d(out_ch))
                 elif m == 'a' and is_act:

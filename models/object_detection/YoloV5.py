@@ -55,6 +55,7 @@ def make_config(backbone_config=backbone_config, neck_config=neck_config, depth_
     out_ch = compute_width(out_ch)
     n_conv_ = [compute_deep(_) for _ in n_conv]
     backbone_config = (out_ch, tuple(n_conv_), cache_block_idx)
+    neck_config = neck_config.copy()
     neck_config['n_c3'] = compute_deep(neck_config['n_c3'])
 
     return dict(backbone_config=backbone_config, neck_config=neck_config)
