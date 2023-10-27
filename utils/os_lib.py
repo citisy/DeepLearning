@@ -226,25 +226,43 @@ class Saver:
 
     def save_pdf_to_pdf(self, path, page=None, save_path=None):
         """select pages from pdf, and save with pdf type"""
-        from PyPDF2 import PdfFileReader, PdfFileWriter
+        from PyPDF2 import PdfFileReader, PdfFileWriter, errors
 
-        pdf_reader = PdfFileReader(path)
-        pdf_writer = PdfFileWriter()
+        try:
+            pdf_reader = PdfFileReader(path)
+            pdf_writer = PdfFileWriter()
 
-        if isinstance(page, int):
-            pdf_writer.addPage(pdf_reader.getPage(page))
+            if isinstance(page, int):
+                pdf_writer.addPage(pdf_reader.getPage(page))
 
-        elif isinstance(page, list):
-            for i in page:
-                pdf_writer.addPage(pdf_reader.getPage(i))
+            elif isinstance(page, list):
+                for i in page:
+                    pdf_writer.addPage(pdf_reader.getPage(i))
 
-        suffix = Path(path).suffix
-        save_path = save_path or path.replace(suffix, '_' + suffix)
+            suffix = Path(path).suffix
+            save_path = save_path or str(path).replace(suffix, '_' + suffix)
 
-        with open(save_path, 'wb') as out:
-            pdf_writer.write(out)
+            with open(save_path, 'wb') as out:
+                pdf_writer.write(out)
 
-        self.stdout(save_path)
+            self.stdout(save_path)
+        except errors.PdfReadError:
+            self.stderr(save_path)
+
+    def save_image_to_pdf(self, obj: np.ndarray or str, path):
+        import fitz     # pip install PyMuPDF
+
+        if isinstance(obj, str):
+            img_doc = fitz.open(obj)
+        else:
+            img_doc = fitz.open(stream=obj, filetype='png')
+
+        img_pdf = fitz.open(stream=img_doc.convert_to_pdf(), filetype='pdf')
+
+        with fitz.open() as doc:
+            doc.insert_pdf(img_pdf)
+            doc.save(path)
+        self.stdout(path)
 
 
 class Loader:
@@ -327,7 +345,7 @@ class Loader:
             obj: str or bytes, scale_ratio: float = 1.33,
             rotate: int = 0, alpha=False, bgr=False
     ) -> List[np.ndarray]:
-        import fitz
+        import fitz     # pip install PyMuPDF
 
         if isinstance(obj, str):
             doc = fitz.open(obj)
@@ -356,13 +374,16 @@ class Loader:
             self,
             obj: str or bytes, scale_ratio: float = 1.33,
     ) -> List[np.ndarray]:
-        from pdf2image import convert_from_path, convert_from_bytes
+        from pdf2image import convert_from_path, convert_from_bytes, exceptions
 
         dpi = 72 * scale_ratio
-        if isinstance(obj, (str, Path)):
-            images = convert_from_path(obj, dpi=dpi)
-        else:
-            images = convert_from_bytes(obj, dpi=dpi)
+        try:
+            if isinstance(obj, (str, Path)):
+                images = convert_from_path(obj, dpi=dpi)
+            else:
+                images = convert_from_bytes(obj, dpi=dpi)
+        except exceptions.PDFPageCountError:
+            images = []
 
         images = [cv2.cvtColor(np.asarray(image), cv2.COLOR_RGB2BGR) for image in images]
 
