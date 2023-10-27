@@ -12,6 +12,7 @@ from data_parse.cv_data_parse.data_augmentation import crop, scale, geometry, pi
 from pathlib import Path
 import numpy as np
 from datetime import datetime
+from metrics import image_generation
 
 
 class IgOptimizer:
@@ -49,10 +50,13 @@ class IgProcess(Process):
             self.log_info = {'total_nums': total_nums}
 
             if losses is not None:
-                for k, v in losses:
+                for k, v in losses.items():
                     self.log_info[f'loss/{k}'] = v
 
-            self.metric(val_obj, cur_epoch=total_nums, **metric_kwargs)
+            result = self.metric(val_obj, cur_epoch=total_nums, **metric_kwargs)
+            score = result['score']
+            self.log_info['val_score'] = score
+            self.logger.info(f"val log: epoch: {total_nums}, score: {score}")
             self.model.train()
 
             ckpt = {
@@ -66,8 +70,11 @@ class IgProcess(Process):
 
             self.wandb.log(self.log_info)
 
-    def metric(self, *args, **kwargs):
-        self.predict(*args, **kwargs)
+    def metric(self, *args, real_xs=None, cls_model=None, **kwargs):
+        fake_xs = self.predict(*args, **kwargs)
+        score = image_generation.fid(real_xs, fake_xs, cls_model=cls_model, device=self.device)
+        result = dict(score=score)
+        return result
 
 
 class Mnist(Process):
@@ -84,7 +91,6 @@ class Mnist(Process):
         channel.Gray2BGR(),
         scale.Proportion(),
         pixel_perturbation.MinMax(),
-        # pixel_perturbation.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]),
         channel.HWC2CHW()
     ])
 
@@ -178,6 +184,7 @@ class WGAN(IgProcess):
                     # }
 
                     pbar.set_postfix({
+                        'total_nums': self.total_nums,
                         **losses,
                         # **mem_info
                     })
@@ -233,7 +240,29 @@ class WGAN_Mnist(WGAN, Mnist):
         super().__init__(dataset_version=dataset_version, **kwargs)
 
 
-class Lsun(Process):
+class DataProcess(Process):
+    aug = Apply([
+        # scale.Proportion(),
+        # crop.Random(is_pad=True),
+        scale.LetterBox(),
+        pixel_perturbation.MinMax(),
+        channel.HWC2CHW()
+    ])
+
+    def data_augment(self, ret) -> dict:
+        aug = RandomApply([
+            pixel_perturbation.CutOut([0.25] * 4),
+            geometry.HFlip(),
+        ], probs=[0.2, 0.5])
+        ret.update(aug(**ret))
+
+        ret.update(dst=self.input_size)
+        ret.update(self.aug(**ret))
+
+        return ret
+
+
+class Lsun(DataProcess):
     data_dir = 'data/lsun'
     train_data_num = 20000
 
@@ -255,28 +284,8 @@ class Lsun(Process):
 
         return iter_data
 
-    def data_augment(self, ret) -> dict:
-        aug = RandomApply([
-            pixel_perturbation.CutOut([0.25] * 4),
-            geometry.HFlip(),
-        ], probs=[0.2, 0.5])
-        ret.update(aug(**ret))
 
-        aug = Apply([
-            scale.Proportion(),
-            crop.Random(is_pad=False),
-            # scale.LetterBox(),
-            pixel_perturbation.MinMax(),
-            channel.HWC2CHW()
-        ])
-
-        ret.update(dst=self.input_size)
-        ret.update(aug(**ret))
-
-        return ret
-
-
-class CelebA(Process):
+class CelebA(DataProcess):
     data_dir = 'data/CelebA'
     train_data_num = 40000
 
@@ -290,26 +299,6 @@ class CelebA(Process):
             max_size=self.train_data_num
         )[0]
         return iter_data
-
-    def data_augment(self, ret) -> dict:
-        aug = RandomApply([
-            pixel_perturbation.CutOut([0.25] * 4),
-            geometry.HFlip(),
-        ], probs=[0.2, 0.5])
-        ret.update(aug(**ret))
-
-        aug = Apply([
-            scale.Proportion(),
-            crop.Random(is_pad=False),
-            # scale.LetterBox(),
-            pixel_perturbation.MinMax(),
-            channel.HWC2CHW()
-        ])
-
-        ret.update(dst=self.input_size)
-        ret.update(aug(**ret))
-
-        return ret
 
 
 class StyleGan(IgProcess):
@@ -327,8 +316,8 @@ class StyleGan(IgProcess):
         )
 
         generator_params = list(model.net_g.parameters()) + list(model.net_s.parameters())
-        optimizer_g = optim.Adam(generator_params, lr=0.0002, betas=(0.5, 0.9))
-        optimizer_d = optim.Adam(model.net_d.parameters(), lr=0.0002 * 2, betas=(0.5, 0.9))
+        optimizer_g = optim.Adam(generator_params, lr=1e-4, betas=(0.5, 0.9))
+        optimizer_d = optim.Adam(model.net_d.parameters(), lr=1e-4 * 2, betas=(0.5, 0.9))
 
         super().__init__(
             model=model,
@@ -361,6 +350,8 @@ class StyleGan(IgProcess):
                    self.model.gen_same_noise_z_list(vis_num, self.device),
                    self.model.gen_noise_z(num_truncate_z, self.device)
                    )
+        real_xs = []
+        cls_model = image_generation.get_default_cls_model(device=self.device)
         for i in range(max_epoch):
             self.model.train()
             pbar = tqdm(train_dataloader, desc=f'train {i}/{max_epoch}')
@@ -374,13 +365,13 @@ class StyleGan(IgProcess):
 
                 # train discriminator
                 optimizer_d.zero_grad()
-                loss_d = self.model.loss_d(images)
+                loss_d = self.model.loss_d(images, use_gp=self.total_nums % 32 < batch_size)
                 loss_d.backward()
                 optimizer_d.step()
 
                 # train generator
                 optimizer_g.zero_grad()
-                loss_g = self.model.loss_g(images)
+                loss_g = self.model.loss_g(images, use_pp=(self.total_nums > 80000 and self.total_nums % 512 < batch_size))
                 loss_g.backward()
                 optimizer_g.step()
 
@@ -404,13 +395,20 @@ class StyleGan(IgProcess):
                 # }
 
                 pbar.set_postfix({
+                    'total_nums': self.total_nums,
                     **losses,
                     # **mem_info
                 })
 
+                if len(real_xs) < vis_num:
+                    images = images.data.mul(255).clamp_(0, 255).permute(0, 2, 3, 1).to("cpu", torch.uint8).numpy()
+                    real_xs.extend(list(images)[:vis_num - len(real_xs)])
+
                 if self.on_train_epoch_end(self.total_nums, save_period, val_obj, batch_size,
                                            losses=losses,
                                            max_num=max_save_num,
+                                           real_xs=real_xs,
+                                           cls_model=cls_model,
                                            **metric_kwargs):
                     break
 
@@ -446,6 +444,7 @@ class StyleGan(IgProcess):
             fake_xs.append(fake_x)
 
         fake_xs = torch.cat(fake_xs, 0)
+        fake_xs = fake_xs.data.mul(255).clamp_(0, 255).permute(0, 2, 3, 1).to("cpu", torch.uint8).numpy()
 
         for i in range(0, num_batch, vis_batch_size):
             fake_x = fake_xs[i: i + vis_batch_size]
@@ -454,6 +453,7 @@ class StyleGan(IgProcess):
             )
 
             cur_vis_num = self.on_val_step_end(vis_image, cur_epoch, visualize, vis_batch_size, max_vis_num, cur_vis_num)
+        return fake_xs
 
     def on_val_step_end(self, vis_image, cur_epoch, visualize, batch_size, max_vis_num, cur_vis_num):
         if visualize:
@@ -461,7 +461,6 @@ class StyleGan(IgProcess):
             if n > 0:
                 rets = []
                 for name, images in vis_image.items():
-                    images = images.data.mul(255).clamp_(0, 255).permute(0, 2, 3, 1).to("cpu", torch.uint8).numpy()
                     rets.append([{'image': image, '_id': f'{name}.{cur_vis_num}.png'} for image in images])
 
                 rets = [r for r in zip(*rets)]
@@ -479,7 +478,7 @@ class StyleGan_Mnist(StyleGan, Mnist):
 
             from examples.image_generate import StyleGan_Mnist as Process
 
-            Process().run(max_epoch=2000, train_batch_size=64, save_period=20000, save_maxsize=10, num_workers=16, metric_kwargs=dict(visualize=True))
+            Process().run(max_epoch=2000, train_batch_size=64, save_period=20000, max_save_num=10, num_workers=16, metric_kwargs=dict(visualize=True))
     """
 
     def __init__(self, dataset_version='Mnist', input_size=32, **kwargs):
@@ -493,7 +492,7 @@ class StyleGan_Lsun(StyleGan, Lsun):
 
             from examples.image_generate import StyleGan_Lsun as Process
 
-            Process().run(max_epoch=2000, train_batch_size=32, save_period=20000, save_maxsize=10, num_workers=16, metric_kwargs=dict(visualize=True))
+            Process().run(max_epoch=200, train_batch_size=32, save_period=20000, max_save_num=10, num_workers=16, metric_kwargs=dict(visualize=True))
     """
 
     def __init__(self, dataset_version='lsun', **kwargs):
@@ -507,7 +506,8 @@ class StyleGan_CelebA(StyleGan, CelebA):
 
             from examples.image_generate import StyleGan_CelebA as Process
 
-            Process().run(max_epoch=2000, train_batch_size=32, save_period=20000, save_maxsize=10, num_workers=16, metric_kwargs=dict(visualize=True))
+            Process().run(max_epoch=200, train_batch_size=32, save_period=20000, max_save_num=10, num_workers=16, metric_kwargs=dict(visualize=True))
+            {'score': 134.8424}
     """
 
     def __init__(self, dataset_version='CelebA', **kwargs):

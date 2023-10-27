@@ -5,6 +5,7 @@ from einops import rearrange, repeat
 from kornia.filters import filter2d
 import torch
 import torch.nn.functional as F
+from torch.autograd import grad
 from ..layers import Linear, Conv, EqualLinear, Residual
 from utils.torch_utils import initialize_layers
 
@@ -21,8 +22,8 @@ net_g_config = dict(
 
 net_d_config = dict(
     network_capacity=16,
-    fq_layers=[4, 5],
     fq_dict_size=512,
+    fq_layers=[4, 5],
     attn_layers=[4, 5]
 )
 
@@ -36,6 +37,7 @@ class Model(nn.ModuleList):
         - https://github.com/lucidrains/stylegan2-pytorch
 
     """
+
     def __init__(self, img_ch, image_size, net_g_in_ch=512,
                  net_s_config=net_s_config, net_g_config=net_g_config, net_d_config=net_d_config,
                  ):
@@ -48,10 +50,12 @@ class Model(nn.ModuleList):
         self.net_g = Generator(net_g_in_ch, out_ch=img_ch, num_layers=self.num_layers, **net_g_config)
         self.net_d = Discriminator(img_ch, num_layers=self.num_layers, **net_d_config)
 
+        self.pl_mean = None
+
         # init weights
         initialize_layers(self, init_type='kaiming')
 
-    def loss_d(self, real_x):
+    def loss_d(self, real_x, use_gp=False):
         batch_size = real_x.shape[0]
 
         noise_x = self.gen_noise_image(batch_size, real_x.device)
@@ -65,9 +69,18 @@ class Model(nn.ModuleList):
         real_x.requires_grad_(True)
         real_y, real_q_loss = self.net_d(real_x)
 
-        return (F.relu(1 + real_y) + F.relu(1 - fake_y)).mean() + (fake_q_loss + real_q_loss).mean()
+        r = real_y - fake_y.mean()
+        f = fake_y - real_y.mean()
+        loss = (F.relu(1 + r) + F.relu(1 - f)).mean() + (fake_q_loss + real_q_loss).mean()
 
-    def loss_g(self, real_x):
+        if use_gp:
+            # gradient penalty
+            loss_gp = gradient_penalty(real_x, real_y)
+            loss = loss + loss_gp
+
+        return loss
+
+    def loss_g(self, real_x, use_pp=False, beta=0.99):
         batch_size = real_x.shape[0]
 
         noise_x = self.gen_noise_image(batch_size, real_x.device)
@@ -75,7 +88,21 @@ class Model(nn.ModuleList):
 
         fake_x = self.net_g(styles, noise_x)
         fake_y, _ = self.net_d(fake_x)
-        return fake_y.mean()
+        loss = fake_y.mean()
+
+        if use_pp:
+            # path penalty
+            pl_lengths = calc_pl_lengths(styles, fake_x)
+            avg_pl_length = torch.mean(pl_lengths.detach())
+
+            if self.pl_mean is not None:
+                pl_loss = ((pl_lengths - self.pl_mean) ** 2).mean()
+                loss = loss + pl_loss
+                self.pl_mean = self.pl_mean * beta + (1 - beta) * avg_pl_length
+            else:
+                self.pl_mean = avg_pl_length
+
+        return loss
 
     def gen_rand_noise_z_list(self, batch_size, device):
         tt = int(torch.rand(()).numpy() * self.num_layers)
@@ -131,7 +158,7 @@ class Generator(nn.Module):
         self.out_channels = out_ch
 
         out_ches = [network_capacity * (2 ** (i + 1)) for i in range(num_layers)][::-1]
-        out_ches = [min(network_capacity * 64, out_ch) for out_ch in out_ches]
+        out_ches = [min(network_capacity * 32, out_ch) for out_ch in out_ches]  # max=512
         out_ch = out_ches[0]
 
         self.const_input = const_input
@@ -283,6 +310,7 @@ class Conv2DMod(nn.Module):
         self.demod = demod
         self.weight = nn.Parameter(torch.randn((out_ch, in_ch, k, k)))
         self.eps = eps
+        # nn.init.kaiming_normal_(self.weight, a=0, mode='fan_in', nonlinearity='leaky_relu')
 
     def initialize_layers(self):
         nn.init.kaiming_normal_(self.weight, a=0, mode='fan_in', nonlinearity='leaky_relu')
@@ -317,8 +345,8 @@ class Discriminator(nn.Module):
         super().__init__()
         self.in_channels = in_ch
 
-        out_ches = [(network_capacity * 4) * (2 ** i) for i in range(num_layers)]
-        out_ches = [min(network_capacity * 64, out_ch) for out_ch in out_ches]
+        out_ches = [(network_capacity * 4) * (2 ** i) for i in range(num_layers + 1)]
+        out_ches = [min(network_capacity * 32, out_ch) for out_ch in out_ches]  # max=512
 
         blocks = []
         quantize_blocks = []
@@ -342,7 +370,7 @@ class Discriminator(nn.Module):
         out_features = 1
 
         self.out = nn.Sequential(
-            Conv(in_ch, in_ch, 3, padding=1, act=nn.LeakyReLU(0.2), is_norm=False),
+            Conv(in_ch, in_ch, 3, p=1, act=nn.LeakyReLU(0.2), is_norm=False),
             nn.Flatten(),
             nn.LazyLinear(out_features)
         )
@@ -457,3 +485,26 @@ class ConvAttention(nn.Module):
         out = rearrange(out, '(b h) (x y) d -> b (h d) x y', h=h, x=x, y=y)
 
         return self.to_out(out)
+
+
+def gradient_penalty(inputs, outputs, weight=10):
+    batch_size = inputs.shape[0]
+    gradients = grad(outputs=outputs, inputs=inputs,
+                     grad_outputs=torch.ones(outputs.size(), device=inputs.device),
+                     create_graph=True, retain_graph=True, only_inputs=True)[0]
+
+    gradients = gradients.reshape(batch_size, -1)
+    return weight * ((gradients.norm(2, dim=1) - 1) ** 2).mean()
+
+
+def calc_pl_lengths(styles, images):
+    device = images.device
+    num_pixels = images.shape[2] * images.shape[3]
+    pl_noise = torch.randn(images.shape, device=device) / math.sqrt(num_pixels)
+    outputs = (images * pl_noise).sum()
+
+    pl_grads = grad(outputs=outputs, inputs=styles,
+                    grad_outputs=torch.ones(outputs.shape, device=device),
+                    create_graph=True, retain_graph=True, only_inputs=True)[0]
+
+    return (pl_grads ** 2).sum(dim=2).mean(dim=1).sqrt()
