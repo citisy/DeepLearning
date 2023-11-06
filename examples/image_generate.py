@@ -1,11 +1,7 @@
 from .base import Process, BaseDataset, WEIGHT
-import random
-import itertools
 import torch
 from torch import nn, optim
-from torch.utils.data import Dataset, DataLoader
 from tqdm import tqdm
-from utils.torch_utils import EarlyStopping, ModuleInfo, Export
 from utils import os_lib, configs
 from data_parse.cv_data_parse.base import DataRegister, DataVisualizer
 from data_parse.cv_data_parse.data_augmentation import crop, scale, geometry, pixel_perturbation, RandomApply, Apply, channel, RandomChoice
@@ -15,7 +11,7 @@ from datetime import datetime
 from metrics import image_generation
 
 
-class IgOptimizer:
+class GanOptimizer:
     def __init__(self, optimizer_d, optimizer_g):
         self.optimizer_d = optimizer_d
         self.optimizer_g = optimizer_g
@@ -32,20 +28,8 @@ class IgOptimizer:
 
 
 class IgProcess(Process):
-    total_nums = 0
-
-    def model_info(self, **kwargs):
-        modules = dict(
-            d=self.model.net_d,
-            g=self.model.net_g,
-        )
-
-        for key, module in modules.items():
-            self.logger.info(f'net {key} module info:')
-            self._model_info(module, **kwargs)
-
     def on_train_epoch_end(self, total_nums, save_period, val_obj, train_batch_size,
-                           losses=None, max_num=None, **metric_kwargs):
+                           losses=None, max_save_weight_num=None, **metric_kwargs):
         if save_period and total_nums % save_period < train_batch_size:
             self.log_info = {'total_nums': total_nums}
 
@@ -66,15 +50,47 @@ class IgProcess(Process):
             }
 
             self.save(f'{self.work_dir}/{total_nums}.pth', save_type=WEIGHT, only_model=False, **ckpt)
-            os_lib.FileCacher(f'{self.work_dir}/', max_size=max_num, stdout_method=self.logger.info).delete_over_range(suffix='pth')
+            os_lib.FileCacher(f'{self.work_dir}/', max_size=max_save_weight_num, stdout_method=self.logger.info).delete_over_range(suffix='pth')
 
             self.wandb.log(self.log_info)
 
     def metric(self, *args, real_xs=None, cls_model=None, **kwargs):
         fake_xs = self.predict(*args, **kwargs)
-        score = image_generation.fid(real_xs, fake_xs, cls_model=cls_model, device=self.device)
-        result = dict(score=score)
-        return result
+        if real_xs is not None:
+            score = image_generation.fid(real_xs, fake_xs, cls_model=cls_model, device=self.device)
+            result = dict(score=score)
+            return result
+        else:
+            return {}
+
+    def on_val_step_end(self, vis_image, cur_epoch, visualize, batch_size, max_vis_num, cur_vis_num):
+        if visualize:
+            n = min(batch_size, max_vis_num - cur_vis_num)
+            if n > 0:
+                rets = []
+                for name, images in vis_image.items():
+                    rets.append([{'image': image, '_id': f'{name}.{cur_vis_num}.jpg'} for image in images])
+
+                rets = [r for r in zip(*rets)]
+                cache_dir = f'{self.save_result_dir}/{cur_epoch}'
+                cache_image = DataVisualizer(cache_dir, verbose=False, pbar=False, stdout_method=self.logger.info)(*rets[:n], return_image=True)
+                self.log_info.setdefault('val_image', []).extend([self.wandb.Image(img, caption=Path(r['_id']).stem) for img, r in zip(cache_image, rets[0])])
+                cur_vis_num += n
+        return cur_vis_num
+
+
+class GanProcess(IgProcess):
+    total_nums = 0
+
+    def model_info(self, **kwargs):
+        modules = dict(
+            d=self.model.net_d,
+            g=self.model.net_g,
+        )
+
+        for key, module in modules.items():
+            self.logger.info(f'net {key} module info:')
+            self._model_info(module, **kwargs)
 
 
 class Mnist(Process):
@@ -101,7 +117,7 @@ class Mnist(Process):
         return ret
 
 
-class WGAN(IgProcess):
+class WGAN(GanProcess):
     def __init__(self,
                  input_size=64,
                  in_ch=3,
@@ -122,13 +138,13 @@ class WGAN(IgProcess):
 
         super().__init__(
             model=model,
-            optimizer=IgOptimizer(optimizer_d, optimizer_g),
+            optimizer=GanOptimizer(optimizer_d, optimizer_g),
             model_version=model_version,
             input_size=input_size,
             **kwargs
         )
 
-    def fit(self, max_epoch, batch_size, save_period=None, max_save_num=None, metric_kwargs=dict(), **dataloader_kwargs):
+    def fit(self, max_epoch, batch_size, save_period=None, max_save_weight_num=None, metric_kwargs=dict(), **dataloader_kwargs):
         train_dataloader, _, metric_kwargs = self.on_train_start(batch_size, metric_kwargs, return_val_dataloader=True, **dataloader_kwargs)
 
         self.model.to(self.device)
@@ -190,40 +206,39 @@ class WGAN(IgProcess):
                     })
 
                     if self.on_train_epoch_end(self.total_nums, save_period, val_noise, batch_size,
-                                               losses=losses, max_num=max_save_num,
+                                               losses=losses, max_save_weight_num=max_save_weight_num,
                                                **metric_kwargs):
                         break
 
-    def predict(self, val_noise, batch_size=128, cur_epoch=-1, model=None, visualize=False, max_vis_num=None, save_ret_func=None, **dataloader_kwargs):
+    def predict(self, val_noise=None, batch_size=16,
+                cur_epoch=-1, model=None, visualize=False, max_vis_num=None, vis_batch_size=64,
+                save_ret_func=None, **dataloader_kwargs):
         self.model.to(self.device)
+        self.model.eval()
+        val_noise = val_noise if val_noise is not None else torch.normal(mean=0., std=1., size=(64, self.model.hidden_ch, 1, 1), device=self.device)
         max_vis_num = max_vis_num or float('inf')
-        vis_num = 0
+        num_batch = val_noise.shape[0]
 
         with torch.no_grad():
-            for i in tqdm(range(0, len(val_noise), batch_size), desc='val'):
-                x = val_noise[i:i + batch_size].to(self.device)
-                fake_y = self.model.net_g(x)
+            fake_xs = []
+            for i in tqdm(range(0, num_batch, batch_size)):
+                noise_x = val_noise[i: i + batch_size]
+                fake_x = self.model.net_g(noise_x)
+                fake_xs.append(fake_x)
+
+            fake_xs = torch.cat(fake_xs, 0)
+            fake_xs = fake_xs.data.mul(255).clamp_(0, 255).permute(0, 2, 3, 1).to("cpu", torch.uint8).numpy()
+
+            cur_vis_num = 0
+            for i in range(0, num_batch, vis_batch_size):
+                fake_x = fake_xs[i: i + vis_batch_size]
                 vis_image = dict(
-                    fake=fake_y,
+                    fake=fake_x,
                 )
 
-                vis_num = self.on_val_step_end(vis_image, cur_epoch, visualize, batch_size, max_vis_num, vis_num)
+                cur_vis_num = self.on_val_step_end(vis_image, cur_epoch, visualize, vis_batch_size, max_vis_num, cur_vis_num)
 
-    def on_val_step_end(self, vis_image, cur_epoch, visualize, batch_size, max_vis_num, vis_num):
-        if visualize:
-            n = min(batch_size, max_vis_num - vis_num)
-            if n > 0:
-                ret = []
-                for name, images in vis_image.items():
-                    images = images.data.mul(255).clamp_(0, 255).permute(0, 2, 3, 1).to("cpu", torch.uint8).numpy()
-                    ret.append([{'image': image, '_id': f'{name}.png'} for image in images])
-
-                ret = [r for r in zip(*ret)]
-                cache_dir = f'{self.save_result_dir}/{cur_epoch}'
-                DataVisualizer(cache_dir, verbose=False, stdout_method=self.logger.info)(*ret[:n])
-                self.log_info['val_image'] = [self.wandb.Image(str(fp), caption=fp.stem) for fp in Path(cache_dir).glob('*.png')]
-                vis_num += n
-        return vis_num
+        return fake_xs
 
 
 class WGAN_Mnist(WGAN, Mnist):
@@ -242,19 +257,19 @@ class WGAN_Mnist(WGAN, Mnist):
 
 class DataProcess(Process):
     aug = Apply([
-        # scale.Proportion(),
-        # crop.Random(is_pad=True),
-        scale.LetterBox(),
+        scale.Proportion(choice_type=3),
+        crop.Random(is_pad=False),
+        # scale.LetterBox(),    # there are gray lines
         pixel_perturbation.MinMax(),
         channel.HWC2CHW()
     ])
 
     def data_augment(self, ret) -> dict:
-        aug = RandomApply([
-            pixel_perturbation.CutOut([0.25] * 4),
-            geometry.HFlip(),
-        ], probs=[0.2, 0.5])
-        ret.update(aug(**ret))
+        # aug = RandomApply([
+        #     pixel_perturbation.CutOut([0.25] * 4),
+        #     geometry.HFlip(),
+        # ], probs=[0.2, 0.5])
+        # ret.update(aug(**ret))
 
         ret.update(dst=self.input_size)
         ret.update(self.aug(**ret))
@@ -279,7 +294,7 @@ class Lsun(DataProcess):
         # iter_data = loader.load(
         #     set_type=DataRegister.TRAIN, image_type=DataRegister.ARRAY, generator=False,
         #     task='church_outdoor',
-        #     max_size=10000
+        #     max_size=self.train_data_num
         # )[0]
 
         return iter_data
@@ -294,14 +309,29 @@ class CelebA(DataProcess):
 
         loader = Loader(self.data_dir)
         iter_data = loader.load(
-            image_type=DataRegister.ARRAY, generator=False,
+            generator=False,
             img_task='align',
             max_size=self.train_data_num
         )[0]
         return iter_data
 
 
-class StyleGan(IgProcess):
+class CelebAHQ(DataProcess):
+    data_dir = 'data/CelebAHQ'
+    train_data_num = 40000
+
+    def get_train_data(self, *args, **kwargs):
+        from data_parse.cv_data_parse.CelebAHQ import ZipLoader as Loader
+
+        loader = Loader(self.data_dir)
+        iter_data = loader.load(
+            generator=False,
+            max_size=self.train_data_num
+        )[0]
+        return iter_data
+
+
+class StyleGan(GanProcess):
     def __init__(self,
                  model_version='StyleGAN',
                  input_size=128,
@@ -321,7 +351,7 @@ class StyleGan(IgProcess):
 
         super().__init__(
             model=model,
-            optimizer=IgOptimizer(optimizer_d, optimizer_g),
+            optimizer=GanOptimizer(optimizer_d, optimizer_g),
             model_version=model_version,
             input_size=input_size,
             **kwargs
@@ -338,20 +368,22 @@ class StyleGan(IgProcess):
             self.logger.info(f'net {key} module info:')
             self._model_info(module, **kwargs)
 
-    def fit(self, max_epoch, batch_size, save_period=None, max_save_num=None, metric_kwargs=dict(), **dataloader_kwargs):
+    def fit(self, max_epoch, batch_size, save_period=None, max_save_weight_num=None,
+            vis_num=64 * 8, num_truncate_z=2000,
+            per_gp_step=4, per_pp_step=32, min_pp_step=5000,
+            metric_kwargs=dict(), **dataloader_kwargs):
         train_dataloader, _, metric_kwargs = self.on_train_start(batch_size, metric_kwargs, return_val_dataloader=False, **dataloader_kwargs)
 
         optimizer_d, optimizer_g = self.optimizer.optimizer_d, self.optimizer.optimizer_g
 
-        steps = 0
-        vis_num = 64 * 8
-        num_truncate_z = 2000
-        val_obj = (self.model.gen_noise_image(vis_num, self.device),
-                   self.model.gen_same_noise_z_list(vis_num, self.device),
-                   self.model.gen_noise_z(num_truncate_z, self.device)
-                   )
+        val_obj = (
+            self.model.gen_noise_image(vis_num, self.device),
+            self.model.gen_same_noise_z_list(vis_num, self.device),
+            self.model.gen_noise_z(num_truncate_z, self.device)
+        )
         real_xs = []
         cls_model = image_generation.get_default_cls_model(device=self.device)
+        steps = 0
         for i in range(max_epoch):
             self.model.train()
             pbar = tqdm(train_dataloader, desc=f'train {i}/{max_epoch}')
@@ -365,13 +397,13 @@ class StyleGan(IgProcess):
 
                 # train discriminator
                 optimizer_d.zero_grad()
-                loss_d = self.model.loss_d(images, use_gp=self.total_nums % 32 < batch_size)
+                loss_d = self.model.loss_d(images, use_gp=steps % per_gp_step == 0)
                 loss_d.backward()
                 optimizer_d.step()
 
                 # train generator
                 optimizer_g.zero_grad()
-                loss_g = self.model.loss_g(images, use_pp=(self.total_nums > 80000 and self.total_nums % 512 < batch_size))
+                loss_g = self.model.loss_g(images, use_pp=(steps > min_pp_step and steps % per_gp_step == 0))
                 loss_g.backward()
                 optimizer_g.step()
 
@@ -406,7 +438,7 @@ class StyleGan(IgProcess):
 
                 if self.on_train_epoch_end(self.total_nums, save_period, val_obj, batch_size,
                                            losses=losses,
-                                           max_num=max_save_num,
+                                           max_save_weight_num=max_save_weight_num,
                                            real_xs=real_xs,
                                            cls_model=cls_model,
                                            **metric_kwargs):
@@ -416,6 +448,7 @@ class StyleGan(IgProcess):
     def predict(self, val_obj=(None, None, None), trunc_psi=0.6, batch_size=16,
                 cur_epoch=-1, model=None, visualize=False, max_vis_num=None, vis_batch_size=64,
                 save_ret_func=None, **dataloader_kwargs):
+        self.model.to(self.device)
         self.model.eval()
 
         noise_xs, noise_zs, truncate_zs = val_obj
@@ -455,21 +488,6 @@ class StyleGan(IgProcess):
             cur_vis_num = self.on_val_step_end(vis_image, cur_epoch, visualize, vis_batch_size, max_vis_num, cur_vis_num)
         return fake_xs
 
-    def on_val_step_end(self, vis_image, cur_epoch, visualize, batch_size, max_vis_num, cur_vis_num):
-        if visualize:
-            n = min(batch_size, max_vis_num - cur_vis_num)
-            if n > 0:
-                rets = []
-                for name, images in vis_image.items():
-                    rets.append([{'image': image, '_id': f'{name}.{cur_vis_num}.png'} for image in images])
-
-                rets = [r for r in zip(*rets)]
-                cache_dir = f'{self.save_result_dir}/{cur_epoch}'
-                cache_image = DataVisualizer(cache_dir, verbose=False, pbar=False, stdout_method=self.logger.info)(*rets[:n], return_image=True)
-                self.log_info.setdefault('val_image', []).extend([self.wandb.Image(img, caption=Path(r['_id']).stem) for img, r in zip(cache_image, rets[0])])
-                cur_vis_num += n
-        return cur_vis_num
-
 
 class StyleGan_Mnist(StyleGan, Mnist):
     """
@@ -478,7 +496,7 @@ class StyleGan_Mnist(StyleGan, Mnist):
 
             from examples.image_generate import StyleGan_Mnist as Process
 
-            Process().run(max_epoch=2000, train_batch_size=64, save_period=20000, max_save_num=10, num_workers=16, metric_kwargs=dict(visualize=True))
+            Process().run(max_epoch=2000, train_batch_size=64, save_period=20000, max_save_weight_num=10, num_workers=16, metric_kwargs=dict(visualize=True))
     """
 
     def __init__(self, dataset_version='Mnist', input_size=32, **kwargs):
@@ -492,7 +510,7 @@ class StyleGan_Lsun(StyleGan, Lsun):
 
             from examples.image_generate import StyleGan_Lsun as Process
 
-            Process().run(max_epoch=200, train_batch_size=32, save_period=20000, max_save_num=10, num_workers=16, metric_kwargs=dict(visualize=True))
+            Process().run(max_epoch=200, train_batch_size=32, save_period=20000, max_save_weight_num=10, num_workers=16, metric_kwargs=dict(visualize=True))
     """
 
     def __init__(self, dataset_version='lsun', **kwargs):
@@ -506,7 +524,177 @@ class StyleGan_CelebA(StyleGan, CelebA):
 
             from examples.image_generate import StyleGan_CelebA as Process
 
-            Process().run(max_epoch=200, train_batch_size=32, save_period=20000, max_save_num=10, num_workers=16, metric_kwargs=dict(visualize=True))
+            Process().run(max_epoch=200, train_batch_size=32, save_period=20000, max_save_weight_num=10, num_workers=16, metric_kwargs=dict(visualize=True))
+            {'score': 134.8424}
+    """
+
+    def __init__(self, dataset_version='CelebA', **kwargs):
+        super().__init__(dataset_version=dataset_version, **kwargs)
+
+
+class DiProcess(IgProcess):
+    total_nums = 0
+
+    def fit(self, max_epoch=100, batch_size=16, save_period=None, max_save_weight_num=None,
+            vis_num=64 * 8, num_truncate_z=2000,
+            per_gp_step=4, per_pp_step=32, min_pp_step=5000,
+            metric_kwargs=dict(), **dataloader_kwargs):
+        train_dataloader, _, metric_kwargs = self.on_train_start(batch_size, metric_kwargs, return_val_dataloader=False, **dataloader_kwargs)
+        self.model.train()
+
+        val_noise = self.model.gen_x_t(vis_num, device=self.device)
+
+        real_xs = []
+        cls_model = image_generation.get_default_cls_model(device=self.device)
+        steps = 0
+        for i in range(max_epoch):
+            pbar = tqdm(train_dataloader, desc=f'train {i}/{max_epoch}')
+            total_nums = 0
+            total_loss = 0
+
+            for rets in pbar:
+                images = [torch.from_numpy(ret.pop('image')).to(self.device, non_blocking=True, dtype=torch.float) for ret in rets]
+                images = torch.stack(images)
+
+                self.optimizer.zero_grad()
+
+                output = self.model(images)
+                loss = output['loss']
+                loss.backward()
+                self.optimizer.step()
+
+                steps += 1
+                self.total_nums += len(rets)
+
+                total_loss += loss.item()
+                total_nums += len(rets)
+                mean_loss = total_loss / total_nums
+
+                losses = {
+                    'loss': loss.item(),
+                    'mean_loss': mean_loss
+                }
+                # mem_info = {
+                #     'cpu_info': log_utils.MemoryInfo.get_process_mem_info(),
+                #     'gpu_info': log_utils.MemoryInfo.get_gpu_mem_info()
+                # }
+
+                pbar.set_postfix({
+                    'total_nums': self.total_nums,
+                    **losses,
+                    # **mem_info
+                })
+
+                if len(real_xs) < vis_num:
+                    images = images.data.mul(255).clamp_(0, 255).permute(0, 2, 3, 1).to("cpu", torch.uint8).numpy()
+                    real_xs.extend(list(images)[:vis_num - len(real_xs)])
+
+                if self.on_train_epoch_end(self.total_nums, save_period, val_noise, batch_size,
+                                           losses=losses,
+                                           max_save_weight_num=max_save_weight_num,
+                                           real_xs=real_xs,
+                                           cls_model=cls_model,
+                                           **metric_kwargs):
+                    break
+
+    def predict(self, val_noise=None, batch_size=16,
+                cur_epoch=-1, model=None, visualize=False, max_vis_num=None, vis_batch_size=64,
+                save_ret_func=None, **dataloader_kwargs):
+        self.model.to(self.device)
+        self.model.eval()
+        val_noise = val_noise if val_noise is not None else self.model.gen_x_t(vis_batch_size, device=self.device)
+        max_vis_num = max_vis_num or float('inf')
+        num_batch = val_noise.shape[0]
+
+        with torch.no_grad():
+            fake_xs = []
+            for i in tqdm(range(0, num_batch, batch_size)):
+                noise_x = val_noise[i: i + batch_size]
+                fake_x = self.model(noise_x)
+                fake_xs.append(fake_x)
+
+            fake_xs = torch.cat(fake_xs, 0)
+            fake_xs = fake_xs.data.mul(255).clamp_(0, 255).permute(0, 2, 3, 1).to("cpu", torch.uint8).numpy()
+
+            cur_vis_num = 0
+            for i in range(0, num_batch, vis_batch_size):
+                fake_x = fake_xs[i: i + vis_batch_size]
+                vis_image = dict(
+                    fake=fake_x,
+                )
+
+                cur_vis_num = self.on_val_step_end(vis_image, cur_epoch, visualize, vis_batch_size, max_vis_num, cur_vis_num)
+
+        return fake_xs
+
+
+class Ddpm(DiProcess):
+    def __init__(self,
+                 model_version='Ddpm',
+                 input_size=128,
+                 in_ch=3,
+                 **kwargs
+                 ):
+        from models.image_generate.ddpm import Model
+
+        model = Model(
+            img_ch=in_ch,
+            image_size=input_size,
+        )
+        super().__init__(
+            model=model,
+            optimizer=optim.Adam(model.parameters(), lr=1e-4, betas=(0.9, 0.99)),
+            model_version=model_version,
+            input_size=input_size,
+            **kwargs
+        )
+
+
+class Ddpm_CelebA(Ddpm, CelebA):
+    """
+    Usage:
+        .. code-block:: python
+
+            from examples.image_generate import Ddpm_CelebA as Process
+
+            Process().run(max_epoch=200, train_batch_size=32, save_period=20000, max_save_weight_num=10, num_workers=16, metric_kwargs=dict(visualize=True))
+            {'score': 134.8424}
+    """
+
+    def __init__(self, dataset_version='CelebA', **kwargs):
+        super().__init__(dataset_version=dataset_version, **kwargs)
+
+
+class Dpim(DiProcess):
+    def __init__(self,
+                 model_version='Ddpm',   # model and train step is same to ddpm, only pred step is different
+                 input_size=128,
+                 in_ch=3,
+                 **kwargs
+                 ):
+        from models.image_generate.ddim import Model
+
+        model = Model(
+            img_ch=in_ch,
+            image_size=input_size,
+        )
+        super().__init__(
+            model=model,
+            optimizer=optim.Adam(model.parameters(), lr=1e-4, betas=(0.9, 0.99)),
+            model_version=model_version,
+            input_size=input_size,
+            **kwargs
+        )
+
+
+class Ddim_CelebA(Dpim, CelebA):
+    """
+    Usage:
+        .. code-block:: python
+
+            from examples.image_generate import Ddpm_CelebA as Process
+
+            Process().run(max_epoch=200, train_batch_size=32, save_period=20000, max_save_weight_num=10, num_workers=16, metric_kwargs=dict(visualize=True))
             {'score': 134.8424}
     """
 

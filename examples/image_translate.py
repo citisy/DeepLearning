@@ -7,10 +7,10 @@ from utils import os_lib, configs
 from data_parse.cv_data_parse.base import DataRegister, DataVisualizer
 from data_parse.cv_data_parse.data_augmentation import scale, pixel_perturbation, Apply, channel
 from pathlib import Path
-from .image_generate import IgProcess, IgOptimizer
+from .image_generate import GanProcess, GanOptimizer
 
 
-class ItProcess(IgProcess):
+class ItProcess(GanProcess):
     def on_val_step_end(self, vis_image, _ids, cur_epoch, visualize, batch_size, max_vis_num, vis_num):
         if visualize:
             n = min(batch_size, max_vis_num - vis_num)
@@ -96,7 +96,7 @@ class Pix2pix(ItProcess):
 
         super().__init__(
             model=model,
-            optimizer=IgOptimizer(optimizer_d, optimizer_g),
+            optimizer=GanOptimizer(optimizer_d, optimizer_g),
             model_version=model_version,
             input_size=input_size,
             **kwargs
