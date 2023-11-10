@@ -4,6 +4,12 @@ from .ddpm import Model as Model_, extract
 
 
 class Model(Model_):
+    """refer to:
+    paper:
+        - DENOISING DIFFUSION IMPLICIT MODELS
+    code:
+        - https://github.com/lucidrains/denoising-diffusion-pytorch
+    """
     def __init__(self, ddim_discr_method='uniform', ddim_timesteps=30, ddim_eta=0., **kwargs):
         super().__init__(**kwargs)
         self.ddim_discr_method = ddim_discr_method
@@ -23,15 +29,15 @@ class Model(Model_):
         # previous sequence
         ddim_timestep_prev_seq = np.append(np.array([0]), ddim_timestep_seq[:-1])
         x_0 = None
-        imgs = [x_t]
+        images = [x_t]
         for i in reversed(range(0, self.ddim_timesteps)):
             self_cond = x_0 if self.self_condition else None
             x_t, x_0 = self.p_sample(x_t, ddim_timestep_seq[i], ddim_timestep_prev_seq[i], self_cond)
-            imgs.append(x_t)
+            images.append(x_t)
 
-        ret = x_t if not return_all_timesteps else torch.stack(imgs, dim=1)
-        ret = (ret + 1) * 0.5  # unnormalize
-        return ret
+        images = x_t if not return_all_timesteps else torch.stack(images, dim=1)
+        images = (images + 1) * 0.5  # unnormalize
+        return images
 
     def p_sample(self, x_t, t: int, prev_t: int, x_self_cond=None):
         t = torch.full((x_t.shape[0],), t, device=x_t.device, dtype=torch.long)

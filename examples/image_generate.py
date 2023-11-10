@@ -658,7 +658,6 @@ class Ddpm_CelebA(Ddpm, CelebA):
             from examples.image_generate import Ddpm_CelebA as Process
 
             Process().run(max_epoch=200, train_batch_size=32, save_period=20000, max_save_weight_num=10, num_workers=16, metric_kwargs=dict(visualize=True))
-            {'score': 134.8424}
     """
 
     def __init__(self, dataset_version='CelebA', **kwargs):
@@ -667,7 +666,7 @@ class Ddpm_CelebA(Ddpm, CelebA):
 
 class Dpim(DiProcess):
     def __init__(self,
-                 model_version='Ddpm',   # model and train step is same to ddpm, only pred step is different
+                 model_version='Ddpm',  # model and train step is same to ddpm, only pred step is different
                  input_size=128,
                  in_ch=3,
                  **kwargs
@@ -695,8 +694,22 @@ class Ddim_CelebA(Dpim, CelebA):
             from examples.image_generate import Ddpm_CelebA as Process
 
             Process().run(max_epoch=200, train_batch_size=32, save_period=20000, max_save_weight_num=10, num_workers=16, metric_kwargs=dict(visualize=True))
-            {'score': 134.8424}
+            {'score': 64.1675}
     """
 
     def __init__(self, dataset_version='CelebA', **kwargs):
         super().__init__(dataset_version=dataset_version, **kwargs)
+
+
+class Ddim_CelebAHQ(Dpim, CelebAHQ):
+    """
+    Usage:
+        .. code-block:: python
+
+            from examples.image_generate import Ddim_CelebAHQ as Process
+
+            Process().run(max_epoch=200, train_batch_size=8, save_period=20000, max_save_weight_num=10, num_workers=16, metric_kwargs=dict(visualize=True))
+    """
+
+    def __init__(self, dataset_version='CelebAHQ', input_size=1024, **kwargs):
+        super().__init__(dataset_version=dataset_version, input_size=input_size, **kwargs)
