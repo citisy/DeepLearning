@@ -63,14 +63,14 @@ utf8_str_dict = dict(
     en=('\u0041', '\u007a'),
     en_upper=('\u0041', '\u005a'),
     en_lower=('\u0061', '\u007a'),
-    en_pr=(('\u0021', '\u002f'), ('\u003a', '\u0040'), ('\u005b', '\u0060'), ('\u007b', '\u007e')),
+    en_pr=(('\u0021', '\u002f'), ('\u003a', '\u0040'), ('\u005b', '\u0060'), ('\u007b', '\u007e')),  # en punctuation
     num=('\u0030', '\u0039'),
 
     # double/full-width symbols
     en_double=('\uff21', '\uff5a'),
     en_upper_double=('\uff21', '\uff3a'),
     en_lower_double=('\uff41', '\uff5a'),
-    en_pr_double=(('\uff01', '\uff0f'), ('\uff1a', '\uff20'), ('\uff3b', '\uff40'), ('\uff5b', '\uff5e')),
+    en_pr_double=(('\uff01', '\uff0f'), ('\uff1a', '\uff20'), ('\uff3b', '\uff40'), ('\uff5b', '\uff5e')),  # en punctuation
     num_double=('\uff10', '\uff19'),
 )
 
@@ -86,7 +86,7 @@ ascii_str_dict = dict(
     en_ascii=('\x41', '\x7a'),
     en_upper_ascii=('\x41', '\x5a'),
     en_lower_ascii=('\x61', '\x7a'),
-    en_pr_ascii=('\x5b', '\x60'),
+    en_pr_ascii=('\x5b', '\x60'),  # en punctuation
 )
 
 utf8_int_dict = gen_int_dict(utf8_str_dict)

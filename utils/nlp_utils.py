@@ -1,0 +1,94 @@
+from typing import List
+
+
+class Sequencer:
+    """make the single words to the sentence sequence
+    refer to [ROUGE: A Package for Automatic Evaluation of Summaries](https://aclanthology.org/W04-1013.pdf)"""
+
+    @staticmethod
+    def n_grams(segments: List[List[str]], n_gram=2) -> List[set]:
+        """
+        Usages:
+            >>> Sequencer.n_grams([['a', 'b', 'c', 'd', 'e']])
+            [{('d', 'e'), ('a', 'b'), ('b', 'c'), ('c', 'd')}]
+
+            >>> Sequencer.n_grams([['a', 'b', 'c', 'd', 'e']], n_gram=3)
+            [{('c', 'd', 'e'), ('b', 'c', 'd'), ('a', 'b', 'c')}]
+        """
+        segments_n_grams = []
+        for seg in segments:
+            seg = [tuple(seg[i: i + n_gram]) for i in range(len(seg) - n_gram + 1)]
+            seg = set(seg)
+            segments_n_grams.append(seg)
+
+        return segments_n_grams
+
+    @staticmethod
+    def search_seq(a, b, table):
+        def cur(i, j):
+            if i == 0 or j == 0:
+                return []
+            elif a[i - 1] == b[j - 1]:
+                return cur(i - 1, j - 1) + [(a[i - 1], i)]
+            elif table[i - 1, j] > table[i, j - 1]:
+                return cur(i - 1, j)
+            else:
+                return cur(i, j - 1)
+
+        return list(map(lambda x: x[0], cur(len(a), len(b))))
+
+    @classmethod
+    def longest_common_subsequence(cls, a: List[str], b: List[str]) -> dict:
+        """longest common subsequence(LCS)
+
+        Usages:
+            >>> Sequencer.longest_common_subsequence(['a', 'b', 'c', 'd', 'e'], ['a', 'b', 'b', 'c', 'd', 'e'])
+            {'lcs': ['a', 'b', 'c', 'd', 'e'], 'score': 5}
+        """
+        m, n = len(a), len(b)
+        table = dict()
+        for i in range(m + 1):
+            for j in range(n + 1):
+                if i == 0 or j == 0:
+                    table[i, j] = 0
+                elif a[i - 1] == b[j - 1]:
+                    table[i, j] = table[i - 1, j - 1] + 1
+                else:
+                    table[i, j] = max(table[i - 1, j], table[i, j - 1])
+
+        return dict(
+            lcs=cls.search_seq(a, b, table),
+            score=table[m, n]
+        )
+
+    @classmethod
+    def weighted_longest_common_subsequence(cls, a, b, f=lambda x: x ** 2, f_inv=lambda x: x ** 0.5) -> dict:
+        """weighted longest common subsequence(WLCS)
+
+        Usages:
+            >>> Sequencer.weighted_longest_common_subsequence(['a', 'b', 'c', 'd', 'e'], ['a', 'b', 'b', 'c', 'd', 'e'])
+            {'lcs': ['a', 'b', 'c', 'd', 'e'], 'score': 4.123105625617661}
+        """
+        m, n = len(a), len(b)
+        c, w = dict(), dict()
+
+        for i in range(m + 1):
+            for j in range(n + 1):
+                if i == 0 or j == 0:
+                    c[i, j] = 0
+                    w[i, j] = 0
+                elif a[i - 1] == b[j - 1]:
+                    k = w[i - 1, j - 1]
+                    c[i, j] = c[i - 1, j - 1] + f(k + 1) - f(k)
+                    w[i, j] = k + 1
+                elif c[i - 1, j] > c[i, j - 1]:
+                    c[i, j] = c[i - 1, j]
+                    w[i, j] = 0
+                else:
+                    c[i, j] = c[i, j - 1]
+                    w[i, j] = 0
+
+        return dict(
+            lcs=cls.search_seq(a, b, c),
+            score=f_inv(c[m, n])
+        )
