@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 from ..layers import Conv
-from ..semantic_segmentation.Unet import PureModel as NetG, unet256_config
+from ..semantic_segmentation.Unet import CurBlock, unet256_config
 from utils.torch_utils import initialize_layers
 
 net_g_config = dict(
@@ -75,6 +75,15 @@ class Model(nn.ModuleList):
         loss_g = loss_g_gan + loss_g_l1
 
         return loss_g
+
+
+class NetG(nn.Sequential):
+    def __init__(self, conv_config=unet256_config):
+        in_ches, hidden_ches, out_ches = conv_config
+        super().__init__(
+            CurBlock(in_ches, hidden_ches, out_ches),
+            nn.Tanh()
+        )
 
 
 class NetD(nn.Module):
