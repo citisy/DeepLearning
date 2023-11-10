@@ -1,14 +1,9 @@
-"""see
-- https://www.unicode.org/charts/
-- https://www.unicode.org/Public/UCD/latest/ucd/NamesList.txt
-to get more info for all unicode characters
-"""
 import re
 
 
-def gen_charset_int_dict():
+def gen_int_dict(str_dict):
     dic = {}
-    for k, v in charset_str_dict.items():
+    for k, v in str_dict.items():
         if isinstance(v[0], tuple):
             tmp = []
             for vv in v:
@@ -19,9 +14,9 @@ def gen_charset_int_dict():
     return dic
 
 
-def get_charset_pattern_dict():
+def get_unicode_pattern_dict(int_dict):
     dic = {}
-    for k, v in charset_int_dict.items():
+    for k, v in int_dict.items():
         if isinstance(v[0], tuple):
             p = ''
             for vv in v:
@@ -34,38 +29,74 @@ def get_charset_pattern_dict():
     return dic
 
 
-charset_str_dict = dict(
+def get_simple_pattern_dict(int_dict):
+    dic = {}
+    for k, v in int_dict.items():
+        if isinstance(v[0], tuple):
+            p = ''
+            for vv in v:
+                p += f'[\\x{vv[0]:02x}-\\x{vv[1]:02x}]' + '|'
+            p = p[:-1]
+        else:
+            p = f'[\\x{v[0]:02x}-\\x{v[1]:02x}]'
+        dic[k] = re.compile(p)
+
+    return dic
+
+
+"""see
+- https://www.unicode.org/charts/
+- https://www.unicode.org/Public/UCD/latest/ucd/NamesList.txt
+to get more info for all unicode characters
+"""
+utf8_str_dict = dict(
 
     # https://www.cnblogs.com/straybirds/p/6392306.html to get more info for zh utf8 characters
-    zh_utf8=('\u4e00', '\u9fa5'),
-    zh_gbk=('\x00', '\xff'),
-    zh_gb2312=('\xa1', '\xff'),
+    zh=('\u4e00', '\u9fa5'),
 
-    jp_hi_utf8=('\u3040', '\u309f'),
-    jp_ka_utf8=('\u30a0', '\u30ff'),
+    jp_hi=('\u3040', '\u309f'),
+    jp_ka=('\u30a0', '\u30ff'),
 
-    cjk_utf8=('\u2e80', '\u9fff'),
-    cjk_pr_utf8=(('\u3000', '\u303f'), ('\ufe30', '\ufe4f')),
+    cjk=('\u2e80', '\u9fff'),
+    cjk_pr=(('\u3000', '\u303f'), ('\ufe30', '\ufe4f')),
 
-    en_utf8=('\u0041', '\u007a'),
-    en_upper_utf8=('\u0041', '\u005a'),
-    en_lower_utf8=('\u0061', '\u007a'),
-    en_pr_utf8=(('\u0021', '\u002f'), ('\u003a', '\u0040'), ('\u005b', '\u0060'), ('\u007b', '\u007e')),
-    num_utf8=('\u0030', '\u0039'),
+    en=('\u0041', '\u007a'),
+    en_upper=('\u0041', '\u005a'),
+    en_lower=('\u0061', '\u007a'),
+    en_pr=(('\u0021', '\u002f'), ('\u003a', '\u0040'), ('\u005b', '\u0060'), ('\u007b', '\u007e')),
+    num=('\u0030', '\u0039'),
 
     # double/full-width symbols
-    en_double_utf8=('\uff21', '\uff5a'),
-    en_upper_double_utf8=('\uff21', '\uff3a'),
-    en_lower_double_utf8=('\uff41', '\uff5a'),
-    en_pr_double_utf8=(('\uff01', '\uff0f'), ('\uff1a', '\uff20'), ('\uff3b', '\uff40'), ('\uff5b', '\uff5e')),
-    num_double_utf8=('\uff10', '\uff19'),
+    en_double=('\uff21', '\uff5a'),
+    en_upper_double=('\uff21', '\uff3a'),
+    en_lower_double=('\uff41', '\uff5a'),
+    en_pr_double=(('\uff01', '\uff0f'), ('\uff1a', '\uff20'), ('\uff3b', '\uff40'), ('\uff5b', '\uff5e')),
+    num_double=('\uff10', '\uff19'),
+)
 
+gbk_str_dict = dict(
+    zh_gbk=('\x00', '\xff'),
+)
+
+gb2312_str_dict = dict(
+    zh_gb2312=('\xa1', '\xff'),
+)
+
+ascii_str_dict = dict(
     en_ascii=('\x41', '\x7a'),
     en_upper_ascii=('\x41', '\x5a'),
     en_lower_ascii=('\x61', '\x7a'),
     en_pr_ascii=('\x5b', '\x60'),
-
 )
 
-charset_int_dict = gen_charset_int_dict()
-charset_pattern_dict = get_charset_pattern_dict()
+utf8_int_dict = gen_int_dict(utf8_str_dict)
+utf8_pattern_dict = get_unicode_pattern_dict(utf8_int_dict)
+
+gbk_int_dict = gen_int_dict(gbk_str_dict)
+gbk_pattern_dict = get_simple_pattern_dict(gbk_int_dict)
+
+gb2312_int_dict = gen_int_dict(gb2312_str_dict)
+gb2312_pattern_dict = get_simple_pattern_dict(gb2312_int_dict)
+
+ascii_int_dict = gen_int_dict(ascii_str_dict)
+ascii_pattern_dict = get_simple_pattern_dict(ascii_int_dict)

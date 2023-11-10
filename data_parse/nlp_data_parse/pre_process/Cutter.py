@@ -32,11 +32,11 @@ def simple_cut(segments: List[str], sep=None, **filter_kwargs):
         >>> simple_cut(['hello world!'], filter_blank=True)
         [['helloworld!']]
 
-        >>> from utils.excluded.charset_dict import charset_pattern_dict
-        >>> simple_cut(['hello world!'], filter_pattern=charset_pattern_dict['en_pr_utf8'])
+        >>> from utils.excluded.charset_dict import utf8_pattern_dict
+        >>> simple_cut(['hello world!'], filter_pattern=utf8_pattern_dict['en_pr'])
         [['hello', 'world']]
 
-        >>> simple_cut(['hello world!'], keep_pattern=charset_pattern_dict['en_utf8'])
+        >>> simple_cut(['hello world!'], keep_pattern=utf8_pattern_dict['en'])
         [['helloworld']]
     """
     _segments = []
@@ -56,11 +56,11 @@ def jieba_cut(segments: List[str], **filter_kwargs) -> List[List[str]]:
         >>> jieba_cut(['你好 世界！'], filter_blank=True)
         [['你好', '世界', '！']]
 
-        >>> from utils.excluded.charset_dict import charset_pattern_dict
-        >>> jieba_cut(['你好 世界！'], filter_pattern=(charset_pattern_dict['cjk_pr_utf8'], charset_pattern_dict['en_pr_double_utf8']))
+        >>> from utils.excluded.charset_dict import utf8_pattern_dict
+        >>> jieba_cut(['你好 世界！'], filter_pattern=(utf8_pattern_dict['cjk_pr'], utf8_pattern_dict['en_pr_double']))
         [['你好', ' ', '世界']]
 
-        >>> jieba_cut(['你好 世界！'], keep_pattern=charset_pattern_dict['zh_utf8'])
+        >>> jieba_cut(['你好 世界！'], keep_pattern=utf8_pattern_dict['zh'])
         [['你好', '世界']]
     """
     import jieba
