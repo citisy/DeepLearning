@@ -1,5 +1,6 @@
 import cv2
 import numpy as np
+import inspect
 from PIL import ImageFont, ImageDraw, Image
 from typing import List
 from .excluded.cmap import cmap, terminal_cmap
@@ -20,6 +21,7 @@ class ImageVisualize:
     def box(img, boxes, visual_type=RECTANGLE, colors=None, line_thickness=None):
         """目标框
         boxes: polygon: (-1, -1, 2) or rectangle: (-1, 4)
+        colors: (-1, 3) or (-1, 1)
         """
         img = img.copy()
         colors = colors or [get_color_array(0)] * len(boxes)
@@ -196,10 +198,12 @@ class ImageVisualize:
         return img
 
 
-def get_variable_name(var, local_vars):
-    for k, v in local_vars.items():
-        if local_vars[k] is var:
-            return k
+def get_variable_name(var):
+    # there may be some bugs in the future
+    for fi in reversed(inspect.stack()):
+        names = [var_name for var_name, var_val in fi.frame.f_locals.items() if var_val is var]
+        if len(names) > 0:
+            return names[0]
 
 
 class TextVisualize:

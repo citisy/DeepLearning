@@ -248,6 +248,8 @@ class Saver:
             self.stdout(save_path)
         except errors.PdfReadError:
             self.stderr(save_path)
+        except KeyError:
+            self.stderr(save_path)
 
     def save_image_to_pdf(self, obj: np.ndarray or str, path):
         import fitz     # pip install PyMuPDF
