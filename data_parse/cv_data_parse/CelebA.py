@@ -157,7 +157,7 @@ class ZipLoader(Loader):
 
         return super()._call(img_task=img_task, zip_file=zip_file, **kwargs)
 
-    def get_ret(self, line, image_type=DataRegister.ARRAY, img_task='original', only_image=False,
+    def get_ret(self, line, img_task='original', only_image=False,
                 bbox_df=None, attr_df=None, identity_df=None, load_type_df=None, landmarks_df=None,
                 zip_file=None, **kwargs) -> dict:
         _id, _data_type = line.split(' ')
