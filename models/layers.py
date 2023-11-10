@@ -74,11 +74,18 @@ class Conv(nn.Sequential):
 
         layers = []
 
-        for m in mode:
+        for i, m in enumerate(mode):
             if m == 'c':
                 layers.append(nn.Conv2d(in_ch, out_ch, k, s, p, **conv_kwargs))
             elif m == 'n' and is_norm:
-                layers.append(norm or nn.BatchNorm2d(out_ch))
+                if norm is not None:
+                    j = mode.index('c')
+                    if i < j:   # norm first
+                        norm_ch = in_ch
+                    else:
+                        norm_ch = out_ch
+                    norm = nn.BatchNorm2d(norm_ch)
+                layers.append(norm)
             elif m == 'a' and is_act:
                 layers.append(act or nn.ReLU(True))
             elif m == 'd' and is_drop:
@@ -137,11 +144,18 @@ class ConvT(nn.Sequential):
 
             layers = []
 
-            for m in mode:
+            for i, m in enumerate(mode):
                 if m == 'c':
                     layers.append(nn.ConvTranspose2d(in_ch, out_ch, k, s, p, **conv_kwargs))
                 elif m == 'n' and is_norm:
-                    layers.append(norm or nn.BatchNorm2d(out_ch))
+                    if norm is not None:
+                        j = mode.index('c')
+                        if i < j:  # norm first
+                            norm_ch = in_ch
+                        else:
+                            norm_ch = out_ch
+                        norm = nn.BatchNorm2d(norm_ch)
+                    layers.append(norm)
                 elif m == 'a' and is_act:
                     layers.append(act or nn.ReLU(True))
                 elif m == 'd' and is_drop:
@@ -174,13 +188,20 @@ class Linear(nn.Sequential):
 
         layers = []
 
-        for m in mode:
+        for i, m in enumerate(mode):
             if m == 'l':
                 if linear is None:
                     linear = nn.Linear
                 layers.append(linear(in_features, out_features, **linear_kwargs))
             elif m == 'n' and is_norm:
-                layers.append(norm or nn.BatchNorm1d(out_features))
+                if norm is not None:
+                    j = mode.index('l')
+                    if i < j:   # norm first
+                        norm_features = in_features
+                    else:
+                        norm_features = out_features
+                    norm = nn.BatchNorm1d(norm_features)
+                layers.append(norm)
             elif m == 'a' and is_act:
                 layers.append(act or nn.Sigmoid())
             elif m == 'd' and is_drop:
