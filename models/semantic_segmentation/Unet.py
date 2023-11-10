@@ -1,6 +1,5 @@
 import torch
 import torch.nn as nn
-from torch.nn import functional as F
 from . import BaseSemSegModel
 from ..layers import Conv, ConvInModule, ConvT
 from utils.torch_utils import initialize_layers
@@ -25,7 +24,7 @@ class Model(BaseSemSegModel):
         in_ches[0] = in_ch
         out_ches[0] = self.out_features
         # top(outer) -> bottom(inner)
-        self.backbone = CurBlock(in_ches, hidden_ches, out_ches, is_top_block=True)
+        self.backbone = CurBlock(in_ches, hidden_ches, out_ches)
         initialize_layers(self)
 
     def forward(self, x, pix_images=None):
@@ -33,52 +32,62 @@ class Model(BaseSemSegModel):
         return super().forward(x, pix_images)
 
 
-class PureModel(nn.Sequential):
-    def __init__(self, conv_config=unet256_config):
-        in_ches, hidden_ches, out_ches = conv_config
-        super().__init__(
-            CurBlock(in_ches, hidden_ches, out_ches, is_top_block=True),
-            nn.Tanh()
-        )
-        initialize_layers(self)
-
-
 class CurBlock(nn.Module):
-    def __init__(self, in_ches, hidden_ches, out_ches, is_top_block=False):
+    def __init__(self, in_ches, hidden_ches, out_ches, layer_idx=0,
+                 get_down_layer_func=None, get_up_layer_func=None):
         super().__init__()
-        in_ch, hidden_ch, out_ch = in_ches.pop(0), hidden_ches.pop(0), out_ches.pop(0)
+        get_down_layer_func = get_down_layer_func or down_layers
+        get_up_layer_func = get_up_layer_func or up_layers
 
-        is_bottom_block = len(in_ches) == 0
-        self.is_bottom_block = is_bottom_block
-        self.is_top_block = is_top_block
-
+        is_bottom = len(in_ches) == layer_idx
+        is_top = layer_idx == 0
         layers = []
+        in_ch, hidden_ch, out_ch = in_ches[layer_idx], hidden_ches[layer_idx], out_ches[layer_idx]
 
         # down
-        if is_top_block:
-            layers.append(Conv(in_ch, hidden_ch, k=4, s=2, p=1, is_act=False, is_norm=False, mode='acn'))
-        elif is_bottom_block:
-            layers.append(Conv(in_ch, hidden_ch, k=4, s=2, p=1, act=nn.LeakyReLU(0.2), is_norm=False, mode='acn'))
-        else:
-            layers.append(Conv(in_ch, hidden_ch, k=4, s=2, p=1, act=nn.LeakyReLU(0.2), mode='acn'))
+        layers.append(get_down_layer_func(in_ch, hidden_ch, is_top, is_bottom, layer_idx))
 
         # sub
-        if not is_bottom_block:
-            layers.append(CurBlock(in_ches, hidden_ches, out_ches))
+        if not is_bottom:
+            layers.append(CurBlock(
+                in_ches, hidden_ches, out_ches,
+                layer_idx=layer_idx + 1,
+                get_down_layer_func=get_down_layer_func,
+                get_up_layer_func=get_up_layer_func
+            ))
 
         # up
-        if is_top_block:
-            layers.append(ConvT(hidden_ch * 2, out_ch, k=4, s=2, p=1, is_norm=False, mode='acn'))
-        elif is_bottom_block:
-            layers.append(ConvT(hidden_ch, out_ch, k=4, s=2, p=1, mode='acn'))
-        else:
-            layers.append(ConvT(hidden_ch * 2, out_ch, k=4, s=2, p=1, mode='acn'))
+        layers.append(get_up_layer_func(hidden_ch, out_ch, is_top, is_bottom, layer_idx))
 
         self.conv_seq = nn.Sequential(*layers)
+        self.is_bottom = is_bottom
+        self.is_top = is_top
 
     def forward(self, x):
         y = self.conv_seq(x)
-        if self.is_top_block:
+        if self.is_top:
             return y
         else:
             return torch.cat([x, y], 1)
+
+
+def down_layers(in_ch, hidden_ch, is_top_block, is_bottom_block, layer_idx=None):
+    if is_top_block:
+        layer = Conv(in_ch, hidden_ch, k=4, s=2, p=1, mode='c')
+    elif is_bottom_block:
+        layer = Conv(in_ch, hidden_ch, k=4, s=2, p=1, act=nn.LeakyReLU(0.2), mode='ac')
+    else:
+        layer = Conv(in_ch, hidden_ch, k=4, s=2, p=1, act=nn.LeakyReLU(0.2), mode='acn')
+
+    return layer
+
+
+def up_layers(hidden_ch, out_ch, is_top_block, is_bottom_block, layer_idx=None):
+    if is_top_block:
+        layer = ConvT(hidden_ch * 2, out_ch, k=4, s=2, p=1, mode='ac')
+    elif is_bottom_block:
+        layer = ConvT(hidden_ch, out_ch, k=4, s=2, p=1, mode='acn')
+    else:
+        layer = ConvT(hidden_ch * 2, out_ch, k=4, s=2, p=1, mode='acn')
+
+    return layer

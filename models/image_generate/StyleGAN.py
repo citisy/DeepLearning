@@ -1,5 +1,6 @@
 import math
 from math import floor, log2
+import numpy as np
 from torch import nn, einsum
 from einops import rearrange, repeat
 from kornia.filters import filter2d
@@ -16,15 +17,15 @@ net_s_config = dict(
 
 net_g_config = dict(
     network_capacity=16,
-    attn_layers=[4, 5],
+    # attn_layers=[4, 5],
     const_input=True
 )
 
 net_d_config = dict(
     network_capacity=16,
     fq_dict_size=512,
-    fq_layers=[4, 5],
-    attn_layers=[4, 5]
+    # fq_layers=[4, 5],
+    # attn_layers=[4, 5]
 )
 
 
@@ -53,14 +54,29 @@ class Model(nn.ModuleList):
         self.pl_mean = None
 
         # init weights
-        initialize_layers(self, init_type='kaiming')
+        # initialize_layers(self, init_type='kaiming')
+        self._init_weights()
+
+    def _init_weights(self):
+        for m in self.modules():
+            if type(m) in {nn.Conv2d, nn.Linear}:
+                nn.init.kaiming_normal_(m.weight, a=0, mode='fan_in', nonlinearity='leaky_relu')
+
+        for block in self.net_g.blocks:
+            nn.init.zeros_(block.to_noise1.weight)
+            nn.init.zeros_(block.to_noise2.weight)
+            nn.init.zeros_(block.to_noise1.bias)
+            nn.init.zeros_(block.to_noise2.bias)
 
     def loss_d(self, real_x, use_gp=False):
         batch_size = real_x.shape[0]
 
         noise_x = self.gen_noise_image(batch_size, real_x.device)
         # z -> w > net_s -> styles
-        styles = self.gen_styles(self.gen_rand_noise_z_list(batch_size, real_x.device))
+        if np.random.random() < 0.9:
+            styles = self.gen_styles(self.gen_rand_noise_z_list(batch_size, real_x.device))
+        else:
+            styles = self.gen_styles(self.gen_same_noise_z_list(batch_size, real_x.device))
 
         # styles + noise_x -> net_g -> fake_x
         fake_x = self.net_g(styles, noise_x)
@@ -69,9 +85,12 @@ class Model(nn.ModuleList):
         real_x.requires_grad_(True)
         real_y, real_q_loss = self.net_d(real_x)
 
-        r = real_y - fake_y.mean()
-        f = fake_y - real_y.mean()
-        loss = (F.relu(1 + r) + F.relu(1 - f)).mean() + (fake_q_loss + real_q_loss).mean()
+        r = real_y
+        f = fake_y
+
+        # r = real_y - fake_y.mean()
+        # f = fake_y - real_y.mean()
+        loss = (F.relu(1 + r) + F.relu(1 - f)).mean() #+ (fake_q_loss + real_q_loss).mean()
 
         if use_gp:
             # gradient penalty
@@ -84,7 +103,10 @@ class Model(nn.ModuleList):
         batch_size = real_x.shape[0]
 
         noise_x = self.gen_noise_image(batch_size, real_x.device)
-        styles = self.gen_styles(self.gen_rand_noise_z_list(batch_size, real_x.device))
+        if np.random.random() < 0.9:
+            styles = self.gen_styles(self.gen_rand_noise_z_list(batch_size, real_x.device))
+        else:
+            styles = self.gen_styles(self.gen_same_noise_z_list(batch_size, real_x.device))
 
         fake_x = self.net_g(styles, noise_x)
         fake_y, _ = self.net_d(fake_x)
@@ -310,7 +332,7 @@ class Conv2DMod(nn.Module):
         self.demod = demod
         self.weight = nn.Parameter(torch.randn((out_ch, in_ch, k, k)))
         self.eps = eps
-        # nn.init.kaiming_normal_(self.weight, a=0, mode='fan_in', nonlinearity='leaky_relu')
+        nn.init.kaiming_normal_(self.weight, a=0, mode='fan_in', nonlinearity='leaky_relu')
 
     def initialize_layers(self):
         nn.init.kaiming_normal_(self.weight, a=0, mode='fan_in', nonlinearity='leaky_relu')
