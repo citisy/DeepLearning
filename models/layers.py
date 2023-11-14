@@ -78,7 +78,7 @@ class Conv(nn.Sequential):
             if m == 'c':
                 layers.append(nn.Conv2d(in_ch, out_ch, k, s, p, **conv_kwargs))
             elif m == 'n' and is_norm:
-                if norm is not None:
+                if norm is None:
                     j = mode.index('c')
                     if i < j:   # norm first
                         norm_ch = in_ch
@@ -148,7 +148,7 @@ class ConvT(nn.Sequential):
                 if m == 'c':
                     layers.append(nn.ConvTranspose2d(in_ch, out_ch, k, s, p, **conv_kwargs))
                 elif m == 'n' and is_norm:
-                    if norm is not None:
+                    if norm is None:
                         j = mode.index('c')
                         if i < j:  # norm first
                             norm_ch = in_ch
@@ -194,7 +194,7 @@ class Linear(nn.Sequential):
                     linear = nn.Linear
                 layers.append(linear(in_features, out_features, **linear_kwargs))
             elif m == 'n' and is_norm:
-                if norm is not None:
+                if norm is None:
                     j = mode.index('l')
                     if i < j:   # norm first
                         norm_features = in_features
