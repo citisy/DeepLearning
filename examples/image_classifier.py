@@ -117,7 +117,7 @@ class ClsProcess(Process):
                     ret['_id'] = f'{_id.stem}({ret["_class"]}_{_p}){_id.suffix}'
                     ret['image'] = ret['ori_image']
                 DataVisualizer(f'{self.save_result_dir}/{cur_epoch}', verbose=False, pbar=False)(rets[:n])
-                self.log_info.setdefault('val_image', []).extend([self.wandb.Image(ret['image'], caption=ret['_id']) for ret in rets[:n]])
+                self.log_info.setdefault('val_image', []).extend([self.wandb.Image(ret['image'], mode='BGR', caption=ret['_id']) for ret in rets[:n]])
                 vis_num += n
 
         return vis_num

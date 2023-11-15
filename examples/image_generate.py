@@ -74,7 +74,7 @@ class IgProcess(Process):
                 rets = [r for r in zip(*rets)]
                 cache_dir = f'{self.save_result_dir}/{cur_epoch}'
                 cache_image = DataVisualizer(cache_dir, verbose=False, pbar=False, stdout_method=self.logger.info)(*rets[:n], return_image=True)
-                self.log_info.setdefault('val_image', []).extend([self.wandb.Image(img, caption=Path(r['_id']).stem) for img, r in zip(cache_image, rets[0])])
+                self.log_info.setdefault('val_image', []).extend([self.wandb.Image(img, mode='BGR', caption=Path(r['_id']).stem) for img, r in zip(cache_image, rets[0])])
                 cur_vis_num += n
         return cur_vis_num
 
@@ -256,24 +256,34 @@ class WGAN_Mnist(WGAN, Mnist):
 
 
 class DataProcess(Process):
+    rand_aug = RandomApply([
+        pixel_perturbation.CutOut([0.25] * 4),
+        geometry.HFlip(),
+    ], probs=[0.2, 0.5])
+
     aug = Apply([
         scale.Proportion(choice_type=3),
         crop.Random(is_pad=False),
         # scale.LetterBox(),    # there are gray lines
+    ])
+
+    post_aug = Apply([
         pixel_perturbation.MinMax(),
+        # pixel_perturbation.Normalize(127.5, 127.5),
         channel.HWC2CHW()
     ])
 
     def data_augment(self, ret) -> dict:
-        # aug = RandomApply([
-        #     pixel_perturbation.CutOut([0.25] * 4),
-        #     geometry.HFlip(),
-        # ], probs=[0.2, 0.5])
-        # ret.update(aug(**ret))
-
+        # ret.update(self.rand_aug(**ret))
         ret.update(dst=self.input_size)
         ret.update(self.aug(**ret))
+        ret.update(self.post_aug(**ret))
 
+        return ret
+
+    def val_data_restore(self, ret) -> dict:
+        ret = self.post_aug.restore(ret)
+        ret.update(pixel_perturbation.Clip()(**ret))
         return ret
 
 

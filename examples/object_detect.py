@@ -199,7 +199,7 @@ class OdProcess(Process):
                 cache_image = DataVisualizer(f'{self.save_result_dir}/{cur_epoch}', verbose=False, pbar=False)(
                     rets[:n], outputs[:n], return_image=True, cls_alias=cls_alias
                 )
-                self.log_info.setdefault('val_image', []).extend([self.wandb.Image(img, caption=Path(r['_id']).stem) for img, r in zip(cache_image, rets)])
+                self.log_info.setdefault('val_image', []).extend([self.wandb.Image(img, mode='BGR', caption=Path(r['_id']).stem) for img, r in zip(cache_image, rets)])
                 vis_num += n
 
         return vis_num

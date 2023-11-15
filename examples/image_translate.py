@@ -23,7 +23,7 @@ class ItProcess(GanProcess):
                 ret = [r[:n] for r in ret]
                 cache_dir = f'{self.save_result_dir}/{cur_epoch}'
                 cache_image = DataVisualizer(cache_dir, verbose=False, pbar=False)(*ret, return_image=True)
-                self.log_info.setdefault('val_image', []).extend([self.wandb.Image(img, caption=Path(_id).stem) for img, _id in zip(cache_image, _ids)])
+                self.log_info.setdefault('val_image', []).extend([self.wandb.Image(img, mode='BGR', caption=Path(_id).stem) for img, _id in zip(cache_image, _ids)])
                 vis_num += n
         return vis_num
 
