@@ -1,18 +1,16 @@
-import math
 import cv2
 import copy
 import numpy as np
 import torch
-from torch import nn, optim
-from torch.utils.data import DataLoader
-from PIL import Image
-from tqdm import tqdm
+from torch import optim, nn
+from metrics import mulit_classifier
+from data_parse.cv_data_parse.data_augmentation import crop, scale, geometry, channel, RandomApply, Apply, complex, pixel_perturbation
+from data_parse import DataRegister
 from pathlib import Path
-from utils.visualize import get_color_array
-from .base import Process, BaseDataset
-from metrics import classifier, mulit_classifier
+from PIL import Image
 from data_parse.cv_data_parse.base import DataVisualizer
-from data_parse.cv_data_parse.data_augmentation import crop, scale, geometry, channel, pixel_perturbation, RandomApply, Apply
+from processor import Process, DataHooks, bundled, BaseDataset
+from utils.visualize import get_color_array
 
 
 class SegDataset(BaseDataset):
@@ -36,79 +34,50 @@ class SegDataset(BaseDataset):
 
 
 class SegProcess(Process):
-    def fit(self, max_epoch, batch_size, save_period=None, metric_kwargs=dict(), **dataloader_kwargs):
-        train_dataloader, val_dataloader, metric_kwargs = self.on_train_start(batch_size, metric_kwargs, **dataloader_kwargs)
+    def set_optimizer(self):
+        self.optimizer = optim.SGD(self.model.parameters(), lr=0.001, momentum=0.9, weight_decay=1e-4)
 
-        lrf = 0.01
+    def on_train_start(self, container, batch_size=16, max_epoch=None, **kwargs):
+        super().on_train_start(container, batch_size=batch_size, **kwargs)
 
-        # lf = lambda x: (1 - x / max_epoch) * (1.0 - lrf) + lrf
-        lf = lambda x: ((1 - math.cos(x * math.pi / max_epoch)) / 2) * (lrf - 1) + 1  # cos_lr
+        self.set_scheduler(max_epoch=max_epoch)
+        self.set_scaler()
 
-        scheduler = optim.lr_scheduler.LambdaLR(self.optimizer, lr_lambda=lf)
-        scheduler.last_epoch = -1
+    def on_train_step(self, rets, container, **kwargs) -> dict:
+        images = [torch.from_numpy(ret.pop('image')).to(self.device, non_blocking=True, dtype=torch.float) for ret in rets]
+        images = torch.stack(images)
 
-        scaler = torch.cuda.amp.GradScaler(enabled=True)
-        accumulate = 64 // batch_size
-        j = 0
+        pix_images = [torch.from_numpy(ret.pop('pix_image')).to(self.device, non_blocking=True, dtype=torch.long) for ret in rets]
+        pix_images = torch.stack(pix_images)
 
-        for i in range(self.start_epoch, max_epoch):
-            self.model.train()
-            pbar = tqdm(train_dataloader, desc=f'train {i}/{max_epoch}')
-            total_loss = 0
-            total_batch = 0
-            losses = None
+        images = images / 255
 
-            for rets in pbar:
-                images = [torch.from_numpy(ret.pop('image')).to(self.device, non_blocking=True, dtype=torch.float) for ret in rets]
-                images = torch.stack(images)
+        with torch.cuda.amp.autocast(True):
+            output = self.model(images, pix_images)
 
-                pix_images = [torch.from_numpy(ret.pop('pix_image')).to(self.device, non_blocking=True, dtype=torch.long) for ret in rets]
-                pix_images = torch.stack(pix_images)
+        return output
 
-                images = images / 255
+    def on_backward(self, output, container, batch_size=16, accumulate=64, **kwargs):
+        loss = output['loss']
+        counters = container['counters']
 
-                with torch.cuda.amp.autocast(True):
-                    output = self.model(images, pix_images)
-                loss = output['loss']
+        self.scaler.scale(loss).backward()
+        if counters['total_nums'] % accumulate < batch_size:
+            self.scaler.unscale_(self.optimizer)  # unscale gradients
+            torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=10.0)  # clip gradients
+            self.scaler.step(self.optimizer)  # optimizer.step
+            self.scaler.update()
+            self.optimizer.zero_grad()
 
-                scaler.scale(loss).backward()
-                if j % accumulate == 0:
-                    scaler.unscale_(self.optimizer)  # unscale gradients
-                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=10.0)  # clip gradients
-                    scaler.step(self.optimizer)  # optimizer.step
-                    scaler.update()
-                    self.optimizer.zero_grad()
-
-                j += 1
-                total_loss += loss.item()
-                total_batch += len(rets)
-                mean_loss = total_loss / total_batch
-
-                losses = {
-                    'loss': loss.item(),
-                    'mean_loss': mean_loss,
-                }
-                # mem_info = {
-                #     'cpu_info': log_utils.MemoryInfo.get_process_mem_info(),
-                #     'gpu_info': log_utils.MemoryInfo.get_gpu_mem_info()
-                # }
-
-                pbar.set_postfix({
-                    **losses,
-                    # **mem_info
-                })
-
-            scheduler.step()
-            if self.on_train_epoch_end(i, save_period, val_dataloader,
-                                       losses=losses,
-                                       **metric_kwargs):
-                break
+    def on_train_epoch_end(self, *args, **kwargs) -> bool:
+        self.scheduler.step()
+        return super().on_train_epoch_end(*args, **kwargs)
 
     def metric(self, *args, **kwargs):
-        true, pred = self.predict(*args, **kwargs)
+        container = self.predict(*args, **kwargs)
         # ignore background
-        pred = np.concatenate(pred).flatten() - 1
-        true = np.concatenate(true).flatten() - 1
+        pred = np.concatenate(container['preds']).flatten() - 1
+        true = np.concatenate(container['trues']).flatten() - 1
 
         result = mulit_classifier.TopMetric(n_class=self.out_features, ignore_class=(-1, 254)).f1(true, pred)
 
@@ -118,44 +87,25 @@ class SegProcess(Process):
 
         return result
 
-    def predict(self, dataset, batch_size=16, cur_epoch=-1, visualize=False, max_vis_num=None, save_ret_func=None, **dataloader_kwargs):
-        dataloader = DataLoader(
-            dataset,
-            batch_size=batch_size,
-            collate_fn=dataset.collate_fn,
-            **dataloader_kwargs
-        )
+    def on_val_step(self, rets, container, **kwargs) -> tuple:
+        images = [torch.from_numpy(ret.pop('image')).to(self.device, non_blocking=True, dtype=torch.float) for ret in rets]
+        images = torch.stack(images)
+        images = images / 255
 
-        self.model.to(self.device)
-        pred = []
-        true = []
-        max_vis_num = max_vis_num or float('inf')
-        vis_num = 0
+        outputs = self.model(images).cpu().detach().numpy().astype(np.uint8)
+        container['preds'].append(outputs)
+        container['trues'].append([ret.pop('pix_image') for ret in rets])
 
-        with torch.no_grad():
-            self.model.eval()
-            for rets in tqdm(dataloader):
-                images = [torch.from_numpy(ret.pop('image')).to(self.device, non_blocking=True, dtype=torch.float) for ret in rets]
-                images = torch.stack(images)
-                images = images / 255
+        return rets, outputs
 
-                pred_images = self.model(images).cpu().detach().numpy().astype(np.uint8)
-                pred.append(pred_images)
-                true.append([ret.pop('pix_image') for ret in rets])
-
-                vis_num = self.on_val_step_end(rets, pred_images, cur_epoch, visualize, batch_size, max_vis_num, vis_num)
-
-        if save_ret_func:
-            save_ret_func(pred)
-
-        return true, pred
-
-    def on_val_step_end(self, rets, pred_images, cur_epoch, visualize, batch_size, max_vis_num, vis_num):
-        if visualize:
-            n = min(batch_size, max_vis_num - vis_num)
+    def on_val_step_end(self, rets, outputs, container, is_visualize=False, batch_size=16, max_vis_num=None, **kwargs):
+        if is_visualize:
+            max_vis_num = max_vis_num or float('inf')
+            counters = container['counters']
+            n = min(batch_size, max_vis_num - counters['vis_num'])
             if n > 0:
-                outputs = []
-                for ret, output in zip(rets, pred_images):
+                det_rets = []
+                for ret, output in zip(rets, outputs):
                     ret.pop('bboxes')
 
                     ori_pix_image = ret['ori_pix_image']
@@ -167,46 +117,49 @@ class SegProcess(Process):
 
                     det_ret = {'image': pred_image, **ret}
                     det_ret = self.val_data_restore(det_ret)
-                    outputs.append(det_ret)
+                    det_rets.append(det_ret)
 
                     ret['image'] = ret['ori_image']
                     ret['pix_image'] = true_image
 
-                cache_image = DataVisualizer(f'{self.save_result_dir}/{cur_epoch}', verbose=False, pbar=False)(rets[:n], outputs[:n], return_image=True)
-                self.log_info.setdefault('val_image', []).extend([self.wandb.Image(img, mode='BGR', caption=Path(r['_id']).stem) for img, r in zip(cache_image, rets)])
-                vis_num += n
+                cache_image = DataVisualizer(f'{self.cache_dir}/{counters["epoch"]}', verbose=False, pbar=False)(rets[:n], det_rets[:n], return_image=True)
+                self.get_log_trace(bundled.WANDB).setdefault('val_image', []).extend(
+                    [self.wandb.Image(cv2.cvtColor(img, cv2.COLOR_BGR2RGB), caption=Path(r['_id']).stem) for img, r in zip(cache_image, rets)]
+                )
+                counters['vis_num'] += n
 
-        return vis_num
 
-
-class Voc(Process):
+class Voc(DataHooks):
+    dataset_version = 'VOC2012'
     data_dir = 'data/VOC2012'
+    input_size = 512
+    in_ch = 3
+    out_features = 20
 
-    def data_augment(self, ret):
-        random_aug = RandomApply([
-            geometry.HFlip(),
-            geometry.VFlip(),
-        ])
+    aug = Apply([
+        scale.Proportion(choice_type=3),
+        crop.Random(is_pad=False),
+        # scale.LetterBox(),    # there are gray lines
+    ])
 
-        aug = Apply([
-            # scale.LetterBox(),
-            scale.Jitter(),
-            # pixel_perturbation.MinMax(),
-            channel.HWC2CHW()
-        ])
+    # note that, use cv2.INTER_NEAREST mode to resize
+    pix_aug = Apply([
+        scale.Proportion(choice_type=3, interpolation=1),
+        crop.Random(is_pad=False, fill=255),
+        # scale.LetterBox(interpolation=1, fill=255),    # there are gray lines
+    ])
 
-        ret.update(random_aug(**ret))
-        ret.update(RandomApply([pixel_perturbation.Jitter()])(**ret))
-        ret.update(dst=self.input_size)
-        ret.update(aug(**ret))
+    rand_aug1 = RandomApply([
+        geometry.HFlip(),
+        geometry.VFlip(),
+    ])
+    rand_aug2 = RandomApply([pixel_perturbation.Jitter()])
 
-        pix_image = ret['pix_image']
-        # note that, use cv2.INTER_NEAREST mode to resize
-        # pix_image = scale.LetterBox(interpolation=1, fill=255).apply_image(pix_image, ret)
-        pix_image = random_aug.apply_image(pix_image, ret)
-        pix_image = scale.Jitter(interpolation=1, fill=255).apply_image(pix_image, ret)
-        ret['pix_image'] = pix_image
-        return ret
+    post_aug = Apply([
+        # pixel_perturbation.MinMax(),
+        # pixel_perturbation.Normalize(127.5, 127.5),
+        channel.HWC2CHW()
+    ])
 
     def get_train_data(self):
         from data_parse.cv_data_parse.Voc import Loader, DataRegister, SEG_CLS
@@ -214,28 +167,37 @@ class Voc(Process):
         loader = Loader(self.data_dir)
         return loader(set_type=DataRegister.TRAIN, generator=False, image_type=DataRegister.PATH, set_task=SEG_CLS)[0]
 
-    def val_data_augment(self, ret):
-        aug = Apply([
-            scale.LetterBox(),
-            # pixel_perturbation.MinMax(),
-            channel.HWC2CHW()
-        ])
-        ret.update(dst=self.input_size)
-        ret.update(aug(**ret))
-        pix_image = ret['pix_image']
-        pix_image = scale.LetterBox(interpolation=1, fill=255).apply_image(pix_image, ret)
-        ret['pix_image'] = pix_image
-        return ret
-
-    def val_data_restore(self, ret):
-        ret = scale.LetterBox().restore(ret)
-        return ret
-
     def get_val_data(self):
         from data_parse.cv_data_parse.Voc import Loader, DataRegister, SEG_CLS
 
         loader = Loader(self.data_dir)
         return loader(set_type=DataRegister.VAL, generator=False, image_type=DataRegister.PATH, set_task=SEG_CLS)[0]
+
+    def train_data_augment(self, ret):
+        ret.update(self.rand_aug1(**ret))
+        ret.update(self.rand_aug2(**ret))
+        ret.update(dst=self.input_size)
+        ret.update(self.aug(**ret))
+        ret.update(self.post_aug(**ret))
+
+        pix_image = ret['pix_image']
+        pix_image = self.rand_aug1.apply_image(pix_image, ret)
+        pix_image = self.pix_aug.apply_image(pix_image, ret)
+        ret['pix_image'] = pix_image
+        return ret
+
+    def val_data_augment(self, ret):
+        ret.update(dst=self.input_size)
+        ret.update(self.aug(**ret))
+        ret.update(self.post_aug(**ret))
+        pix_image = ret['pix_image']
+        pix_image = self.pix_aug.apply_image(pix_image, ret)
+        ret['pix_image'] = pix_image
+        return ret
+
+    def val_data_restore(self, ret):
+        ret = self.pix_aug.restore(ret)
+        return ret
 
 
 class FCN_Voc(SegProcess, Voc):
@@ -248,23 +210,14 @@ class FCN_Voc(SegProcess, Voc):
             Process().run(max_epoch=1000)
             {'score': 0.1429}
     """
+    model_version = 'FCN'
 
-    def __init__(self, model_version='FCN', dataset_version='Voc',
-                 input_size=512, in_ch=3, out_features=20, **kwargs):
+    def set_model(self):
         from models.semantic_segmentation.FCN import Model
-        model = Model(
-            in_ch=in_ch,
-            input_size=input_size,
-            out_features=out_features
-        )
-        super().__init__(
-            model=model,
-            optimizer=optim.SGD(model.parameters(), lr=0.001, momentum=0.9, weight_decay=1e-4),
-            model_version=model_version,
-            dataset_version=dataset_version,
-            input_size=input_size,
-            out_features=out_features,
-            **kwargs
+        self.model = Model(
+            in_ch=self.in_ch,
+            input_size=self.input_size,
+            out_features=self.out_features
         )
 
 
@@ -278,23 +231,14 @@ class Unet_Voc(SegProcess, Voc):
             Process().run(max_epoch=1000)
             {'score': 0.1973}
     """
+    model_version = 'Unet'
 
-    def __init__(self, model_version='Unet', dataset_version='Voc',
-                 input_size=512, in_ch=3, out_features=20, **kwargs):
+    def set_model(self):
         from models.semantic_segmentation.Unet import Model
-        model = Model(
-            in_ch=in_ch,
-            input_size=input_size,
-            out_features=out_features
-        )
-        super().__init__(
-            model=model,
-            optimizer=optim.SGD(model.parameters(), lr=0.1, momentum=0.9, weight_decay=1e-4),
-            model_version=model_version,
-            dataset_version=dataset_version,
-            input_size=input_size,
-            out_features=out_features,
-            **kwargs
+        self.model = Model(
+            in_ch=self.in_ch,
+            input_size=self.input_size,
+            out_features=self.out_features
         )
 
 
@@ -308,21 +252,12 @@ class DeeplabV3_Voc(SegProcess, Voc):
             Process().run(max_epoch=1000)
             {'score': 0.3021}
     """
+    model_version = 'DeeplabV3'
 
-    def __init__(self, model_version='DeeplabV3', dataset_version='Voc',
-                 input_size=512, in_ch=3, out_features=20, **kwargs):
+    def set_model(self):
         from models.semantic_segmentation.DeeplabV3 import Model
-        model = Model(
-            in_ch=in_ch,
-            input_size=input_size,
-            out_features=out_features
-        )
-        super().__init__(
-            model=model,
-            optimizer=optim.SGD(model.parameters(), lr=0.001, momentum=0.9, weight_decay=1e-4),
-            model_version=model_version,
-            dataset_version=dataset_version,
-            input_size=input_size,
-            out_features=out_features,
-            **kwargs
+        self.model = Model(
+            in_ch=self.in_ch,
+            input_size=self.input_size,
+            out_features=self.out_features
         )

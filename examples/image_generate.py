@@ -1,14 +1,16 @@
-from .base import Process, BaseDataset, WEIGHT
-import torch
-from torch import nn, optim
-from tqdm import tqdm
-from utils import os_lib, configs
-from data_parse.cv_data_parse.base import DataRegister, DataVisualizer
-from data_parse.cv_data_parse.data_augmentation import crop, scale, geometry, pixel_perturbation, RandomApply, Apply, channel, RandomChoice
-from pathlib import Path
+import time
+import cv2
 import numpy as np
-from datetime import datetime
+import torch
+from torch import optim, nn
 from metrics import image_generation
+from data_parse.cv_data_parse.data_augmentation import crop, scale, geometry, channel, RandomApply, Apply, complex, pixel_perturbation
+from data_parse import DataRegister
+from pathlib import Path
+from data_parse.cv_data_parse.base import DataVisualizer
+from processor import Process, DataHooks, bundled, BaseDataset, model_process
+from utils import configs, cv_utils, os_lib, log_utils
+from datetime import datetime
 
 
 class GanOptimizer:
@@ -28,60 +30,118 @@ class GanOptimizer:
 
 
 class IgProcess(Process):
-    def on_train_epoch_end(self, total_nums, save_period, val_obj, train_batch_size,
-                           losses=None, max_save_weight_num=None, **metric_kwargs):
-        if save_period and total_nums % save_period < train_batch_size:
-            self.log_info = {'total_nums': total_nums}
+    vis_num = 64 * 8
 
+    def on_train_start(self, container, **kwargs):
+        super().on_train_start(container, **kwargs)
+        container['real_xs'] = []
+        container['cls_model'] = image_generation.get_default_cls_model(device=self.device)
+
+    def _on_train_step_end(self, container, save_period=None, batch_size=None, max_save_weight_num=None, **kwargs):
+        counters = container['counters']
+        total_nums = counters['total_nums']
+        if save_period and counters['total_nums'] % save_period < batch_size:
+            self.trace({'total_nums': total_nums}, bundled.WANDB)
+
+            losses = container.get('losses')
             if losses is not None:
                 for k, v in losses.items():
-                    self.log_info[f'loss/{k}'] = v
+                    self.trace({f'loss/{k}': v}, bundled.WANDB)
+                    if np.isnan(v) or np.isinf(v):
+                        container['end_flag'] = True
+                        self.log(f'Train will be stop soon, got {v} value from {k}')
 
-            result = self.metric(val_obj, cur_epoch=total_nums, **metric_kwargs)
+            epoch_start_time = container.get('epoch_start_time')
+            if epoch_start_time is not None:
+                self.trace({'time_consume': (time.time() - epoch_start_time) / 60}, bundled.WANDB)
+
+            result = self.metric(
+                real_xs=container.get('real_xs'),
+                cls_model=container.get('cls_model'),
+                val_dataloader=container.get('val_dataloader'),
+                model=container.get('model'),
+                counters=counters,
+                **container.get('metric_kwargs', {})
+            )
             score = result['score']
-            self.log_info['val_score'] = score
             self.logger.info(f"val log: epoch: {total_nums}, score: {score}")
+
             self.model.train()
 
             ckpt = {
-                'total_nums': total_nums,
-                'wandb_id': self.wandb_run.id,
+                'optimizer': self.optimizer.state_dict(),
+                'counters': counters,
+                'wandb_id': self.wandb_id,
                 'date': datetime.now().isoformat()
             }
 
-            self.save(f'{self.work_dir}/{total_nums}.pth', save_type=WEIGHT, only_model=False, **ckpt)
-            os_lib.FileCacher(f'{self.work_dir}/', max_size=max_save_weight_num, stdout_method=self.logger.info).delete_over_range(suffix='pth')
+            self.save(f'{self.work_dir}/last.pth', save_type=model_process.WEIGHT, save_items=ckpt)
+            os_lib.FileCacher(f'{self.work_dir}/', max_size=max_save_weight_num, stdout_method=self.log).delete_over_range(suffix='pth')
+            self.log_trace(bundled.WANDB)
 
-            self.wandb.log(self.log_info)
+    def on_train_epoch_end(self, container, **kwargs) -> bool:
+        return container.get('end_flag', False)
 
-    def metric(self, *args, real_xs=None, cls_model=None, **kwargs):
-        fake_xs = self.predict(*args, **kwargs)
-        if real_xs is not None:
-            score = image_generation.fid(real_xs, fake_xs, cls_model=cls_model, device=self.device)
+    def metric(self, real_xs=None, cls_model=None, **kwargs):
+        container = self.predict(**kwargs)
+        if real_xs is not None and 'fake_xs' in container['preds']:
+            score = image_generation.fid(real_xs, container['preds']['fake_xs'], cls_model=cls_model, device=self.device)
             result = dict(score=score)
             return result
         else:
-            return {}
+            return {'score': None}
 
-    def on_val_step_end(self, vis_image, cur_epoch, visualize, batch_size, max_vis_num, cur_vis_num):
-        if visualize:
-            n = min(batch_size, max_vis_num - cur_vis_num)
+    def on_val_start(self, container, model=None, counters=dict(), **kwargs):
+        if model is None:
+            model = self.model
+
+        model.to(self.device)
+        model.eval()
+        container['model'] = model
+
+        counters['vis_num'] = 0
+        counters.setdefault('epoch', -1)
+        container['counters'] = counters
+        container['preds'] = {}
+
+    def on_val_step_end(self, rets, outputs, container, **kwargs):
+        for name, images in outputs.items():
+            images = images.mul(255).clamp_(0, 255).permute(0, 2, 3, 1).to("cpu", torch.uint8).numpy()
+            container['preds'].setdefault(name, []).append(images)
+
+    def on_val_end(self, container, num_synth_per_image=64, is_visualize=False, max_vis_num=None, **kwargs):
+        preds = container['preds']
+
+        for k, v in preds.items():
+            preds[k] = np.concatenate(v, 0)
+            num_batch = preds[k].shape[0]
+
+        for i in range(0, num_batch, num_synth_per_image):
+            vis_image = {k: v[i: i + num_synth_per_image] for k, v in preds.items()}
+            self._on_val_end(container, is_visualize=is_visualize, vis_image=vis_image, num_synth_per_image=num_synth_per_image, max_vis_num=max_vis_num, **kwargs)
+
+        super().on_val_end(container, **kwargs)
+
+    def _on_val_end(self, container, is_visualize=False, vis_image={}, num_synth_per_image=64, max_vis_num=None, **kwargs):
+        if is_visualize:
+            max_vis_num = max_vis_num or float('inf')
+            counters = container['counters']
+            n = min(num_synth_per_image, max_vis_num - counters['vis_num'])
             if n > 0:
                 rets = []
                 for name, images in vis_image.items():
-                    rets.append([{'image': image, '_id': f'{name}.{cur_vis_num}.jpg'} for image in images])
+                    rets.append([{'image': image, '_id': f'{name}.{counters["vis_num"]}.jpg'} for image in images])
 
                 rets = [r for r in zip(*rets)]
-                cache_dir = f'{self.save_result_dir}/{cur_epoch}'
+                cache_dir = f'{self.cache_dir}/{counters["epoch"]}'
                 cache_image = DataVisualizer(cache_dir, verbose=False, pbar=False, stdout_method=self.logger.info)(*rets[:n], return_image=True)
-                self.log_info.setdefault('val_image', []).extend([self.wandb.Image(img, mode='BGR', caption=Path(r['_id']).stem) for img, r in zip(cache_image, rets[0])])
-                cur_vis_num += n
-        return cur_vis_num
+                self.get_log_trace(bundled.WANDB).setdefault('val_image', []).extend(
+                    [self.wandb.Image(cv2.cvtColor(img, cv2.COLOR_BGR2RGB), caption=Path(r['_id']).stem) for img, r in zip(cache_image, rets[0])]
+                )
+                counters['vis_num'] += n
 
 
 class GanProcess(IgProcess):
-    total_nums = 0
-
     def model_info(self, **kwargs):
         modules = dict(
             d=self.model.net_d,
@@ -92,10 +152,55 @@ class GanProcess(IgProcess):
             self.logger.info(f'net {key} module info:')
             self._model_info(module, **kwargs)
 
+    def on_train_epoch_start(self, counters, **kwargs):
+        _counters = ('per_epoch_loss', 'per_epoch_nums', 'epoch', 'total_loss_g', 'total_loss_d')
+        super().on_train_epoch_start(counters, _counters=_counters, **kwargs)
 
-class Mnist(Process):
+    def on_backward(self, output, container, **kwargs):
+        """has been completed in on_train_step() already"""
+
+    def on_train_step_end(self, rets, output, container, more_log=False, save_period=None, batch_size=None, max_save_weight_num=None, **kwargs):
+        counters = container['counters']
+        counters['total_nums'] += len(rets)
+        counters['total_steps'] += 1
+        counters['per_epoch_nums'] += len(rets)
+
+        losses = {}
+        for k, v in output.items():
+            if k.startswith('loss'):
+                losses[k] = v.item()
+
+        counters['total_loss_g'] += losses['loss.g']
+        counters['total_loss_d'] += losses['loss.d']
+        mean_loss_g = counters['total_loss_g'] / counters['per_epoch_nums']
+        mean_loss_d = counters['total_loss_d'] / counters['per_epoch_nums']
+
+        losses.update({
+            'mean_loss_d': mean_loss_d,
+            'mean_loss_g': mean_loss_g,
+        })
+
+        mem_info = {
+            'cpu_info': log_utils.MemoryInfo.get_process_mem_info(),
+            'gpu_info': log_utils.MemoryInfo.get_gpu_mem_info()
+        } if more_log else {}
+
+        self.log({
+            'total_nums': counters['total_nums'],
+            **losses,
+            **mem_info
+        }, 'pbar')
+
+        self._on_train_step_end(container, save_period=save_period, batch_size=batch_size, max_save_weight_num=max_save_weight_num, **kwargs)
+
+
+class Mnist(DataHooks):
     # use `Process(data_dir='data/mnist')` to use digital mnist dataset
+    dataset_version = 'fashion'
     data_dir = 'data/fashion'
+
+    input_size = 64
+    in_ch = 3
 
     def get_train_data(self):
         from data_parse.cv_data_parse.Mnist import Loader
@@ -110,7 +215,7 @@ class Mnist(Process):
         channel.HWC2CHW()
     ])
 
-    def data_augment(self, ret):
+    def train_data_augment(self, ret):
         ret.update(dst=self.input_size)
         ret.update(self.aug(**ret))
 
@@ -118,127 +223,89 @@ class Mnist(Process):
 
 
 class WGAN(GanProcess):
-    def __init__(self,
-                 input_size=64,
-                 in_ch=3,
-                 hidden_ch=100,
-                 model_version='WGAN',
-                 **kwargs
-                 ):
+    model_version = 'WGAN'
+    hidden_ch = 100
+
+    def set_model(self):
         from models.image_generate.wgan import Model
-
-        model = Model(
-            input_size=input_size,
-            in_ch=in_ch,
-            hidden_ch=hidden_ch,
+        self.model = Model(
+            input_size=self.input_size,
+            in_ch=self.in_ch,
+            hidden_ch=self.hidden_ch,
         )
 
-        optimizer_d = optim.Adam(model.net_d.parameters(), lr=0.00005, betas=(0.5, 0.999))
-        optimizer_g = optim.Adam(model.net_g.parameters(), lr=0.00005, betas=(0.5, 0.999))
+    def set_optimizer(self):
+        optimizer_d = optim.Adam(self.model.net_d.parameters(), lr=0.00005, betas=(0.5, 0.999))
+        optimizer_g = optim.Adam(self.model.net_g.parameters(), lr=0.00005, betas=(0.5, 0.999))
+        self.optimizer = GanOptimizer(optimizer_d, optimizer_g)
 
-        super().__init__(
-            model=model,
-            optimizer=GanOptimizer(optimizer_d, optimizer_g),
-            model_version=model_version,
-            input_size=input_size,
-            **kwargs
-        )
+    def on_train_step(self, rets, container, batch_size=16, **kwargs) -> dict:
+        counters = container['counters']
+        images = [torch.from_numpy(ret.pop('image')).to(self.device, non_blocking=True, dtype=torch.float) for ret in rets]
+        images = torch.stack(images)
 
-    def fit(self, max_epoch, batch_size, save_period=None, max_save_weight_num=None, metric_kwargs=dict(), **dataloader_kwargs):
-        train_dataloader, _, metric_kwargs = self.on_train_start(batch_size, metric_kwargs, return_val_dataloader=True, **dataloader_kwargs)
+        loss_d = self.model.loss_d(images)
+        loss_d.backward()
+        self.optimizer.optimizer_d.step()
+        self.optimizer.optimizer_d.zero_grad()
 
-        self.model.to(self.device)
-        optimizer_d, optimizer_g = self.optimizer.optimizer_d, self.optimizer.optimizer_g
+        # note that, to avoid G so strong, training G once while training D iter_gap times
+        if 0 < counters['total_nums'] < 1000 or counters['total_nums'] % 20000 < batch_size:
+            iter_gap = 3000
+        else:
+            iter_gap = 150
 
-        val_noise = torch.normal(mean=0., std=1., size=(64, self.model.hidden_ch, 1, 1), device=self.device)
+        loss_g = torch.tensor(0, device=self.device)
+        if counters['total_nums'] % iter_gap < batch_size:
+            loss_g = self.model.loss_g(images)
+            loss_g.backward()
+            self.optimizer.optimizer_g.step()
+            self.optimizer.optimizer_g.zero_grad()
+
+        real_xs = container['real_xs']
+        if len(real_xs) < self.vis_num:
+            images = images.data.mul(255).clamp_(0, 255).permute(0, 2, 3, 1).to("cpu", torch.uint8).numpy()
+            real_xs.extend(list(images)[:self.vis_num - len(real_xs)])
+
+        return {
+            'loss.g': loss_g,
+            'loss.d': loss_d,
+        }
+
+    def on_train_step_end(self, *args, save_period=None, **kwargs):
         if save_period:
             # consider iter_gap
             save_period = int(np.ceil(save_period / 3000)) * 3000
 
-        for i in range(max_epoch):
-            self.model.train()
-            pbar = tqdm(train_dataloader, desc=f'train {i}/{max_epoch}')
-            total_nums = 0
-            total_loss_g = 0
-            total_loss_d = 0
+        super().on_train_step_end(*args, save_period=save_period, **kwargs)
 
-            for rets in pbar:
-                images = [torch.from_numpy(ret.pop('image')).to(self.device, non_blocking=True, dtype=torch.float) for ret in rets]
-                images = torch.stack(images)
+    def get_val_data(self, *args, **kwargs):
+        val_obj = self.model.gen_noise(self.vis_num, self.device)
+        return val_obj
 
-                loss_d = self.model.loss_d(images)
-                loss_d.backward()
-                optimizer_d.step()
+    def on_val_start(self, container, val_dataloader=None, batch_size=16, dataloader_kwargs=dict(), **kwargs):
+        super().on_val_start(container, **kwargs)
 
-                total_loss_d += loss_d.item()
-                total_nums += len(rets)
-                self.total_nums += len(rets)
-
-                # note that, to avoid G so strong, training G once while training D iter_gap times
-                if self.total_nums < 1000 or self.total_nums % 20000 < batch_size:
-                    iter_gap = 3000
-                else:
-                    iter_gap = 150
-
-                if self.total_nums % iter_gap < batch_size:
-                    loss_g = self.model.loss_g(images)
-                    loss_g.backward()
-                    optimizer_g.step()
-
-                    total_loss_g += loss_g.item()
-
-                    mean_loss_g = total_loss_g / total_nums
-                    mean_loss_d = total_loss_d / total_nums
-
-                    losses = {
-                        'mean_loss_d': mean_loss_d,
-                        'mean_loss_g': mean_loss_g,
-                    }
-                    # mem_info = {
-                    #     'cpu_info': log_utils.MemoryInfo.get_process_mem_info(),
-                    #     'gpu_info': log_utils.MemoryInfo.get_gpu_mem_info()
-                    # }
-
-                    pbar.set_postfix({
-                        'total_nums': self.total_nums,
-                        **losses,
-                        # **mem_info
-                    })
-
-                    if self.on_train_epoch_end(self.total_nums, save_period, val_noise, batch_size,
-                                               losses=losses, max_save_weight_num=max_save_weight_num,
-                                               **metric_kwargs):
-                        break
-
-    def predict(self, val_noise=None, batch_size=16,
-                cur_epoch=-1, model=None, visualize=False, max_vis_num=None, vis_batch_size=64,
-                save_ret_func=None, **dataloader_kwargs):
-        self.model.to(self.device)
-        self.model.eval()
-        val_noise = val_noise if val_noise is not None else torch.normal(mean=0., std=1., size=(64, self.model.hidden_ch, 1, 1), device=self.device)
-        max_vis_num = max_vis_num or float('inf')
+        val_noise = val_dataloader if val_dataloader is not None else torch.normal(mean=0., std=1., size=(batch_size, self.model.hidden_ch, 1, 1), device=self.device)
         num_batch = val_noise.shape[0]
 
-        with torch.no_grad():
-            fake_xs = []
-            for i in tqdm(range(0, num_batch, batch_size)):
-                noise_x = val_noise[i: i + batch_size]
-                fake_x = self.model.net_g(noise_x)
-                fake_xs.append(fake_x)
+        def gen():
+            for i in range(0, num_batch, batch_size):
+                yield val_noise[i: i + batch_size]
 
-            fake_xs = torch.cat(fake_xs, 0)
-            fake_xs = fake_xs.data.mul(255).clamp_(0, 255).permute(0, 2, 3, 1).to("cpu", torch.uint8).numpy()
+        container['val_dataloader'] = gen()
 
-            cur_vis_num = 0
-            for i in range(0, num_batch, vis_batch_size):
-                fake_x = fake_xs[i: i + vis_batch_size]
-                vis_image = dict(
-                    fake=fake_x,
-                )
+    def on_val_step(self, rets, container, **kwargs) -> tuple:
+        noise_x = rets
+        fake_x = container['model'].net_g(noise_x)
 
-                cur_vis_num = self.on_val_step_end(vis_image, cur_epoch, visualize, vis_batch_size, max_vis_num, cur_vis_num)
+        fake_x = fake_x.data.mul(255).clamp_(0, 255).permute(0, 2, 3, 1).to("cpu", torch.uint8).numpy()
+        outputs = dict(
+            fake=fake_x,
+        )
+        container['fake_xs'].append(fake_x)
 
-        return fake_xs
+        return rets, outputs
 
 
 class WGAN_Mnist(WGAN, Mnist):
@@ -248,14 +315,11 @@ class WGAN_Mnist(WGAN, Mnist):
 
             from examples.image_generate import WGAN_Mnist as Process
 
-            Process().run(max_epoch=1000, train_batch_size=64, save_period=10000, save_maxsize=10, num_workers=16, metric_kwargs=dict(visualize=True))
+            Process().run(max_epoch=1000, train_batch_size=64, save_period=10000, save_maxsize=10, metric_kwargs=dict(is_visualize=True))
     """
 
-    def __init__(self, dataset_version='fashion', **kwargs):
-        super().__init__(dataset_version=dataset_version, **kwargs)
 
-
-class DataProcess(Process):
+class DataProcess(DataHooks):
     rand_aug = RandomApply([
         pixel_perturbation.CutOut([0.25] * 4),
         geometry.HFlip(),
@@ -273,7 +337,7 @@ class DataProcess(Process):
         channel.HWC2CHW()
     ])
 
-    def data_augment(self, ret) -> dict:
+    def train_data_augment(self, ret) -> dict:
         # ret.update(self.rand_aug(**ret))
         ret.update(dst=self.input_size)
         ret.update(self.aug(**ret))
@@ -286,10 +350,17 @@ class DataProcess(Process):
         ret.update(pixel_perturbation.Clip()(**ret))
         return ret
 
+    def get_val_dataloader(self, **dataloader_kwargs):
+        return self.get_val_data()
+
 
 class Lsun(DataProcess):
+    dataset_version = 'lsun'
     data_dir = 'data/lsun'
     train_data_num = 20000
+
+    input_size = 128
+    in_ch = 3
 
     def get_train_data(self, *args, **kwargs):
         from data_parse.cv_data_parse.lsun import Loader
@@ -311,8 +382,11 @@ class Lsun(DataProcess):
 
 
 class CelebA(DataProcess):
+    dataset_version = 'CelebA'
     data_dir = 'data/CelebA'
     train_data_num = 40000
+    input_size = 128
+    in_ch = 3
 
     def get_train_data(self, *args, **kwargs):
         from data_parse.cv_data_parse.CelebA import ZipLoader as Loader
@@ -327,8 +401,12 @@ class CelebA(DataProcess):
 
 
 class CelebAHQ(DataProcess):
+    dataset_version = 'CelebAHQ'
     data_dir = 'data/CelebAHQ'
     train_data_num = 40000
+
+    input_size = 1024
+    in_ch = 3
 
     def get_train_data(self, *args, **kwargs):
         from data_parse.cv_data_parse.CelebAHQ import ZipLoader as Loader
@@ -342,30 +420,22 @@ class CelebAHQ(DataProcess):
 
 
 class StyleGan(GanProcess):
-    def __init__(self,
-                 model_version='StyleGAN',
-                 input_size=128,
-                 in_ch=3,
-                 **kwargs
-                 ):
+    model_version = 'StyleGAN'
+
+    def set_model(self):
         from models.image_generate.StyleGAN import Model
 
-        model = Model(
-            img_ch=in_ch,
-            image_size=input_size,
+        self.model = Model(
+            img_ch=self.in_ch,
+            image_size=self.input_size,
         )
 
-        generator_params = list(model.net_g.parameters()) + list(model.net_s.parameters())
+    def set_optimizer(self):
+        generator_params = list(self.model.net_g.parameters()) + list(self.model.net_s.parameters())
         optimizer_g = optim.Adam(generator_params, lr=1e-4, betas=(0.5, 0.9))
-        optimizer_d = optim.Adam(model.net_d.parameters(), lr=1e-4 * 2, betas=(0.5, 0.9))
+        optimizer_d = optim.Adam(self.model.net_d.parameters(), lr=1e-4 * 2, betas=(0.5, 0.9))
 
-        super().__init__(
-            model=model,
-            optimizer=GanOptimizer(optimizer_d, optimizer_g),
-            model_version=model_version,
-            input_size=input_size,
-            **kwargs
-        )
+        self.optimizer = GanOptimizer(optimizer_d, optimizer_g)
 
     def model_info(self, **kwargs):
         modules = dict(
@@ -378,125 +448,95 @@ class StyleGan(GanProcess):
             self.logger.info(f'net {key} module info:')
             self._model_info(module, **kwargs)
 
-    def fit(self, max_epoch, batch_size, save_period=None, max_save_weight_num=None,
-            vis_num=64 * 8, num_truncate_z=2000,
-            per_gp_step=4, per_pp_step=32, min_pp_step=5000,
-            metric_kwargs=dict(), **dataloader_kwargs):
-        train_dataloader, _, metric_kwargs = self.on_train_start(batch_size, metric_kwargs, return_val_dataloader=False, **dataloader_kwargs)
+    per_gp_step = 4
+    per_pp_step = 32
+    min_pp_step = 5000
 
-        optimizer_d, optimizer_g = self.optimizer.optimizer_d, self.optimizer.optimizer_g
+    def on_train_step(self, rets, container, vis_num=64 * 8, **kwargs) -> dict:
+        counters = container['counters']
+        images = [torch.from_numpy(ret.pop('image')).to(self.device, non_blocking=True, dtype=torch.float) for ret in rets]
+        images = torch.stack(images)
 
-        val_obj = (
-            self.model.gen_noise_image(vis_num, self.device),
-            self.model.gen_same_noise_z_list(vis_num, self.device),
-            self.model.gen_noise_z(num_truncate_z, self.device)
+        # train discriminator
+        self.optimizer.optimizer_d.zero_grad()
+        loss_d = self.model.loss_d(
+            images,
+            use_gp=counters['total_steps'] % self.per_gp_step == 0
         )
-        real_xs = []
-        cls_model = image_generation.get_default_cls_model(device=self.device)
-        steps = 0
-        for i in range(max_epoch):
-            self.model.train()
-            pbar = tqdm(train_dataloader, desc=f'train {i}/{max_epoch}')
-            total_nums = 0
-            total_loss_g = 0
-            total_loss_d = 0
+        loss_d.backward()
+        self.optimizer.optimizer_d.step()
 
-            for rets in pbar:
-                images = [torch.from_numpy(ret.pop('image')).to(self.device, non_blocking=True, dtype=torch.float) for ret in rets]
-                images = torch.stack(images)
+        # train generator
+        self.optimizer.optimizer_g.zero_grad()
+        loss_g = self.model.loss_g(
+            images,
+            use_pp=(counters['total_steps'] > self.min_pp_step and counters['total_steps'] % self.per_gp_step == 0)
+        )
+        loss_g.backward()
+        self.optimizer.optimizer_g.step()
 
-                # train discriminator
-                optimizer_d.zero_grad()
-                loss_d = self.model.loss_d(images, use_gp=steps % per_gp_step == 0)
-                loss_d.backward()
-                optimizer_d.step()
+        real_xs = container['real_xs']
+        if len(real_xs) < vis_num:
+            images = images.data.mul(255).clamp_(0, 255).permute(0, 2, 3, 1).to("cpu", torch.uint8).numpy()
+            real_xs.extend(list(images)[:vis_num - len(real_xs)])
 
-                # train generator
-                optimizer_g.zero_grad()
-                loss_g = self.model.loss_g(images, use_pp=(steps > min_pp_step and steps % per_gp_step == 0))
-                loss_g.backward()
-                optimizer_g.step()
+        return {
+            'loss.g': loss_g,
+            'loss.d': loss_d,
+        }
 
-                steps += 1
-                self.total_nums += len(rets)
-                total_nums += len(rets)
-                total_loss_g += loss_g.item()
-                total_loss_d += loss_d.item()
-                mean_loss_g = total_loss_g / total_nums
-                mean_loss_d = total_loss_d / total_nums
+    num_truncate_z = 2000
 
-                losses = {
-                    'loss_g': loss_g.item(),
-                    'loss_d': loss_d.item(),
-                    'mean_loss_d': mean_loss_d,
-                    'mean_loss_g': mean_loss_g,
-                }
-                # mem_info = {
-                #     'cpu_info': log_utils.MemoryInfo.get_process_mem_info(),
-                #     'gpu_info': log_utils.MemoryInfo.get_gpu_mem_info()
-                # }
+    def get_val_data(self, *args, **kwargs):
+        val_obj = (
+            self.model.gen_noise_image(self.vis_num, self.device),
+            self.model.gen_same_noise_z_list(self.vis_num, self.device),
+            self.model.gen_noise_z(self.num_truncate_z, self.device)
+        )
 
-                pbar.set_postfix({
-                    'total_nums': self.total_nums,
-                    **losses,
-                    # **mem_info
-                })
+        return val_obj
 
-                if len(real_xs) < vis_num:
-                    images = images.data.mul(255).clamp_(0, 255).permute(0, 2, 3, 1).to("cpu", torch.uint8).numpy()
-                    real_xs.extend(list(images)[:vis_num - len(real_xs)])
+    def on_val_start(self, container, val_dataloader=(None, None, None), batch_size=16, trunc_psi=0.6, dataloader_kwargs=dict(), **kwargs):
+        super().on_val_start(container, **kwargs)
+        model = container['model']
 
-                if self.on_train_epoch_end(self.total_nums, save_period, val_obj, batch_size,
-                                           losses=losses,
-                                           max_save_weight_num=max_save_weight_num,
-                                           real_xs=real_xs,
-                                           cls_model=cls_model,
-                                           **metric_kwargs):
-                    break
+        noise_xs, noise_zs, truncate_zs = val_dataloader if val_dataloader is not None else self.get_val_dataloader(batch_size=batch_size, **dataloader_kwargs)
 
-    @torch.no_grad()
-    def predict(self, val_obj=(None, None, None), trunc_psi=0.6, batch_size=16,
-                cur_epoch=-1, model=None, visualize=False, max_vis_num=None, vis_batch_size=64,
-                save_ret_func=None, **dataloader_kwargs):
-        self.model.to(self.device)
-        self.model.eval()
-
-        noise_xs, noise_zs, truncate_zs = val_obj
-        noise_xs = noise_xs if noise_xs is not None else self.model.gen_noise_image(vis_batch_size, self.device)
-        noise_zs = noise_zs if noise_zs is not None else self.model.gen_same_noise_z_list(vis_batch_size, self.device)
-        truncate_zs = truncate_zs if truncate_zs is not None else self.model.gen_noise_z(2000, self.device)
+        noise_xs = noise_xs if noise_xs is not None else model.gen_noise_image(batch_size, self.device)
+        noise_zs = noise_zs if noise_zs is not None else model.gen_same_noise_z_list(batch_size, self.device)
+        truncate_zs = truncate_zs if truncate_zs is not None else model.gen_noise_z(2000, self.device)
         num_batch = noise_xs.shape[0]
 
         w_styles = []
         for z, num_layer in noise_zs:
             # truncate_style
-            truncate_w_style = [self.model.net_s(truncate_zs[i: i + batch_size]) for i in range(0, len(truncate_zs), batch_size)]
+            truncate_w_style = [model.net_s(truncate_zs[i: i + batch_size]) for i in range(0, len(truncate_zs), batch_size)]
             truncate_w_style = torch.cat(truncate_w_style, dim=0).mean(0).unsqueeze(0)
-            w_style = self.model.net_s(z)
+            w_style = model.net_s(z)
             w_style = trunc_psi * (w_style - truncate_w_style) + truncate_w_style
             w_styles.append((w_style, num_layer))
         w_styles = torch.cat([t[:, None, :].expand(-1, n, -1) for t, n in w_styles], dim=1)
+        container['w_styles'] = w_styles
+        container['noise_xs'] = noise_xs
 
-        max_vis_num = max_vis_num or float('inf')
-        cur_vis_num = 0
-        fake_xs = []
-        for i in range(0, num_batch, batch_size):
-            noise_x = noise_xs[i: i + batch_size]
-            w_style = w_styles[i: i + batch_size]
-            fake_x = self.model.net_g(w_style, noise_x)
-            fake_xs.append(fake_x)
+        def gen():
+            for i in range(0, num_batch, batch_size):
+                noise_x = noise_xs[i: i + batch_size]
+                w_style = w_styles[i: i + batch_size]
+                yield noise_x, w_style
 
-        fake_xs = torch.cat(fake_xs, 0)
-        fake_xs = fake_xs.data.mul(255).clamp_(0, 255).permute(0, 2, 3, 1).to("cpu", torch.uint8).numpy()
+        container['val_dataloader'] = gen()
 
-        for i in range(0, num_batch, vis_batch_size):
-            fake_x = fake_xs[i: i + vis_batch_size]
-            vis_image = dict(
-                fake=fake_x,
-            )
+    def on_val_step(self, rets, container, vis_batch_size=64, **kwargs) -> tuple:
+        noise_x, w_style = rets
+        fake_x = container['model'].net_g(w_style, noise_x)
+        fake_x = fake_x.data.mul(255).clamp_(0, 255).permute(0, 2, 3, 1).to("cpu", torch.uint8).numpy()
+        outputs = dict(
+            fake=fake_x,
+        )
+        container['fake_xs'].append(fake_x)
 
-            cur_vis_num = self.on_val_step_end(vis_image, cur_epoch, visualize, vis_batch_size, max_vis_num, cur_vis_num)
-        return fake_xs
+        return rets, outputs
 
 
 class StyleGan_Mnist(StyleGan, Mnist):
@@ -506,11 +546,8 @@ class StyleGan_Mnist(StyleGan, Mnist):
 
             from examples.image_generate import StyleGan_Mnist as Process
 
-            Process().run(max_epoch=2000, train_batch_size=64, save_period=20000, max_save_weight_num=10, num_workers=16, metric_kwargs=dict(visualize=True))
+            Process().run(max_epoch=2000, train_batch_size=64, save_period=20000, max_save_weight_num=10, metric_kwargs=dict(is_visualize=True))
     """
-
-    def __init__(self, dataset_version='Mnist', input_size=32, **kwargs):
-        super().__init__(dataset_version=dataset_version, input_size=input_size, **kwargs)
 
 
 class StyleGan_Lsun(StyleGan, Lsun):
@@ -520,11 +557,8 @@ class StyleGan_Lsun(StyleGan, Lsun):
 
             from examples.image_generate import StyleGan_Lsun as Process
 
-            Process().run(max_epoch=200, train_batch_size=32, save_period=20000, max_save_weight_num=10, num_workers=16, metric_kwargs=dict(visualize=True))
+            Process().run(max_epoch=200, train_batch_size=32, save_period=20000, max_save_weight_num=10, metric_kwargs=dict(is_visualize=True))
     """
-
-    def __init__(self, dataset_version='lsun', **kwargs):
-        super().__init__(dataset_version=dataset_version, **kwargs)
 
 
 class StyleGan_CelebA(StyleGan, CelebA):
@@ -534,130 +568,64 @@ class StyleGan_CelebA(StyleGan, CelebA):
 
             from examples.image_generate import StyleGan_CelebA as Process
 
-            Process().run(max_epoch=200, train_batch_size=32, save_period=20000, max_save_weight_num=10, num_workers=16, metric_kwargs=dict(visualize=True))
+            Process().run(max_epoch=200, train_batch_size=32, save_period=20000, max_save_weight_num=10, metric_kwargs=dict(is_visualize=True))
             {'score': 134.8424}
     """
 
-    def __init__(self, dataset_version='CelebA', **kwargs):
-        super().__init__(dataset_version=dataset_version, **kwargs)
-
 
 class DiProcess(IgProcess):
-    total_nums = 0
+    def on_train_step(self, rets, container, **kwargs) -> dict:
+        images = [torch.from_numpy(ret.pop('image')).to(self.device, non_blocking=True, dtype=torch.float) for ret in rets]
+        images = torch.stack(images)
+        output = self.model(images)
 
-    def fit(self, max_epoch=100, batch_size=16, save_period=None, max_save_weight_num=None,
-            vis_num=64 * 8, num_truncate_z=2000,
-            per_gp_step=4, per_pp_step=32, min_pp_step=5000,
-            metric_kwargs=dict(), **dataloader_kwargs):
-        train_dataloader, _, metric_kwargs = self.on_train_start(batch_size, metric_kwargs, return_val_dataloader=False, **dataloader_kwargs)
-        self.model.train()
+        real_xs = container['real_xs']
+        if len(real_xs) < self.vis_num:
+            images = images.data.mul(255).clamp_(0, 255).permute(0, 2, 3, 1).to("cpu", torch.uint8).numpy()
+            real_xs.extend(list(images)[:self.vis_num - len(real_xs)])
 
-        val_noise = self.model.gen_x_t(vis_num, device=self.device)
+        return output
 
-        real_xs = []
-        cls_model = image_generation.get_default_cls_model(device=self.device)
-        steps = 0
-        for i in range(max_epoch):
-            pbar = tqdm(train_dataloader, desc=f'train {i}/{max_epoch}')
-            total_nums = 0
-            total_loss = 0
+    def get_val_data(self, *args, **kwargs):
+        val_obj = self.model.gen_x_t(self.vis_num, device=self.device)
+        return val_obj
 
-            for rets in pbar:
-                images = [torch.from_numpy(ret.pop('image')).to(self.device, non_blocking=True, dtype=torch.float) for ret in rets]
-                images = torch.stack(images)
-
-                self.optimizer.zero_grad()
-
-                output = self.model(images)
-                loss = output['loss']
-                loss.backward()
-                self.optimizer.step()
-
-                steps += 1
-                self.total_nums += len(rets)
-
-                total_loss += loss.item()
-                total_nums += len(rets)
-                mean_loss = total_loss / total_nums
-
-                losses = {
-                    'loss': loss.item(),
-                    'mean_loss': mean_loss
-                }
-                # mem_info = {
-                #     'cpu_info': log_utils.MemoryInfo.get_process_mem_info(),
-                #     'gpu_info': log_utils.MemoryInfo.get_gpu_mem_info()
-                # }
-
-                pbar.set_postfix({
-                    'total_nums': self.total_nums,
-                    **losses,
-                    # **mem_info
-                })
-
-                if len(real_xs) < vis_num:
-                    images = images.data.mul(255).clamp_(0, 255).permute(0, 2, 3, 1).to("cpu", torch.uint8).numpy()
-                    real_xs.extend(list(images)[:vis_num - len(real_xs)])
-
-                if self.on_train_epoch_end(self.total_nums, save_period, val_noise, batch_size,
-                                           losses=losses,
-                                           max_save_weight_num=max_save_weight_num,
-                                           real_xs=real_xs,
-                                           cls_model=cls_model,
-                                           **metric_kwargs):
-                    break
-
-    def predict(self, val_noise=None, batch_size=16,
-                cur_epoch=-1, model=None, visualize=False, max_vis_num=None, vis_batch_size=64,
-                save_ret_func=None, **dataloader_kwargs):
-        self.model.to(self.device)
-        self.model.eval()
-        val_noise = val_noise if val_noise is not None else self.model.gen_x_t(vis_batch_size, device=self.device)
-        max_vis_num = max_vis_num or float('inf')
+    def on_val_start(self, container, val_dataloader=None, batch_size=16, dataloader_kwargs=dict(), **kwargs):
+        super().on_val_start(container, **kwargs)
+        model = container['model']
+        val_noise = val_dataloader if val_dataloader is not None else model.gen_x_t(batch_size, device=self.device)
         num_batch = val_noise.shape[0]
 
-        with torch.no_grad():
-            fake_xs = []
-            for i in tqdm(range(0, num_batch, batch_size)):
-                noise_x = val_noise[i: i + batch_size]
-                fake_x = self.model(noise_x)
-                fake_xs.append(fake_x)
+        def gen():
+            for i in range(0, num_batch, batch_size):
+                yield val_noise[i: i + batch_size]
 
-            fake_xs = torch.cat(fake_xs, 0)
-            fake_xs = fake_xs.data.mul(255).clamp_(0, 255).permute(0, 2, 3, 1).to("cpu", torch.uint8).numpy()
+        container['val_dataloader'] = gen()
 
-            cur_vis_num = 0
-            for i in range(0, num_batch, vis_batch_size):
-                fake_x = fake_xs[i: i + vis_batch_size]
-                vis_image = dict(
-                    fake=fake_x,
-                )
+    def on_val_step(self, rets, container, **kwargs) -> tuple:
+        noise_x = rets
+        fake_x = self.model(noise_x)
+        fake_x = fake_x.data.mul(255).clamp_(0, 255).permute(0, 2, 3, 1).to("cpu", torch.uint8).numpy()
+        outputs = dict(
+            fake=fake_x,
+        )
+        container['fake_xs'].append(fake_x)
 
-                cur_vis_num = self.on_val_step_end(vis_image, cur_epoch, visualize, vis_batch_size, max_vis_num, cur_vis_num)
-
-        return fake_xs
+        return rets, outputs
 
 
 class Ddpm(DiProcess):
-    def __init__(self,
-                 model_version='Ddpm',
-                 input_size=128,
-                 in_ch=3,
-                 **kwargs
-                 ):
-        from models.image_generate.ddpm import Model
+    model_version = 'Ddpm'
 
-        model = Model(
-            img_ch=in_ch,
-            image_size=input_size,
+    def set_model(self):
+        from models.image_generate.ddpm import Model
+        self.model = Model(
+            img_ch=self.in_ch,
+            image_size=self.input_size,
         )
-        super().__init__(
-            model=model,
-            optimizer=optim.Adam(model.parameters(), lr=1e-4, betas=(0.9, 0.99)),
-            model_version=model_version,
-            input_size=input_size,
-            **kwargs
-        )
+
+    def set_optimizer(self):
+        self.optimizer = optim.Adam(self.model.parameters(), lr=1e-4, betas=(0.9, 0.99))
 
 
 class Ddpm_CelebA(Ddpm, CelebA):
@@ -667,33 +635,24 @@ class Ddpm_CelebA(Ddpm, CelebA):
 
             from examples.image_generate import Ddpm_CelebA as Process
 
-            Process().run(max_epoch=200, train_batch_size=32, save_period=20000, max_save_weight_num=10, num_workers=16, metric_kwargs=dict(visualize=True))
+            Process().run(max_epoch=200, train_batch_size=32, save_period=20000, max_save_weight_num=10, metric_kwargs=dict(is_visualize=True))
     """
-
-    def __init__(self, dataset_version='CelebA', **kwargs):
-        super().__init__(dataset_version=dataset_version, **kwargs)
 
 
 class Dpim(DiProcess):
-    def __init__(self,
-                 model_version='Ddpm',  # model and train step is same to ddpm, only pred step is different
-                 input_size=128,
-                 in_ch=3,
-                 **kwargs
-                 ):
-        from models.image_generate.ddim import Model
+    # model and train step is same to ddpm, only pred step is different
+    # so still use ddpm to name the model
+    model_version = 'Ddpm'
 
-        model = Model(
-            img_ch=in_ch,
-            image_size=input_size,
+    def set_model(self):
+        from models.image_generate.ddim import Model
+        self.model = Model(
+            img_ch=self.in_ch,
+            image_size=self.input_size,
         )
-        super().__init__(
-            model=model,
-            optimizer=optim.Adam(model.parameters(), lr=1e-4, betas=(0.9, 0.99)),
-            model_version=model_version,
-            input_size=input_size,
-            **kwargs
-        )
+
+    def set_optimizer(self):
+        self.optimizer = optim.Adam(self.model.parameters(), lr=1e-4, betas=(0.9, 0.99))
 
 
 class Ddim_CelebA(Dpim, CelebA):
@@ -703,12 +662,9 @@ class Ddim_CelebA(Dpim, CelebA):
 
             from examples.image_generate import Ddpm_CelebA as Process
 
-            Process().run(max_epoch=200, train_batch_size=32, save_period=20000, max_save_weight_num=10, num_workers=16, metric_kwargs=dict(visualize=True))
+            Process().run(max_epoch=200, train_batch_size=32, save_period=20000, max_save_weight_num=10, metric_kwargs=dict(is_visualize=True))
             {'score': 64.1675}
     """
-
-    def __init__(self, dataset_version='CelebA', **kwargs):
-        super().__init__(dataset_version=dataset_version, **kwargs)
 
 
 class Ddim_CelebAHQ(Dpim, CelebAHQ):
@@ -718,8 +674,5 @@ class Ddim_CelebAHQ(Dpim, CelebAHQ):
 
             from examples.image_generate import Ddim_CelebAHQ as Process
 
-            Process().run(max_epoch=200, train_batch_size=8, save_period=20000, max_save_weight_num=10, num_workers=16, metric_kwargs=dict(visualize=True))
+            Process().run(max_epoch=200, train_batch_size=4, save_period=20000, max_save_weight_num=10, metric_kwargs=dict(is_visualize=True))
     """
-
-    def __init__(self, dataset_version='CelebAHQ', input_size=1024, **kwargs):
-        super().__init__(dataset_version=dataset_version, input_size=input_size, **kwargs)

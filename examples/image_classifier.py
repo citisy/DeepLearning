@@ -1,76 +1,33 @@
-import numpy as np
+import cv2
 import torch
-from torch import nn, optim
-from torch.utils.data import DataLoader
-from tqdm import tqdm
-from models.layers import SimpleInModule
-from utils.torch_utils import EMA
-from utils import configs
+from torch import optim
+import numpy as np
 from metrics import classifier
 from data_parse.cv_data_parse.data_augmentation import crop, scale, geometry, channel, RandomApply, Apply
 from data_parse import DataRegister
-from data_parse.cv_data_parse.base import DataVisualizer
-from .base import Process, BaseDataset
 from pathlib import Path
+from data_parse.cv_data_parse.base import DataVisualizer
+from processor import Process, DataHooks, bundled
 
 
 class ClsProcess(Process):
-    def fit(self, max_epoch=100, batch_size=16, save_period=None, metric_kwargs=dict(), **dataloader_kwargs):
-        train_dataloader, val_dataloader, metric_kwargs = self.on_train_start(batch_size, metric_kwargs, **dataloader_kwargs)
-        # ema = EMA(self.model, step_start_ema=0)
+    def on_train_step(self, rets, container, **kwargs) -> dict:
+        images = [torch.from_numpy(ret.pop('image')).to(self.device, non_blocking=True, dtype=torch.float) for ret in rets]
+        _class = [torch.tensor(ret['_class']).to(self.device) for ret in rets]
+        images = torch.stack(images)
+        _class = torch.stack(_class)
+        images = images / 255
 
-        for i in range(self.start_epoch, max_epoch):
-            self.model.train()
-            pbar = tqdm(train_dataloader, desc=f'train {i}/{max_epoch}')
-            total_loss = 0
-            total_batch = 0
-            losses = None
+        self.optimizer.zero_grad()
 
-            for rets in pbar:
-                images = [torch.from_numpy(ret.pop('image')).to(self.device, non_blocking=True, dtype=torch.float) for ret in rets]
-                _class = [torch.tensor(ret['_class']).to(self.device) for ret in rets]
-                images = torch.stack(images)
-                _class = torch.stack(_class)
-                images = images / 255
+        output = self.model(images, _class)
+        return output
 
-                self.optimizer.zero_grad()
-
-                output = self.model(images, _class)
-                loss = output['loss']
-                loss.backward()
-                self.optimizer.step()
-                # ema.step(self.model)
-
-                total_loss += loss.item()
-                total_batch += len(rets)
-
-                mean_loss = total_loss / total_batch
-
-                losses = {
-                    'loss': loss.item(),
-                    'mean_loss': mean_loss,
-                }
-                # mem_info = {
-                #     'cpu_info': log_utils.MemoryInfo.get_process_mem_info(),
-                #     'gpu_info': log_utils.MemoryInfo.get_gpu_mem_info()
-                # }
-
-                pbar.set_postfix({
-                    **losses,
-                    # **mem_info
-                })
-
-            if self.on_train_epoch_end(i, save_period, val_dataloader,
-                                       losses=losses,
-                                       # model=ema.ema_model,
-                                       **metric_kwargs):
-                break
-
-        self.wandb.finish()
-
-    def metric(self, *args, **predict_kwargs):
-        true, pred = self.predict(*args, **predict_kwargs)
-        result = classifier.top_metric.f_measure(true, pred)
+    def metric(self, **predict_kwargs):
+        container = self.predict(**predict_kwargs)
+        trues = np.array(container['trues'])
+        preds = np.array(container['preds'])
+        result = classifier.top_metric.f_measure(trues, preds)
 
         result.update(
             score=result['f']
@@ -78,53 +35,41 @@ class ClsProcess(Process):
 
         return result
 
-    def predict(self, val_dataloader=None, batch_size=128, cur_epoch=-1, model=None, visualize=False, max_vis_num=float('inf'), save_ret_func=None, **dataloader_kwargs):
-        if val_dataloader is None:
-            val_dataloader = self.on_val_start(batch_size, **dataloader_kwargs)
+    def on_val_step(self, rets, container, **kwargs) -> tuple:
+        images = [torch.from_numpy(ret.pop('image')).to(self.device, non_blocking=True, dtype=torch.float) for ret in rets]
+        images = torch.stack(images)
+        images = images / 255
 
-        model = model or self.model
-        model.to(self.device)
+        outputs = container['model'](images)
+        outputs['pred'] = outputs['pred'].argmax(1).cpu().detach().numpy()
+        container['preds'].extend(outputs['pred'].tolist())
+        container['trues'].extend([ret['_class'] for ret in rets])
+        return rets, outputs
 
-        pred = []
-        true = []
-        vis_num = 0
-
-        with torch.no_grad():
-            self.model.eval()
-            for rets in tqdm(val_dataloader):
-                images = [torch.from_numpy(ret.pop('image')).to(self.device, non_blocking=True, dtype=torch.float) for ret in rets]
-                images = torch.stack(images)
-                images = images / 255
-
-                outputs = self.model(images)
-                outputs['pred'] = outputs['pred'].argmax(1).cpu().detach().numpy()
-                pred.extend(outputs['pred'].tolist())
-                true.extend([ret['_class'] for ret in rets])
-
-                vis_num = self.on_val_step_end(rets, outputs, cur_epoch, visualize, batch_size, max_vis_num, vis_num)
-
-        pred = np.array(pred)
-        true = np.array(true)
-
-        return true, pred
-
-    def on_val_step_end(self, rets, outputs, cur_epoch, visualize, batch_size, max_vis_num, vis_num):
-        if visualize:
-            n = min(batch_size, max_vis_num - vis_num)
+    def on_val_step_end(self, rets, outputs, container, is_visualize=False, batch_size=16, max_vis_num=None, **kwargs):
+        if is_visualize:
+            max_vis_num = max_vis_num or float('inf')
+            counters = container['counters']
+            n = min(batch_size, max_vis_num - counters['vis_num'])
             if n > 0:
                 for ret, _p in zip(rets, outputs['pred']):
                     _id = Path(ret['_id'])
                     ret['_id'] = f'{_id.stem}({ret["_class"]}_{_p}){_id.suffix}'
                     ret['image'] = ret['ori_image']
-                DataVisualizer(f'{self.save_result_dir}/{cur_epoch}', verbose=False, pbar=False)(rets[:n])
-                self.log_info.setdefault('val_image', []).extend([self.wandb.Image(ret['image'], mode='BGR', caption=ret['_id']) for ret in rets[:n]])
-                vis_num += n
+                DataVisualizer(f'{self.cache_dir}/{counters["epoch"]}', verbose=False, pbar=False)(rets[:n])
+                self.get_log_trace(bundled.WANDB).setdefault('val_image', []).extend(
+                    [self.wandb.Image(cv2.cvtColor(ret['image'], cv2.COLOR_BGR2RGB), caption=ret['_id']) for ret in rets[:n]]
+                )
+                counters['vis_num'] += n
 
-        return vis_num
 
-
-class Mnist(Process):
+class Mnist(DataHooks):
+    dataset_version = 'mnist'
     data_dir = 'data/mnist'
+
+    in_ch = 1
+    input_size = 28
+    out_features = 10
 
     def get_train_data(self):
         from data_parse.cv_data_parse.Mnist import Loader
@@ -138,7 +83,7 @@ class Mnist(Process):
         loader = Loader(self.data_dir)
         return loader(set_type=DataRegister.TEST, image_type=DataRegister.ARRAY, generator=False)[0]
 
-    def data_augment(self, ret):
+    def train_data_augment(self, ret):
         ret.update(Apply([
             RandomApply([
                 geometry.HFlip(),
@@ -155,8 +100,13 @@ class Mnist(Process):
         return ret
 
 
-class Cifar(Process):
+class Cifar(DataHooks):
+    dataset_version = 'cifar-10-batches-py'
     data_dir = 'data/cifar-10-batches-py'
+
+    in_ch = 3
+    input_size = 32
+    out_features = 10
 
     def get_train_data(self):
         from data_parse.cv_data_parse.Cifar import Loader
@@ -171,22 +121,13 @@ class Cifar(Process):
         return loader(set_type=DataRegister.TEST, image_type=DataRegister.ARRAY, generator=False)[0]
 
 
-class ImageNet(Process):
+class ImageNet(DataHooks):
+    dataset_version = 'ImageNet2012'
     data_dir = 'data/ImageNet2012'
 
-    def data_augment(self, ret):
-        ret.update(scale.Proportion()(**ret, dst=256))
-        ret.update(dst=self.input_size)
-        ret.update(Apply([
-            crop.Random(),
-            RandomApply([
-                geometry.HFlip(),
-                geometry.VFlip(),
-            ]),
-            # pixel_perturbation.MinMax(),
-            channel.HWC2CHW()
-        ])(**ret))
-        return ret
+    in_ch = 3
+    input_size = 224
+    out_features = 2
 
     def get_train_data(self):
         from data_parse.cv_data_parse.ImageNet import Loader
@@ -208,14 +149,6 @@ class ImageNet(Process):
                       )[0]
 
         return data
-
-    def val_data_augment(self, ret):
-        ret.update(dst=self.input_size)
-        ret.update(Apply([
-            scale.LetterBox(),
-            channel.HWC2CHW()
-        ])(**ret))
-        return ret
 
     def get_val_data(self):
         from data_parse.cv_data_parse.ImageNet import Loader
@@ -239,6 +172,28 @@ class ImageNet(Process):
 
         return data
 
+    def train_data_augment(self, ret):
+        ret.update(scale.Proportion()(**ret, dst=256))
+        ret.update(dst=self.input_size)
+        ret.update(Apply([
+            crop.Random(),
+            RandomApply([
+                geometry.HFlip(),
+                geometry.VFlip(),
+            ]),
+            # pixel_perturbation.MinMax(),
+            channel.HWC2CHW()
+        ])(**ret))
+        return ret
+
+    def val_data_augment(self, ret):
+        ret.update(dst=self.input_size)
+        ret.update(Apply([
+            scale.LetterBox(),
+            channel.HWC2CHW()
+        ])(**ret))
+        return ret
+
 
 class LeNet_mnist(ClsProcess, Mnist):
     """
@@ -250,23 +205,11 @@ class LeNet_mnist(ClsProcess, Mnist):
             Process().run(max_epoch=10, train_batch_size=256, predict_batch_size=256)
             {'score': 0.9899}
     """
+    model_version = 'LeNet'
 
-    def __init__(self,
-                 in_ch=1,
-                 input_size=28,
-                 out_features=10,
-                 model_version='LeNet',
-                 dataset_version='mnist',
-                 **kwargs
-                 ):
+    def set_model(self):
         from models.image_classifier.LeNet import Model
-
-        super().__init__(
-            model=Model(in_ch, input_size, out_features),
-            model_version=model_version,
-            dataset_version=dataset_version,
-            **kwargs
-        )
+        self.model = Model(self.in_ch, self.input_size, self.out_features)
 
 
 class LeNet_cifar(ClsProcess, Cifar):
@@ -279,24 +222,11 @@ class LeNet_cifar(ClsProcess, Cifar):
             Process().run(max_epoch=150, train_batch_size=128, predict_batch_size=256)
             {'score': 0.6082}
     """
+    model_version = 'LeNet'
 
-    def __init__(self,
-                 in_ch=3,
-                 input_size=32,
-                 out_features=10,
-                 model_version='LeNet',
-                 dataset_version='cifar-10-batches-py',
-                 **kwargs
-                 ):
+    def set_model(self):
         from models.image_classifier.LeNet import Model
-
-        super().__init__(
-            model=Model(in_ch, input_size, out_features),
-            model_version=model_version,
-            dataset_version=dataset_version,
-            input_size=input_size,
-            **kwargs
-        )
+        self.model = Model(self.in_ch, self.input_size, self.out_features)
 
 
 class AlexNet_ImageNet(ClsProcess, ImageNet):
@@ -309,24 +239,11 @@ class AlexNet_ImageNet(ClsProcess, ImageNet):
             Process().run()
             {'p': 0.8461538461538461, 'r': 0.88, 'f': 0.8627450980392156}
     """
+    model_version = 'AlexNet'
 
-    def __init__(self,
-                 in_ch=3,
-                 input_size=224,
-                 out_features=2,
-                 model_version='AlexNet',
-                 dataset_version='ImageNet2012',
-                 **kwargs
-                 ):
+    def set_model(self):
         from models.image_classifier.AlexNet import Model
-
-        super().__init__(
-            model=Model(in_ch, input_size, out_features),
-            model_version=model_version,
-            dataset_version=dataset_version,
-            input_size=input_size,
-            **kwargs
-        )
+        self.model = Model(self.in_ch, self.input_size, self.out_features)
 
 
 class Vgg_ImageNet(ClsProcess, ImageNet):
@@ -339,26 +256,13 @@ class Vgg_ImageNet(ClsProcess, ImageNet):
             Process().run()
             {'p': 0.9230769230769231, 'r': 0.96, 'f': 0.9411764705882353, 'score': 0.9411764705882353}
     """
+    model_version = 'Vgg'
 
-    def __init__(self,
-                 in_ch=3,
-                 input_size=224,
-                 out_features=2,
-                 model_version='Vgg',
-                 dataset_version='ImageNet2012',
-                 **kwargs
-                 ):
+    def set_model(self):
         from models.image_classifier.VGG import Model
+        self.model = Model(self.in_ch, self.input_size, self.out_features)
 
-        super().__init__(
-            model=Model(in_ch, input_size, out_features),
-            model_version=model_version,
-            dataset_version=dataset_version,
-            input_size=input_size,
-            **kwargs
-        )
-
-    def data_augment(self, ret):
+    def train_data_augment(self, ret):
         ret.update(dst=self.input_size)
         ret.update(scale.Jitter((256, 384))(**ret))
         ret.update(RandomApply([geometry.HFlip()])(**ret))
@@ -379,24 +283,11 @@ class InceptionV1_ImageNet(ClsProcess, ImageNet):
             Process().run()
             {'p': 0.8363636363636363, 'r': 0.92, 'f': 0.8761904761904761, 'score': 0.8761904761904761}
     """
+    model_version = 'InceptionV1'
 
-    def __init__(self,
-                 in_ch=3,
-                 input_size=224,
-                 out_features=2,
-                 model_version='InceptionV1',
-                 dataset_version='ImageNet2012',
-                 **kwargs
-                 ):
+    def set_model(self):
         from models.image_classifier.InceptionV1 import Model
-
-        super().__init__(
-            model=Model(in_ch, input_size, out_features),
-            model_version=model_version,
-            dataset_version=dataset_version,
-            input_size=input_size,
-            **kwargs
-        )
+        self.model = Model(self.in_ch, self.input_size, self.out_features)
 
 
 class InceptionV3_ImageNet(ClsProcess, ImageNet):
@@ -409,24 +300,12 @@ class InceptionV3_ImageNet(ClsProcess, ImageNet):
             Process().run()
             {'p': 0.98, 'r': 0.98, 'f': 0.98, 'score': 0.98}
     """
+    model_version = 'InceptionV3'
+    input_size = 299    # special input_size from paper
 
-    def __init__(self,
-                 in_ch=3,
-                 input_size=299,
-                 out_features=2,
-                 model_version='InceptionV3',
-                 dataset_version='ImageNet2012',
-                 **kwargs
-                 ):
+    def set_model(self):
         from models.image_classifier.InceptionV3 import InceptionV3 as Model
-
-        super().__init__(
-            model=Model(in_ch, input_size, out_features),
-            model_version=model_version,
-            dataset_version=dataset_version,
-            input_size=input_size,
-            **kwargs
-        )
+        self.model = Model(self.in_ch, self.input_size, self.out_features)
 
 
 class ResNet_ImageNet(ClsProcess, ImageNet):
@@ -439,26 +318,13 @@ class ResNet_ImageNet(ClsProcess, ImageNet):
             Process().run()
             {'p': 0.9230769230769231, 'r': 0.96, 'f': 0.9411764705882353, 'score': 0.9411764705882353}
     """
+    model_version = 'ResNet'
 
-    def __init__(self,
-                 in_ch=3,
-                 input_size=224,
-                 out_features=2,
-                 model_version='ResNet',
-                 dataset_version='ImageNet2012',
-                 **kwargs
-                 ):
+    def set_model(self):
         from models.image_classifier.ResNet import Model, Res50_config
+        self.model = Model(self.in_ch, self.input_size, self.out_features)
 
-        super().__init__(
-            model=Model(in_ch, input_size, out_features),
-            model_version=model_version,
-            dataset_version=dataset_version,
-            input_size=input_size,
-            **kwargs
-        )
-
-    def data_augment(self, ret):
+    def train_data_augment(self, ret):
         ret.update(dst=self.input_size)
         ret.update(scale.Jitter((256, 384))(**ret))
         ret.update(RandomApply([geometry.HFlip()])(**ret))
@@ -479,24 +345,11 @@ class DenseNet_ImageNet(ClsProcess, ImageNet):
             Process().run()
             {'p': 0.819672131147541, 'r': 1.0, 'f': 0.9009009009009009, 'score': 0.9009009009009009}
     """
+    model_version = 'DenseNet'
 
-    def __init__(self,
-                 in_ch=3,
-                 input_size=224,
-                 out_features=2,
-                 model_version='DenseNet',
-                 dataset_version='ImageNet2012',
-                 **kwargs
-                 ):
+    def set_model(self):
         from models.image_classifier.DenseNet import Model
-
-        super().__init__(
-            model=Model(in_ch, input_size, out_features),
-            model_version=model_version,
-            dataset_version=dataset_version,
-            input_size=input_size,
-            **kwargs
-        )
+        self.model = Model(self.in_ch, self.input_size, self.out_features)
 
 
 class SENet_ImageNet(ClsProcess, ImageNet):
@@ -509,24 +362,11 @@ class SENet_ImageNet(ClsProcess, ImageNet):
             Process().run()
             {'p': 0.847457627118644, 'r': 1.0, 'f': 0.9174311926605504, 'score': 0.9174311926605504}
     """
+    model_version = 'SENet'
 
-    def __init__(self,
-                 in_ch=3,
-                 input_size=224,
-                 out_features=2,
-                 model_version='SENet',
-                 dataset_version='ImageNet2012',
-                 **kwargs
-                 ):
+    def set_model(self):
         from models.image_classifier.SEInception import Model
-
-        super().__init__(
-            model=Model(in_ch, input_size, out_features),
-            model_version=model_version,
-            dataset_version=dataset_version,
-            input_size=input_size,
-            **kwargs
-        )
+        self.model = Model(self.in_ch, self.input_size, self.out_features)
 
 
 class SqueezeNet_ImageNet(ClsProcess, ImageNet):
@@ -539,24 +379,11 @@ class SqueezeNet_ImageNet(ClsProcess, ImageNet):
             Process().run(train_batch_size=32, predict_batch_size=32)
             {'p': 0.7538461538461538, 'r': 0.98, 'f': 0.8521739130434782, 'score': 0.8521739130434782}
     """
+    model_version = 'SqueezeNet'
 
-    def __init__(self,
-                 in_ch=3,
-                 input_size=224,
-                 out_features=2,
-                 model_version='SqueezeNet',
-                 dataset_version='ImageNet2012',
-                 **kwargs
-                 ):
+    def set_model(self):
         from models.image_classifier.SqueezeNet import Model
-
-        super().__init__(
-            model=Model(in_ch, input_size, out_features),
-            model_version=model_version,
-            dataset_version=dataset_version,
-            input_size=input_size,
-            **kwargs
-        )
+        self.model = Model(self.in_ch, self.input_size, self.out_features)
 
 
 class MobileNetV1_ImageNet(ClsProcess, ImageNet):
@@ -569,24 +396,11 @@ class MobileNetV1_ImageNet(ClsProcess, ImageNet):
             Process().run(train_batch_size=32, predict_batch_size=32)
             {'p': 0.9795918367346939, 'r': 0.96, 'f': 0.9696969696969697, 'score': 0.9696969696969697}
     """
+    model_version = 'MobileNetV1'
 
-    def __init__(self,
-                 in_ch=3,
-                 input_size=224,
-                 out_features=2,
-                 model_version='MobileNetV1',
-                 dataset_version='ImageNet2012',
-                 **kwargs
-                 ):
+    def set_model(self):
         from models.image_classifier.MobileNetV1 import Model
-
-        super().__init__(
-            model=Model(in_ch, input_size, out_features),
-            model_version=model_version,
-            dataset_version=dataset_version,
-            input_size=input_size,
-            **kwargs
-        )
+        self.model = Model(self.in_ch, self.input_size, self.out_features)
 
 
 class ShuffleNetV1_ImageNet(ClsProcess, ImageNet):
@@ -599,24 +413,11 @@ class ShuffleNetV1_ImageNet(ClsProcess, ImageNet):
             Process().run(train_batch_size=64, predict_batch_size=64)
             {'p': 0.8679245283018868, 'r': 0.92, 'f': 0.8932038834951457, 'score': 0.8932038834951457}
     """
+    model_version = 'ShuffleNet'
 
-    def __init__(self,
-                 in_ch=3,
-                 input_size=224,
-                 out_features=2,
-                 model_version='ShuffleNet',
-                 dataset_version='ImageNet2012',
-                 **kwargs
-                 ):
+    def set_model(self):
         from models.image_classifier.ShuffleNetV1 import Model
-
-        super().__init__(
-            model=Model(in_ch, input_size, out_features),
-            model_version=model_version,
-            dataset_version=dataset_version,
-            input_size=input_size,
-            **kwargs
-        )
+        self.model = Model(self.in_ch, self.input_size, self.out_features)
 
 
 class IGC_cifar(ClsProcess, Cifar):
@@ -629,26 +430,13 @@ class IGC_cifar(ClsProcess, Cifar):
             Process().run(train_batch_size=64, predict_batch_size=64)
             {'score': 0.8058}
     """
+    model_version = 'IGC'
 
-    def __init__(self,
-                 in_ch=3,
-                 input_size=32,
-                 out_features=10,
-                 model_version='IGC',
-                 dataset_version='cifar-10-batches-py',
-                 **kwargs
-                 ):
+    def set_model(self):
         from models.image_classifier.IGCV1 import Model
+        from models.layers import SimpleInModule
 
-        super().__init__(
-            model=Model(in_module=SimpleInModule(out_channels=in_ch), out_features=out_features),
-            model_version=model_version,
-            dataset_version=dataset_version,
-            input_size=input_size,
-            **kwargs
-        )
-
-        self.input_size = input_size
+        self.model = Model(in_module=SimpleInModule(out_channels=self.in_ch), out_features=self.out_features)
 
 
 class CondenseNet_ImageNet(ClsProcess, ImageNet):
@@ -661,24 +449,11 @@ class CondenseNet_ImageNet(ClsProcess, ImageNet):
             Process().run(train_batch_size=64, predict_batch_size=64)
             {'p': 0.9333333333333333, 'r': 0.84, 'f': 0.8842105263157894, 'score': 0.8842105263157894}
     """
+    model_version = 'CondenseNet'
 
-    def __init__(self,
-                 in_ch=3,
-                 input_size=224,
-                 out_features=2,
-                 model_version='CondenseNet',
-                 dataset_version='ImageNet2012',
-                 **kwargs
-                 ):
+    def set_model(self):
         from models.image_classifier.CondenseNet import Model
-
-        super().__init__(
-            model=Model(in_ch, input_size, out_features),
-            model_version=model_version,
-            dataset_version=dataset_version,
-            input_size=input_size,
-            **kwargs
-        )
+        self.model = Model(self.in_ch, self.input_size, self.out_features)
 
 
 class ViT_ImageNet(ClsProcess, ImageNet):
@@ -690,25 +465,13 @@ class ViT_ImageNet(ClsProcess, ImageNet):
 
             Process().run(max_epoch=300, train_batch_size=32, predict_batch_size=32)
             {'p': 0.7049180212308521, 'r': 0.86, 'f': 0.7747742727054547, 'score': 0.7747742727054547}
+            note, work better in a large dataset
     """
+    model_version = 'ViT'
 
-    def __init__(self,
-                 in_ch=3,
-                 input_size=224,
-                 out_features=2,
-                 model_version='ViT',
-                 dataset_version='ImageNet2012',
-                 **kwargs
-                 ):
+    def set_model(self):
         from models.image_classifier.ViT import Model
-        model = Model(in_ch, input_size, out_features)
-        optimizer = optim.SGD(model.parameters(), lr=0.001, momentum=0.9, weight_decay=1e-4)
+        self.model = Model(self.in_ch, self.input_size, self.out_features)
 
-        super().__init__(
-            model=model,
-            optimizer=optimizer,
-            model_version=model_version,
-            dataset_version=dataset_version,
-            input_size=input_size,
-            **kwargs
-        )
+    def set_optimizer(self):
+        self.optimizer = optim.SGD(self.model.parameters(), lr=0.001, momentum=0.9, weight_decay=1e-4)

@@ -1,70 +1,26 @@
-from .base import Process, MixDataset, BaseDataset, IterDataset
+import cv2
 import torch
-from torch import nn, optim
-from tqdm import tqdm
-from data_parse.cv_data_parse.base import DataRegister, DataVisualizer
-from data_parse.cv_data_parse.data_augmentation import crop, scale, geometry, pixel_perturbation, RandomApply, Apply, channel, RandomChoice
-from pathlib import Path
-import time
+from torch import optim, nn
 from metrics import text_generation
-from utils import os_lib
+from data_parse.cv_data_parse.data_augmentation import crop, scale, geometry, channel, RandomApply, Apply, complex, pixel_perturbation
+from data_parse import DataRegister
+from pathlib import Path
+from data_parse.cv_data_parse.base import DataVisualizer
+from processor import Process, DataHooks, bundled, BaseDataset, MixDataset, IterDataset
+from utils import configs, cv_utils, os_lib
 
 
 class TrProcess(Process):
-    def fit(self, max_epoch=100, batch_size=16, save_period=None, metric_kwargs=dict(), **dataloader_kwargs):
-        train_dataloader, val_dataloader, metric_kwargs = self.on_train_start(batch_size, metric_kwargs, **dataloader_kwargs)
+    def on_train_step(self, rets, container, **kwargs) -> dict:
+        images = [torch.from_numpy(ret.pop('image')).to(self.device, non_blocking=True, dtype=torch.float) for ret in rets]
+        transcription = [ret['transcription'] for ret in rets]
+        images = torch.stack(images)
+        output = self.model(images, transcription)
+        return output
 
-        for i in range(self.start_epoch, max_epoch):
-            self.model.train()
-            pbar = tqdm(train_dataloader, desc=f'train {i}/{max_epoch}')
-            total_loss = 0
-            total_batch = 0
-            losses = None
-            epoch_start_time = time.time()
-
-            for rets in pbar:
-                images = [torch.from_numpy(ret.pop('image')).to(self.device, non_blocking=True, dtype=torch.float) for ret in rets]
-                transcription = [ret['transcription'] for ret in rets]
-
-                images = torch.stack(images)
-
-                self.optimizer.zero_grad()
-                output = self.model(images, transcription)
-                loss = output['loss']
-                loss.backward()
-                self.optimizer.step()
-
-                total_loss += loss.item()
-                total_batch += len(rets)
-
-                mean_loss = total_loss / total_batch
-
-                losses = {
-                    'loss': loss.item(),
-                    'mean_loss': mean_loss,
-                }
-                # mem_info = {
-                #     'cpu_info': log_utils.MemoryInfo.get_process_mem_info(),
-                #     'gpu_info': log_utils.MemoryInfo.get_gpu_mem_info()
-                # }
-
-                pbar.set_postfix({
-                    **losses,
-                    # **mem_info
-                })
-
-            if self.on_train_epoch_end(i, save_period, val_dataloader,
-                                       losses=losses,
-                                       epoch_start_time=epoch_start_time,
-                                       **metric_kwargs):
-                break
-
-        self.wandb.finish()
-
-    def metric(self, *args, **kwargs):
-        true, pred = self.predict(*args, **kwargs)
-
-        result = text_generation.top_metric.f_measure(true, pred)
+    def metric(self, **kwargs):
+        container = self.predict(**kwargs)
+        result = text_generation.top_metric.f_measure(container['trues'], container['preds'])
 
         result.update(
             score=result['f']
@@ -72,48 +28,34 @@ class TrProcess(Process):
 
         return result
 
-    def predict(self, val_dataloader=None, batch_size=16, cur_epoch=-1, model=None, visualize=False, max_vis_num=float('inf'), save_ret_func=None, **dataloader_kwargs):
-        if val_dataloader is None:
-            val_dataloader = self.on_val_start(batch_size, **dataloader_kwargs)
+    def on_val_step(self, rets, container, **kwargs) -> tuple:
+        images = [torch.from_numpy(ret.pop('image')).to(self.device, non_blocking=True, dtype=torch.float) for ret in rets]
+        images = torch.stack(images)
+        transcription = [ret['transcription'] for ret in rets]
 
-        model = model or self.model
-        model.to(self.device)
+        outputs = container['model'](images)
+        container['preds'].extend(outputs['pred'])
+        container['trues'].extend(transcription)
+        return rets, outputs
 
-        pred = []
-        true = []
-        vis_num = 0
-
-        with torch.no_grad():
-            self.model.eval()
-            for rets in tqdm(val_dataloader):
-                images = [torch.from_numpy(ret.pop('image')).to(self.device, non_blocking=True, dtype=torch.float) for ret in rets]
-                images = torch.stack(images)
-                transcription = [ret['transcription'] for ret in rets]
-
-                outputs = self.model(images)
-                pred.extend(outputs['pred'])
-                true.extend(transcription)
-
-                vis_num = self.on_val_step_end(rets, outputs, cur_epoch, visualize, batch_size, max_vis_num, vis_num)
-
-        return true, pred
-
-    def on_val_step_end(self, rets, outputs, cur_epoch, visualize, batch_size, max_vis_num, vis_num):
-        if visualize:
-            n = min(batch_size, max_vis_num - vis_num)
+    def on_val_step_end(self, rets, outputs, container, is_visualize=False, batch_size=16, max_vis_num=None, **kwargs):
+        if is_visualize:
+            max_vis_num = max_vis_num or float('inf')
+            counters = container['counters']
+            n = min(batch_size, max_vis_num - counters['vis_num'])
             if n > 0:
                 for ret, _p in zip(rets, outputs['pred']):
                     _id = Path(ret['_id'])
                     ret['_id'] = f'{_id.stem}({_p}){_id.suffix}'
                     ret['image'] = ret['ori_image']
-                DataVisualizer(f'{self.save_result_dir}/{cur_epoch}', verbose=False, pbar=False)(rets[:n])
-                self.log_info.setdefault('val_image', []).extend([self.wandb.Image(ret['image'], mode='BGR', caption=ret['_id']) for ret in rets[:n]])
-                vis_num += n
+                DataVisualizer(f'{self.cache_dir}/{counters["epoch"]}', verbose=False, pbar=False)(rets[:n])
+                self.get_log_trace(bundled.WANDB).setdefault('val_image', []).extend(
+                    [self.wandb.Image(cv2.cvtColor(ret['image'], cv2.COLOR_BGR2RGB), caption=ret['_id']) for ret in rets[:n]]
+                )
+                counters['vis_num'] += n
 
-        return vis_num
 
-
-class DataProcess(Process):
+class DataProcess(DataHooks):
     train_data_num = int(5e5)
     val_data_num = int(5e4)
 
@@ -126,7 +68,7 @@ class DataProcess(Process):
         channel.HWC2CHW()
     ])
 
-    def data_augment(self, ret) -> dict:
+    def train_data_augment(self, ret) -> dict:
         ret.update(
             RandomApply([
                 pixel_perturbation.GaussNoise(),
@@ -144,16 +86,22 @@ class DataProcess(Process):
         return ret
 
     def save_char_dict(self, char_dict):
-        saver = os_lib.Saver(stdout_method=self.logger.info)
-        saver.save_json(char_dict, f'{self.model_dir}/{self.dataset_version}/char_dict.json')
+        saver = os_lib.Saver(stdout_method=self.log)
+        saver.save_json(char_dict, f'{self.work_dir}/char_dict.json')
 
     def load_char_dict(self):
-        loader = os_lib.Loader(stdout_method=self.logger.info)
-        return loader.load_json(f'{self.model_dir}/{self.dataset_version}/char_dict.json')
+        loader = os_lib.Loader(stdout_method=self.log)
+        return loader.load_json(f'{self.work_dir}/char_dict.json')
 
 
 class MJSynth(DataProcess):
+    dataset_version = 'MJSynth'
     data_dir = 'data/MJSynth'
+
+    input_size = (100, 32)  # make sure that image_w / 4 - 1 > max_len
+    in_ch = 1
+    out_features = 36  # 26 for a-z + 10 for 0-9
+    max_seq_len = 25
 
     def get_train_data(self, *args, **kwargs):
         from data_parse.cv_data_parse.MJSynth import Loader
@@ -193,9 +141,16 @@ class MJSynth(DataProcess):
 
 
 class SynthText(DataProcess):
+    # so slow...
+    dataset_version = 'SynthText'
+    data_dir = 'data/SynthText'
     train_dataset_ins = IterDataset
     train_dataset_ins.length = DataProcess.train_data_num
-    data_dir = 'data/SynthText'
+
+    input_size = (100, 32)  # make sure that image_w / 4 - 1 > max_len
+    in_ch = 1
+    out_features = 62  # 26 * 2 for a-z + 10 for 0-9
+    max_seq_len = 25
 
     def get_train_data(self, *args, **kwargs):
         from data_parse.cv_data_parse.SynthOcrText import Loader
@@ -236,10 +191,16 @@ class SynthText(DataProcess):
 
 
 class MixMJSynthSynthText(DataProcess):
-    train_dataset_ins = MixDataset
+    dataset_version = 'MixMJSynthSynthText'
     data_dir1 = 'data/MJSynth'
     data_dir2 = 'data/SynthText'
+    train_dataset_ins = MixDataset
     dataset_ratio = [0.5, 0.5]
+
+    input_size = (100, 32)  # make sure that image_w / 4 - 1 > max_len
+    in_ch = 1
+    out_features = 62  # 26 * 2 for a-z + 10 for 0-9
+    max_seq_len = 25
 
     def get_train_data(self, *args, **kwargs):
         from data_parse.cv_data_parse.MJSynth import Loader
@@ -294,29 +255,20 @@ class MixMJSynthSynthText(DataProcess):
 
 
 class CRNN(TrProcess):
-    def __init__(self,
-                 model_version='CRNN',
-                 input_size=(100, 32),  # make sure that image_w / 4 - 1 > max_len
-                 in_ch=1,
-                 out_features=36,  # 26 for a-z + 10 for 0-9
-                 max_seq_len=25,
-                 **kwargs
-                 ):
+    model_version = 'CRNN'
+
+    def set_model(self):
         from models.text_recognition.crnn import Model
 
-        model = Model(
-            in_ch=in_ch,
-            input_size=input_size,
-            out_features=out_features,
-            max_seq_len=max_seq_len
+        self.model = Model(
+            in_ch=self.in_ch,
+            input_size=self.input_size,
+            out_features=self.out_features,
+            max_seq_len=self.max_seq_len
         )
 
-        super().__init__(
-            model=model,
-            optimizer=optim.Adam(model.parameters(), lr=0.0005),
-            model_version=model_version,
-            **kwargs
-        )
+    def set_optimizer(self):
+        self.optimizer = optim.Adam(self.model.parameters(), lr=0.0005)
 
 
 class CRNN_MJSynth(CRNN, MJSynth):
@@ -330,44 +282,43 @@ class CRNN_MJSynth(CRNN, MJSynth):
             {'score': 0.7878}
     """
 
-    def __init__(self, dataset_version='MJSynth', out_features=36, **kwargs):
-        super().__init__(dataset_version=dataset_version, out_features=out_features, **kwargs)
-
 
 class CRNN_SynthText(CRNN, SynthText):
-    def __init__(self, dataset_version='SynthText', out_features=62, **kwargs):
-        super().__init__(dataset_version=dataset_version, out_features=out_features, **kwargs)
+    """
+    Usage:
+        .. code-block:: python
+
+            from examples.text_recognition import CRNN_SynthText as Process
+
+            Process().run(max_epoch=500, train_batch_size=256, predict_batch_size=256)
+    """
 
 
 class CRNN_MixMJSynthSynthText(CRNN, MixMJSynthSynthText):
-    def __init__(self, dataset_version='MixMJSynthSynthText', out_features=62, **kwargs):
-        super().__init__(dataset_version=dataset_version, out_features=out_features, **kwargs)
+    """
+    Usage:
+        .. code-block:: python
+
+            from examples.text_recognition import CRNN_MixMJSynthSynthText as Process
+
+            Process().run(max_epoch=500, train_batch_size=256, predict_batch_size=256)
+    """
 
 
 class Svtr(TrProcess):
-    def __init__(self,
-                 model_version='Svtr',
-                 input_size=(100, 32),
-                 in_ch=1,
-                 out_features=36,  # 26 for a-z + 10 for 0-9
-                 max_seq_len=25,
-                 **kwargs
-                 ):
+    model_version = 'Svtr'
+
+    def set_model(self):
         from models.text_recognition.svtr import Model
-
-        model = Model(
-            in_ch=in_ch,
-            input_size=input_size,
-            out_features=out_features,
-            max_seq_len=max_seq_len
+        self.model = Model(
+            in_ch=self.in_ch,
+            input_size=self.input_size,
+            out_features=self.out_features,
+            max_seq_len=self.max_seq_len
         )
 
-        super().__init__(
-            model=model,
-            optimizer=optim.Adam(model.parameters(), lr=0.0005),
-            model_version=model_version,
-            **kwargs
-        )
+    def set_optimizer(self):
+        self.optimizer = optim.Adam(self.model.parameters(), lr=0.0005)
 
 
 class Svtr_MJSynth(Svtr, MJSynth):
@@ -380,6 +331,3 @@ class Svtr_MJSynth(Svtr, MJSynth):
             Process().run(max_epoch=500, train_batch_size=256, predict_batch_size=256)
             {'score': 0.7962}
     """
-
-    def __init__(self, dataset_version='SynthText', out_features=36, **kwargs):
-        super().__init__(dataset_version=dataset_version, out_features=out_features, **kwargs)
