@@ -8,6 +8,26 @@ from functools import wraps
 from . import os_lib, converter, configs
 
 
+class EmptyLogger:
+    def __call__(self, *args, **kwargs):
+        pass
+
+    def debug(self, msg, *args, **kwargs):
+        pass
+
+    def info(self, msg, *args, **kwargs):
+        pass
+
+    def warning(self, msg, *args, **kwargs):
+        pass
+
+    def error(self, msg, *args, **kwargs):
+        pass
+
+    def critical(self, msg, *args, **kwargs):
+        pass
+
+
 class FakeLogger:
     def debug(self, msg, *args, **kwargs):
         print(msg)
@@ -23,6 +43,27 @@ class FakeLogger:
 
     def critical(self, msg, *args, **kwargs):
         print(msg)
+
+
+class FakeWandb:
+    def __init__(self, *args, **kwargs):
+        self.id = None
+        self.__dict__.update(**kwargs)
+
+    def init(self, *args, **kwargs):
+        return self
+
+    def Table(self, *args, **kwargs):
+        return self
+
+    def Image(self, *args, **kwargs):
+        return self
+
+    def log(self, *args, **kwargs):
+        pass
+
+    def finish(self, *args, **kwargs):
+        pass
 
 
 class MultiProcessTimedRotatingFileHandler(TimedRotatingFileHandler):
@@ -194,7 +235,7 @@ def logger_init(log_dir=None, **custom_config):
                 'info': {
                     'level': 'INFO',
                     'formatter': 'precise',
-                    'class': 'utils.configs.MultiProcessTimedRotatingFileHandler',
+                    'class': 'utils.log_utils.MultiProcessTimedRotatingFileHandler',
                     'filename': f'{log_dir}/info.log',
                     'when': 'D',
                     'backupCount': 15,
@@ -204,7 +245,7 @@ def logger_init(log_dir=None, **custom_config):
                 'error': {
                     'level': 'ERROR',
                     'formatter': 'precise',
-                    'class': 'utils.configs.MultiProcessTimedRotatingFileHandler',
+                    'class': 'utils.log_utils.MultiProcessTimedRotatingFileHandler',
                     'filename': f'{log_dir}/error.log',
                     'when': 'W0',
                     'backupCount': 5,
