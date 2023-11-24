@@ -22,6 +22,20 @@ class MinMax:
         return ret
 
 
+class Clip:
+    def __init__(self, a_min=0, a_max=255):
+        self.a_min = a_min
+        self.a_max = a_max
+
+    def __call__(self, image, **kwargs):
+        return dict(
+            image=self.apply_image(image)
+        )
+
+    def apply_image(self, image, *args):
+        return np.clip(image, self.a_min, self.a_max)
+
+
 class GaussNoise:
     """添加高斯噪声
 

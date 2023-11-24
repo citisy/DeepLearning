@@ -28,6 +28,9 @@ class CHW2HWC:
 
 
 class BGR2RGB:
+    def __init__(self, axis=-1):
+        self.axis = axis
+
     def __call__(self, image, **kwargs):
         return dict(
             image=self.apply_image(image)
@@ -35,7 +38,10 @@ class BGR2RGB:
 
     def apply_image(self, image, *args):
         image = image.copy()
-        image[(0, 1, 2)] = image[(2, 1, 0)]
+        if self.axis == 0:
+            image[(0, 1, 2)] = image[(2, 1, 0)]
+        elif self.axis == -1:
+            image[:, :, (0, 1, 2)] = image[:, :, (2, 1, 0)]
         return image
 
 
