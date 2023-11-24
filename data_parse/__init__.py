@@ -17,5 +17,6 @@ class DataRegister(Enum):
     PATH = 1
     ARRAY = 2
     GRAY_ARRAY = 2.1
+    NPY = 2.2
     BASE64 = 3
     Zip = 4
