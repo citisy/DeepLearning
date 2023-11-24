@@ -84,6 +84,8 @@ class ModuleInfo:
 
 
 def initialize_layers(module, init_gain=0.02, init_type='normal'):
+    """trace each module, initialize the variables
+    if module has `initialize_layers`, use `module.initialize_layers()` to initialize"""
     def cur(current_m):
         for name, m in current_m._modules.items():
             if m is None:
@@ -181,6 +183,35 @@ class EarlyStopping:
             self.stdout_method(f'Early Stopping training. Best results observed at epoch {self.best_epoch}, and best score is {self.best_score}')
         return stop
 
+    def state_dict(self):
+        return dict(
+            last_epoch=self.last_epoch,
+            acc_epoch=self.acc_epoch,
+            best_epoch=self.best_epoch,
+            best_score=self.best_score
+        )
+
+    def load_state_dict(self, items: dict):
+        self.__dict__.update(items)
+
+
+def export_formats():
+    import pandas as pd
+
+    x = [
+        ['PyTorch', '-', '.pt', True],
+        ['TorchScript', 'torchscript', '.torchscript', True],
+        ['ONNX', 'onnx', '.onnx', True],
+        ['OpenVINO', 'openvino', '_openvino_model', False],
+        ['TensorRT', 'engine', '.engine', True],
+        ['CoreML', 'coreml', '.mlmodel', False],
+        ['TensorFlow SavedModel', 'saved_model', '_saved_model', True],
+        ['TensorFlow GraphDef', 'pb', '.pb', True],
+        ['TensorFlow Lite', 'tflite', '.tflite', False],
+        ['TensorFlow Edge TPU', 'edgetpu', '_edgetpu.tflite', False],
+        ['TensorFlow.js', 'tfjs', '_web_model', False], ]
+    return pd.DataFrame(x, columns=['Format', 'Argument', 'Suffix', 'GPU'])
+
 
 class Export:
     @staticmethod
@@ -188,7 +219,10 @@ class Export:
         pass
 
     @staticmethod
-    def to_jit(model, *trace_input, **export_kwargs):
+    def to_torchscript(model, *trace_input, **export_kwargs):
+        """note that, dynamic python script change to static c++ script, according to trace the code
+        so, such as `if...else...`, 'for...in...`, etc., if trace in a dynamic variable,
+        will cause some unexpectedly bugs"""
         with torch.no_grad():
             model.eval()
             # warmup, make sure that the model is initialized right
@@ -198,8 +232,8 @@ class Export:
         return jit_model
 
     @staticmethod
-    def to_onnx(model, *trace_input, **export_kwargs):
-        torch.onnx.export(model=model, args=trace_input, **export_kwargs)
+    def to_onnx(model, f, *trace_input, **export_kwargs):
+        torch.onnx.export(model=model, f=f, args=trace_input, **export_kwargs)
 
 
 def is_parallel(model):
