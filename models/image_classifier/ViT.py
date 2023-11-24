@@ -1,7 +1,7 @@
 import torch
 from torch import nn
 from . import BaseImgClsModel
-from ..layers import OutModule
+from ..layers import OutModule, Linear
 from einops.layers.torch import Rearrange
 
 default_config = dict(
@@ -66,8 +66,7 @@ class Backbone(nn.Module):
         self.to_patch_embedding = nn.Sequential(
             Rearrange('b c (h p1) (w p2) -> b (h w) (p1 p2 c)', p1=patch_size, p2=patch_size),
             nn.LayerNorm(p_size),
-            nn.Linear(p_size, output_size),
-            nn.LayerNorm(output_size),
+            Linear(p_size, output_size, mode='ln', norm=nn.LayerNorm(output_size))
         )
 
         self.cls_token = nn.Parameter(torch.randn(1, 1, output_size))

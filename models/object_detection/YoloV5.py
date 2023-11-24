@@ -135,7 +135,7 @@ class Model(nn.Module):
                 a, h, w = f.shape[1:4]
                 shape = 1, a, h, w, 2  # grid shape
                 y, x = torch.arange(h).to(f), torch.arange(w).to(f)
-                yv, xv = torch.meshgrid(y, x, indexing='ij')
+                yv, xv = torch.meshgrid(y, x)
                 grid = torch.stack((xv, yv), 2).expand(shape)
                 self.grid.append(grid)
 
@@ -160,10 +160,10 @@ class Model(nn.Module):
             keep = conf > self.conf_thres
             bboxes, det_cls = bboxes[keep], det_cls[keep]
 
-            keep, classes = (det_cls > self.conf_thres).nonzero(as_tuple=False).T
+            keep, classes = (det_cls > self.conf_thres).nonzero(as_tuple=True)
             bboxes, scores = bboxes[keep], det_cls[keep, classes]
 
-            if len(bboxes) > 10 * self.max_det:
+            if bboxes.shape[0] > 10 * self.max_det:
                 # if num of bboxes is too large, it will raise:
                 # RuntimeError: Trying to create tensor with negative dimension
                 arg = torch.argsort(det_cls, descending=True)

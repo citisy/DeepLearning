@@ -6,7 +6,7 @@ import torch.nn.functional as F
 from einops.layers.torch import Rearrange
 from ..layers import Conv, Linear, ConvInModule, OutModule
 from . import BaseTextRecModel
-from utils import nlp_utils
+from data_parse.nlp_data_parse.pre_process import Decoder
 
 CONV_MIX = 0
 GLOBAL_MIX = 1
@@ -38,7 +38,7 @@ class Model(BaseTextRecModel):
 
     def post_process(self, x):
         x = x.permute(1, 0, 2)
-        preds, probs = nlp_utils.Decoder.beam_search(x, beam_size=10)
+        preds, probs = Decoder.beam_search(x, beam_size=10)
         words = []
         for b in range(x.shape[0]):
             seq = {}

@@ -39,7 +39,7 @@ class CurBlock(nn.Module):
         get_down_layer_func = get_down_layer_func or down_layers
         get_up_layer_func = get_up_layer_func or up_layers
 
-        is_bottom = len(in_ches) == layer_idx
+        is_bottom = layer_idx == len(in_ches) - 1
         is_top = layer_idx == 0
         layers = []
         in_ch, hidden_ch, out_ch = in_ches[layer_idx], hidden_ches[layer_idx], out_ches[layer_idx]
