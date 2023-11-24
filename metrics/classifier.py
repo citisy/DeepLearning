@@ -179,7 +179,7 @@ class TopMetric:
         self.pr = pr_method(**pr_method_kwarg) if pr_method is not None else PR(**pr_method_kwarg)
         self.pr.return_more_info = return_more_info
 
-    def f_measure(self, true=None, pred=None, a=1, eps=1e-6, p=None, r=None, **kwargs):
+    def f_measure(self, true=None, pred=None, a=1, eps=1e-6, **kwargs):
         ret = self.pr.get_pr(true, pred)
         p = ret.pop('ppv')
         r = ret.pop('tpr')
