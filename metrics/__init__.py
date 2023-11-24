@@ -58,7 +58,7 @@ def diff_obj(obj1, obj2, num_eps=0, return_str_span=False):
     return flag, path
 
 
-def diff(obj1, obj2, **kwargs):
+def diff(obj1, obj2, is_sort=False, **kwargs):
     """
     Usages:
         >>> a = {'a': {'b': {'c': 1.1, 'd': [1,2,3], 'e': 'hello', 'f': 4}}}
@@ -86,7 +86,26 @@ def diff(obj1, obj2, **kwargs):
         ['a', 'b', 'e', (((1, 2),), ((1, 2),))]
         ['a', 'b', 'f', (4, None)]
 
+        >>> a = [1,2,3]
+        >>> b = [3,2,1]
+        >>> flag, path = diff(a, b, is_sort=True)   # is_sort arg will change the original objs
+        >>> flag
+        True
+        >>> a
+        [1, 2, 3]
+        >>> b
+        [1, 2, 3]
+
     """
+    def cache(flag, _path, k):
+        flags.append(flag)
+        if not flag:
+            if _path:
+                for p in _path:
+                    paths.append([k] + p)
+            else:
+                paths.append([k])
+
     paths = []
     flags = []
     if isinstance(obj1, dict) and isinstance(obj2, dict):
@@ -94,25 +113,21 @@ def diff(obj1, obj2, **kwargs):
         for k in keys:
             o1 = obj1.get(k)
             o2 = obj2.get(k)
-            flag, _path = diff(o1, o2, **kwargs)
-            flags.append(flag)
-            if not flag:
-                if _path:
-                    for p in _path:
-                        paths.append([k] + p)
-                else:
-                    paths.append([k])
+            flag, path = diff(o1, o2, is_sort=is_sort, **kwargs)
+            cache(flag, path, k)
 
-    elif isinstance(obj1, (list, tuple, set)) and isinstance(obj2, (list, tuple)):
+    elif isinstance(obj1, list) and isinstance(obj2, list):
+        if is_sort:
+            obj1.sort(key=lambda x: str(x))
+            obj2.sort(key=lambda x: str(x))
         for i, (o1, o2) in enumerate(zip(obj1, obj2)):
-            flag, _path = diff(o1, o2, **kwargs)
-            flags.append(flag)
-            if not flag:
-                if _path:
-                    for p in _path:
-                        paths.append([i] + p)
-                else:
-                    paths.append([i])
+            flag, path = diff(o1, o2, is_sort=is_sort, **kwargs)
+            cache(flag, path, i)
+
+    elif isinstance(obj1, tuple) and isinstance(obj2, tuple):
+        for i, (o1, o2) in enumerate(zip(obj1, obj2)):
+            flag, path = diff(o1, o2, is_sort=is_sort, **kwargs)
+            cache(flag, path, i)
     else:
         flag, path = diff_obj(obj1, obj2, **kwargs)
         flags.append(flag)
