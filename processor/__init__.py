@@ -47,23 +47,30 @@ class Process(
     cache_dir: str
 
     def init(self):
-        setup_seed()
+        self.init_logs()
+        self.init_paths()
+        self.init_components()
+
+    def init_logs(self):
         self.init_log_base(self.log_dir)
         self.init_wandb()
 
+    def init_paths(self):
         self.work_dir = f'{self._model_cache_dir}/{self.model_version}/{self.dataset_version}'
         self.cache_dir = f'{self._result_cache_dir}/{self.model_version}/{self.dataset_version}'
         self.default_model_path = f'{self.work_dir}/weight.pth'
         os_lib.mk_dir(self.work_dir)
 
-        self.log(f'{torch.__version__ = }')
         self.log(f'{self.model_version = }')
         self.log(f'{self.dataset_version = }')
         self.log(f'{self.work_dir = }')
         self.log(f'{self.cache_dir = }')
 
-        self.counters = dict()
+    def init_components(self):
+        self.log(f'{torch.__version__ = }')
 
+        setup_seed()
+        self.counters = dict()
         self.device = torch.device(f"cuda:{self.device}" if torch.cuda.is_available() else "cpu") if self.device is not None else 'cpu'
 
         if not hasattr(self, 'model') or self.model is None:
