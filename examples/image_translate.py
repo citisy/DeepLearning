@@ -120,7 +120,7 @@ class Pix2pix(GanProcess):
 
         real_a = images_a
         real_b = images_b
-        fake_b = container['model'].net_g(real_a)
+        fake_b = self.model.net_g(real_a)
 
         outputs = dict(
             real_a=real_a,

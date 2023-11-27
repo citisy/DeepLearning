@@ -40,7 +40,7 @@ class ClsProcess(Process):
         images = torch.stack(images)
         images = images / 255
 
-        outputs = container['model'](images)
+        outputs = self.model(images)
         outputs['pred'] = outputs['pred'].argmax(1).cpu().detach().numpy()
         container['preds'].extend(outputs['pred'].tolist())
         container['trues'].extend([ret['_class'] for ret in rets])
@@ -456,7 +456,8 @@ class CondenseNet_ImageNet(ClsProcess, ImageNet):
 
 
 class ViT_ImageNet(ClsProcess, ImageNet):
-    """
+    """note, work better in a large dataset
+
     Usage:
         .. code-block:: python
 
@@ -464,7 +465,6 @@ class ViT_ImageNet(ClsProcess, ImageNet):
 
             Process().run(max_epoch=300, train_batch_size=32, predict_batch_size=32)
             {'p': 0.7049180212308521, 'r': 0.86, 'f': 0.7747742727054547, 'score': 0.7747742727054547}
-            note, work better in a large dataset
     """
     model_version = 'ViT'
 

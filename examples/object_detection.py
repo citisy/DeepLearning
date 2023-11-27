@@ -102,7 +102,7 @@ class OdProcess(Process):
         images = torch.stack(images)
         images = images / 255
 
-        outputs = container['model'](images)
+        outputs = self.model(images)
         outputs = [{k: v.to('cpu').numpy() for k, v in t.items()} for t in outputs]
 
         for i in range(len(images)):

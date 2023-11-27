@@ -5,7 +5,7 @@ import torch
 from torch import nn, optim
 from pathlib import Path
 from datetime import datetime
-from typing import List, Optional, Callable
+from typing import List, Optional, Callable, Dict, Tuple
 from tqdm import tqdm
 from . import bundled, data_process
 from utils import os_lib, configs, visualize, log_utils
@@ -126,7 +126,8 @@ class CheckpointHooks:
 
 
 class ModelHooks:
-    model: Optional[nn.Module]
+    model: nn.Module
+    aux_model: Dict[str, nn.Module]
     optimizer: Optional
     stopper: Optional
     scheduler: Optional
@@ -138,6 +139,21 @@ class ModelHooks:
 
     def set_model(self):
         raise NotImplementedError
+
+    def set_aux_model(self):
+        raise NotImplementedError
+
+    def set_mode(self, train=True):
+        if train:
+            self.model.train()
+            if hasattr(self, 'aux_model'):
+                for v in self.aux_model.values():
+                    v.train()
+        else:
+            self.model.eval()
+            if hasattr(self, 'aux_model'):
+                for v in self.aux_model.values():
+                    v.eval()
 
     def set_optimizer(self):
         self.optimizer = optim.Adam(self.model.parameters())
@@ -270,7 +286,7 @@ class ModelHooks:
         )
         self.wandb_id = wandb_run.id
 
-        self.model.train()
+        self.set_mode(train=True)
 
         _counters = ['start_epoch', 'total_nums', 'total_steps']
         for c in _counters:
@@ -374,12 +390,14 @@ class ModelHooks:
             'date': datetime.now().isoformat()
         }
 
+        if hasattr(self, 'aux_model'):
+            ckpt['aux_model'] = {k: v.state_dict() for k, v in self.aux_model.items()}
+
         self.save(f'{self.work_dir}/last.pth', save_type=WEIGHT, save_items=ckpt)
 
         if check_period and epoch % check_period == check_period - 1:
             result = self.metric(
                 val_dataloader=container.get('val_dataloader'),
-                model=container.get('model'),
                 **container.get('metric_kwargs', {})
             )
             score = result['score']
@@ -387,7 +405,7 @@ class ModelHooks:
             self.trace({'val_score': score}, bundled.WANDB)
             self.log(f"val log: epoch: {epoch}, score: {score}")
 
-            self.model.train()
+            self.set_mode(train=True)
 
             if score > self.stopper.best_score:
                 self.save(f'{self.work_dir}/best.pth', save_type=WEIGHT, save_items=ckpt)
@@ -447,13 +465,7 @@ class ModelHooks:
     def on_val_start(self, container, val_dataloader=None, batch_size=16, dataloader_kwargs=dict(), model=None, **kwargs):
         container['val_dataloader'] = val_dataloader if val_dataloader is not None else self.get_val_dataloader(batch_size=batch_size, **dataloader_kwargs)
 
-        if model is None:
-            model = self.model
-
-        model.to(self.device)
-        model.eval()
-        container['model'] = model
-
+        self.set_mode(train=False)
         self.counters['vis_num'] = 0
         self.counters.setdefault('epoch', -1)
         container['trues'] = []

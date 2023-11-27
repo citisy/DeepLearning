@@ -58,13 +58,12 @@ class IgProcess(Process):
                 real_xs=container.get('real_xs'),
                 cls_model=container.get('cls_model'),
                 val_dataloader=container.get('val_dataloader'),
-                model=container.get('model'),
                 **container.get('metric_kwargs', {})
             )
             score = result['score']
             self.logger.info(f"val log: epoch: {total_nums}, score: {score}")
 
-            self.model.train()
+            self.set_mode(train=True)
 
             ckpt = {
                 'optimizer': self.optimizer.state_dict(),
@@ -90,13 +89,7 @@ class IgProcess(Process):
             return {'score': None}
 
     def on_val_start(self, container, model=None, **kwargs):
-        if model is None:
-            model = self.model
-
-        model.to(self.device)
-        model.eval()
-        container['model'] = model
-
+        self.set_mode(train=False)
         self.counters['vis_num'] = 0
         self.counters.setdefault('epoch', -1)
         container['preds'] = {}
@@ -291,7 +284,7 @@ class WGAN(GanProcess):
 
     def on_val_step(self, rets, container, **kwargs) -> tuple:
         noise_x = rets
-        fake_x = container['model'].net_g(noise_x)
+        fake_x = self.model.net_g(noise_x)
 
         fake_x = fake_x.data.mul(255).clamp_(0, 255).permute(0, 2, 3, 1).to("cpu", torch.uint8).numpy()
         outputs = dict(
@@ -491,7 +484,7 @@ class StyleGan(GanProcess):
 
     def on_val_start(self, container, val_dataloader=(None, None, None), batch_size=16, trunc_psi=0.6, dataloader_kwargs=dict(), **kwargs):
         super().on_val_start(container, **kwargs)
-        model = container['model']
+        model = self.model
 
         noise_xs, noise_zs, truncate_zs = val_dataloader if val_dataloader is not None else self.get_val_dataloader(batch_size=batch_size, **dataloader_kwargs)
 
@@ -522,7 +515,7 @@ class StyleGan(GanProcess):
 
     def on_val_step(self, rets, container, vis_batch_size=64, **kwargs) -> tuple:
         noise_x, w_style = rets
-        fake_x = container['model'].net_g(w_style, noise_x)
+        fake_x = self.model.net_g(w_style, noise_x)
         fake_x = fake_x.data.mul(255).clamp_(0, 255).permute(0, 2, 3, 1).to("cpu", torch.uint8).numpy()
         outputs = dict(
             fake=fake_x,
@@ -585,8 +578,7 @@ class DiProcess(IgProcess):
 
     def on_val_start(self, container, val_dataloader=None, batch_size=16, dataloader_kwargs=dict(), **kwargs):
         super().on_val_start(container, **kwargs)
-        model = container['model']
-        val_noise = val_dataloader if val_dataloader is not None else model.gen_x_t(batch_size, device=self.device)
+        val_noise = val_dataloader if val_dataloader is not None else self.model.gen_x_t(batch_size, device=self.device)
         num_batch = val_noise.shape[0]
 
         def gen():

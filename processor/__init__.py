@@ -85,10 +85,16 @@ class Process(
         if not hasattr(self, 'stopper') or self.stopper is None:
             self.set_stopper()
 
+        try:
+            self.set_aux_model()
+        except NotImplementedError:
+            self.log('set_aux_model() not init', level=logging.DEBUG)
+
     def run(self, max_epoch=100, train_batch_size=16, predict_batch_size=None, check_period=None, fit_kwargs=dict(), metric_kwargs=dict()):
         self.init()
         self.model_info()
 
+        # also add metric_kwargs to fit_kwargs, 'cause there will be metric strategy while fitting
         fit_kwargs.setdefault('metric_kwargs', metric_kwargs)
         self.fit(
             max_epoch=max_epoch,
@@ -101,7 +107,7 @@ class Process(
         self.save(self.default_model_path, save_type=WEIGHT)
 
         # self.load(self.model_path, save_type=WEIGHT)
-        # self.load(f'{self.model_dir}/{self.dataset_version}/last.pth', save_type=WEIGHT)
+        # self.load(f'{self.work_dir}/last.pth', save_type=WEIGHT)
 
         r = self.metric(
             batch_size=predict_batch_size or train_batch_size,

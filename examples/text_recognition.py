@@ -33,7 +33,7 @@ class TrProcess(Process):
         images = torch.stack(images)
         transcription = [ret['transcription'] for ret in rets]
 
-        outputs = container['model'](images)
+        outputs = self.model(images)
         container['preds'].extend(outputs['pred'])
         container['trues'].extend(transcription)
         return rets, outputs
