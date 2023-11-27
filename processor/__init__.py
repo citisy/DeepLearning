@@ -62,6 +62,8 @@ class Process(
         self.log(f'{self.work_dir = }')
         self.log(f'{self.cache_dir = }')
 
+        self.counters = dict()
+
         self.device = torch.device(f"cuda:{self.device}" if torch.cuda.is_available() else "cpu") if self.device is not None else 'cpu'
 
         if not hasattr(self, 'model') or self.model is None:
@@ -130,8 +132,8 @@ class ParamsSearch:
                     ),
                     sys=dict(
                         var=dict(lf=[
-                            lambda x, max_epoch, lrf: (1 - x / max_epoch) * (1.0 - lrf) + lrf,
-                            lambda x, max_epoch, lrf: ((1 - math.cos(x * math.pi / max_epoch)) / 2) * (lrf - 1) + 1,
+                            lambda x, max_epoch, lrf=0.01: (1 - x / max_epoch) * (1.0 - lrf) + lrf,
+                            lambda x, max_epoch, lrf=0.01: ((1 - math.cos(x * math.pi / max_epoch)) / 2) * (lrf - 1) + 1,
                         ])
                     )
                 ),
@@ -140,11 +142,12 @@ class ParamsSearch:
                 model_version='ResNet',
                 dataset_version='ImageNet2012.ps',
             )
-            # there is 3*2*2 test group
+            # there is 12(3*2*2) test group
             params_search.run()
 
             ######## example 2 ########
             from models.object_detection.YoloV5 import Model, head_config, make_config, default_model_multiple
+            from examples.object_detection import xxx as Process
             params_search = ParamsSearch(
                 process=Process,
                 params=dict(
@@ -163,18 +166,18 @@ class ParamsSearch:
                     ),
                     sys=dict(
                         const=dict(
-                            input_size=None,
+                            input_size=640,
                             device=0,
                             cls_alias=classes
                         ),
                     )
                 ),
-                run_kwargs=dict(max_epoch=100, check_period=4, metric_kwargs=dict(visualize=True, max_vis_num=8)),
+                run_kwargs=dict(max_epoch=100, check_period=4, metric_kwargs=dict(is_visualize=True, max_vis_num=8)),
                 process_kwargs=dict(use_wandb=True),
                 model_version='yolov5-test',
                 dataset_version='Voc.ps',
             )
-            # there are 5 test groups
+            # there are 5(1+1+3) test groups
             params_search.run()
 
     """

@@ -49,18 +49,17 @@ class ClsProcess(Process):
     def on_val_step_end(self, rets, outputs, container, is_visualize=False, batch_size=16, max_vis_num=None, **kwargs):
         if is_visualize:
             max_vis_num = max_vis_num or float('inf')
-            counters = container['counters']
-            n = min(batch_size, max_vis_num - counters['vis_num'])
+            n = min(batch_size, max_vis_num - self.counters['vis_num'])
             if n > 0:
                 for ret, _p in zip(rets, outputs['pred']):
                     _id = Path(ret['_id'])
                     ret['_id'] = f'{_id.stem}({ret["_class"]}_{_p}){_id.suffix}'
                     ret['image'] = ret['ori_image']
-                DataVisualizer(f'{self.cache_dir}/{counters["epoch"]}', verbose=False, pbar=False)(rets[:n])
+                DataVisualizer(f'{self.cache_dir}/{self.counters["epoch"]}', verbose=False, pbar=False)(rets[:n])
                 self.get_log_trace(bundled.WANDB).setdefault('val_image', []).extend(
                     [self.wandb.Image(cv2.cvtColor(ret['image'], cv2.COLOR_BGR2RGB), caption=ret['_id']) for ret in rets[:n]]
                 )
-                counters['vis_num'] += n
+                self.counters['vis_num'] += n
 
 
 class Mnist(DataHooks):

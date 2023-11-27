@@ -59,10 +59,9 @@ class SegProcess(Process):
 
     def on_backward(self, output, container, batch_size=16, accumulate=64, **kwargs):
         loss = output['loss']
-        counters = container['counters']
 
         self.scaler.scale(loss).backward()
-        if counters['total_nums'] % accumulate < batch_size:
+        if self.counters['total_nums'] % accumulate < batch_size:
             self.scaler.unscale_(self.optimizer)  # unscale gradients
             torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=10.0)  # clip gradients
             self.scaler.step(self.optimizer)  # optimizer.step
@@ -101,8 +100,7 @@ class SegProcess(Process):
     def on_val_step_end(self, rets, outputs, container, is_visualize=False, batch_size=16, max_vis_num=None, **kwargs):
         if is_visualize:
             max_vis_num = max_vis_num or float('inf')
-            counters = container['counters']
-            n = min(batch_size, max_vis_num - counters['vis_num'])
+            n = min(batch_size, max_vis_num - self.counters['vis_num'])
             if n > 0:
                 det_rets = []
                 for ret, output in zip(rets, outputs):
@@ -122,11 +120,11 @@ class SegProcess(Process):
                     ret['image'] = ret['ori_image']
                     ret['pix_image'] = true_image
 
-                cache_image = DataVisualizer(f'{self.cache_dir}/{counters["epoch"]}', verbose=False, pbar=False)(rets[:n], det_rets[:n], return_image=True)
+                cache_image = DataVisualizer(f'{self.cache_dir}/{self.counters["epoch"]}', verbose=False, pbar=False)(rets[:n], det_rets[:n], return_image=True)
                 self.get_log_trace(bundled.WANDB).setdefault('val_image', []).extend(
                     [self.wandb.Image(cv2.cvtColor(img, cv2.COLOR_BGR2RGB), caption=Path(r['_id']).stem) for img, r in zip(cache_image, rets)]
                 )
-                counters['vis_num'] += n
+                self.counters['vis_num'] += n
 
 
 class Voc(DataHooks):

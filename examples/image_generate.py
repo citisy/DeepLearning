@@ -38,9 +38,8 @@ class IgProcess(Process):
         container['cls_model'] = image_generation.get_default_cls_model(device=self.device)
 
     def _on_train_step_end(self, container, save_period=None, batch_size=None, max_save_weight_num=None, **kwargs):
-        counters = container['counters']
-        total_nums = counters['total_nums']
-        if save_period and counters['total_nums'] % save_period < batch_size:
+        total_nums = self.counters['total_nums']
+        if save_period and total_nums % save_period < batch_size:
             self.trace({'total_nums': total_nums}, bundled.WANDB)
 
             losses = container.get('losses')
@@ -60,7 +59,6 @@ class IgProcess(Process):
                 cls_model=container.get('cls_model'),
                 val_dataloader=container.get('val_dataloader'),
                 model=container.get('model'),
-                counters=counters,
                 **container.get('metric_kwargs', {})
             )
             score = result['score']
@@ -70,7 +68,7 @@ class IgProcess(Process):
 
             ckpt = {
                 'optimizer': self.optimizer.state_dict(),
-                'counters': counters,
+                'counters': self.counters,
                 'wandb_id': self.wandb_id,
                 'date': datetime.now().isoformat()
             }
@@ -91,7 +89,7 @@ class IgProcess(Process):
         else:
             return {'score': None}
 
-    def on_val_start(self, container, model=None, counters=dict(), **kwargs):
+    def on_val_start(self, container, model=None, **kwargs):
         if model is None:
             model = self.model
 
@@ -99,9 +97,8 @@ class IgProcess(Process):
         model.eval()
         container['model'] = model
 
-        counters['vis_num'] = 0
-        counters.setdefault('epoch', -1)
-        container['counters'] = counters
+        self.counters['vis_num'] = 0
+        self.counters.setdefault('epoch', -1)
         container['preds'] = {}
 
     def on_val_step_end(self, rets, outputs, container, **kwargs):
@@ -125,20 +122,19 @@ class IgProcess(Process):
     def _on_val_end(self, container, is_visualize=False, vis_image={}, num_synth_per_image=64, max_vis_num=None, **kwargs):
         if is_visualize:
             max_vis_num = max_vis_num or float('inf')
-            counters = container['counters']
-            n = min(num_synth_per_image, max_vis_num - counters['vis_num'])
+            n = min(num_synth_per_image, max_vis_num - self.counters['vis_num'])
             if n > 0:
                 rets = []
                 for name, images in vis_image.items():
-                    rets.append([{'image': image, '_id': f'{name}.{counters["vis_num"]}.jpg'} for image in images])
+                    rets.append([{'image': image, '_id': f'{name}.{self.counters["vis_num"]}.jpg'} for image in images])
 
                 rets = [r for r in zip(*rets)]
-                cache_dir = f'{self.cache_dir}/{counters["epoch"]}'
+                cache_dir = f'{self.cache_dir}/{self.counters["epoch"]}'
                 cache_image = DataVisualizer(cache_dir, verbose=False, pbar=False, stdout_method=self.logger.info)(*rets[:n], return_image=True)
                 self.get_log_trace(bundled.WANDB).setdefault('val_image', []).extend(
                     [self.wandb.Image(cv2.cvtColor(img, cv2.COLOR_BGR2RGB), caption=Path(r['_id']).stem) for img, r in zip(cache_image, rets[0])]
                 )
-                counters['vis_num'] += n
+                self.counters['vis_num'] += n
 
 
 class GanProcess(IgProcess):
@@ -152,28 +148,27 @@ class GanProcess(IgProcess):
             self.logger.info(f'net {key} module info:')
             self._model_info(module, **kwargs)
 
-    def on_train_epoch_start(self, counters, **kwargs):
+    def on_train_epoch_start(self, container, **kwargs):
         _counters = ('per_epoch_loss', 'per_epoch_nums', 'epoch', 'total_loss_g', 'total_loss_d')
-        super().on_train_epoch_start(counters, _counters=_counters, **kwargs)
+        super().on_train_epoch_start(container, _counters=_counters, **kwargs)
 
     def on_backward(self, output, container, **kwargs):
         """has been completed in on_train_step() already"""
 
     def on_train_step_end(self, rets, output, container, more_log=False, save_period=None, batch_size=None, max_save_weight_num=None, **kwargs):
-        counters = container['counters']
-        counters['total_nums'] += len(rets)
-        counters['total_steps'] += 1
-        counters['per_epoch_nums'] += len(rets)
+        self.counters['total_nums'] += len(rets)
+        self.counters['total_steps'] += 1
+        self.counters['per_epoch_nums'] += len(rets)
 
         losses = {}
         for k, v in output.items():
             if k.startswith('loss'):
                 losses[k] = v.item()
 
-        counters['total_loss_g'] += losses['loss.g']
-        counters['total_loss_d'] += losses['loss.d']
-        mean_loss_g = counters['total_loss_g'] / counters['per_epoch_nums']
-        mean_loss_d = counters['total_loss_d'] / counters['per_epoch_nums']
+        self.counters['total_loss_g'] += losses['loss.g']
+        self.counters['total_loss_d'] += losses['loss.d']
+        mean_loss_g = self.counters['total_loss_g'] / self.counters['per_epoch_nums']
+        mean_loss_d = self.counters['total_loss_d'] / self.counters['per_epoch_nums']
 
         losses.update({
             'mean_loss_d': mean_loss_d,
@@ -186,7 +181,7 @@ class GanProcess(IgProcess):
         } if more_log else {}
 
         self.log({
-            'total_nums': counters['total_nums'],
+            'total_nums': self.counters['total_nums'],
             **losses,
             **mem_info
         }, 'pbar')
@@ -240,7 +235,6 @@ class WGAN(GanProcess):
         self.optimizer = GanOptimizer(optimizer_d, optimizer_g)
 
     def on_train_step(self, rets, container, batch_size=16, **kwargs) -> dict:
-        counters = container['counters']
         images = [torch.from_numpy(ret.pop('image')).to(self.device, non_blocking=True, dtype=torch.float) for ret in rets]
         images = torch.stack(images)
 
@@ -250,13 +244,13 @@ class WGAN(GanProcess):
         self.optimizer.optimizer_d.zero_grad()
 
         # note that, to avoid G so strong, training G once while training D iter_gap times
-        if 0 < counters['total_nums'] < 1000 or counters['total_nums'] % 20000 < batch_size:
+        if 0 < self.counters['total_nums'] < 1000 or self.counters['total_nums'] % 20000 < batch_size:
             iter_gap = 3000
         else:
             iter_gap = 150
 
         loss_g = torch.tensor(0, device=self.device)
-        if counters['total_nums'] % iter_gap < batch_size:
+        if self.counters['total_nums'] % iter_gap < batch_size:
             loss_g = self.model.loss_g(images)
             loss_g.backward()
             self.optimizer.optimizer_g.step()
@@ -453,7 +447,6 @@ class StyleGan(GanProcess):
     min_pp_step = 5000
 
     def on_train_step(self, rets, container, vis_num=64 * 8, **kwargs) -> dict:
-        counters = container['counters']
         images = [torch.from_numpy(ret.pop('image')).to(self.device, non_blocking=True, dtype=torch.float) for ret in rets]
         images = torch.stack(images)
 
@@ -461,7 +454,7 @@ class StyleGan(GanProcess):
         self.optimizer.optimizer_d.zero_grad()
         loss_d = self.model.loss_d(
             images,
-            use_gp=counters['total_steps'] % self.per_gp_step == 0
+            use_gp=self.counters['total_steps'] % self.per_gp_step == 0
         )
         loss_d.backward()
         self.optimizer.optimizer_d.step()
@@ -470,7 +463,7 @@ class StyleGan(GanProcess):
         self.optimizer.optimizer_g.zero_grad()
         loss_g = self.model.loss_g(
             images,
-            use_pp=(counters['total_steps'] > self.min_pp_step and counters['total_steps'] % self.per_gp_step == 0)
+            use_pp=(self.counters['total_steps'] > self.min_pp_step and self.counters['total_steps'] % self.per_gp_step == 0)
         )
         loss_g.backward()
         self.optimizer.optimizer_g.step()

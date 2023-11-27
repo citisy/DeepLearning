@@ -45,7 +45,6 @@ class CheckpointHooks:
         torch.save(ckpt, save_path, **kwargs)
 
     device = '0'
-    input_size: int
 
     def save_torchscript(self, save_path, trace_input=None, model_warp=None, **kwargs):
         if trace_input is None:
@@ -238,7 +237,6 @@ class ModelHooks:
         container:
             be loaded what parameters generated or changed in all the pipelines
             suggest to include mainly the following parameters:
-                counters:
                 train_dataloader:
                 val_dataloader:
 
@@ -274,11 +272,9 @@ class ModelHooks:
 
         self.model.train()
 
-        container['counters'] = {}
-
         _counters = ['start_epoch', 'total_nums', 'total_steps']
         for c in _counters:
-            container['counters'][c] = self.__dict__.get('counters', dict()).get(c, 0)
+            self.counters.setdefault(c, 0)
 
         container['train_dataloader'] = self.get_train_dataloader(batch_size=batch_size, **dataloader_kwargs)
 
@@ -293,7 +289,7 @@ class ModelHooks:
     def on_train(self, container, max_epoch=100, **kwargs):
         self.register_logger('pbar', None)
 
-        for i in range(container['counters']['start_epoch'], max_epoch):
+        for i in range(self.counters['start_epoch'], max_epoch):
             self.on_train_epoch_start(container, **kwargs)
             pbar = tqdm(container['train_dataloader'], desc=visualize.TextVisualize.highlight_str(f'Train {i}/{max_epoch}'))
             self.log_methods['pbar'] = pbar.set_postfix
@@ -309,10 +305,8 @@ class ModelHooks:
 
     def on_train_epoch_start(self, container, _counters=('per_epoch_loss', 'per_epoch_nums', 'epoch'), **kwargs):
         container['epoch_start_time'] = time.time()
-        counters = container['counters']
         for c in _counters:
-            if c not in counters:
-                counters[c] = self.__dict__.get('counters', dict()).get(c, 0)
+            self.counters.setdefault(c, 0)
 
     def on_train_step_start(self, container, **kwargs):
         pass
@@ -328,13 +322,12 @@ class ModelHooks:
 
     def on_train_step_end(self, rets, output, container, more_log=False, **kwargs):
         loss = output['loss']
-        counters = container['counters']
-        counters['total_nums'] += len(rets)
-        counters['total_steps'] += 1
-        counters['per_epoch_loss'] += loss.item()
-        counters['per_epoch_nums'] += len(rets)
+        self.counters['total_nums'] += len(rets)
+        self.counters['total_steps'] += 1
+        self.counters['per_epoch_loss'] += loss.item()
+        self.counters['per_epoch_nums'] += len(rets)
 
-        mean_loss = counters['per_epoch_loss'] / counters['per_epoch_nums']
+        mean_loss = self.counters['per_epoch_loss'] / self.counters['per_epoch_nums']
         losses = {'mean_loss': mean_loss}
         for k, v in output.items():
             if k.startswith('loss'):
@@ -352,12 +345,12 @@ class ModelHooks:
         }, 'pbar')
 
     save: CheckpointHooks.save
+    counters: dict
 
     def on_train_epoch_end(self, container, check_period=None, batch_size=None, **kwargs) -> bool:
         end_flag = False
-        counters = container['counters']
-        epoch = counters['epoch']
-        counters['epoch'] += 1
+        epoch = self.counters['epoch']
+        self.counters['epoch'] += 1
         self.trace({'epoch': epoch}, (bundled.BASELOG, bundled.WANDB))
 
         losses = container.get('losses')
@@ -376,7 +369,7 @@ class ModelHooks:
         ckpt = {
             'optimizer': self.optimizer.state_dict(),
             'stopper': self.stopper.state_dict(),
-            'counters': counters,
+            'counters': self.counters,
             'wandb_id': self.wandb_id,
             'date': datetime.now().isoformat()
         }
@@ -387,7 +380,6 @@ class ModelHooks:
             result = self.metric(
                 val_dataloader=container.get('val_dataloader'),
                 model=container.get('model'),
-                counters=counters,
                 **container.get('metric_kwargs', {})
             )
             score = result['score']
@@ -429,7 +421,6 @@ class ModelHooks:
             suggest to include mainly the following parameters:
                 val_dataloader:
                 batch_size:
-                counters:
                 model:
                 is_visualize:
                 max_vis_num:
@@ -453,7 +444,7 @@ class ModelHooks:
 
         return container
 
-    def on_val_start(self, container, val_dataloader=None, batch_size=16, dataloader_kwargs=dict(), model=None, counters=dict(), **kwargs):
+    def on_val_start(self, container, val_dataloader=None, batch_size=16, dataloader_kwargs=dict(), model=None, **kwargs):
         container['val_dataloader'] = val_dataloader if val_dataloader is not None else self.get_val_dataloader(batch_size=batch_size, **dataloader_kwargs)
 
         if model is None:
@@ -463,9 +454,8 @@ class ModelHooks:
         model.eval()
         container['model'] = model
 
-        counters['vis_num'] = 0
-        counters.setdefault('epoch', -1)
-        container['counters'] = counters
+        self.counters['vis_num'] = 0
+        self.counters.setdefault('epoch', -1)
         container['trues'] = []
         container['preds'] = []
 
