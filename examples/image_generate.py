@@ -31,11 +31,12 @@ class GanOptimizer:
 
 class IgProcess(Process):
     val_data_num = 64 * 8
+    use_ema = False
 
     def set_aux_model(self):
-        self.ema = torch_utils.EMA()
-        ema_model = self.ema.copy(self.model)
-        self.aux_model = {'ema': ema_model}
+        if self.use_ema:
+            self.ema = torch_utils.EMA()
+            self.aux_model = {'ema': self.ema.copy(self.model)}
 
     def on_train_start(self, container, **kwargs):
         super().on_train_start(container, **kwargs)

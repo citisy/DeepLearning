@@ -11,10 +11,12 @@ from utils import configs, cv_utils, os_lib, torch_utils
 
 
 class TrProcess(Process):
+    use_ema = False
+
     def set_aux_model(self):
-        self.ema = torch_utils.EMA()
-        ema_model = self.ema.copy(self.model)
-        self.aux_model = {'ema': ema_model}
+        if self.use_ema:
+            self.ema = torch_utils.EMA()
+            self.aux_model = {'ema': self.ema.copy(self.model)}
 
     def on_train_step(self, rets, container, **kwargs) -> dict:
         images = [torch.from_numpy(ret.pop('image')).to(self.device, non_blocking=True, dtype=torch.float) for ret in rets]
