@@ -86,6 +86,7 @@ class ModuleInfo:
 def initialize_layers(module, init_gain=0.02, init_type='normal'):
     """trace each module, initialize the variables
     if module has `initialize_layers`, use `module.initialize_layers()` to initialize"""
+
     def cur(current_m):
         for name, m in current_m._modules.items():
             if m is None:
@@ -147,29 +148,26 @@ def bilinear_kernel(in_channels, out_channels, kernel_size):
 
 
 class EarlyStopping:
-    def __init__(self, thres=0.005, patience=float('inf'), min_epoch=0, ignore_min_score=-1,
+    def __init__(self, thres=0.005, patience=None, min_epoch=0, ignore_min_score=-1,
                  verbose=True, stdout_method=print):
         self.thres = thres
         self.best_score = -1
         self.best_epoch = 0
         self.acc_epoch = 0
+        self.last_epoch = 0
         self.min_epoch = min_epoch
         self.ignore_min_score = ignore_min_score
-        self.last_epoch = self.min_epoch
-        self.patience = patience
+        self.patience = patience or float('inf')
         self.verbose = verbose
         self.stdout_method = stdout_method
 
     def __call__(self, epoch, score):
-        if epoch < self.min_epoch:
-            return False
-
-        if score < self.ignore_min_score:
+        if epoch < self.min_epoch or score < self.ignore_min_score:
+            self.last_epoch = epoch
             return False
 
         if score - self.best_score > self.thres:
             self.acc_epoch = 0
-
         elif abs(self.best_score - score) <= self.thres:
             self.acc_epoch += epoch - self.last_epoch
 
@@ -252,32 +250,54 @@ class EMA:
     For EMA details see https://www.tensorflow.org/api_docs/python/tf/train/ExponentialMovingAverage
     """
 
-    def __init__(self, model, cur_step=0, decay=0.9999, step_start_ema=0, tau=2000):
+    def __init__(self, cur_step=0, decay=0.9999, step_start_ema=0, tau=2000):
+        """
+
+        Args:
+            cur_step:
+            decay:
+            step_start_ema:
+            tau: growth factor
+                when x is larger, y is larger
+                x is closed to 0, y is closed to 0
+                x is closed 3 * tau, y is closed to exp(-3)*decay=0.95*decay
+                tau is closed to 0, y is closed to decay
+        """
         super().__init__()
         self.cur_step = cur_step
-        # self.step_start_ema = step_start_ema
-        self.decay = lambda x: decay * (1 - math.exp(-x / tau))  # decay exponential ramp (to help early epochs)
-        self.ema_model = copy.deepcopy(de_parallel(model)).eval()  # FP32 EMA
-        for p in self.ema_model.parameters():
-            p.requires_grad_(False)
+        self.step_start_ema = step_start_ema
+        self.decay = lambda x: decay * (1 - math.exp(-x / tau))
 
-    def update_attr(self, model):
+    @staticmethod
+    def copy(model):
+        ema_model = copy.deepcopy(model)
+        ema_model.requires_grad_(False)
+        return ema_model
+
+    @torch.no_grad()
+    def update_attr(self, model, ema_model):
+        # beta is larger, weights are closed to old model
         beta = self.decay(self.cur_step)
-        for old_params, new_params in zip(self.ema_model.parameters(), model.parameters()):
-            old_weight, new_weight = old_params.data, new_params.data
-            if new_weight.requires_grad:
-                old_params.data = old_weight * beta + (1 - beta) * new_weight
 
-    def copy_attr(self, model, include=(), exclude=()):
+        msd = de_parallel(model).state_dict()  # model state_dict
+        for k, v in ema_model.state_dict().items():
+            if v.dtype.is_floating_point:
+                v *= beta
+                v += (1 - beta) * msd[k].detach()
+
+    @torch.no_grad()
+    def copy_attr(self, model, ema_model, include=(), exclude=()):
         for k, v in model.__dict__.items():
             if (len(include) and k not in include) or k.startswith('_') or k in exclude:
                 continue
             else:
-                setattr(self.ema_model, k, v)
+                setattr(ema_model, k, v)
+        ema_model.load_state_dict(ema_model.state_dict())
 
-    def step(self, model):
-        # if self.cur_step < self.step_start_ema:
-        #     self.copy_attr(model)
-        # else:
-        self.update_attr(model)
+    def step(self, model, ema_model):
+        if self.cur_step < self.step_start_ema:
+            self.copy_attr(model, ema_model)
+        else:
+            self.update_attr(model, ema_model)
         self.cur_step += 1
+        return self.cur_step
