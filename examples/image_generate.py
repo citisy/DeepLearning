@@ -9,7 +9,7 @@ from data_parse import DataRegister
 from pathlib import Path
 from data_parse.cv_data_parse.base import DataVisualizer
 from processor import Process, DataHooks, bundled, BaseDataset, model_process
-from utils import configs, cv_utils, os_lib, log_utils
+from utils import configs, cv_utils, os_lib, log_utils, torch_utils
 from datetime import datetime
 
 
@@ -30,16 +30,21 @@ class GanOptimizer:
 
 
 class IgProcess(Process):
-    vis_num = 64 * 8
+    val_data_num = 64 * 8
+
+    def set_aux_model(self):
+        self.ema = torch_utils.EMA()
+        ema_model = self.ema.copy(self.model)
+        self.aux_model = {'ema': ema_model}
 
     def on_train_start(self, container, **kwargs):
         super().on_train_start(container, **kwargs)
-        container['real_xs'] = []
+        container['real_x'] = []
         container['cls_model'] = image_generation.get_default_cls_model(device=self.device)
 
-    def _on_train_step_end(self, container, save_period=None, batch_size=None, max_save_weight_num=None, **kwargs):
+    def _on_train_step_end(self, container, check_period=None, batch_size=None, max_save_weight_num=None, **kwargs):
         total_nums = self.counters['total_nums']
-        if save_period and total_nums % save_period < batch_size:
+        if check_period and total_nums % check_period < batch_size:
             self.trace({'total_nums': total_nums}, bundled.WANDB)
 
             losses = container.get('losses')
@@ -54,14 +59,19 @@ class IgProcess(Process):
             if epoch_start_time is not None:
                 self.trace({'time_consume': (time.time() - epoch_start_time) / 60}, bundled.WANDB)
 
-            result = self.metric(
-                real_xs=container.get('real_xs'),
+            results = self.metric(
+                real_x=container.get('real_x'),
                 cls_model=container.get('cls_model'),
                 val_dataloader=container.get('val_dataloader'),
                 **container.get('metric_kwargs', {})
             )
-            score = result['score']
-            self.logger.info(f"val log: epoch: {total_nums}, score: {score}")
+
+            scores = {}
+            for name, result in results.items():
+                scores[f'val_score/{name}'] = result['score']
+
+            self.trace(scores, bundled.WANDB)
+            self.log(f'val log: total_nums: {total_nums}, score: {scores}')
 
             self.set_mode(train=True)
 
@@ -72,62 +82,78 @@ class IgProcess(Process):
                 'date': datetime.now().isoformat()
             }
 
-            self.save(f'{self.work_dir}/last.pth', save_type=model_process.WEIGHT, save_items=ckpt)
+            self.save(f'{self.work_dir}/{total_nums}.pth', save_type=model_process.WEIGHT, save_items=ckpt)
             os_lib.FileCacher(f'{self.work_dir}/', max_size=max_save_weight_num, stdout_method=self.log).delete_over_range(suffix='pth')
             self.log_trace(bundled.WANDB)
 
+    def on_train_step_end(self, rets, outputs, container, check_period=None, batch_size=None, max_save_weight_num=None, **kwargs):
+        super().on_train_step_end(rets, outputs, container, **kwargs)
+        self._on_train_step_end(container, check_period=check_period, batch_size=batch_size, max_save_weight_num=max_save_weight_num, **kwargs)
+
     def on_train_epoch_end(self, container, **kwargs) -> bool:
+        """eval strategy will work on on_train_step_end()"""
+        self.counters['epoch'] += 1
         return container.get('end_flag', False)
 
-    def metric(self, real_xs=None, cls_model=None, **kwargs):
+    def metric(self, real_x=None, cls_model=None, **kwargs):
         container = self.predict(**kwargs)
-        if real_xs is not None and 'fake_xs' in container['preds']:
-            score = image_generation.fid(real_xs, container['preds']['fake_xs'], cls_model=cls_model, device=self.device)
-            result = dict(score=score)
-            return result
-        else:
-            return {'score': None}
+        metric_results = {}
+        for name, results in container['model_results'].items():
+            if real_x is not None and 'fake_x' in results:
+                score = image_generation.fid(real_x, results['fake_x'], cls_model=cls_model, device=self.device)
+                result = dict(score=score)
+                metric_results[name] = result
+            else:
+                metric_results[name] = {'score': None}
+
+        return metric_results
 
     def on_val_start(self, container, model=None, **kwargs):
+        """except loading val data"""
         self.set_mode(train=False)
         self.counters['vis_num'] = 0
         self.counters.setdefault('epoch', -1)
-        container['preds'] = {}
+        container['model_results'] = dict()
+
+    def on_val_reprocess(self, rets, model_results, container, **kwargs):
+        for name, results in model_results.items():
+            r = container['model_results'].setdefault(name, dict())
+            for n, items in results.items():
+                r.setdefault(n, []).extend(items)
 
     def on_val_step_end(self, rets, outputs, container, **kwargs):
-        for name, images in outputs.items():
-            images = images.mul(255).clamp_(0, 255).permute(0, 2, 3, 1).to("cpu", torch.uint8).numpy()
-            container['preds'].setdefault(name, []).append(images)
+        """visualize will work on on_val_end() instead of here,
+        because to combine small images into a large image"""
 
     def on_val_end(self, container, num_synth_per_image=64, is_visualize=False, max_vis_num=None, **kwargs):
-        preds = container['preds']
-
-        for k, v in preds.items():
-            preds[k] = np.concatenate(v, 0)
-            num_batch = preds[k].shape[0]
+        # {name1: {name2: items}}
+        for name, results in container['model_results'].items():
+            for name2, items in results.items():
+                results[name2] = np.stack(items)
+                num_batch = results[name2].shape[0]
 
         for i in range(0, num_batch, num_synth_per_image):
-            vis_image = {k: v[i: i + num_synth_per_image] for k, v in preds.items()}
-            self._on_val_end(container, is_visualize=is_visualize, vis_image=vis_image, num_synth_per_image=num_synth_per_image, max_vis_num=max_vis_num, **kwargs)
+            if is_visualize:
+                max_vis_num = max_vis_num or float('inf')
+                n = min(num_synth_per_image, max_vis_num - self.counters['vis_num'])
+                if n > 0:
+                    self.visualize(None, container['model_results'], n, **kwargs)
+                    self.counters['vis_num'] += n
 
         super().on_val_end(container, **kwargs)
 
-    def _on_val_end(self, container, is_visualize=False, vis_image={}, num_synth_per_image=64, max_vis_num=None, **kwargs):
-        if is_visualize:
-            max_vis_num = max_vis_num or float('inf')
-            n = min(num_synth_per_image, max_vis_num - self.counters['vis_num'])
-            if n > 0:
-                rets = []
-                for name, images in vis_image.items():
-                    rets.append([{'image': image, '_id': f'{name}.{self.counters["vis_num"]}.jpg'} for image in images])
+    def visualize(self, rets, model_results, n, **kwargs):
+        for name, results in model_results.items():
+            vis_rets = []
+            for name2, images in results.items():
+                vis_rets.append([{'image': image, '_id': f'{name2}.{self.counters["vis_num"]}.jpg'} for image in images[:n]])
 
-                rets = [r for r in zip(*rets)]
-                cache_dir = f'{self.cache_dir}/{self.counters["epoch"]}'
-                cache_image = DataVisualizer(cache_dir, verbose=False, pbar=False, stdout_method=self.logger.info)(*rets[:n], return_image=True)
-                self.get_log_trace(bundled.WANDB).setdefault('val_image', []).extend(
-                    [self.wandb.Image(cv2.cvtColor(img, cv2.COLOR_BGR2RGB), caption=Path(r['_id']).stem) for img, r in zip(cache_image, rets[0])]
-                )
-                self.counters['vis_num'] += n
+            vis_rets = [r for r in zip(*vis_rets)]
+            cache_dir = f'{self.cache_dir}/{self.counters["total_nums"]}/{name}'
+            cache_image = DataVisualizer(cache_dir, verbose=False, pbar=False, stdout_method=self.logger.info)(*vis_rets, return_image=True)
+            self.get_log_trace(bundled.WANDB).setdefault(f'val_image/{name}', []).extend(
+                [self.wandb.Image(cv2.cvtColor(img, cv2.COLOR_BGR2RGB), caption=Path(r['_id']).stem) for img, r in zip(cache_image, vis_rets[0])]
+            )
 
 
 class GanProcess(IgProcess):
@@ -148,7 +174,8 @@ class GanProcess(IgProcess):
     def on_backward(self, output, container, **kwargs):
         """has been completed in on_train_step() already"""
 
-    def on_train_step_end(self, rets, output, container, more_log=False, save_period=None, batch_size=None, max_save_weight_num=None, **kwargs):
+    def on_train_step_end(self, rets, output, container, more_log=False, check_period=None, batch_size=None, max_save_weight_num=None, **kwargs):
+        # add net g and net d log info
         self.counters['total_nums'] += len(rets)
         self.counters['total_steps'] += 1
         self.counters['per_epoch_nums'] += len(rets)
@@ -179,7 +206,7 @@ class GanProcess(IgProcess):
             **mem_info
         }, 'pbar')
 
-        self._on_train_step_end(container, save_period=save_period, batch_size=batch_size, max_save_weight_num=max_save_weight_num, **kwargs)
+        self._on_train_step_end(container, check_period=check_period, batch_size=batch_size, max_save_weight_num=max_save_weight_num, **kwargs)
 
 
 class Mnist(DataHooks):
@@ -249,31 +276,34 @@ class WGAN(GanProcess):
             self.optimizer.optimizer_g.step()
             self.optimizer.optimizer_g.zero_grad()
 
-        real_xs = container['real_xs']
-        if len(real_xs) < self.vis_num:
+        real_x = container['real_x']
+        if len(real_x) < self.val_data_num:
             images = images.data.mul(255).clamp_(0, 255).permute(0, 2, 3, 1).to("cpu", torch.uint8).numpy()
-            real_xs.extend(list(images)[:self.vis_num - len(real_xs)])
+            real_x.extend(list(images)[:self.val_data_num - len(real_x)])
+
+        if hasattr(self, 'aux_model'):
+            self.ema.step(self.model, self.aux_model['ema'])
 
         return {
             'loss.g': loss_g,
             'loss.d': loss_d,
         }
 
-    def on_train_step_end(self, *args, save_period=None, **kwargs):
-        if save_period:
+    def on_train_step_end(self, *args, check_period=None, **kwargs):
+        if check_period:
             # consider iter_gap
-            save_period = int(np.ceil(save_period / 3000)) * 3000
+            check_period = int(np.ceil(check_period / 3000)) * 3000
 
-        super().on_train_step_end(*args, save_period=save_period, **kwargs)
+        super().on_train_step_end(*args, check_period=check_period, **kwargs)
 
     def get_val_data(self, *args, **kwargs):
-        val_obj = self.model.gen_noise(self.vis_num, self.device)
+        val_obj = self.model.gen_noise(self.val_data_num, self.device)
         return val_obj
 
     def on_val_start(self, container, val_dataloader=None, batch_size=16, dataloader_kwargs=dict(), **kwargs):
         super().on_val_start(container, **kwargs)
 
-        val_noise = val_dataloader if val_dataloader is not None else torch.normal(mean=0., std=1., size=(batch_size, self.model.hidden_ch, 1, 1), device=self.device)
+        val_noise = val_dataloader if val_dataloader is not None else self.get_val_data()
         num_batch = val_noise.shape[0]
 
         def gen():
@@ -282,17 +312,23 @@ class WGAN(GanProcess):
 
         container['val_dataloader'] = gen()
 
-    def on_val_step(self, rets, container, **kwargs) -> tuple:
+    def on_val_step(self, rets, container, **kwargs) -> dict:
         noise_x = rets
-        fake_x = self.model.net_g(noise_x)
 
-        fake_x = fake_x.data.mul(255).clamp_(0, 255).permute(0, 2, 3, 1).to("cpu", torch.uint8).numpy()
-        outputs = dict(
-            fake=fake_x,
-        )
-        container['fake_xs'].append(fake_x)
+        models = {self.model_name: self.model}
+        if hasattr(self, 'aux_model'):
+            models.update(self.aux_model)
 
-        return rets, outputs
+        model_results = {}
+        for name, model in models.items():
+            fake_x = model.net_g(noise_x)
+            fake_x = fake_x.data.mul(255).clamp_(0, 255).permute(0, 2, 3, 1).to("cpu", torch.uint8).numpy()
+
+            model_results[name] = dict(
+                fake_x=fake_x,
+            )
+
+        return model_results
 
 
 class WGAN_Mnist(WGAN, Mnist):
@@ -302,7 +338,7 @@ class WGAN_Mnist(WGAN, Mnist):
 
             from examples.image_generate import WGAN_Mnist as Process
 
-            Process().run(max_epoch=1000, train_batch_size=64, save_period=10000, save_maxsize=10, metric_kwargs=dict(is_visualize=True))
+            Process().run(max_epoch=1000, train_batch_size=64, check_period=10000, save_maxsize=10, metric_kwargs=dict(is_visualize=True))
     """
 
 
@@ -344,7 +380,7 @@ class DataProcess(DataHooks):
 class Lsun(DataProcess):
     dataset_version = 'lsun'
     data_dir = 'data/lsun'
-    train_data_num = 20000
+    train_data_num = 50000
 
     input_size = 128
     in_ch = 3
@@ -371,7 +407,7 @@ class Lsun(DataProcess):
 class CelebA(DataProcess):
     dataset_version = 'CelebA'
     data_dir = 'data/CelebA'
-    train_data_num = 40000
+    train_data_num = 50000
     input_size = 128
     in_ch = 3
 
@@ -439,7 +475,7 @@ class StyleGan(GanProcess):
     per_pp_step = 32
     min_pp_step = 5000
 
-    def on_train_step(self, rets, container, vis_num=64 * 8, **kwargs) -> dict:
+    def on_train_step(self, rets, container, **kwargs) -> dict:
         images = [torch.from_numpy(ret.pop('image')).to(self.device, non_blocking=True, dtype=torch.float) for ret in rets]
         images = torch.stack(images)
 
@@ -461,10 +497,13 @@ class StyleGan(GanProcess):
         loss_g.backward()
         self.optimizer.optimizer_g.step()
 
-        real_xs = container['real_xs']
-        if len(real_xs) < vis_num:
+        real_x = container['real_x']
+        if len(real_x) < self.val_data_num:
             images = images.data.mul(255).clamp_(0, 255).permute(0, 2, 3, 1).to("cpu", torch.uint8).numpy()
-            real_xs.extend(list(images)[:vis_num - len(real_xs)])
+            real_x.extend(list(images)[:self.val_data_num - len(real_x)])
+
+        if hasattr(self, 'aux_model'):
+            self.ema.step(self.model, self.aux_model['ema'])
 
         return {
             'loss.g': loss_g,
@@ -475,22 +514,18 @@ class StyleGan(GanProcess):
 
     def get_val_data(self, *args, **kwargs):
         val_obj = (
-            self.model.gen_noise_image(self.vis_num, self.device),
-            self.model.gen_same_noise_z_list(self.vis_num, self.device),
+            self.model.gen_noise_image(self.val_data_num, self.device),
+            self.model.gen_same_noise_z_list(self.val_data_num, self.device),
             self.model.gen_noise_z(self.num_truncate_z, self.device)
         )
 
         return val_obj
 
-    def on_val_start(self, container, val_dataloader=(None, None, None), batch_size=16, trunc_psi=0.6, dataloader_kwargs=dict(), **kwargs):
+    def on_val_start(self, container, val_dataloader=(None, None, None), batch_size=16, trunc_psi=0.6, **kwargs):
         super().on_val_start(container, **kwargs)
         model = self.model
 
-        noise_xs, noise_zs, truncate_zs = val_dataloader if val_dataloader is not None else self.get_val_dataloader(batch_size=batch_size, **dataloader_kwargs)
-
-        noise_xs = noise_xs if noise_xs is not None else model.gen_noise_image(batch_size, self.device)
-        noise_zs = noise_zs if noise_zs is not None else model.gen_same_noise_z_list(batch_size, self.device)
-        truncate_zs = truncate_zs if truncate_zs is not None else model.gen_noise_z(2000, self.device)
+        noise_xs, noise_zs, truncate_zs = val_dataloader if val_dataloader is not None else self.get_val_data()
         num_batch = noise_xs.shape[0]
 
         w_styles = []
@@ -513,16 +548,23 @@ class StyleGan(GanProcess):
 
         container['val_dataloader'] = gen()
 
-    def on_val_step(self, rets, container, vis_batch_size=64, **kwargs) -> tuple:
+    def on_val_step(self, rets, container, vis_batch_size=64, **kwargs) -> dict:
         noise_x, w_style = rets
-        fake_x = self.model.net_g(w_style, noise_x)
-        fake_x = fake_x.data.mul(255).clamp_(0, 255).permute(0, 2, 3, 1).to("cpu", torch.uint8).numpy()
-        outputs = dict(
-            fake=fake_x,
-        )
-        container['fake_xs'].append(fake_x)
 
-        return rets, outputs
+        models = {self.model_name: self.model}
+        if hasattr(self, 'aux_model'):
+            models.update(self.aux_model)
+
+        model_results = {}
+        for name, model in models.items():
+            fake_x = model.net_g(w_style, noise_x)
+            fake_x = fake_x.data.mul(255).clamp_(0, 255).permute(0, 2, 3, 1).to("cpu", torch.uint8).numpy()
+
+            model_results[name] = dict(
+                fake_x=fake_x,
+            )
+
+        return model_results
 
 
 class StyleGan_Mnist(StyleGan, Mnist):
@@ -532,7 +574,7 @@ class StyleGan_Mnist(StyleGan, Mnist):
 
             from examples.image_generate import StyleGan_Mnist as Process
 
-            Process().run(max_epoch=2000, train_batch_size=64, save_period=20000, max_save_weight_num=10, metric_kwargs=dict(is_visualize=True))
+            Process().run(max_epoch=2000, train_batch_size=64, check_period=20000, max_save_weight_num=10, metric_kwargs=dict(is_visualize=True))
     """
 
 
@@ -543,7 +585,7 @@ class StyleGan_Lsun(StyleGan, Lsun):
 
             from examples.image_generate import StyleGan_Lsun as Process
 
-            Process().run(max_epoch=200, train_batch_size=32, save_period=20000, max_save_weight_num=10, metric_kwargs=dict(is_visualize=True))
+            Process().run(max_epoch=200, train_batch_size=32, check_period=20000, max_save_weight_num=10, metric_kwargs=dict(is_visualize=True))
     """
 
 
@@ -554,7 +596,7 @@ class StyleGan_CelebA(StyleGan, CelebA):
 
             from examples.image_generate import StyleGan_CelebA as Process
 
-            Process().run(max_epoch=200, train_batch_size=32, save_period=20000, max_save_weight_num=10, metric_kwargs=dict(is_visualize=True))
+            Process().run(max_epoch=200, train_batch_size=32, check_period=20000, max_save_weight_num=10, metric_kwargs=dict(is_visualize=True))
             {'score': 134.8424}
     """
 
@@ -565,20 +607,23 @@ class DiProcess(IgProcess):
         images = torch.stack(images)
         output = self.model(images)
 
-        real_xs = container['real_xs']
-        if len(real_xs) < self.vis_num:
+        real_x = container['real_x']
+        if len(real_x) < self.val_data_num:
             images = images.data.mul(255).clamp_(0, 255).permute(0, 2, 3, 1).to("cpu", torch.uint8).numpy()
-            real_xs.extend(list(images)[:self.vis_num - len(real_xs)])
+            real_x.extend(list(images)[:self.val_data_num - len(real_x)])
+
+        if hasattr(self, 'aux_model'):
+            self.ema.step(self.model, self.aux_model['ema'])
 
         return output
 
     def get_val_data(self, *args, **kwargs):
-        val_obj = self.model.gen_x_t(self.vis_num, device=self.device)
+        val_obj = self.model.gen_x_t(self.val_data_num, device=self.device)
         return val_obj
 
     def on_val_start(self, container, val_dataloader=None, batch_size=16, dataloader_kwargs=dict(), **kwargs):
         super().on_val_start(container, **kwargs)
-        val_noise = val_dataloader if val_dataloader is not None else self.model.gen_x_t(batch_size, device=self.device)
+        val_noise = val_dataloader if val_dataloader is not None else self.get_val_data()
         num_batch = val_noise.shape[0]
 
         def gen():
@@ -587,16 +632,22 @@ class DiProcess(IgProcess):
 
         container['val_dataloader'] = gen()
 
-    def on_val_step(self, rets, container, **kwargs) -> tuple:
+    def on_val_step(self, rets, container, **kwargs) -> dict:
         noise_x = rets
-        fake_x = self.model(noise_x)
-        fake_x = fake_x.data.mul(255).clamp_(0, 255).permute(0, 2, 3, 1).to("cpu", torch.uint8).numpy()
-        outputs = dict(
-            fake=fake_x,
-        )
-        container['fake_xs'].append(fake_x)
 
-        return rets, outputs
+        models = {self.model_name: self.model}
+        if hasattr(self, 'aux_model'):
+            models.update(self.aux_model)
+
+        model_results = {}
+        for name, model in models.items():
+            fake_x = model(noise_x)
+            fake_x = fake_x.data.mul(255).clamp_(0, 255).permute(0, 2, 3, 1).to("cpu", torch.uint8).numpy()
+            model_results[name] = dict(
+                fake_x=fake_x,
+            )
+
+        return model_results
 
 
 class Ddpm(DiProcess):
@@ -620,7 +671,7 @@ class Ddpm_CelebA(Ddpm, CelebA):
 
             from examples.image_generate import Ddpm_CelebA as Process
 
-            Process().run(max_epoch=200, train_batch_size=32, save_period=20000, max_save_weight_num=10, metric_kwargs=dict(is_visualize=True))
+            Process().run(max_epoch=200, train_batch_size=32, check_period=20000, max_save_weight_num=10, metric_kwargs=dict(is_visualize=True))
     """
 
 
@@ -647,7 +698,7 @@ class Ddim_CelebA(Dpim, CelebA):
 
             from examples.image_generate import Ddpm_CelebA as Process
 
-            Process().run(max_epoch=200, train_batch_size=32, save_period=20000, max_save_weight_num=10, metric_kwargs=dict(is_visualize=True))
+            Process().run(max_epoch=200, train_batch_size=32, check_period=20000, max_save_weight_num=10, metric_kwargs=dict(is_visualize=True))
             {'score': 64.1675}
     """
 
@@ -659,5 +710,5 @@ class Ddim_CelebAHQ(Dpim, CelebAHQ):
 
             from examples.image_generate import Ddim_CelebAHQ as Process
 
-            Process().run(max_epoch=200, train_batch_size=4, save_period=20000, max_save_weight_num=10, metric_kwargs=dict(is_visualize=True))
+            Process().run(max_epoch=200, train_batch_size=4, check_period=20000, max_save_weight_num=10, metric_kwargs=dict(is_visualize=True))
     """

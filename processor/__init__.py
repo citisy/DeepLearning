@@ -45,6 +45,7 @@ class Process(
     _result_cache_dir = 'cache_data'
     default_model_path: str
     cache_dir: str
+    model_name = 'model'
 
     def init(self):
         self.init_logs()
@@ -58,17 +59,16 @@ class Process(
     def init_paths(self):
         self.work_dir = f'{self._model_cache_dir}/{self.model_version}/{self.dataset_version}'
         self.cache_dir = f'{self._result_cache_dir}/{self.model_version}/{self.dataset_version}'
-        self.default_model_path = f'{self.work_dir}/weight.pth'
+        self.default_model_path = f'{self.work_dir}/{self.model_name}.pth'
         os_lib.mk_dir(self.work_dir)
 
         self.log(f'{self.model_version = }')
         self.log(f'{self.dataset_version = }')
         self.log(f'{self.work_dir = }')
         self.log(f'{self.cache_dir = }')
+        self.log(f'{self.model_name = }')
 
     def init_components(self):
-        self.log(f'{torch.__version__ = }')
-
         setup_seed()
         self.counters = dict()
         self.device = torch.device(f"cuda:{self.device}" if torch.cuda.is_available() else "cpu") if self.device is not None else 'cpu'
@@ -89,6 +89,9 @@ class Process(
             self.set_aux_model()
         except NotImplementedError:
             self.log('set_aux_model() not init', level=logging.DEBUG)
+
+        self.log(f'{torch.__version__ = }')
+        self.log(f'{self.device = }')
 
     def run(self, max_epoch=100, train_batch_size=16, predict_batch_size=None, check_period=None, fit_kwargs=dict(), metric_kwargs=dict()):
         self.init()

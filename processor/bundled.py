@@ -42,7 +42,7 @@ class LogHooks:
                 import wandb
             except ImportError:
                 wandb = log_utils.FakeWandb()
-                self.logger.warning('wandb import error, please check install')
+                self.logger.warning('wandb import error, wandb init fail, please check install')
 
         else:
             from utils.os_lib import FakeWandb

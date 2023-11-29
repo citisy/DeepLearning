@@ -10,7 +10,7 @@ from data_parse import DataRegister
 from pathlib import Path
 from data_parse.cv_data_parse.base import DataVisualizer
 from processor import Process, DataHooks, bundled, BaseDataset
-from utils import configs, cv_utils
+from utils import configs, cv_utils, torch_utils
 
 
 class OdDataset(BaseDataset):
@@ -31,6 +31,10 @@ class OdDataset(BaseDataset):
 
 
 class OdProcess(Process):
+    def set_aux_model(self):
+        self.ema = torch_utils.EMA()
+        ema_model = self.ema.copy(self.model)
+        self.aux_model = {'ema': ema_model}
 
     def on_train_start(self, container, max_epoch=None, **kwargs):
         super().on_train_start(container, **kwargs)
@@ -66,88 +70,118 @@ class OdProcess(Process):
             self.scaler.update()
             self.optimizer.zero_grad()
 
+            if hasattr(self, 'aux_model'):
+                self.ema.step(self.model, self.aux_model['ema'])
+
     def on_train_epoch_end(self, *args, **kwargs) -> bool:
         self.scheduler.step()
         return super().on_train_epoch_end(*args, **kwargs)
 
     def metric(self, **kwargs):
         container = self.predict(**kwargs)
-        gt_rets = container['trues']
-        det_rets = container['preds']
-        df = object_detection.EasyMetric(verbose=False).quick_metric(gt_rets, det_rets, save_path=f'{self.work_dir}/result.csv')
 
-        log_info = {
-            # 'table': self.wandb.Table(dataframe=df)
-        }
-        for i in df.index:
-            name = i
-            if hasattr(self, 'cls_alias'):
-                try:
-                    name = self.cls_alias[i]
-                except:
-                    pass
-            log_info[f'metrics/{name}'] = df['ap'][i]
+        metric_results = {}
+        for name, results in container['model_results'].items():
+            gt_rets = results['trues']
+            det_rets = results['preds']
+            df = object_detection.EasyMetric(verbose=False).quick_metric(gt_rets, det_rets, save_path=f'{self.work_dir}/result.csv')
 
-        self.trace(log_info, bundled.WANDB)
+            # avoid to log too much, only log the main model
+            if name == self.model_name:
+                log_info = {
+                    # 'table': self.wandb.Table(dataframe=df)
+                }
+                for i in df.index:
+                    cls_name = i
+                    if hasattr(self, 'cls_alias'):
+                        try:
+                            cls_name = self.cls_alias[i]
+                        except:
+                            pass
+                    log_info[f'metrics/{cls_name}'] = df['ap'][i]
 
-        result = dict(
-            per_class_result=df,
-            score=df['ap']['mean']
-        )
+                self.trace(log_info, bundled.WANDB)
 
-        return result
+            metric_results[name] = dict(
+                per_class_result=df,
+                score=df['ap']['mean']
+            )
 
-    def on_val_step(self, rets, container, **kwargs) -> tuple:
+        return metric_results
+
+    def on_val_step(self, rets, container, **kwargs) -> dict:
         images = [torch.from_numpy(ret.pop('image')).to(self.device) for ret in rets]
         images = torch.stack(images)
         images = images / 255
 
-        outputs = self.model(images)
-        outputs = [{k: v.to('cpu').numpy() for k, v in t.items()} for t in outputs]
+        models = {self.model_name: self.model}
+        if hasattr(self, 'aux_model'):
+            models.update(self.aux_model)
 
-        for i in range(len(images)):
-            output = outputs[i]
-            ret = rets[i]
+        model_results = {}
+        for name, model in models.items():
+            outputs = model(images)
+            outputs = [{k: v.to('cpu').numpy() for k, v in t.items()} for t in outputs]
 
-            output = configs.merge_dict(ret, output)
-            ret = self.val_data_restore(ret)
-            output = self.val_data_restore(output)
+            preds = []
+            for i in range(len(images)):
+                output = outputs[i]
+                ret = rets[i]
 
-            outputs[i] = output
-            rets[i] = ret
+                output = configs.merge_dict(ret, output)
+                output = self.val_data_restore(output)
+                preds.append(dict(
+                    bboxes=output['bboxes'],
+                    classes=output['classes'],
+                    confs=output['confs']
+                ))
 
-            container['trues'].append(dict(
-                _id=ret['_id'],
-                bboxes=ret['bboxes'],
-                classes=ret['classes'],
-            ))
+            model_results[name] = dict(
+                outputs=outputs,
+                preds=preds,
+            )
 
-            container['preds'].append(dict(
-                _id=ret['_id'],
-                bboxes=output['bboxes'],
-                classes=output['classes'],
-                confs=output['confs']
-            ))
+        return model_results
 
-        return rets, outputs
+    def on_val_reprocess(self, rets, model_results, container, **kwargs):
+        for name, results in model_results.items():
+            r = container['model_results'].setdefault(name, dict())
+            trues = r.setdefault('trues', [])
+            preds = r.setdefault('preds', [])
+            for ret, pred in zip(rets, results['preds']):
+                trues.append(dict(
+                    _id=ret['_id'],
+                    bboxes=ret['ori_bboxes'],
+                    classes=ret['classes'],
+                ))
+                pred['_id'] = ret['_id']
+                preds.append(pred)
 
-    def on_val_step_end(self, rets, outputs, container, is_visualize=False, batch_size=16, max_vis_num=None, **kwargs):
-        if is_visualize:
-            max_vis_num = max_vis_num or float('inf')
-            n = min(batch_size, max_vis_num - self.counters['vis_num'])
-            if n > 0:
-                for ret, output in zip(rets, outputs):
-                    ret['image'] = ret['ori_image']
-                    output['image'] = ret['ori_image']
+    def visualize(self, rets, model_results, n, **kwargs):
+        for name, results in model_results.items():
+            vis_trues = []
+            vis_preds = []
+            for i in range(n):
+                true = rets[i]
+                pred = results['preds'][i]
 
-                cls_alias = self.__dict__.get('cls_alias')
-                cache_image = DataVisualizer(f'{self.cache_dir}/{self.counters["epoch"]}', verbose=False, pbar=False)(
-                    rets[:n], outputs[:n], return_image=True, cls_alias=cls_alias
-                )
-                self.get_log_trace(bundled.WANDB).setdefault('val_image', []).extend(
-                    [self.wandb.Image(cv2.cvtColor(img, cv2.COLOR_BGR2RGB), caption=Path(r['_id']).stem) for img, r in zip(cache_image, rets)]
-                )
-                self.counters['vis_num'] += n
+                vis_trues.append(dict(
+                    _id=true['_id'],
+                    image=true['ori_image'],
+                    bboxes=true['ori_bboxes'],
+                    classes=true['classes']
+                ))
+
+                pred['image'] = true['ori_image']
+                vis_preds.append(pred)
+
+            cls_alias = self.__dict__.get('cls_alias')
+            cache_image = DataVisualizer(f'{self.cache_dir}/{self.counters["epoch"]}/{name}', verbose=False, pbar=False)(
+                vis_trues, vis_preds, return_image=True, cls_alias=cls_alias
+            )
+            self.get_log_trace(bundled.WANDB).setdefault(f'val_image/{name}', []).extend(
+                [self.wandb.Image(cv2.cvtColor(img, cv2.COLOR_BGR2RGB), caption=Path(r['_id']).stem) for img, r in zip(cache_image, vis_trues)]
+            )
 
     def fragment_predict(self, image: np.ndarray, **kwargs):
         images, coors = cv_utils.fragment_image(image, max_size=self.input_size, over_ratio=0.5, overlap_ratio=0.2)
@@ -194,6 +228,8 @@ class Voc(DataHooks):
     n_classes = 20
 
     cls_alias: dict
+    train_dataset_ins = OdDataset
+    val_dataset_ins = OdDataset
 
     def get_train_data(self):
         from data_parse.cv_data_parse.Voc import Loader
@@ -263,7 +299,6 @@ class FastererRCNN_Voc(OdProcess, Voc):
 
 class YoloV5(OdProcess):
     model_version = 'YoloV5'
-    input_size = 640
 
     def set_model(self):
         # auto anchors
@@ -297,14 +332,26 @@ class YoloV5(OdProcess):
         del g
 
 
-class VocWithYolov5Aug(Voc):
+class Yolov5Aug(DataHooks):
+    """use Mosaic data augment"""
+
     def train_data_augment(self, ret):
+        # note, there do not need to reshape the size of image
         ret.update(RandomApply([geometry.HFlip()])(**ret))
         return ret
 
     mosaic_prob = 0.5
 
     def complex_data_augment(self, idx, data, base_process):
+        """
+
+        Args:
+            idx:
+            data:
+            base_process:
+                self.train_data_augment()
+
+        """
         if np.random.random() > self.mosaic_prob:
             idxes = [idx] + list(np.random.choice(range(len(data)), 3, replace=False))
             rets = []
@@ -334,7 +381,7 @@ class VocWithYolov5Aug(Voc):
         return ret
 
 
-class YoloV5_Voc(YoloV5, VocWithYolov5Aug):
+class YoloV5_Voc(YoloV5, Voc, Yolov5Aug):
     """
     Usage:
         .. code-block:: python
@@ -346,12 +393,17 @@ class YoloV5_Voc(YoloV5, VocWithYolov5Aug):
     """
 
 
-class Yolov5Dataset(DataHooks):
+class Yolov5Dataset(Yolov5Aug):
     """supported official data type of yolov5
     see https://github.com/ultralytics/yolov5 to get more information"""
 
     dataset_version = 'yolov5'
     data_dir = 'yolov5/data_mapping'
+
+    input_size = 640  # special input_size from official yolov5
+
+    train_dataset_ins = OdDataset
+    val_dataset_ins = OdDataset
 
     def get_train_data(self):
         from data_parse.cv_data_parse.YoloV5 import Loader, DataRegister

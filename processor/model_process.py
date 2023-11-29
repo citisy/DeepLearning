@@ -31,12 +31,29 @@ class CheckpointHooks:
             self.logger.info(f'Successfully saved to {save_path} !')
 
     def save_model(self, save_path, save_items: dict = None, **kwargs):
+        """
+
+        Args:
+            save_path:
+            save_items: {path: item}
+                path, where the item saved
+                item, which obj wanted to save
+
+        """
         torch.save(self.model, save_path, **kwargs)
         if save_items:
             for path, item in save_items.items():
                 torch.save(item, path, **kwargs)
 
     def save_weight(self, save_path, save_items: dict = None, **kwargs):
+        """
+
+        Args:
+            save_path:
+            save_items: {name: item}
+                name, which key of the item;
+                item, which obj wanted to save
+        """
         ckpt = dict(
             model=self.model.state_dict(),
         )
@@ -88,32 +105,59 @@ class CheckpointHooks:
             self.logger.info(f'Successfully load {save_path} !')
 
     model: nn.Module
-    callable_model: Callable
-    callable_optimizer: Callable
+    aux_model: Dict[str, nn.Module]
 
     def load_model(self, save_path, save_items: dict = None, **kwargs):
+        """
+
+        Args:
+            save_path:
+            save_items: {path: name}
+                path, where the item saved
+                name, which key of the item
+
+        """
         self.model = torch.load(save_path, map_location=self.device, **kwargs)
         if save_items:
-            for path, var in save_items.items():
-                self.__dict__.update({var: torch.load(path, map_location=self.device)})
+            for path, name in save_items.items():
+                self.__dict__.update({name: torch.load(path, map_location=self.device)})
 
-    def load_weight(self, save_path, save_items: dict = None, **kwargs):
+    def load_weight(self, save_path, save_items: list = None, **kwargs):
+        """
+
+        Args:
+            save_path:
+            save_items: [name]
+                name, which key of the item
+                if None, load all the items
+        Returns:
+
+        """
         ckpt = torch.load(save_path, map_location=self.device, **kwargs)
-
-        if self.model is None:
-            self.model = self.callable_model(**ckpt['model_config'])
         self.model.load_state_dict(ckpt.pop('model'), strict=False)
 
-        if save_items:
-            for path, var in save_items.items():
-                if var not in ckpt:
+        if 'aux_model' in ckpt:
+            aux_model = ckpt.pop('aux_model')
+            for name, w in aux_model.items():
+                self.aux_model[name].load_state_dict(w, strict=False)
+
+        def _load(name, item):
+            if name in self.__dict__ and hasattr(self.__dict__[name], 'load_state_dict'):
+                self.__dict__[name].load_state_dict(item)
+            else:
+                self.__dict__[name] = item
+
+        if save_items is None:
+            for name, item in ckpt.items():
+                _load(name, item)
+
+        else:
+            for name in save_items:
+                if name not in ckpt:
                     continue
 
-                item = ckpt[var]
-                if var in self.__dict__ and hasattr(self.__dict__[var], 'load_state_dict'):
-                    self.__dict__[var].load_state_dict(item)
-                else:
-                    self.__dict__[var] = item
+                item = ckpt[name]
+                _load(name, item)
 
     def load_jit(self, save_path, **kwargs):
         self.model = torch.jit.load(save_path, map_location=self.device, **kwargs)
@@ -268,6 +312,7 @@ class ModelHooks:
     model_version: str
     dataset_version: str
     work_dir: str
+    model_name: str
     get_train_dataloader: 'data_process.DataHooks.get_train_dataloader'
     get_val_dataloader: 'data_process.DataHooks.get_val_dataloader'
 
@@ -311,10 +356,10 @@ class ModelHooks:
             self.log_methods['pbar'] = pbar.set_postfix
 
             for rets in pbar:
-                self.on_train_step_start(container, **kwargs)
-                output = self.on_train_step(rets, container, **kwargs)
-                self.on_backward(output, container, **kwargs)
-                self.on_train_step_end(rets, output, container, **kwargs)
+                self.on_train_step_start(rets, container, **kwargs)
+                outputs = self.on_train_step(rets, container, **kwargs)
+                self.on_backward(outputs, container, **kwargs)
+                self.on_train_step_end(rets, outputs, container, **kwargs)
 
             if self.on_train_epoch_end(container, **kwargs):
                 break
@@ -324,20 +369,24 @@ class ModelHooks:
         for c in _counters:
             self.counters.setdefault(c, 0)
 
-    def on_train_step_start(self, container, **kwargs):
+    def on_train_step_start(self, rets, container, **kwargs):
         pass
 
     def on_train_step(self, rets, container, **kwargs) -> dict:
+        """model train main step
+        must return a dict included:
+            loss: loss to backward
+        """
         raise NotImplementedError
 
-    def on_backward(self, output, container, **kwargs):
-        loss = output['loss']
+    def on_backward(self, outputs, container, **kwargs):
+        loss = outputs['loss']
         loss.backward()
         self.optimizer.step()
         self.optimizer.zero_grad()
 
-    def on_train_step_end(self, rets, output, container, more_log=False, **kwargs):
-        loss = output['loss']
+    def on_train_step_end(self, rets, outputs, container, more_log=False, **kwargs):
+        loss = outputs['loss']
         self.counters['total_nums'] += len(rets)
         self.counters['total_steps'] += 1
         self.counters['per_epoch_loss'] += loss.item()
@@ -345,7 +394,7 @@ class ModelHooks:
 
         mean_loss = self.counters['per_epoch_loss'] / self.counters['per_epoch_nums']
         losses = {'mean_loss': mean_loss}
-        for k, v in output.items():
+        for k, v in outputs.items():
             if k.startswith('loss'):
                 losses[k] = v.item()
         container['losses'] = losses
@@ -396,21 +445,25 @@ class ModelHooks:
         self.save(f'{self.work_dir}/last.pth', save_type=WEIGHT, save_items=ckpt)
 
         if check_period and epoch % check_period == check_period - 1:
-            result = self.metric(
+            results = self.metric(
                 val_dataloader=container.get('val_dataloader'),
                 **container.get('metric_kwargs', {})
             )
-            score = result['score']
 
-            self.trace({'val_score': score}, bundled.WANDB)
-            self.log(f"val log: epoch: {epoch}, score: {score}")
+            scores = {}
+            for name, result in results.items():
+                scores[f'val_score/{name}'] = result['score']
 
-            self.set_mode(train=True)
+            self.trace(scores, bundled.WANDB)
+            self.log(f'val log: epoch: {epoch}, score: {scores}')
+
+            score = results[self.model_name]['score']
 
             if score > self.stopper.best_score:
                 self.save(f'{self.work_dir}/best.pth', save_type=WEIGHT, save_items=ckpt)
 
             end_flag = end_flag or self.stopper(epoch=epoch, score=score)
+            self.set_mode(train=True)
 
         self.log_trace(bundled.WANDB)
         return end_flag
@@ -418,7 +471,7 @@ class ModelHooks:
     def on_train_end(self, container, **kwargs):
         self.wandb.finish()
 
-    def metric(self, *args, **kwargs):
+    def metric(self, *args, **kwargs) -> dict:
         raise NotImplementedError
 
     @torch.no_grad()
@@ -430,6 +483,7 @@ class ModelHooks:
             Loop batches:
                 on_val_step_start()
                 on_val_step()
+                on_val_reprocess()
                 on_val_step_end()
             on_val_end()
 
@@ -454,9 +508,10 @@ class ModelHooks:
         self.on_val_start(container, **kwargs)
 
         for rets in tqdm(container['val_dataloader'], desc=visualize.TextVisualize.highlight_str('Val')):
-            self.on_val_step_start(container, **kwargs)
-            rets, outputs = self.on_val_step(rets, container, **kwargs)
-            self.on_val_step_end(rets, outputs, container, **kwargs)
+            self.on_val_step_start(rets, container, **kwargs)
+            model_results = self.on_val_step(rets, container, **kwargs)
+            self.on_val_reprocess(rets, model_results, container, **kwargs)
+            self.on_val_step_end(rets, model_results, container, **kwargs)
 
         self.on_val_end(container, **kwargs)
 
@@ -468,32 +523,48 @@ class ModelHooks:
         self.set_mode(train=False)
         self.counters['vis_num'] = 0
         self.counters.setdefault('epoch', -1)
-        container['trues'] = []
-        container['preds'] = []
+        container['model_results'] = dict()
 
-    def on_val_step_start(self, container, **kwargs):
+    def on_val_step_start(self, rets, container, **kwargs):
         pass
 
-    def on_val_step(self, rets, container, **kwargs) -> tuple:
+    def on_val_step(self, rets, container, **kwargs) -> dict:
+        """model predict main step
+        must return a dict included:
+            outputs: original model output
+            preds: normalized model output
+
+        """
         raise NotImplementedError
 
-    def on_val_step_end(self, rets, outputs, container, **kwargs):
+    def on_val_reprocess(self, rets, model_results, container, **kwargs):
+        """reprocess model outputs, for visualize, metric, etc.
+        reprocess data will be cached in container"""
+
+    def on_val_step_end(self, rets, model_results, container, is_visualize=False, batch_size=16, max_vis_num=None, **kwargs):
+        """visualize the model outputs usually"""
+        if is_visualize:
+            max_vis_num = max_vis_num or float('inf')
+            n = min(batch_size, max_vis_num - self.counters['vis_num'])
+            if n > 0:
+                self.visualize(rets, model_results, n, **kwargs)
+                self.counters['vis_num'] += n
+
+    def visualize(self, rets, model_results, n, **kwargs):
         pass
 
-    def on_val_end(self, container, save_ret_func=None, **kwargs):
-        preds = container['preds']
-        if save_ret_func:
-            save_ret_func(preds)
+    def on_val_end(self, container, **kwargs):
+        """save the results usually"""
 
     @torch.no_grad()
     def single_predict(self, image: np.ndarray, **kwargs):
-        self.model.eval()
+        self.set_mode(train=False)
         _, outputs = self.on_val_step([{'image': image}], {}, **kwargs)
         return outputs[0]
 
     @torch.no_grad()
     def batch_predict(self, images: List[np.ndarray], batch_size=16, **kwargs):
-        self.model.eval()
+        self.set_mode(train=False)
         results = []
 
         for i in range(0, len(images), batch_size):

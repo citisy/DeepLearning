@@ -13,6 +13,9 @@ class Facade(Process):
     dataset_version = 'facade'
     data_dir = 'data/cmp_facade'
 
+    train_data_num = None
+    val_data_num = None
+
     input_size = 256
     in_ch = 3
 
@@ -20,9 +23,10 @@ class Facade(Process):
         from data_parse.cv_data_parse.cmp_facade import Loader
 
         loader = Loader(self.data_dir)
-        data = loader(set_type=DataRegister.TRAIN, image_type=DataRegister.ARRAY, generator=False)[0]
-
-        return data
+        return loader(
+            set_type=DataRegister.TRAIN, image_type=DataRegister.ARRAY, generator=False,
+            max_size=self.train_data_num
+        )[0]
 
     aug = Apply([
         scale.LetterBox(),
@@ -44,9 +48,10 @@ class Facade(Process):
         from data_parse.cv_data_parse.cmp_facade import Loader
 
         loader = Loader(self.data_dir)
-        data = loader(set_type=DataRegister.TEST, image_type=DataRegister.ARRAY, generator=False)[0]
-
-        return data
+        return loader(
+            set_type=DataRegister.TEST, image_type=DataRegister.ARRAY, generator=False,
+            max_size=self.val_data_num,
+        )[0]
 
     def val_data_augment(self, ret) -> dict:
         ret.update(dst=self.input_size)
@@ -100,6 +105,9 @@ class Pix2pix(GanProcess):
         loss_g.backward()
         self.optimizer.optimizer_g.step()
 
+        if hasattr(self, 'aux_model'):
+            self.ema.step(self.model, self.aux_model['ema'])
+
         return {
             'loss.g': loss_g,
             'loss.d': loss_d,
@@ -111,7 +119,11 @@ class Pix2pix(GanProcess):
             val_dataloader = self.get_val_dataloader(**dataloader_kwargs)
         container['val_dataloader'] = val_dataloader
 
-    def on_val_step(self, rets, container, **kwargs) -> tuple:
+    def on_val_step(self, rets, container, **kwargs) -> dict:
+        models = {self.model_name: self.model}
+        if hasattr(self, 'aux_model'):
+            models.update(self.aux_model)
+
         images_a = [torch.from_numpy(ret.pop('image')).to(self.device, non_blocking=True, dtype=torch.float) for ret in rets]
         images_a = torch.stack(images_a)
 
@@ -120,15 +132,27 @@ class Pix2pix(GanProcess):
 
         real_a = images_a
         real_b = images_b
-        fake_b = self.model.net_g(real_a)
 
-        outputs = dict(
-            real_a=real_a,
-            real_b=real_b,
-            fake_b=fake_b
-        )
+        model_results = {}
+        for name, model in models.items():
+            fake_b = model.net_g(real_a)
 
-        return rets, outputs
+            r = dict(
+                fake_b=fake_b
+            )
+
+            if name == self.model_name:
+                r.update(
+                    real_a=real_a,
+                    real_b=real_b,
+                )
+
+            for k, v in r.items():
+                r[k] = v.data.mul(255).clamp_(0, 255).permute(0, 2, 3, 1).to("cpu", torch.uint8).numpy()
+
+            model_results[name] = r
+
+        return model_results
 
 
 class Pix2pix_facade(Pix2pix, Facade):
@@ -138,7 +162,7 @@ class Pix2pix_facade(Pix2pix, Facade):
 
             from examples.image_translate import Pix2pix_facade as Process
 
-            Process().run(max_epoch=1000, train_batch_size=64, save_period=2000)
+            Process().run(max_epoch=1000, train_batch_size=64, check_period=2000)
     """
 
 
@@ -191,8 +215,8 @@ class CycleGan(GanProcess):
         images_b = [torch.from_numpy(ret.pop('pix_image')).to(self.device, non_blocking=True, dtype=torch.float) for ret in rets]
         images_b = torch.stack(images_b)
 
-        real_a = images_a.to(self.device)
-        real_b = images_b.to(self.device)
+        real_a = images_a
+        real_b = images_b
 
         optimizer_g.zero_grad()
         (fake_b, rec_a), (loss_idt_b, loss_g_a, loss_cycle_a) = self.model.loss_g(real_a, net_g_a, net_g_b, net_d_a, self.lambda_a)
@@ -208,6 +232,9 @@ class CycleGan(GanProcess):
         loss_d.backward()
         optimizer_d.step()
 
+        if hasattr(self, 'aux_model'):
+            self.ema.step(self.model, self.aux_model['ema'])
+
         return {
             'loss.g': loss_g,
             'loss.d': loss_d,
@@ -219,7 +246,11 @@ class CycleGan(GanProcess):
             val_dataloader = self.get_val_dataloader(**dataloader_kwargs)
         container['val_dataloader'] = val_dataloader
 
-    def on_val_step(self, rets, container, **kwargs) -> tuple:
+    def on_val_step(self, rets, container, **kwargs) -> dict:
+        models = {self.model_name: self.model}
+        if hasattr(self, 'aux_model'):
+            models.update(self.aux_model)
+
         images_a = [torch.from_numpy(ret.pop('image')).to(self.device, non_blocking=True, dtype=torch.float) for ret in rets]
         images_a = torch.stack(images_a)
 
@@ -229,22 +260,33 @@ class CycleGan(GanProcess):
         real_a = images_a
         real_b = images_b
 
-        fake_b = self.model.net_g_a(real_a)
-        fake_a = self.model.net_g_b(real_b)
+        model_results = {}
+        for name, model in models.items():
+            fake_b = model.net_g_a(real_a)
+            fake_a = model.net_g_b(real_b)
 
-        rec_a = self.model.net_g_b(fake_b)
-        rec_b = self.model.net_g_a(fake_a)
+            rec_a = model.net_g_b(fake_b)
+            rec_b = model.net_g_a(fake_a)
 
-        outputs = dict(
-            real_a=real_a,
-            fake_a=fake_a,
-            rec_a=rec_a,
-            real_b=real_b,
-            fake_b=fake_b,
-            rec_b=rec_b
-        )
+            r = dict(
+                fake_a=fake_a,
+                rec_a=rec_a,
+                fake_b=fake_b,
+                rec_b=rec_b
+            )
 
-        return rets, outputs
+            if name == self.model_name:
+                r.update(
+                    real_a=real_a,
+                    real_b=real_b,
+                )
+
+            for k, v in r.items():
+                r[k] = v.data.mul(255).clamp_(0, 255).permute(0, 2, 3, 1).to("cpu", torch.uint8).numpy()
+
+            model_results[name] = r
+
+        return model_results
 
 
 class CycleGan_facade(CycleGan, Facade):
@@ -254,5 +296,5 @@ class CycleGan_facade(CycleGan, Facade):
 
             from examples.image_translate import CycleGan_facade as Process
 
-            Process().run(max_epoch=1000, train_batch_size=8, save_period=500)
+            Process().run(max_epoch=1000, train_batch_size=8, check_period=500)
     """

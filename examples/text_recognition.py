@@ -7,51 +7,82 @@ from data_parse import DataRegister
 from pathlib import Path
 from data_parse.cv_data_parse.base import DataVisualizer
 from processor import Process, DataHooks, bundled, BaseDataset, MixDataset, IterDataset
-from utils import configs, cv_utils, os_lib
+from utils import configs, cv_utils, os_lib, torch_utils
 
 
 class TrProcess(Process):
+    def set_aux_model(self):
+        self.ema = torch_utils.EMA()
+        ema_model = self.ema.copy(self.model)
+        self.aux_model = {'ema': ema_model}
+
     def on_train_step(self, rets, container, **kwargs) -> dict:
         images = [torch.from_numpy(ret.pop('image')).to(self.device, non_blocking=True, dtype=torch.float) for ret in rets]
         transcription = [ret['transcription'] for ret in rets]
         images = torch.stack(images)
         output = self.model(images, transcription)
+
+        if hasattr(self, 'aux_model'):
+            self.ema.step(self.model, self.aux_model['ema'])
+
         return output
 
     def metric(self, **kwargs):
         container = self.predict(**kwargs)
-        result = text_generation.top_metric.f_measure(container['trues'], container['preds'])
 
-        result.update(
-            score=result['f']
-        )
+        metric_results = {}
+        for name, results in container['model_results'].items():
+            result = text_generation.top_metric.f_measure(results['trues'], results['preds'])
 
-        return result
+            result.update(
+                score=result['f']
+            )
 
-    def on_val_step(self, rets, container, **kwargs) -> tuple:
+            metric_results[name] = result
+
+        return metric_results
+
+    def on_val_step(self, rets, container, **kwargs) -> dict:
         images = [torch.from_numpy(ret.pop('image')).to(self.device, non_blocking=True, dtype=torch.float) for ret in rets]
         images = torch.stack(images)
-        transcription = [ret['transcription'] for ret in rets]
 
-        outputs = self.model(images)
-        container['preds'].extend(outputs['pred'])
-        container['trues'].extend(transcription)
-        return rets, outputs
+        models = {self.model_name: self.model}
+        if hasattr(self, 'aux_model'):
+            models.update(self.aux_model)
 
-    def on_val_step_end(self, rets, outputs, container, is_visualize=False, batch_size=16, max_vis_num=None, **kwargs):
-        if is_visualize:
-            max_vis_num = max_vis_num or float('inf')
-            n = min(batch_size, max_vis_num - self.counters['vis_num'])
-            if n > 0:
-                for ret, _p in zip(rets, outputs['pred']):
-                    _id = Path(ret['_id'])
-                    ret['_id'] = f'{_id.stem}({_p}){_id.suffix}'
-                    ret['image'] = ret['ori_image']
-                DataVisualizer(f'{self.cache_dir}/{self.counters["epoch"]}', verbose=False, pbar=False)(rets[:n])
-                self.get_log_trace(bundled.WANDB).setdefault('val_image', []).extend(
-                    [self.wandb.Image(cv2.cvtColor(ret['image'], cv2.COLOR_BGR2RGB), caption=ret['_id']) for ret in rets[:n]]
-                )
-                self.counters['vis_num'] += n
+        model_results = {}
+        for name, model in models.items():
+            outputs = model(images)
+
+            model_results[name] = dict(
+                outputs=outputs['pred'],
+                preds=outputs['pred'],
+            )
+
+        return model_results
+
+    def on_val_reprocess(self, rets, model_results, container, **kwargs):
+        for name, results in model_results.items():
+            r = container['model_results'].setdefault(name, dict())
+            r.setdefault('trues', []).extend([ret['transcription'] for ret in rets])
+            r.setdefault('preds', []).extend(results['preds'])
+
+    def visualize(self, rets, model_results, n, **kwargs):
+        for name, results in model_results.items():
+            vis_rets = []
+            for i in range(n):
+                ret = rets[i]
+                _p = results['preds'][i]
+                _id = Path(ret['_id'])
+                vis_rets.append(dict(
+                    _id=f'{_id.stem}({_p}){_id.suffix}',    # true(pred).jpg
+                    image=ret['ori_image']
+                ))
+
+            DataVisualizer(f'{self.cache_dir}/{self.counters["epoch"]}/{name}', verbose=False, pbar=False)(vis_rets)
+            self.get_log_trace(bundled.WANDB).setdefault(f'val_image/{name}', []).extend(
+                [self.wandb.Image(cv2.cvtColor(ret['image'], cv2.COLOR_BGR2RGB), caption=ret['_id']) for ret in vis_rets]
+            )
 
 
 class DataProcess(DataHooks):

@@ -5,12 +5,11 @@ import torch
 from torch import optim, nn
 from metrics import mulit_classifier
 from data_parse.cv_data_parse.data_augmentation import crop, scale, geometry, channel, RandomApply, Apply, complex, pixel_perturbation
-from data_parse import DataRegister
 from pathlib import Path
 from PIL import Image
 from data_parse.cv_data_parse.base import DataVisualizer
 from processor import Process, DataHooks, bundled, BaseDataset
-from utils.visualize import get_color_array
+from utils import visualize, torch_utils, configs
 
 
 class SegDataset(BaseDataset):
@@ -36,6 +35,11 @@ class SegDataset(BaseDataset):
 class SegProcess(Process):
     def set_optimizer(self):
         self.optimizer = optim.SGD(self.model.parameters(), lr=0.001, momentum=0.9, weight_decay=1e-4)
+
+    def set_aux_model(self):
+        self.ema = torch_utils.EMA()
+        ema_model = self.ema.copy(self.model)
+        self.aux_model = {'ema': ema_model}
 
     def on_train_start(self, container, batch_size=16, max_epoch=None, **kwargs):
         super().on_train_start(container, batch_size=batch_size, **kwargs)
@@ -68,63 +72,99 @@ class SegProcess(Process):
             self.scaler.update()
             self.optimizer.zero_grad()
 
+            if hasattr(self, 'aux_model'):
+                self.ema.step(self.model, self.aux_model['ema'])
+
     def on_train_epoch_end(self, *args, **kwargs) -> bool:
         self.scheduler.step()
         return super().on_train_epoch_end(*args, **kwargs)
 
     def metric(self, *args, **kwargs):
         container = self.predict(*args, **kwargs)
-        # ignore background
-        pred = np.concatenate(container['preds']).flatten() - 1
-        true = np.concatenate(container['trues']).flatten() - 1
 
-        result = mulit_classifier.TopMetric(n_class=self.out_features, ignore_class=(-1, 254)).f1(true, pred)
+        metric_results = {}
+        for name, results in container['model_results'].items():
+            # ignore background
+            pred = np.concatenate([i.flatten() for i in results['preds']]) - 1
+            true = np.concatenate([i.flatten() for i in results['trues']]) - 1
 
-        result.update(
-            score=result['f']
-        )
+            result = mulit_classifier.TopMetric(n_class=self.out_features, ignore_class=(-1, 254)).f1(true, pred)
 
-        return result
+            result.update(
+                score=result['f']
+            )
 
-    def on_val_step(self, rets, container, **kwargs) -> tuple:
+            metric_results[name] = result
+
+        return metric_results
+
+    def on_val_step(self, rets, container, **kwargs) -> dict:
         images = [torch.from_numpy(ret.pop('image')).to(self.device, non_blocking=True, dtype=torch.float) for ret in rets]
         images = torch.stack(images)
         images = images / 255
 
-        outputs = self.model(images).cpu().detach().numpy().astype(np.uint8)
-        container['preds'].append(outputs)
-        container['trues'].append([ret.pop('pix_image') for ret in rets])
+        models = {self.model_name: self.model}
+        if hasattr(self, 'aux_model'):
+            models.update(self.aux_model)
 
-        return rets, outputs
+        model_results = {}
+        for name, model in models.items():
+            outputs = model(images)
+            outputs = outputs.cpu().numpy().astype(np.uint8)
 
-    def on_val_step_end(self, rets, outputs, container, is_visualize=False, batch_size=16, max_vis_num=None, **kwargs):
-        if is_visualize:
-            max_vis_num = max_vis_num or float('inf')
-            n = min(batch_size, max_vis_num - self.counters['vis_num'])
-            if n > 0:
-                det_rets = []
-                for ret, output in zip(rets, outputs):
-                    ret.pop('bboxes')
+            preds = []
+            for i in range(len(images)):
+                output = outputs[i]
+                ret = rets[i]
 
-                    ori_pix_image = ret['ori_pix_image']
-                    pred_image = np.zeros((*output.shape, 3), dtype=output.dtype) + 255
-                    true_image = np.zeros((*ori_pix_image.shape, 3), dtype=output.dtype) + 255
-                    for i in range(self.out_features + 1):
-                        pred_image[output == i] = get_color_array(i)
-                        true_image[ori_pix_image == i] = get_color_array(i)
+                output = configs.merge_dict(ret, {'image': output})
+                output = self.val_data_restore(output)
+                preds.append(output['image'])
 
-                    det_ret = {'image': pred_image, **ret}
-                    det_ret = self.val_data_restore(det_ret)
-                    det_rets.append(det_ret)
+            model_results[name] = dict(
+                outputs=outputs,
+                preds=preds,
+            )
 
-                    ret['image'] = ret['ori_image']
-                    ret['pix_image'] = true_image
+        return model_results
 
-                cache_image = DataVisualizer(f'{self.cache_dir}/{self.counters["epoch"]}', verbose=False, pbar=False)(rets[:n], det_rets[:n], return_image=True)
-                self.get_log_trace(bundled.WANDB).setdefault('val_image', []).extend(
-                    [self.wandb.Image(cv2.cvtColor(img, cv2.COLOR_BGR2RGB), caption=Path(r['_id']).stem) for img, r in zip(cache_image, rets)]
-                )
-                self.counters['vis_num'] += n
+    def on_val_reprocess(self, rets, model_results, container, **kwargs):
+        for name, results in model_results.items():
+            r = container['model_results'].setdefault(name, dict())
+            r.setdefault('trues', []).extend([ret['ori_pix_image'] for ret in rets])
+            r.setdefault('preds', []).extend(results['preds'])
+
+    def visualize(self, rets, model_results, n, **kwargs):
+        for ret in rets:
+            ret.pop('bboxes')
+            ret.pop('pix_image')
+
+        for name, results in model_results.items():
+            vis_trues = []
+            vis_preds = []
+            for i in range(n):
+                gt_ret = rets[i]
+                pred = results['preds'][i]
+                true = gt_ret['ori_pix_image']
+                true_image = np.zeros((*true.shape, 3), dtype=true.dtype) + 255
+                pred_image = np.zeros((*pred.shape, 3), dtype=pred.dtype) + 255
+                for i in range(self.out_features + 1):
+                    true_image[true == i] = visualize.get_color_array(i)
+                    pred_image[pred == i] = visualize.get_color_array(i)
+
+                vis_trues.append(dict(
+                    _id=gt_ret['_id'],
+                    image=gt_ret['ori_image'],
+                    pix_image=true_image
+                ))
+                vis_preds.append(dict(
+                    image=pred_image
+                ))
+
+            cache_image = DataVisualizer(f'{self.cache_dir}/{self.counters["epoch"]}/{name}', verbose=False, pbar=False)(vis_trues, vis_preds, return_image=True)
+            self.get_log_trace(bundled.WANDB).setdefault(f'val_image/{name}', []).extend(
+                [self.wandb.Image(cv2.cvtColor(img, cv2.COLOR_BGR2RGB), caption=Path(r['_id']).stem) for img, r in zip(cache_image, vis_trues)]
+            )
 
 
 class Voc(DataHooks):
@@ -134,17 +174,20 @@ class Voc(DataHooks):
     in_ch = 3
     out_features = 20
 
+    train_dataset_ins = SegDataset
+    val_dataset_ins = SegDataset
+
     aug = Apply([
-        scale.Proportion(choice_type=3),
-        crop.Random(is_pad=False),
-        # scale.LetterBox(),    # there are gray lines
+        # scale.Proportion(choice_type=3),
+        # crop.Random(is_pad=False),
+        scale.LetterBox(),    # there are gray lines
     ])
 
     # note that, use cv2.INTER_NEAREST mode to resize
     pix_aug = Apply([
-        scale.Proportion(choice_type=3, interpolation=1),
-        crop.Random(is_pad=False, fill=255),
-        # scale.LetterBox(interpolation=1, fill=255),    # there are gray lines
+        # scale.Proportion(choice_type=3, interpolation=1),
+        # crop.Random(is_pad=False, fill=255),
+        scale.LetterBox(interpolation=1, fill=255),    # there are gray lines
     ])
 
     rand_aug1 = RandomApply([

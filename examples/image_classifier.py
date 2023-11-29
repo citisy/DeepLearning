@@ -2,64 +2,92 @@ import cv2
 import torch
 from torch import optim
 import numpy as np
-from metrics import classifier
-from data_parse.cv_data_parse.data_augmentation import crop, scale, geometry, channel, RandomApply, Apply
-from data_parse import DataRegister
 from pathlib import Path
-from data_parse.cv_data_parse.base import DataVisualizer
+from utils import torch_utils
+from metrics import classifier
 from processor import Process, DataHooks, bundled
+from data_parse.cv_data_parse.base import DataVisualizer, DataRegister
+from data_parse.cv_data_parse.data_augmentation import crop, scale, geometry, channel, RandomApply, Apply
 
 
 class ClsProcess(Process):
+    def set_aux_model(self):
+        self.ema = torch_utils.EMA()
+        ema_model = self.ema.copy(self.model)
+        self.aux_model = {'ema': ema_model}
+
     def on_train_step(self, rets, container, **kwargs) -> dict:
         images = [torch.from_numpy(ret.pop('image')).to(self.device, non_blocking=True, dtype=torch.float) for ret in rets]
         _class = [torch.tensor(ret['_class']).to(self.device) for ret in rets]
         images = torch.stack(images)
         _class = torch.stack(_class)
         images = images / 255
-
-        self.optimizer.zero_grad()
-
         output = self.model(images, _class)
+
+        if hasattr(self, 'aux_model'):
+            self.ema.step(self.model, self.aux_model['ema'])
+
         return output
 
     def metric(self, **predict_kwargs):
         container = self.predict(**predict_kwargs)
-        trues = np.array(container['trues'])
-        preds = np.array(container['preds'])
-        result = classifier.top_metric.f_measure(trues, preds)
 
-        result.update(
-            score=result['f']
-        )
+        metric_results = {}
+        for name, results in container['model_results'].items():
+            trues = np.array(results['trues'])
+            preds = np.array(results['preds'])
+            result = classifier.top_metric.f_measure(trues, preds)
 
-        return result
+            result.update(
+                score=result['f']
+            )
 
-    def on_val_step(self, rets, container, **kwargs) -> tuple:
+            metric_results[name] = result
+
+        return metric_results
+
+    def on_val_step(self, rets, container, **kwargs) -> dict:
         images = [torch.from_numpy(ret.pop('image')).to(self.device, non_blocking=True, dtype=torch.float) for ret in rets]
         images = torch.stack(images)
         images = images / 255
 
-        outputs = self.model(images)
-        outputs['pred'] = outputs['pred'].argmax(1).cpu().detach().numpy()
-        container['preds'].extend(outputs['pred'].tolist())
-        container['trues'].extend([ret['_class'] for ret in rets])
-        return rets, outputs
+        models = {self.model_name: self.model}
+        if hasattr(self, 'aux_model'):
+            models.update(self.aux_model)
 
-    def on_val_step_end(self, rets, outputs, container, is_visualize=False, batch_size=16, max_vis_num=None, **kwargs):
-        if is_visualize:
-            max_vis_num = max_vis_num or float('inf')
-            n = min(batch_size, max_vis_num - self.counters['vis_num'])
-            if n > 0:
-                for ret, _p in zip(rets, outputs['pred']):
-                    _id = Path(ret['_id'])
-                    ret['_id'] = f'{_id.stem}({ret["_class"]}_{_p}){_id.suffix}'
-                    ret['image'] = ret['ori_image']
-                DataVisualizer(f'{self.cache_dir}/{self.counters["epoch"]}', verbose=False, pbar=False)(rets[:n])
-                self.get_log_trace(bundled.WANDB).setdefault('val_image', []).extend(
-                    [self.wandb.Image(cv2.cvtColor(ret['image'], cv2.COLOR_BGR2RGB), caption=ret['_id']) for ret in rets[:n]]
-                )
-                self.counters['vis_num'] += n
+        model_results = {}
+        for name, model in models.items():
+            outputs = model(images)
+
+            model_results[name] = dict(
+                outputs=outputs['pred'],
+                preds=outputs['pred'].argmax(1).cpu().numpy().tolist(),
+            )
+
+        return model_results
+
+    def on_val_reprocess(self, rets, model_results, container, **kwargs):
+        for name, results in model_results.items():
+            r = container['model_results'].setdefault(name, dict())
+            r.setdefault('trues', []).extend([ret['_class'] for ret in rets])
+            r.setdefault('preds', []).extend(results['preds'])
+
+    def visualize(self, rets, model_results, n, **kwargs):
+        for name, results in model_results.items():
+            vis_rets = []
+            for i in range(n):
+                ret = rets[i]
+                _p = results['preds'][i]
+                _id = Path(ret['_id'])
+                vis_rets.append(dict(
+                    _id=f'{_id.stem}({ret["_class"]}_{_p}){_id.suffix}',
+                    image=ret['ori_image']
+                ))
+
+            DataVisualizer(f'{self.cache_dir}/{self.counters["epoch"]}/{name}', verbose=False, pbar=False)(vis_rets)
+            self.get_log_trace(bundled.WANDB).setdefault(f'val_image/{name}', []).extend(
+                [self.wandb.Image(cv2.cvtColor(ret['image'], cv2.COLOR_BGR2RGB), caption=ret['_id']) for ret in vis_rets]
+            )
 
 
 class Mnist(DataHooks):
@@ -300,7 +328,7 @@ class InceptionV3_ImageNet(ClsProcess, ImageNet):
             {'p': 0.98, 'r': 0.98, 'f': 0.98, 'score': 0.98}
     """
     model_version = 'InceptionV3'
-    input_size = 299    # special input_size from paper
+    input_size = 299  # special input_size from paper
 
     def set_model(self):
         from models.image_classifier.InceptionV3 import InceptionV3 as Model
@@ -456,7 +484,7 @@ class CondenseNet_ImageNet(ClsProcess, ImageNet):
 
 
 class ViT_ImageNet(ClsProcess, ImageNet):
-    """note, work better in a large dataset
+    """note, work better on a large dataset
 
     Usage:
         .. code-block:: python

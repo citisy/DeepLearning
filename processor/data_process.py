@@ -129,7 +129,7 @@ class DataHooks:
     def val_data_restore(self, ret) -> dict:
         return ret
 
-    def gen_example_data(self, batch_size=1, input_type='image_norm'):
+    def gen_example_data(self, batch_size=1, input_type='image_norm', **kwargs):
         if input_type == 'image':
             return torch.randint(255, (batch_size, self.in_ch, self.input_size, self.input_size), dtype=torch.uint8, device=self.device)
         elif input_type == 'image_norm':
