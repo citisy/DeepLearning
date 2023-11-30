@@ -25,6 +25,9 @@ class Model(nn.ModuleList):
 
         self.hidden_ch = hidden_ch
 
+    def gen_noise(self, batch_size, device):
+        return torch.normal(mean=0., std=1., size=(batch_size, self.hidden_ch, 1, 1), device=device)
+
     def loss_d(self, real_x):
         self.net_d.requires_grad_(True)
 
@@ -45,7 +48,7 @@ class Model(nn.ModuleList):
         # 2. noise -> net_g -> fake_x -> net_d -> pred_fake -> loss_d_fake -> gradient_ascent
         # loss_d_fake = net_d(net_g(noise))
         with torch.no_grad():
-            noise = torch.normal(mean=0., std=1., size=(len(real_x), self.hidden_ch, 1, 1), device=real_x.device)
+            noise = self.gen_noise(len(real_x), real_x.device)
             fake_x = self.net_g(noise)
 
         pred_fake = self.net_d(fake_x)
@@ -59,7 +62,7 @@ class Model(nn.ModuleList):
 
         # 1. noise -> net_g -> fake_x -> net_d -> pred_fake -> loss_g -> gradient_descent
         # loss_g = net_d(net_g(noise))
-        noise = torch.normal(mean=0., std=1., size=(len(real_x), self.hidden_ch, 1, 1), device=real_x.device)
+        noise = self.gen_noise(len(real_x), real_x.device)
         fake_x = self.net_g(noise)
         loss_g = self.net_d(fake_x)
         return loss_g
