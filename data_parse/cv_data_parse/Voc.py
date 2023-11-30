@@ -104,7 +104,8 @@ class Loader(DataLoader):
             gen_func = f.read().strip().split('\n')
 
         for ret in self.gen_data(gen_func, **kwargs):
-            pix_image_path = os.path.abspath(f'{self.data_dir}/{task}/{ret["_id"]}.png')
+            # note, pix_image with suffix `png` not `jpg`
+            pix_image_path = os.path.abspath(f'{self.data_dir}/{task}/{Path(ret["_id"]).stem}.png')
             pix_image = get_image(pix_image_path, image_type)
 
             ret['pix_image'] = pix_image

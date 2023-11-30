@@ -92,10 +92,11 @@ class DataLoader:
     image_suffix = 'png'
     classes = []
 
-    def __init__(self, data_dir, verbose=True, stdout_method=print):
+    def __init__(self, data_dir, verbose=True, stdout_method=print, **kwargs):
         self.data_dir = data_dir
         self.verbose = verbose
         self.stdout_method = stdout_method if verbose else os_lib.FakeIo()
+        self.__dict__.update(**kwargs)
 
     def __call__(self, *args, **kwargs):
         return self.load(*args, **kwargs)

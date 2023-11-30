@@ -172,7 +172,8 @@ class Pad:
 
 
 class Crop:
-    def __init__(self):
+    def __init__(self, pad=None):
+        self.pad = pad  # for restore
         self.name = __name__.split('.')[-1] + '.' + self.__class__.__name__
 
     def get_add_params(self, dst_coor, w, h):
@@ -230,7 +231,7 @@ class Crop:
 
         if 'image' in ret and ret['image'] is not None:
             # irreversible restore
-            pad = Pad()
+            pad = self.pad or Pad()
             image = ret['image']
             image = pad.apply_image(image, {pad.name: dict(t=y1, d=h - y2, l=x1, r=w - x2)})
             ret['image'] = image
@@ -248,7 +249,7 @@ class PadCrop:
     def __init__(self, is_pad=True, **pad_kwargs):
         self.is_pad = is_pad
         self.pad = Pad(**pad_kwargs)
-        self.crop = Crop()
+        self.crop = Crop(pad=self.pad)
 
     def __call__(self, image, dst_coor, bboxes=None, classes=None, **kwargs):
         x1, x2, y1, y2 = dst_coor
