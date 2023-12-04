@@ -160,22 +160,22 @@ class LetterBox:
 
     def __init__(self, interpolation=0, max_ratio=None, **pad_kwargs):
         self.resize = Proportion(choice_type=MIN, interpolation=interpolation, max_ratio=max_ratio)  # choice the min scale factor
-        self.pad = crop.Pad(**pad_kwargs)
+        self.crop = crop.Center(is_pad=True, pad_type=2, **pad_kwargs)
 
     def __call__(self, image, dst, bboxes=None, **kwargs):
         ret = dict(image=image, bboxes=bboxes, dst=dst, **kwargs)
         ret.update(self.resize(**ret))
-        ret.update(self.pad(**ret))
+        ret.update(self.crop(**ret))
 
         return ret
 
     def apply_image(self, image, ret):
         image = self.resize.apply_image(image, ret)
-        image = self.pad.apply_image(image, ret)
+        image = self.crop.apply_image(image, ret)
         return image
 
     def restore(self, ret):
-        ret = self.pad.restore(ret)
+        ret = self.crop.restore(ret)
         ret = self.resize.restore(ret)
 
         return ret
