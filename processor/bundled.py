@@ -27,7 +27,7 @@ class LogHooks:
     """
     def __init__(self):
         super().__init__()
-        self.loggers = {LOGGING, WANDB}
+        self.loggers = set()
         self.trace_log_items = dict()
         self.log_methods = {}
 
