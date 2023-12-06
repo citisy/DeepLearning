@@ -29,21 +29,12 @@ class LogHooks:
         super().__init__()
         self.loggers = set()
         self.trace_log_items = dict()
-        self.log_methods = {}
+        self.log_methods = dict()
 
     def register_logger(self, name, log_method):
         self.loggers.add(name)
+        self.trace_log_items[name] = {}
         self.log_methods[name] = log_method
-        self._init_trace_log_items(name)
-
-    def _init_trace_log_items(self, loggers=None):
-        if loggers is None:
-            loggers = self.loggers
-        if not isinstance(loggers, (list, tuple, set)):
-            loggers = [loggers]
-
-        for logger in loggers:
-            self.trace_log_items[logger] = {}
 
     logger: Optional
 
