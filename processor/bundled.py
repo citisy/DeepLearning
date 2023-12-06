@@ -2,39 +2,59 @@ import logging
 from utils import log_utils
 from typing import Optional
 
-BASELOG = 1
-WANDB = 2
-TENSORBOARD = 3
+LOGGING = 'logging'
+WANDB = 'wandb'
+TENSORBOARD = 'tensorboard'
 
 empty_logger = log_utils.EmptyLogger()
 
 
 class LogHooks:
+    """
+    .. code-block:: python
+
+        process = LogHooks()
+
+        # add tqdm pbar logger
+        from tqdm import tqdm
+        pbar = tqdm(iter)
+        process.register_logger('pbar', pbar.set_postfix)
+
+        # add loguru logger
+        from loguru import logger
+        process.register_logger('loguru', lambda item, level='INFO', **kwargs: logger.opt(depth=2).log(level, item))
+
+    """
     def __init__(self):
         super().__init__()
-        self.loggers = [BASELOG, WANDB]
-        self._init_trace_log_items()
-        self.log_methods = {
-            BASELOG: self.log_base,
-            WANDB: self.log_wandb
-        }
+        self.loggers = {LOGGING, WANDB}
+        self.trace_log_items = dict()
+        self.log_methods = {}
 
     def register_logger(self, name, log_method):
-        self.loggers.append(name)
+        self.loggers.add(name)
         self.log_methods[name] = log_method
-        self._init_trace_log_items()
+        self._init_trace_log_items(name)
 
-    def _init_trace_log_items(self):
-        self.trace_log_items = {logger: {} for logger in self.loggers}
+    def _init_trace_log_items(self, loggers=None):
+        if loggers is None:
+            loggers = self.loggers
+        if not isinstance(loggers, (list, tuple, set)):
+            loggers = [loggers]
+
+        for logger in loggers:
+            self.trace_log_items[logger] = {}
 
     logger: Optional
-    wandb: Optional
 
-    def init_log_base(self, log_dir):
+    def init_log_base(self, log_dir=None, logger=None):
         log_utils.logger_init(log_dir)
-        self.logger = log_utils.get_logger()
+        logger = log_utils.get_logger(logger)
+        self.logger = logger
+        self.register_logger(LOGGING, lambda item, level=logging.INFO, **kwargs: logger.log(level, item, stacklevel=3))
 
     use_wandb = False
+    wandb: Optional
 
     def init_wandb(self):
         if self.use_wandb:
@@ -49,18 +69,19 @@ class LogHooks:
             wandb = FakeWandb()
 
         self.wandb = wandb
+        self.register_logger(WANDB, lambda item, **kwargs: wandb.log(item))
 
-    def trace(self, item: dict, loggers=BASELOG):
+    def trace(self, item: dict, loggers=LOGGING):
         if isinstance(loggers, int):
             loggers = [loggers]
 
         for logger in loggers:
             self.trace_log_items[logger].update(item)
 
-    def get_log_trace(self, logger=BASELOG):
+    def get_log_trace(self, logger=LOGGING):
         return self.trace_log_items[logger]
 
-    def log_trace(self, loggers=BASELOG, **kwargs):
+    def log_trace(self, loggers=LOGGING, **kwargs):
         if isinstance(loggers, int):
             loggers = [loggers]
 
@@ -69,15 +90,9 @@ class LogHooks:
             self.log_methods.get(logger)(item, **kwargs)
             self.trace_log_items[logger] = {}
 
-    def log(self, item, loggers=BASELOG, **kwargs):
-        if not isinstance(loggers, (list, tuple)):
+    def log(self, item, loggers=LOGGING, **kwargs):
+        if not isinstance(loggers, (list, tuple, set)):
             loggers = [loggers]
 
         for logger in loggers:
             self.log_methods.get(logger, empty_logger)(item, **kwargs)
-
-    def log_base(self, item, level=logging.INFO, **kwargs):
-        self.logger.log(level, item)
-
-    def log_wandb(self, item, **kwargs):
-        self.wandb.log(item)

@@ -9,7 +9,7 @@ from typing import List, Optional, Callable, Dict, Tuple
 from tqdm import tqdm
 from . import bundled, data_process
 from utils import os_lib, configs, visualize, log_utils
-from utils.torch_utils import EarlyStopping, ModuleInfo, Export
+from utils.torch_utils import Export
 
 MODEL = 1
 WEIGHT = 2
@@ -203,6 +203,7 @@ class ModelHooks:
         self.optimizer = optim.Adam(self.model.parameters())
 
     def set_stopper(self):
+        from utils.torch_utils import EarlyStopping
         self.stopper = EarlyStopping(patience=10, min_epoch=10, ignore_min_score=0.1, stdout_method=self.log)
 
     lrf = 0.01
@@ -222,6 +223,7 @@ class ModelHooks:
         return self._model_info(self.model, **kwargs)
 
     def _model_info(self, model, depth=None, human_readable=True):
+        from utils.torch_utils import ModuleInfo
         profile = ModuleInfo.profile_per_layer(model, depth=depth)
         cols = ('name', 'module', 'params', 'grads', 'args')
         lens = [-1] * len(cols)
@@ -348,12 +350,11 @@ class ModelHooks:
     log_methods: dict
 
     def on_train(self, container, max_epoch=100, **kwargs):
-        self.register_logger('pbar', None)
 
         for i in range(self.counters['start_epoch'], max_epoch):
             self.on_train_epoch_start(container, **kwargs)
             pbar = tqdm(container['train_dataloader'], desc=visualize.TextVisualize.highlight_str(f'Train {i}/{max_epoch}'))
-            self.log_methods['pbar'] = pbar.set_postfix
+            self.register_logger('pbar', pbar.set_postfix)
 
             for rets in pbar:
                 self.on_train_step_start(rets, container, **kwargs)
@@ -409,28 +410,28 @@ class ModelHooks:
             **mem_info
         }, 'pbar')
 
-    save: CheckpointHooks.save
+    save: 'CheckpointHooks.save'
     counters: dict
 
     def on_train_epoch_end(self, container, check_period=None, batch_size=None, **kwargs) -> bool:
         end_flag = False
         epoch = self.counters['epoch']
         self.counters['epoch'] += 1
-        self.trace({'epoch': epoch}, (bundled.BASELOG, bundled.WANDB))
+        self.trace({'epoch': epoch}, (bundled.LOGGING, bundled.WANDB))
 
         losses = container.get('losses')
         if losses is not None:
             for k, v in losses.items():
-                self.trace({f'loss/{k}': v}, (bundled.BASELOG, bundled.WANDB))
+                self.trace({f'loss/{k}': v}, (bundled.LOGGING, bundled.WANDB))
                 if np.isnan(v) or np.isinf(v):
                     end_flag = True
                     self.log(f'Train will be stop soon, got {v} value from {k}')
 
         epoch_start_time = container.get('epoch_start_time')
         if epoch_start_time is not None:
-            self.trace({'time_consume': (time.time() - epoch_start_time) / 60}, (bundled.BASELOG, bundled.WANDB))
+            self.trace({'time_consume': (time.time() - epoch_start_time) / 60}, (bundled.LOGGING, bundled.WANDB))
 
-        self.log_trace(bundled.BASELOG)
+        self.log_trace(bundled.LOGGING)
         ckpt = {
             'optimizer': self.optimizer.state_dict(),
             'stopper': self.stopper.state_dict(),
@@ -559,8 +560,9 @@ class ModelHooks:
     @torch.no_grad()
     def single_predict(self, image: np.ndarray, **kwargs):
         self.set_mode(train=False)
-        _, outputs = self.on_val_step([{'image': image}], {}, **kwargs)
-        return outputs[0]
+        ret = self.val_data_augment({'image': image})
+        model_results = self.on_val_step([ret], {}, **kwargs)
+        return model_results[self.model_name]['preds'][0]
 
     @torch.no_grad()
     def batch_predict(self, images: List[np.ndarray], batch_size=16, **kwargs):
@@ -568,9 +570,9 @@ class ModelHooks:
         results = []
 
         for i in range(0, len(images), batch_size):
-            rets = [{'image': image} for image in images[i:i + batch_size]]
-            _, outputs = self.on_val_step(rets, {}, **kwargs)
-            results.extend(outputs)
+            rets = [self.val_data_augment({'image': image}) for image in images[i:i + batch_size]]
+            model_results = self.on_val_step(rets, {}, **kwargs)
+            results.extend(model_results[self.model_name]['preds'])
 
         return results
 
