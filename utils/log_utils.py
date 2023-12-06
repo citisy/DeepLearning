@@ -184,6 +184,7 @@ def logger_init(log_dir=None, **custom_config):
                 'datefmt': '%Y-%m-%d %H:%M:%S'
             }
         },
+        # handlers to scream
         'handlers': {
             # 屏幕输出流
             'default': {
@@ -220,6 +221,7 @@ def logger_init(log_dir=None, **custom_config):
     if log_dir is not None:  # add file handles
         os_lib.mk_dir(log_dir)
         add_config = {
+            # handlers to file
             'handlers': {
                 # 简略信息info
                 'info_standard': {
@@ -294,7 +296,7 @@ def wandb_init(**custom_config):
 
 
 def get_logger(logger=''):
-    if isinstance(logger, str):
+    if isinstance(logger, str) or logger is None:
         logger = logging.getLogger(logger)
     return logger
 
