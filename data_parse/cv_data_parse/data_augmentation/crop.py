@@ -217,12 +217,20 @@ class Crop:
             bboxes[:, 0::2] = np.where(bboxes[:, 0::2] > x2 - x1, x2 - x1, bboxes[:, 0::2])
             bboxes[:, 1::2] = np.where(bboxes[:, 1::2] > y2 - y1, y2 - y1, bboxes[:, 1::2])
 
-            idx = ~((bboxes[:, 0] == bboxes[:, 2]) | (bboxes[:, 1] == bboxes[:, 3]))
-            bboxes = bboxes[idx]
+            idx = ((bboxes[:, 0] == bboxes[:, 2]) | (bboxes[:, 1] == bboxes[:, 3]))
+            if np.any(idx):
+                ret[self.name]['bboxes'] = bboxes[idx]
+
+            keep = ~idx
+            bboxes = bboxes[keep]
 
             if classes is not None:
                 classes = np.array(classes)
-                classes = classes[idx]
+
+                if np.any(idx):
+                    ret[self.name]['classes'] = classes[idx]
+
+                classes = classes[keep]
 
         return bboxes, classes
 
@@ -274,7 +282,7 @@ class PadCrop:
         return self.crop.apply_image(image, ret)
 
     def apply_bboxes_classes(self, bboxes, classes, ret):
-        return self.apply_bboxes_classes(bboxes, classes, ret)
+        return self.crop.apply_bboxes_classes(bboxes, classes, ret)
 
     def restore(self, ret):
         ret = self.crop.restore(ret)
@@ -375,3 +383,11 @@ class Center(PadCrop):
         h_ = max(h - dst_h, 0) // 2
 
         return super().__call__(image, (w_, w_ + dst_w, h_, h_ + dst_h), **kwargs)
+
+
+class Clip:
+    def __call__(self, image, bboxes, **kwargs):
+        pass
+
+    def apply_bboxes(self, bboxes, ret):
+        pass

@@ -1,4 +1,5 @@
 """change the shape of image by resizing the image according to some algorithm"""
+import numbers
 import cv2
 import numpy as np
 from . import crop, Apply
@@ -43,8 +44,13 @@ class Proportion:
             raise ValueError(f'dont support {self.choice_type = }')
 
         if self.max_ratio:
-            # set in [1 / (1 + self.max_ratio), 1 + self.max_ratio]
-            p = max(min(p, 1 + self.max_ratio), 1 / (1 + self.max_ratio))
+            if isinstance(self.max_ratio, numbers.Number):
+                max_ratio = (self.max_ratio, self.max_ratio)
+            else:
+                max_ratio = self.max_ratio
+
+            # set in [1 / (1 + max_ratio_0), 1 + max_ratio_1]
+            p = max(min(p, 1 + max_ratio[1]), 1 / (1 + max_ratio[0]))
         return p
 
     def get_add_params(self, dst, w, h):
