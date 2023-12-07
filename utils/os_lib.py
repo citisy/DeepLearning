@@ -5,6 +5,8 @@ import pickle
 import time
 import psutil
 import uuid
+import yaml
+import configparser
 import random
 import numpy as np
 import pandas as pd
@@ -118,17 +120,28 @@ def mk_parent_dir(file_path):
     mk_dir(dir_path)
 
 
+suffixes_dict = dict(
+    json=('.json', '.js'),
+    yml=('.yml', '.yaml'),
+    ini=('.ini',),
+    txt=('.txt',),
+    pkl=('.pkl',),
+    img=('.jpg', '.jpeg', '.png', '.bmp', '.tiff'),
+    csv=('.csv', '.tsv'),
+)
+
+
 def auto_suffix(obj):
     if isinstance(obj, (list, tuple, set)):
-        s = '.txt'
+        s = suffixes_dict['txt'][0]
     elif isinstance(obj, dict):
-        s = '.json'
+        s = suffixes_dict['json'][0]
     elif isinstance(obj, np.ndarray) and obj.dtype == np.uint8:
-        s = '.png'
+        s = suffixes_dict['img'][0]
     elif isinstance(obj, pd.DataFrame):
-        s = '.csv'
+        s = suffixes_dict['csv'][0]
     else:
-        s = '.pkl'
+        s = suffixes_dict['pkl'][0]
     return s
 
 
@@ -150,15 +163,15 @@ class Saver:
         suffix = Path(path).suffix.lower()
         mk_parent_dir(path)
 
-        if suffix in ('.js', '.json'):
+        if suffix in suffixes_dict['json']:
             self.save_json(obj, path, **kwargs)
-        elif suffix in ('.txt',):
+        elif suffix in suffixes_dict['txt']:
             self.save_txt(obj, path, **kwargs)
-        elif suffix in ('.pkl',):
+        elif suffix in suffixes_dict['pkl']:
             self.save_pkl(obj, path, **kwargs)
-        elif suffix in ('.png', '.jpg', '.jpeg', '.tiff'):
+        elif suffix in suffixes_dict['img']:
             self.save_img(obj, path, **kwargs)
-        elif suffix in ('.csv', '.tsv'):
+        elif suffix in suffixes_dict['csv']:
             self.save_csv(obj, path, **kwargs)
         else:
             self.save_bytes(obj, path, **kwargs)
@@ -252,7 +265,7 @@ class Saver:
             self.stderr(save_path)
 
     def save_image_to_pdf(self, obj: np.ndarray or str, path):
-        import fitz     # pip install PyMuPDF
+        import fitz  # pip install PyMuPDF
 
         if isinstance(obj, str):
             img_doc = fitz.open(obj)
@@ -277,15 +290,19 @@ class Loader:
         self.stdout_method(self.stdout_fmt % path)
 
     def auto_load(self, path: str):
-        suffix = Path(path).suffix
+        suffix = Path(path).suffix.lower()
 
-        if suffix in ('.js', '.json'):
+        if suffix in suffixes_dict['json']:
             obj = self.load_json(path)
-        elif suffix in ('.txt',):
+        elif suffix in suffixes_dict['yml']:
+            obj = self.load_yaml(path)
+        elif suffix in suffixes_dict['ini']:
+            obj = self.load_ini(path)
+        elif suffix in suffixes_dict['txt']:
             obj = self.load_txt(path)
-        elif suffix in ('.pkl',):
+        elif suffix in suffixes_dict['pkl']:
             obj = self.load_pkl(path)
-        elif suffix in ('.png', '.jpg', '.jpeg',):
+        elif suffix in suffixes_dict['img']:
             obj = self.load_img(path)
         else:
             obj = self.load_bytes(path)
@@ -295,6 +312,19 @@ class Loader:
     def load_json(self, path) -> dict:
         with open(path, 'r', encoding='utf8') as f:
             obj = json.load(f)
+        self.stdout(path)
+
+        return obj
+
+    def load_yaml(self, path) -> dict:
+        obj = yaml.load(open(path, 'rb'), Loader=yaml.Loader)
+        self.stdout(path)
+
+        return obj
+
+    def load_ini(self, path) -> configparser.ConfigParser:
+        obj = configparser.ConfigParser()
+        obj.read(path, encoding="utf-8")
         self.stdout(path)
 
         return obj
@@ -347,7 +377,7 @@ class Loader:
             obj: str or bytes, scale_ratio: float = 1.33,
             rotate: int = 0, alpha=False, bgr=False
     ) -> List[np.ndarray]:
-        import fitz     # pip install PyMuPDF
+        import fitz  # pip install PyMuPDF
 
         if isinstance(obj, str):
             doc = fitz.open(obj)
