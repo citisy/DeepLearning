@@ -3,7 +3,8 @@ import cv2
 import hashlib
 import numpy as np
 from pathlib import Path
-from .os_lib import IgnoreException, FakeIo
+from .os_lib import FakeIo
+from .op_utils import IgnoreException
 
 
 ignore_exception = IgnoreException(stdout_method=FakeIo())

@@ -56,8 +56,7 @@ class LogHooks:
                 self.logger.warning('wandb import error, wandb init fail, please check install')
 
         else:
-            from utils.os_lib import FakeWandb
-            wandb = FakeWandb()
+            wandb = log_utils.FakeWandb()
 
         self.wandb = wandb
         self.register_logger(WANDB, lambda item, **kwargs: wandb.log(item))

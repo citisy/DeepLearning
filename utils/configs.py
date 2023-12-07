@@ -1,20 +1,5 @@
-import os
-import time
-import yaml
 import copy
-import configparser
-from logging.handlers import TimedRotatingFileHandler
 from . import os_lib, converter
-
-
-def load_config_from_yml(path) -> dict:
-    return yaml.load(open(path, 'rb'), Loader=yaml.Loader)
-
-
-def load_config_from_ini(path) -> configparser.ConfigParser:
-    config = configparser.ConfigParser()
-    config.read(path, encoding="utf-8")
-    return config
 
 
 class ArgDict(dict):
@@ -157,8 +142,7 @@ def parse_params_example(path, parser) -> dict:
 
     def params_params_from_file(path) -> dict:
         """user params, low priority"""
-
-        return expand_dict(load_config_from_yml(path))
+        return expand_dict(os_lib.loader.load_yaml(path))
 
     def params_params_from_env(flag='Global.') -> dict:
         """global params, middle priority"""
