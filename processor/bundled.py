@@ -63,7 +63,7 @@ class LogHooks:
         self.register_logger(WANDB, lambda item, **kwargs: wandb.log(item))
 
     def trace(self, item: dict, loggers=LOGGING):
-        if isinstance(loggers, int):
+        if not isinstance(loggers, (list, tuple, set)):
             loggers = [loggers]
 
         for logger in loggers:
@@ -73,7 +73,7 @@ class LogHooks:
         return self.trace_log_items[logger]
 
     def log_trace(self, loggers=LOGGING, **kwargs):
-        if isinstance(loggers, int):
+        if not isinstance(loggers, (list, tuple, set)):
             loggers = [loggers]
 
         for logger in loggers:
