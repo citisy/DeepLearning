@@ -169,27 +169,29 @@ class SegProcess(Process):
             )
 
 
-class Voc(DataHooks):
+class SegDataProcess(DataHooks):
+    train_dataset_ins = SegDataset
+    val_dataset_ins = SegDataset
+
+
+class Voc(SegDataProcess):
     dataset_version = 'VOC2012'
     data_dir = 'data/VOC2012'
     input_size = 512
     in_ch = 3
     out_features = 20
 
-    train_dataset_ins = SegDataset
-    val_dataset_ins = SegDataset
-
     aug = Apply([
         # scale.Proportion(choice_type=3),
         # crop.Random(is_pad=False),
-        scale.LetterBox(),    # there are gray lines
+        scale.LetterBox(),  # there are gray lines
     ])
 
     # note that, use cv2.INTER_NEAREST mode to resize
     pix_aug = Apply([
         # scale.Proportion(choice_type=3, interpolation=1),
         # crop.Random(is_pad=False, fill=255),
-        scale.LetterBox(interpolation=1, fill=255),    # there are gray lines
+        scale.LetterBox(interpolation=1, fill=255),  # there are gray lines
     ])
 
     rand_aug1 = RandomApply([

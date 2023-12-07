@@ -22,6 +22,7 @@ class OdDataset(BaseDataset):
 
         ret['ori_image'] = ret['image']
         ret['ori_bboxes'] = ret['bboxes']
+        ret['ori_classes'] = ret['classes']
         ret['idx'] = idx
 
         if self.augment_func:
@@ -154,7 +155,7 @@ class OdProcess(Process):
                 trues.append(dict(
                     _id=ret['_id'],
                     bboxes=ret['ori_bboxes'],
-                    classes=ret['classes'],
+                    classes=ret['ori_classes'],
                 ))
                 pred['_id'] = ret['_id']
                 preds.append(pred)
@@ -171,7 +172,7 @@ class OdProcess(Process):
                     _id=true['_id'],
                     image=true['ori_image'],
                     bboxes=true['ori_bboxes'],
-                    classes=true['classes']
+                    classes=true['ori_classes']
                 ))
 
                 pred['image'] = true['ori_image']
@@ -219,7 +220,12 @@ class OdProcess(Process):
         )
 
 
-class Voc(DataHooks):
+class OdDataProcess(DataHooks):
+    train_dataset_ins = OdDataset
+    val_dataset_ins = OdDataset
+
+
+class Voc(OdDataProcess):
     dataset_version = 'Voc2012'
     data_dir = 'data/VOC2012'
     train_data_num = None
@@ -230,8 +236,6 @@ class Voc(DataHooks):
     n_classes = 20
 
     cls_alias: dict
-    train_dataset_ins = OdDataset
-    val_dataset_ins = OdDataset
 
     def get_train_data(self):
         from data_parse.cv_data_parse.Voc import Loader
@@ -334,7 +338,7 @@ class YoloV5(OdProcess):
         del g
 
 
-class Yolov5Aug(DataHooks):
+class Yolov5Aug(OdDataProcess):
     """use Mosaic data augment"""
 
     def train_data_augment(self, ret):
@@ -403,9 +407,6 @@ class Yolov5Dataset(Yolov5Aug):
     data_dir = 'yolov5/data_mapping'
 
     input_size = 640  # special input_size from official yolov5
-
-    train_dataset_ins = OdDataset
-    val_dataset_ins = OdDataset
 
     def get_train_data(self):
         from data_parse.cv_data_parse.YoloV5 import Loader, DataRegister
