@@ -77,7 +77,7 @@ class TrProcess(Process):
                 _p = results['preds'][i]
                 _id = Path(ret['_id'])
                 vis_rets.append(dict(
-                    _id=f'{_id.stem}({_p}){_id.suffix}',    # true(pred).jpg
+                    _id=f'{_id.stem}({_p}){_id.suffix}',  # true(pred).jpg
                     image=ret['ori_image']
                 ))
 
@@ -91,7 +91,11 @@ class DataProcess(DataHooks):
     train_data_num = int(5e5)
     val_data_num = int(5e4)
 
-    aug = Apply([
+    aug = RandomApply([
+        pixel_perturbation.GaussNoise(),
+    ], probs=[0.2])
+
+    post_aug = Apply([
         scale.LetterBox(pad_type=(crop.RIGHT, crop.CENTER)),
         channel.Keep3Dims(),
         # pixel_perturbation.MinMax(),
@@ -101,19 +105,15 @@ class DataProcess(DataHooks):
     ])
 
     def train_data_augment(self, ret) -> dict:
-        ret.update(
-            RandomApply([
-                pixel_perturbation.GaussNoise(),
-            ], probs=[0.2])(**ret)
-        )
-        ret.update(dst=self.input_size)
         ret.update(self.aug(**ret))
+        ret.update(dst=self.input_size)
+        ret.update(self.post_aug(**ret))
 
         return ret
 
     def val_data_augment(self, ret) -> dict:
         ret.update(dst=self.input_size)
-        ret.update(self.aug(**ret))
+        ret.update(self.post_aug(**ret))
 
         return ret
 

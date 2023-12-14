@@ -112,20 +112,21 @@ class Mnist(DataHooks):
         loader = Loader(self.data_dir)
         return loader(set_type=DataRegister.TEST, image_type=DataRegister.ARRAY, generator=False)[0]
 
+    aug = Apply([
+        RandomApply([
+            geometry.HFlip(),
+            geometry.VFlip(),
+        ]),
+    ])
+    post_aug = channel.HWC2CHW()
+
     def train_data_augment(self, ret):
-        ret.update(Apply([
-            RandomApply([
-                geometry.HFlip(),
-                geometry.VFlip(),
-            ]),
-            channel.HWC2CHW()
-        ])(**ret))
+        ret.update(self.aug(**ret))
+        ret.update(self.post_aug(**ret))
         return ret
 
     def val_data_augment(self, ret):
-        ret.update(Apply([
-            channel.HWC2CHW()
-        ])(**ret))
+        ret.update(self.post_aug(**ret))
         return ret
 
 

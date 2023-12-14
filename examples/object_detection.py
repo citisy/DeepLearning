@@ -259,21 +259,23 @@ class Voc(OdDataProcess):
                       max_size=self.val_data_num,
                       )[0]
 
-    aug = Apply([
+    aug = RandomApply([geometry.HFlip()])
+
+    post_aug = Apply([
         scale.LetterBox(),
         # pixel_perturbation.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
         channel.HWC2CHW()
     ])
 
     def train_data_augment(self, ret):
-        ret.update(RandomApply([geometry.HFlip()])(**ret))
-        ret.update(dst=self.input_size)
         ret.update(self.aug(**ret))
+        ret.update(dst=self.input_size)
+        ret.update(self.post_aug(**ret))
         return ret
 
     def val_data_augment(self, ret):
         ret.update(dst=self.input_size)
-        ret.update(self.aug(**ret))
+        ret.update(self.post_aug(**ret))
         return ret
 
     def val_data_restore(self, ret):
