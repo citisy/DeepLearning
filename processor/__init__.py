@@ -2,16 +2,19 @@ from .bundled import *
 from .data_process import *
 from .model_process import *
 from utils import converter
+import os
 
 
 def setup_seed(seed=42):
     """42 is a lucky number"""
+    import random
     import torch.backends.cudnn as cudnn
 
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
     torch.cuda.manual_seed(seed)
     np.random.seed(seed)
+    random.seed(0)
     cudnn.benchmark = False
     cudnn.deterministic = True
 
@@ -23,14 +26,21 @@ class Process(
     ModelHooks,
 ):
     """
-    all the global vars of the class can be set when creating a new instance,
+    for implementation, expected to override the following methods usually:
+        on_train_step(): logic of training step, expected to return a dict of model output included loss
+        metric(): call the `predict()` function to get model output, then count the score, expected to return a dict of model score
+        on_val_step(): logic of validating step, expected to return a dict of model output included preds
+        on_val_reprocess(): prepare true and pred label for `visualize()` or `metric()`
+        visualize(): logic of predict results visualizing
+
+    for arguments, all the instance attributes can be set specially when called by accepting the arguments,
     e.g.
-        there is a class defined with global vars like that:
+        there is a class defined with instance attributes like that:
             class MyProcess(Process):
                 input_size = 640
                 ...
 
-        and then, you can set special value of `input_size` like that:
+        and then, you can set special value of `input_size` when called like that:
             MyProcess(input_size=512, ...)
 
     """
@@ -57,8 +67,8 @@ class Process(
         self.init_wandb()
 
     def init_paths(self):
-        self.work_dir = f'{self._model_cache_dir}/{self.model_version}/{self.dataset_version}'
-        self.cache_dir = f'{self._result_cache_dir}/{self.model_version}/{self.dataset_version}'
+        self.work_dir = os.path.abspath(f'{self._model_cache_dir}/{self.model_version}/{self.dataset_version}')
+        self.cache_dir = os.path.abspath(f'{self._result_cache_dir}/{self.model_version}/{self.dataset_version}')
         self.default_model_path = f'{self.work_dir}/{self.model_name}.pth'
         os_lib.mk_dir(self.work_dir)
 
@@ -85,10 +95,12 @@ class Process(
         if not hasattr(self, 'stopper') or self.stopper is None:
             self.set_stopper()
 
-        try:
-            self.set_aux_model()
-        except NotImplementedError:
-            self.log('set_aux_model() not init', level=logging.DEBUG)
+        try_init_components = [self.set_aux_model]
+        for components in try_init_components:
+            try:
+                components()
+            except NotImplementedError:
+                self.log(f'{components} not init', level=logging.DEBUG)
 
         self.log(f'{torch.__version__ = }')
         self.log(f'{self.device = }')

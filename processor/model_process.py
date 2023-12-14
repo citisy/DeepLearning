@@ -374,7 +374,7 @@ class ModelHooks:
         pass
 
     def on_train_step(self, rets, container, **kwargs) -> dict:
-        """model train main step
+        """logic of model training step, and expected to return a dict of model output
         must return a dict included:
             loss: loss to backward
         """
@@ -473,6 +473,7 @@ class ModelHooks:
         self.wandb.finish()
 
     def metric(self, *args, **kwargs) -> dict:
+        """call the `predict()` function to get model output, then count the score, expected to return a dict of model score"""
         raise NotImplementedError
 
     @torch.no_grad()
@@ -530,7 +531,7 @@ class ModelHooks:
         pass
 
     def on_val_step(self, rets, container, **kwargs) -> dict:
-        """model predict main step
+        """logic of validating step, expected to return a dict of model output included preds
         must return a dict included:
             outputs: original model output
             preds: normalized model output
@@ -539,7 +540,7 @@ class ModelHooks:
         raise NotImplementedError
 
     def on_val_reprocess(self, rets, model_results, container, **kwargs):
-        """reprocess model outputs, for visualize, metric, etc.
+        """prepare true and pred label for `visualize()` or `metric()`
         reprocess data will be cached in container"""
 
     def on_val_step_end(self, rets, model_results, container, is_visualize=False, batch_size=16, max_vis_num=None, **kwargs):
@@ -552,6 +553,7 @@ class ModelHooks:
                 self.counters['vis_num'] += n
 
     def visualize(self, rets, model_results, n, **kwargs):
+        """logic of predict results visualizing"""
         pass
 
     def on_val_end(self, container, **kwargs):
