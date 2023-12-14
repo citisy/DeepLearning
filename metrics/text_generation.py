@@ -1,7 +1,5 @@
-import numpy as np
 from . import classifier
 from utils import nlp_utils
-from data_parse.nlp_data_parse.pre_process import FineGrainedSpliter
 
 
 class LineConfusionMatrix:
@@ -37,23 +35,18 @@ class WordConfusionMatrix:
     """ROUGE-N
     see also `rouge.Rouge`"""
 
-    def __init__(self, n_gram=2, is_cut=False, filter_blank=True):
-        self.is_cut = is_cut
-        self.filter_blank = filter_blank
+    def __init__(self, n_gram=2):
         self.n_gram = n_gram
 
     def make_n_grams(self, lines):
-        if not self.is_cut:
-            lines = FineGrainedSpliter.segments_from_paragraphs_by_jieba(lines, filter_blank=self.filter_blank)
-
         return nlp_utils.Sequencer.n_grams(lines, n_gram=self.n_gram)
 
     def tp(self, true=None, pred=None, true_with_n_grams=None, pred_with_n_grams=None, **kwargs):
         """
 
         Args:
-            true (List[list]):
-            pred (List[list]):
+            true (List[list]): text list after cut
+            pred (List[list]): text list after cut
             true_with_n_grams (List[set]):
             pred_with_n_grams (List[set]):
 
@@ -114,36 +107,39 @@ class WordLCSConfusionMatrix:
         self.filter_blank = filter_blank
         self.lcs = lcs_method or nlp_utils.Sequencer.longest_common_subsequence
 
-    def tp(self, true=None, pred=None, true_cut=None, pred_cut=None, tp=None, **kwargs):
-        true_cut = true_cut or FineGrainedSpliter.segments_from_paragraphs_by_jieba(true, filter_blank=self.filter_blank) if not self.is_cut else true
-        pred_cut = pred_cut or FineGrainedSpliter.segments_from_paragraphs_by_jieba(pred, filter_blank=self.filter_blank) if not self.is_cut else pred
-        tp = tp if tp is not None else [self.lcs(t, p)['score'] for t, p in zip(true_cut, pred_cut)]
+    def tp(self, true=None, pred=None, tp=None, **kwargs):
+        """
+
+        Args:
+            true (List[list]): text list after cut
+            pred (List[list]): text list after cut
+            tp:
+            **kwargs:
+
+        Returns:
+
+        """
+        tp = tp if tp is not None else [self.lcs(t, p)['score'] for t, p in zip(true, pred)]
 
         return dict(
             tp=tp,
             acc_tp=sum(tp),
-            true_cut=true_cut,
-            pred_cut=pred_cut
         )
 
-    def cp(self, true=None, true_cut=None, **kwargs):
-        true_cut = true_cut or FineGrainedSpliter.segments_from_paragraphs_by_jieba(true, filter_blank=self.filter_blank) if not self.is_cut else true
-        cp = [len(t) for t in true_cut]
+    def cp(self, true=None, **kwargs):
+        cp = [len(t) for t in true]
 
         return dict(
             cp=cp,
             acc_cp=sum(cp),
-            true_cut=true_cut,
         )
 
-    def op(self, pred=None, pred_cut=None, **kwargs):
-        pred_cut = pred_cut or FineGrainedSpliter.segments_from_paragraphs_by_jieba(pred, filter_blank=self.filter_blank) if not self.is_cut else pred
-        op = [len(p) for p in pred_cut]
+    def op(self, pred=None, **kwargs):
+        op = [len(p) for p in pred]
 
         return dict(
             op=sum(op),
             acc_op=sum(op),
-            pred_cut=pred_cut
         )
 
 

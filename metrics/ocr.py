@@ -3,6 +3,7 @@ import numpy as np
 import pandas as pd
 from tqdm import tqdm
 from . import object_detection, text_generation
+from data_parse.nlp_data_parse.pre_process import FineGrainedSpliter
 from utils import os_lib
 
 
@@ -123,15 +124,15 @@ class EasyMetric:
         ret.update({k: v.f_measure(det_text, gt_text) for k, v in _ret.items()})
 
         _ret = {
-            'ROUGE-1': text_generation.TopMetric(confusion_method=text_generation.WordConfusionMatrix, n_gram=1, is_cut=True),
-            'ROUGE-2': text_generation.TopMetric(confusion_method=text_generation.WordConfusionMatrix, n_gram=2, is_cut=True),
-            'ROUGE-3': text_generation.TopMetric(confusion_method=text_generation.WordConfusionMatrix, n_gram=3, is_cut=True),
-            'ROUGE-L': text_generation.TopMetric(confusion_method=text_generation.WordLCSConfusionMatrix, is_cut=True),
-            'ROUGE-W': text_generation.TopMetric(confusion_method=text_generation.WordLCSConfusionMatrix, lcs_method=nlp_utils.Sequencer.weighted_longest_common_subsequence, is_cut=True),
+            'ROUGE-1': text_generation.TopMetric(confusion_method=text_generation.WordConfusionMatrix, n_gram=1),
+            'ROUGE-2': text_generation.TopMetric(confusion_method=text_generation.WordConfusionMatrix, n_gram=2),
+            'ROUGE-3': text_generation.TopMetric(confusion_method=text_generation.WordConfusionMatrix, n_gram=3),
+            'ROUGE-L': text_generation.TopMetric(confusion_method=text_generation.WordLCSConfusionMatrix),
+            'ROUGE-W': text_generation.TopMetric(confusion_method=text_generation.WordLCSConfusionMatrix, lcs_method=nlp_utils.Sequencer.weighted_longest_common_subsequence),
         }
 
-        det_cut_text = nlp_utils.Cutter.cut_word_by_jieba(det_text)
-        gt_cut_text = nlp_utils.Cutter.cut_word_by_jieba(gt_text)
+        det_cut_text = FineGrainedSpliter.segments_from_paragraphs_by_jieba(det_text)
+        gt_cut_text = FineGrainedSpliter.segments_from_paragraphs_by_jieba(gt_text)
 
         ret.update({k: v.f_measure(det_cut_text, gt_cut_text) for k, v in _ret.items()})
 
