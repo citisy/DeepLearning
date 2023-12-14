@@ -35,7 +35,7 @@ class Loader(DataLoader):
             yield a dict had keys of
                 _id: image file name
                 image: see also image_type
-                transcription: str
+                text: str
 
         Usage:
             .. code-block:: python
@@ -51,7 +51,7 @@ class Loader(DataLoader):
                 from utils.visualize import ImageVisualize
 
                 image = r['image']
-                transcription = r['transcription']
+                text = r['text']
 
         """
 
@@ -60,10 +60,10 @@ class Loader(DataLoader):
                 for line in f.read().strip().split('\n'):
                     items = line.split('\t')
                     if len(items) == 2:
-                        image_paths, transcription = items
+                        image_paths, text = items
                         conf = 1
                     elif len(items) == 3:
-                        image_paths, transcription, conf = items
+                        image_paths, text, conf = items
                     else:
                         raise f'the line: {line}\nthere are {len(items)} items'
 
@@ -74,19 +74,19 @@ class Loader(DataLoader):
                         image_paths = [image_paths]
 
                     for image_path in image_paths:
-                        yield image_path, transcription, conf
+                        yield image_path, text, conf
 
         return self.gen_data(gen_func(), **kwargs)
 
     def get_ret(self, obj, image_type=DataRegister.PATH, **kwargs) -> dict:
-        image_path, transcription, conf = obj
+        image_path, text, conf = obj
         image_path = os.path.abspath(image_path)
         image = get_image(image_path, image_type)
 
         return dict(
             _id=Path(image_path).name,
             image=image,
-            transcription=transcription,
+            text=text,
             conf=conf
         )
 
@@ -102,12 +102,12 @@ class Loader(DataLoader):
                 else:
                     ret = ret['Teacher']
 
-                transcription = ret['label']
+                text = ret['label']
 
                 yield dict(
                     _id=Path(image_path).name,
                     image=image,
-                    transcription=transcription,
+                    text=text,
                 )
 
 
@@ -128,12 +128,12 @@ class LoaderDist(DataLoader):
         else:
             ret = ret['Teacher']
 
-        transcription = ret['label']
+        text = ret['label']
 
         return dict(
             _id=Path(image_path).name,
             image=image,
-            transcription=transcription,
+            text=text,
         )
 
 
@@ -187,12 +187,12 @@ class Saver(DataSaver):
 
         for dic in iter_data:
             image = dic['image']
-            transcription = dic['transcription']
+            text = dic['text']
             _id = dic['_id']
 
             image_path = os.path.abspath(f'{self.data_dir}/images/{task}/{_id}')
             save_image(image, image_path, image_type)
-            f.write(f'{image_path}\t{transcription}\n')
+            f.write(f'{image_path}\t{text}\n')
 
         f.close()
 
@@ -228,7 +228,7 @@ class Saver(DataSaver):
             segmentations = dic['segmentations']
             _id = dic['_id']
 
-            for i, (segmentation, transcription) in enumerate(zip(segmentations, transcriptions)):
+            for i, (segmentation, text) in enumerate(zip(segmentations, transcriptions)):
                 x1 = np.min(segmentation[:, 0], axis=0)
                 x2 = np.max(segmentation[:, 0], axis=0)
                 y1 = np.min(segmentation[:, 1], axis=0)
@@ -240,6 +240,6 @@ class Saver(DataSaver):
                 img_fp = f'{self.data_dir}/images/{task}/{p.stem}_{i}{p.suffix}'
                 cv2.imwrite(img_fp, img)
 
-                f.write(f'{img_fp}\t{transcription.strip()}\n')
+                f.write(f'{img_fp}\t{text.strip()}\n')
 
         f.close()

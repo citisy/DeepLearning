@@ -28,20 +28,20 @@ class Loader(DataLoader):
         i, line = obj
 
         if set_type in {DataRegister.TRAIN, DataRegister.DEV}:
-            context, _class = line.split('\t', 1)
+            text, _class = line.split('\t', 1)
             _class = int(_class)
-            context = context.strip()
+            text = text.strip()
 
             return dict(
                 _id=i,
                 _class=_class,
-                context=context,
+                text=text,
             )
 
         else:
-            _, context = line.split('\t', 1)
+            _, text = line.split('\t', 1)
 
             return dict(
                 _id=i,
-                context=context,
+                text=text,
             )

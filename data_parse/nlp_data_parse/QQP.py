@@ -32,7 +32,7 @@ class Loader(DataLoader):
             return dict(
                 _id=(_id, qid1, qid2),
                 _class=_class,
-                contexts=(question1, question2),
+                texts=(question1, question2),
             )
 
         else:
@@ -40,5 +40,5 @@ class Loader(DataLoader):
 
             return dict(
                 _id=_id,
-                contexts=(question1, question2),
+                texts=(question1, question2),
             )

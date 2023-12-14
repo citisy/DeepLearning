@@ -104,7 +104,7 @@ class Loader(DataLoader):
     def _get_train_ret(self, obj):
         essay = obj
         _id = essay.get('nid')
-        context = essay.text
+        text = essay.text
 
         locations = []
         wrongs = []
@@ -124,7 +124,7 @@ class Loader(DataLoader):
 
         return dict(
             _id=_id,
-            context=context,
+            text=text,
             location=locations,
             wrong=wrongs,
             correction=corrections
@@ -132,7 +132,7 @@ class Loader(DataLoader):
 
     def _get_test_ret(self, obj, test_task=None):
         line, y = obj
-        pid, context = line.strip().split(' ', 1)
+        pid, text = line.strip().split(' ', 1)
         _id = pid[5:-1]
 
         y = y.replace(' ', '').split(',')
@@ -151,7 +151,7 @@ class Loader(DataLoader):
                 if n == 0:
                     continue
                 locations.append(n)
-                wrongs.append(context[n - 1])
+                wrongs.append(text[n - 1])
                 corrections.append('')
 
         elif test_task == '2':
@@ -162,14 +162,14 @@ class Loader(DataLoader):
                 if n == 0:
                     continue
                 locations.append(n)
-                wrongs.append(context[n - 1])
+                wrongs.append(text[n - 1])
                 corrections.append(y[j + 1])
         else:
             raise ValueError(f'Unknown input {test_task = }')
 
         return dict(
             _id=_id,
-            context=context,
+            text=text,
             location=locations,
             wrong=wrongs,
             correction=corrections

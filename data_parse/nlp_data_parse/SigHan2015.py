@@ -8,7 +8,7 @@ class Loader(Loader_):
     Data structure:
         .
         ├── Test
-        │   ├── SIGHAN15_CSC_TestInput.txt      # id and context, 1100 items
+        │   ├── SIGHAN15_CSC_TestInput.txt      # id and text, 1100 items
         │   ├── SIGHAN15_CSC_TestSummary.xlsx
         │   └── SIGHAN15_CSC_TestTruth.txt      # id, location and correction
         ├── Tool

@@ -102,12 +102,12 @@ class Loader(DataLoader):
         return self.gen_data(gen_func(), max_size=max_size, **gen_kwargs)
 
     def get_ret(self, obj, image_type=DataRegister.PATH, return_lower=False, **kwargs) -> dict:
-        i, (image, transcription) = obj
+        i, (image, text) = obj
 
         return dict(
-            _id=f'{i}_{transcription}.png',
+            _id=f'{i}_{text}.png',
             image=image,
-            transcription=transcription
+            text=text
         )
 
     def __len__(self):

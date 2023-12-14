@@ -34,11 +34,11 @@ class Loader(DataLoader):
 
             image = r['image']
             segmentations = r['segmentations']
-            transcriptions = r['transcriptions']
+            text = r['text']
 
             vis_image = np.zeros_like(image) + 255
             vis_image = ImageVisualize.box(vis_image, segmentations)
-            vis_image = ImageVisualize.text(vis_image, segmentations, transcriptions)
+            vis_image = ImageVisualize.text(vis_image, segmentations, text)
     """
 
     default_set_type = [DataRegister.TRAIN, DataRegister.TEST]
@@ -52,7 +52,7 @@ class Loader(DataLoader):
                 _id: image file name
                 image: see also image_type
                 segmentations: a np.ndarray with shape of (-1, 4, 2)
-                transcriptions: List[str]
+                text: List[str]
 
         Usage:
             .. code-block:: python
@@ -69,11 +69,11 @@ class Loader(DataLoader):
 
                 image = r['image']
                 segmentations = r['segmentations']
-                transcriptions = r['transcriptions']
+                text = r['text']
 
                 vis_image = np.zeros_like(image) + 255
                 vis_image = ImageVisualize.box(vis_image, segmentations)
-                vis_image = ImageVisualize.text(vis_image, segmentations, transcriptions)
+                vis_image = ImageVisualize.text(vis_image, segmentations, text)
 
         """
 
@@ -87,10 +87,10 @@ class Loader(DataLoader):
         image = get_image(image_path, image_type)
 
         labels = json.loads(labels)
-        segmentations, transcriptions = [], []
+        segmentations, text = [], []
         for label in labels:
             segmentations.append(label['points'])  # (-1, 4, 2)
-            transcriptions.append(label['transcription'])  # (-1, #str)
+            text.append(label['transcription'])  # (-1, #str)
 
         segmentations = np.array(segmentations)
         bboxes = np.zeros((len(segmentations), 4))
@@ -102,7 +102,7 @@ class Loader(DataLoader):
             image=image,
             segmentations=segmentations,
             bboxes=bboxes,
-            transcriptions=transcriptions,
+            text=text,
         )
 
 
@@ -172,12 +172,12 @@ class Saver(DataSaver):
         for dic in iter_data:
             image = dic['image']
             segmentations = np.array(dic['segmentations']).tolist()
-            transcriptions = dic['transcriptions']
+            text = dic['text']
             _id = dic['_id']
 
             image_path = os.path.abspath(f'{self.data_dir}/images/{task}/{_id}')
             save_image(image, image_path, image_type)
-            labels = [{'transcription': t, 'points': s} for t, s in zip(transcriptions, segmentations)]
+            labels = [{'transcription': t, 'points': s} for t, s in zip(text, segmentations)]
 
             f.write(f'{image_path}\t{json.dumps(labels, ensure_ascii=False)}\n')
 

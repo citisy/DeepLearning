@@ -7,9 +7,9 @@ class Loader(DataLoader):
 
     Data structure:
         .
-        ├── msr_paraphrase_data.txt     # single context, 10948 items
-        ├── msr_paraphrase_test.txt     # similar context pair, 1725 items
-        └── msr_paraphrase_train.txt    # similar context pair, 4076 items
+        ├── msr_paraphrase_data.txt     # single text, 10948 items
+        ├── msr_paraphrase_test.txt     # similar text pair, 1725 items
+        └── msr_paraphrase_train.txt    # similar text pair, 4076 items
     """
 
     def _call(self, set_type=DataRegister.TRAIN, **gen_kwargs):
@@ -21,11 +21,11 @@ class Loader(DataLoader):
 
     def get_ret(self, obj, **kwargs) -> dict:
         line = obj
-        _class, id1, id2, context1, context2 = line.split('\t')
+        _class, id1, id2, text1, text2 = line.split('\t')
         _class = int(_class)
 
         return dict(
             _id=(id1, id2),
             _class=_class,
-            contexts=(context1, context2),
+            texts=(text1, text2),
         )

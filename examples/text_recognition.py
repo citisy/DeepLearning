@@ -20,9 +20,9 @@ class TrProcess(Process):
 
     def on_train_step(self, rets, container, **kwargs) -> dict:
         images = [torch.from_numpy(ret.pop('image')).to(self.device, non_blocking=True, dtype=torch.float) for ret in rets]
-        transcription = [ret['transcription'] for ret in rets]
+        text = [ret['text'] for ret in rets]
         images = torch.stack(images)
-        output = self.model(images, transcription)
+        output = self.model(images, text)
 
         if hasattr(self, 'aux_model'):
             self.ema.step(self.model, self.aux_model['ema'])
@@ -66,7 +66,7 @@ class TrProcess(Process):
     def on_val_reprocess(self, rets, model_results, container, **kwargs):
         for name, results in model_results.items():
             r = container['model_results'].setdefault(name, dict())
-            r.setdefault('trues', []).extend([ret['transcription'] for ret in rets])
+            r.setdefault('trues', []).extend([ret['text'] for ret in rets])
             r.setdefault('preds', []).extend(results['preds'])
 
     def visualize(self, rets, model_results, n, **kwargs):

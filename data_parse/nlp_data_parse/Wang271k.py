@@ -25,7 +25,7 @@ class Loader(DataLoader):
     def get_ret(self, obj, **kwargs) -> dict:
         i, essay = obj
         passage = essay.find('text')
-        context = passage.text
+        text = passage.text
 
         locations = []
         wrongs = []
@@ -39,7 +39,7 @@ class Loader(DataLoader):
 
         return dict(
             _id=i,
-            context=context,
+            text=text,
             location=locations,
             wrong=wrongs,
             correction=corrections

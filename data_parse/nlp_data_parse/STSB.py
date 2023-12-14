@@ -33,7 +33,7 @@ class Loader(DataLoader):
                 _id=index,
                 genre=genre,
                 score=score,
-                contexts=(sentence1, sentence2),
+                texts=(sentence1, sentence2),
             )
 
         else:
@@ -42,5 +42,5 @@ class Loader(DataLoader):
             return dict(
                 _id=index,
                 genre=genre,
-                contexts=(sentence1, sentence2),
+                texts=(sentence1, sentence2),
             )

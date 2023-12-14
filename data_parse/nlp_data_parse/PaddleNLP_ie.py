@@ -52,7 +52,7 @@ class Loader(DataLoader):
                     raise ValueError(f'Unknown input {image_type = }')
 
                 bboxes = js['bbox']
-                context = js['content']
+                text = js['content']
                 result_list = js['result_list']
                 prompt = js['prompt']
                 bboxes = np.array(bboxes)
@@ -62,7 +62,7 @@ class Loader(DataLoader):
                     _id=f'{i}.{self.image_suffix}',
                     image=image,
                     bboxes=bboxes,
-                    context=context,
+                    text=text,
                     result_list=result_list,
                     prompt=prompt
                 )

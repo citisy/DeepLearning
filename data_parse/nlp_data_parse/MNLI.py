@@ -65,9 +65,9 @@ class Loader(DataLoader):
                 _class=gold_label,
                 aux_class=aux_class,
                 genre=genre,
-                contexts=(sentence1, sentence2),
-                contexts_parse=(sentence1_parse, sentence2_parse),
-                contexts_binary_parse=(sentence1_binary_parse, sentence2_binary_parse)
+                texts=(sentence1, sentence2),
+                texts_parse=(sentence1_parse, sentence2_parse),
+                texts_binary_parse=(sentence1_binary_parse, sentence2_binary_parse)
             )
 
         else:
@@ -76,7 +76,7 @@ class Loader(DataLoader):
             return dict(
                 _id=(index, promptID, pairID),
                 genre=genre,
-                contexts=(sentence1, sentence2),
-                contexts_parse=(sentence1_parse, sentence2_parse),
-                contexts_binary_parse=(sentence1_binary_parse, sentence2_binary_parse)
+                texts=(sentence1, sentence2),
+                texts_parse=(sentence1_parse, sentence2_parse),
+                texts_binary_parse=(sentence1_binary_parse, sentence2_binary_parse)
             )

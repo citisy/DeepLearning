@@ -50,15 +50,15 @@ class Loader(DataLoader):
         image = get_image(image_path, image_type)
 
         fp = Path(fp)
-        transcription = fp.stem.split('_')[1]
+        text = fp.stem.split('_')[1]
 
         if return_lower:
-            transcription = transcription.lower()
+            text = text.lower()
 
         return dict(
             _id=fp.name,
             image=image,
-            transcription=transcription
+            text=text
         )
 
     def load_lexicon(self):

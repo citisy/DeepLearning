@@ -31,7 +31,7 @@ class Loader(DataLoader):
             return dict(
                 _id=index,
                 _class=_class,
-                contexts=(question, sentence),
+                texts=(question, sentence),
             )
 
         else:
@@ -39,5 +39,5 @@ class Loader(DataLoader):
 
             return dict(
                 _id=index,
-                contexts=(question, sentence),
+                texts=(question, sentence),
             )

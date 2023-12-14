@@ -20,10 +20,10 @@ class Loader(DataLoader):
 
     def get_ret(self, obj, set_type=DataRegister.TRAIN, **kwargs) -> dict:
         i, line = obj
-        context = line
+        text = line
         return dict(
             _id=i,
-            context=context,
+            text=text,
         )
 
 
@@ -36,5 +36,5 @@ class Saver(DataSaver):
         return self.gen_data(iter_data, f=f, **gen_kwargs)
 
     def parse_ret(self, ret, f=None, **get_kwargs):
-        context = ret['context']
-        f.write(context + '\n')
+        text = ret['text']
+        f.write(text + '\n')
