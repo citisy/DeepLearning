@@ -33,8 +33,13 @@ suffixes_dict = dict(
     ini=('.ini',),
     txt=('.txt',),
     pkl=('.pkl',),
+    joblib=('.joblib',),
     img=('.jpg', '.jpeg', '.png', '.bmp', '.tiff'),
     csv=('.csv', '.tsv'),
+    xlsx=('.xlsx', '.xls'),
+    word=('.docx', '.doc'),
+    pdf=('.pdf',),
+    np=('.npy', '.npz')
 )
 
 
@@ -76,6 +81,8 @@ class Saver:
             self.save_txt(obj, path, **kwargs)
         elif suffix in suffixes_dict['pkl']:
             self.save_pkl(obj, path, **kwargs)
+        elif suffix in suffixes_dict['joblib']:
+            self.save_joblib(obj, path, **kwargs)
         elif suffix in suffixes_dict['img']:
             self.save_img(obj, path, **kwargs)
         elif suffix in suffixes_dict['csv']:
@@ -98,6 +105,12 @@ class Saver:
     def save_pkl(self, obj, path, **kwargs):
         with open(path, 'wb') as f:
             pickle.dump(obj, f, **kwargs)
+
+        self.stdout(path)
+
+    def save_joblib(self, obj, path, **kwargs):
+        import joblib
+        joblib.dump(obj, path, **kwargs)
 
         self.stdout(path)
 
@@ -171,7 +184,7 @@ class Saver:
         except KeyError:
             self.stderr(save_path)
 
-    def save_image_to_pdf(self, obj: np.ndarray or str, path):
+    def save_image_to_pdf(self, obj: bytes or str, path):
         import fitz  # pip install PyMuPDF
 
         if isinstance(obj, str):
@@ -184,6 +197,21 @@ class Saver:
         with fitz.open() as doc:
             doc.insert_pdf(img_pdf)
             doc.save(path)
+        self.stdout(path)
+
+    def save_images_to_pdf(self, obj: List, path):
+        import fitz  # pip install PyMuPDF
+
+        doc = fitz.open()
+        for img in obj:
+            if isinstance(img, str):
+                img_doc = fitz.open(img)
+            else:
+                img_doc = fitz.open(stream=img, filetype='png')
+
+            img_pdf = fitz.open(stream=img_doc.convert_to_pdf(), filetype='pdf')
+            doc.insert_pdf(img_pdf)
+        doc.save(path)
         self.stdout(path)
 
 
