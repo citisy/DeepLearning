@@ -208,42 +208,60 @@ def get_variable_name(var):
 
 class TextVisualize:
     @staticmethod
-    def highlight_str(text, types=('blue', 'bold'), start='', end=''):
+    def get_start(types=None):
+        if not types:
+            return ''
+
+        types = [types] if isinstance(types, str) else types
+
+        # fmt -> \033[%sm
+        start = '\033['
+        for t in types:
+            start += terminal_cmap[t] + ';'
+
+        start = start[:-1] + 'm'
+
+        return start
+
+    @staticmethod
+    def get_end(types=None):
+        if not types:
+            return ''
+        return '\033[' + terminal_cmap['end'] + 'm'
+
+    @classmethod
+    def highlight_str(cls, text, types=None, fmt=''):
         """hightlight a string
 
         Args:
             text(str):
-            types(str or tuple): one of keys of `TextVisualize.types'
-            start(str): if set, ignore types
-            end(str):
+            types(str or tuple): one of keys of `terminal_cmap', if fmt is not set, default is `('blue', 'bold')`
+            fmt(str): highlight format, fmt like '... %s ...'
 
         Examples:
+            >>> TextVisualize.highlight_str('hello')
             >>> TextVisualize.highlight_str('hello', 'blue')
             >>> TextVisualize.highlight_str('hello', ('blue', 'bold'))
-            >>> TextVisualize.highlight_str('hello', start='<p style="color:red;">', end='</p>')    # html type
-            >>> TextVisualize.highlight_str('hello', start='\033[34m(highlight str: ', end=')\033[0m')  # add special text
+            >>> TextVisualize.highlight_str('hello', fmt='<p style="color:red;">%s</p>')    # html type
+            >>> TextVisualize.highlight_str('hello', 'blue', fmt='(highlight str: %s)')  # add special text
 
         """
-        if not start:
-            types = [types] if isinstance(types, str) else types
+        if not (types or fmt):
+            types = ('blue', 'bold')
 
-            # fmt -> \033[%sm
-            start = '\033['
-            for t in types:
-                start += terminal_cmap[t] + ';'
+        start, end = '', ''
+        if types:
+            start = cls.get_start(types)
+            end = cls.get_end(types)
 
-            start = start[:-1] + 'm'
+        if not fmt:
+            fmt = '%s'
 
-        end = end or '\033[' + terminal_cmap['end'] + 'm'
-
-        return start + text + end
+        fmt = start + fmt + end
+        return fmt % text
 
     @classmethod
-    def highlight_subtext(
-            cls,
-            text, span, wing_length=None,
-            types=('blue', 'bold'), start='', end=''
-    ):
+    def highlight_subtext(cls, text, span, wing_length=None, types=None, fmt=''):
         """highlight a string where giving by span of a text
         See Also `TextVisualize.highlight_str`
 
@@ -252,8 +270,7 @@ class TextVisualize:
             span(tuple):
             wing_length(int): limit str output. No limit if None, else exceeding part collapse to '...'
             types(str or tuple):
-            start(str):
-            end(str):
+            fmt(str):
 
         Examples:
             >>> TextVisualize.highlight_subtext('hello', (2, 4))
@@ -267,23 +284,18 @@ class TextVisualize:
             s = (
                     left_abbr
                     + text[left:span[0]]
-                    + cls.highlight_str(text[span[0]:span[1]], types, start, end)
+                    + cls.highlight_str(text[span[0]:span[1]], types, fmt)
                     + text[span[1]:right]
                     + right_abbr
             )
 
         else:
-            s = text[:span[0]] + cls.highlight_str(text[span[0]:span[1]], types, start, end) + text[span[1]:]
+            s = text[:span[0]] + cls.highlight_str(text[span[0]:span[1]], types, fmt) + text[span[1]:]
 
         return s
 
     @classmethod
-    def highlight_subtexts(
-            cls,
-            text, spans,
-            types=('blue', 'bold'), start='', end=''
-
-    ):
+    def highlight_subtexts(cls, text, spans, types=None, fmt=''):
         """highlight multiple strings where giving by spans of a text
         See Also `TextVisualize.highlight_str`
 
@@ -291,8 +303,7 @@ class TextVisualize:
             text(str):
             spans(List[tuple]):
             types(str or tuple):
-            start(str or list):
-            end(str or list):
+            fmt(str or list):
 
         Examples:
             >>> TextVisualize.highlight_subtexts('hello world', [(2, 3), (6, 7)])
@@ -307,15 +318,38 @@ class TextVisualize:
             span = spans[i]
             assert tmp <= span[0], f'{span = } overlap, please check'
 
-            _start = start[i] if isinstance(start, list) else start
-            _end = end[i] if isinstance(end, list) else end
-
-            s += text[tmp:span[0]] + cls.highlight_str(text[span[0]:span[1]], types, _start, _end)
+            _fmt = fmt[i] if isinstance(fmt, list) else fmt
+            s += text[tmp:span[0]] + cls.highlight_str(text[span[0]:span[1]], types, _fmt)
             tmp = span[1]
 
         s += text[tmp:]
 
         return s
+
+    @classmethod
+    def mark_subtext(cls, text, span, mark, types=('blue', 'bold'), fmt='(%s -> %s)', **kwargs):
+        """
+        Examples:
+            >>> TextVisualize.mark_subtext('hello', (2, 4), 'ii')
+            >>> TextVisualize.mark_subtext('hello', (2, 4), 'ii', fmt='%s(to %s)')
+        """
+        a, b = fmt.split('%s', 1)
+        fmt = a + '%s' + b % mark
+        return cls.highlight_subtext(text, span, types=types, fmt=fmt, **kwargs)
+
+    @classmethod
+    def mark_subtexts(cls, text, spans, marks, types=('blue', 'bold'), fmt=''):
+        """
+        Examples:
+            >>> TextVisualize.mark_subtexts('hello world', [(2, 3), (6, 7)], ['i', 'v'])
+            >>> TextVisualize.mark_subtexts('hello world', [(2, 3), (6, 7)], ['i', 'v'], fmt='%s(to %s)')
+        """
+        _fmt = []
+        for mark in marks:
+            tmp = fmt or '(%s -> %s)'
+            a, b = tmp.split('%s', 1)
+            _fmt = a + '%s' + b % mark
+        return cls.highlight_subtexts(text, spans, types=types, fmt=_fmt)
 
     @staticmethod
     def num_to_human_readable_str(num: int):
