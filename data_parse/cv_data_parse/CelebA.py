@@ -1,15 +1,77 @@
 import os
-import cv2
 import pandas as pd
 from zipfile import ZipFile
 from pathlib import Path
 from utils import cv_utils, converter
 from .base import DataLoader, DataRegister, get_image
-import io
+
+info = [
+    {
+        'url': 'https://docs.google.com/uc?export=download&id=0B7EVK8r0v71peklHb0pGdDl6R28',
+        'fp': 'Img/img_celeba.7z',
+        'md5': 'b6cd7e93bc7a96c2dc33f819aa3ac651',
+        'len': 202602,
+        'image_suffix': 'jpg'
+    },
+
+    {
+        'url': 'https://docs.google.com/uc?export=download&id=0B7EVK8r0v71pZjFTYXZWM3FlRnM',
+        'fp': 'Img/img_align_celeba.zip',
+        'md5': '00d2c5bc6d35e252742224ab0c1e8fcb',
+        'len': 202602,
+        'image_suffix': 'jpg'
+    },
+
+    {
+        'url': 'https://docs.google.com/uc?export=download&id=0B7EVK8r0v71pbWNEUjJKdDQ3dGc',
+        'fp': 'Img/img_align_celeba_png.7z',
+        'md5': '20523b3fcc187370f4eb06c2539c00f9',
+        'len': 202602,
+        'image_suffix': 'png'
+    },
+
+    {
+        'url': 'https://docs.google.com/uc?export=download&id=0B7EVK8r0v71pblRyaVFSWGxPY0U',
+        'fp': 'Anno/list_attr_celeba.txt',
+        'md5': '75e246fa4810816ffd6ee81facbd244c',
+    },
+
+    {
+        'url': 'https://docs.google.com/uc?export=download&id=1_ee_0u7vcNLOfNLegJRHmolfH5ICW-XS',
+        'fp': 'Anno/identity_CelebA.txt',
+        'md5': '32bd1bd63d3c78cd57e08160ec5ed1e2',
+    },
+
+    {
+        'url': 'https://docs.google.com/uc?export=download&id=0B7EVK8r0v71pbThiMVRxWXZ4dU0',
+        'fp': 'Anno/list_bbox_celeba.txt',
+        'md5': '00566efa6fedff7a56946cd1c10f1c16',
+    },
+
+    {
+        'url': 'https://docs.google.com/uc?export=download&id=0B7EVK8r0v71pd0FJY3Blby1HUTQ',
+        'fp': 'Anno/list_landmarks_align_celeba.txt',
+        'md5': 'cc24ecafdb5b50baae59b03474781f8c',
+    },
+
+    {
+        'url': 'https://docs.google.com/uc?export=download&id=0B7EVK8r0v71pTzJIdlJWdHczRlU',
+        'fp': 'Anno/list_landmarks_celeba.txt',
+        'md5': '063ee6ddb681f96bc9ca28c6febb9d1a',
+    },
+
+    {
+        'url': 'https://docs.google.com/uc?export=download&id=0B7EVK8r0v71pY0NSMzRuSXJEVkk',
+        'fp': 'Eval/list_eval_partition.txt',
+        'md5': 'd32c9cbf5e040fd4025c592c306e6668',
+        'len': 202599
+    }
+
+]
 
 
 class Loader(DataLoader):
-    """http://mmlab.ie.cuhk.edu.hk/projects/CelebA.html
+    """[Large-scale CelebFaces Attributes (CelebA)](http://mmlab.ie.cuhk.edu.hk/projects/CelebA.html)
 
     Data structure:
         .
@@ -51,6 +113,7 @@ class Loader(DataLoader):
 
     attr_classes = None
     landmarks_classes = None
+    dataset_info = info
 
     def _call(self, img_task='original', only_image=False, **kwargs):
         """See Also `cv_data_parse.base.DataLoader._call`

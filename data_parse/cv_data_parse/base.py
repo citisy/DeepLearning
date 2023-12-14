@@ -86,11 +86,17 @@ def fake_func(x):
 
 
 class DataLoader:
+    """
+    for implementation, usually override the following methods:
+        _call(): prepare the data, and return an iterable function warped by `gen_data()`
+        get_ret(): logic of parsing the data, and return a dict of result
+    """
     default_set_type = [DataRegister.TRAIN, DataRegister.TEST]
     default_data_type = DataRegister.FULL
     default_image_type = DataRegister.PATH
     image_suffix = 'png'
     classes = []
+    dataset_info: dict
 
     def __init__(self, data_dir, verbose=True, stdout_method=print, **kwargs):
         self.data_dir = data_dir
@@ -162,7 +168,8 @@ class DataLoader:
         return r
 
     def _call(self, **gen_kwargs):
-        """
+        """prepare the data, and return an iterable function warped by `gen_data()`
+
         Args:
             gen_kwargs:
                 see also `gen_data` function to get more details of gen_kwargs
@@ -220,6 +227,7 @@ class DataLoader:
             gen_func.close()
 
     def get_ret(self, obj, image_type=DataRegister.PATH, **kwargs) -> dict:
+        """logic of parsing the data, and return a dict of result"""
         raise NotImplementedError
 
     def load_cache(self, save_name):

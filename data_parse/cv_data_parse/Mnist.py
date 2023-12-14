@@ -3,10 +3,118 @@ import struct
 import numpy as np
 from .base import DataRegister, DataLoader, DataSaver
 
+info = {
+    # http://yann.lecun.com/exdb/mnist/
+    'mnist': [
+        {
+            'url': 'http://yann.lecun.com/exdb/mnist/train-images-idx3-ubyte.gz',
+            'fp': 'train-images-idx3-ubyte.gz',
+            'md5': 'f68b3c2dcbeaaa9fbdd348bbdeb94873',
+            'len': 60000,
+            'classes': list(range(10))
+
+        },
+
+        {
+            'url': 'http://yann.lecun.com/exdb/mnist/train-labels-idx1-ubyte.gz',
+            'fp': 'train-labels-idx1-ubyte.gz',
+            'md5': 'd53e105ee54ea40749a09fcbcd1e9432',
+            'len': 60000,
+            'classes': list(range(10))
+        },
+
+        {
+            'url': 'http://yann.lecun.com/exdb/mnist/t10k-images-idx3-ubyte.gz',
+            'fp': 't10k-images-idx3-ubyte.gz',
+            'md5': '9fb629c4189551a2d022fa330f9573f3',
+            'len': 10000,
+            'classes': list(range(10))
+        },
+
+        {
+            'url': 'http://yann.lecun.com/exdb/mnist/t10k-labels-idx1-ubyte.gz',
+            'fp': 't10k-labels-idx1-ubyte.gz',
+            'md5': 'ec29112dd5afa0611ce80d1b7f02629c',
+            'len': 10000,
+            'classes': list(range(10))
+        }
+    ],
+
+    # https://github.com/zalandoresearch/fashion-mnist/
+    'fashion-mnist': [
+        {
+            'url': 'http://fashion-mnist.s3-website.eu-central-1.amazonaws.com/train-images-idx3-ubyte.gz',
+            'fp': 'train-images-idx3-ubyte.gz',
+            'md5': '8d4fb7e6c68d591d4c3dfef9ec88bf0d',
+            'len': 60000,
+            'classes': ["T-shirt/top", "Trouser", "Pullover", "Dress", "Coat", "Sandal", "Shirt", "Sneaker", "Bag", "Ankle boot"]
+        },
+
+        {
+            'url': 'http://fashion-mnist.s3-website.eu-central-1.amazonaws.com/train-labels-idx1-ubyte.gz',
+            'fp': 'train-labels-idx1-ubyte.gz',
+            'md5': '25c81989df183df01b3e8a0aad5dffbe',
+            'len': 60000,
+            'classes': ["T-shirt/top", "Trouser", "Pullover", "Dress", "Coat", "Sandal", "Shirt", "Sneaker", "Bag", "Ankle boot"]
+        },
+
+        {
+            'url': 'http://fashion-mnist.s3-website.eu-central-1.amazonaws.com/t10k-images-idx3-ubyte.gz',
+            'fp': 't10k-images-idx3-ubyte.gz',
+            'md5': 'bef4ecab320f06d8554ea6380940ec79',
+            'len': 10000,
+            'classes': ["T-shirt/top", "Trouser", "Pullover", "Dress", "Coat", "Sandal", "Shirt", "Sneaker", "Bag", "Ankle boot"]
+        },
+
+        {
+            'url': 'http://fashion-mnist.s3-website.eu-central-1.amazonaws.com/t10k-labels-idx1-ubyte.gz',
+            'fp': 't10k-labels-idx1-ubyte.gz',
+            'md5': 'bb300cfdad3c16e7a12a480ee83cd310',
+            'len': 10000,
+            'classes': ["T-shirt/top", "Trouser", "Pullover", "Dress", "Coat", "Sandal", "Shirt", "Sneaker", "Bag", "Ankle boot"]
+        }
+    ],
+
+    # https://github.com/rois-codh/kmnist
+    'kmnist': [
+        {
+            'url': 'http://codh.rois.ac.jp/kmnist/dataset/kmnist/train-images-idx3-ubyte.gz',
+            'fp': 'train-images-idx3-ubyte.gz',
+            'md5': 'bdb82020997e1d708af4cf47b453dcf7',
+            'len': 60000,
+            'classes': ["o", "ki", "su", "tsu", "na", "ha", "ma", "ya", "re", "wo"]
+        },
+
+        {
+            'url': 'http://codh.rois.ac.jp/kmnist/dataset/kmnist/train-labels-idx1-ubyte.gz',
+            'fp': 'train-labels-idx1-ubyte.gz',
+            'md5': 'e144d726b3acfaa3e44228e80efcd344',
+            'len': 60000,
+            'classes': ["o", "ki", "su", "tsu", "na", "ha", "ma", "ya", "re", "wo"]
+        },
+
+        {
+            'url': 'http://codh.rois.ac.jp/kmnist/dataset/kmnist/t10k-images-idx3-ubyte.gz',
+            'fp': 't10k-images-idx3-ubyte.gz',
+            'md5': '5c965bf0a639b31b8f53240b1b52f4d7',
+            'len': 10000,
+            'classes': ["o", "ki", "su", "tsu", "na", "ha", "ma", "ya", "re", "wo"]
+        },
+
+        {
+            'url': 'http://codh.rois.ac.jp/kmnist/dataset/kmnist/t10k-labels-idx1-ubyte.gz',
+            'fp': 't10k-labels-idx1-ubyte.gz',
+            'md5': '7320c461ea6c1c855c0b718fb2a4b134',
+            'len': 10000,
+            'classes': ["o", "ki", "su", "tsu", "na", "ha", "ma", "ya", "re", "wo"]
+        }
+    ],
+
+}
+
 
 class Loader(DataLoader):
     """http://yann.lecun.com/exdb/mnist/
-    See Also https://github.com/zalandoresearch/fashion-mnist/
 
     Data structure:
         .
@@ -32,6 +140,7 @@ class Loader(DataLoader):
     """
     default_image_type = DataRegister.ARRAY
     classes = list(range(10))
+    dataset_info = info['mnist']
 
     def _call(self, set_type, image_type, decompression=False, **kwargs):
         """See Also `cv_data_parse.base.DataLoader._call`
