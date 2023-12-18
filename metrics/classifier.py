@@ -102,7 +102,7 @@ class PR:
             acc_cp = r.pop('acc_cp')
 
         ret = dict(
-            tpr=acc_tp / acc_cp,
+            tpr=acc_tp / (acc_cp + 1e-6),
             acc_tp=acc_tp,
             acc_cp=acc_cp
         )
@@ -204,39 +204,46 @@ class TopMetric:
     def pr_curve(self, true, pred, thres_list=np.arange(0, 1, 0.05)):
         pr = {}
         for thres in thres_list:
-            true_ = np.where(true < thres, 0, 1)
-            pred_ = np.where(pred < thres, 0, 1)
+            true_ = np.where(true <= thres, 0, 1)
+            pred_ = np.where(pred <= thres, 0, 1)
 
             ret = self.f_measure(true_, pred_)
             pr[thres] = ret
 
         p = np.array([_['p'] for _ in pr.values()])
         r = np.array([_['r'] for _ in pr.values()])
-        best_point = np.argmin(np.abs(p / r - 1))
+        points = p / r
+        best_arg = np.argmin(np.abs(points - 1))
+        best_thres = thres_list[best_arg]
 
         return dict(
             pr=pr,
-            best_point=best_point
+            points=points,
+            best_arg=best_arg,
+            best_thres=best_thres
         )
 
     def roc(self, true, pred, thres_list=np.arange(0, 1, 0.05)):
         pr = {}
         for thres in thres_list:
-            true_ = np.where(true < thres, 0, 1)
-            pred_ = np.where(pred < thres, 0, 1)
+            true_ = np.where(true <= thres, 0, 1)
+            pred_ = np.where(pred <= thres, 0, 1)
 
-            ret = self.f_measure(true_, pred_)
+            ret = self.pr.tpr(true_, pred_)
+            ret.update(self.pr.fpr(true_, pred_))
             pr[thres] = ret
 
-        pr_ = np.array([[_['p'], _['r']] for _ in pr.values()])
-        base = np.ones_like(pr_)
-
-        cos_sim = pr_ * base / np.linalg.norm(pr_, axis=1) * np.sqrt(2)
-        best_point = np.argmin(cos_sim)
+        tpr = np.array([_['tpr'] for _ in pr.values()])
+        fpr = np.array([_['fpr'] for _ in pr.values()])
+        points = tpr / fpr
+        best_arg = np.argmin(points)
+        best_thres = thres_list[best_arg]
 
         return dict(
             pr=pr,
-            best_point=best_point
+            points=points,
+            best_arg=best_arg,
+            best_thres=best_thres
         )
 
     def auc(self, true, pred):
@@ -245,22 +252,24 @@ class TopMetric:
     def ks(self, true, pred, thres_list=np.arange(0, 1, 0.05)):
         pr = {}
         for thres in thres_list:
-            true_ = np.where(true < thres, 0, 1)
-            pred_ = np.where(pred < thres, 0, 1)
+            true_ = np.where(true <= thres, 0, 1)
+            pred_ = np.where(pred <= thres, 0, 1)
 
-            ret = self.f_measure(true_, pred_)
+            ret = self.pr.tpr(true_, pred_)
+            ret.update(self.pr.fpr(true_, pred_))
             pr[thres] = ret
 
-        pr_ = np.array([[_['p'], _['r']] for _ in pr.values()])
-        pr_[1] = 1 - pr_[1]
-        base = np.ones_like(pr_)
-
-        cos_sim = pr_ * base / np.linalg.norm(pr_, axis=1) * np.sqrt(2)
-        best_point = np.argmin(cos_sim)
+        tpr = np.array([_['tpr'] for _ in pr.values()])
+        fpr = np.array([_['fpr'] for _ in pr.values()])
+        points = np.abs(tpr - fpr)
+        best_arg = np.argmin(points)
+        best_thres = thres_list[best_arg]
 
         return dict(
             pr=pr,
-            best_point=best_point
+            points=points,
+            best_arg=best_arg,
+            best_thres=best_thres
         )
 
 
