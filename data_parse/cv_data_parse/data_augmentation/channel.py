@@ -9,10 +9,15 @@ class HWC2CHW:
             image=self.apply_image(image)
         )
 
-    def apply_image(self, image, *args):
+    @staticmethod
+    def apply_image(image, *args):
         image = np.transpose(image, (2, 0, 1))
         image = np.ascontiguousarray(image)
         return image
+
+    def restore(self, ret):
+        ret['image'] = CHW2HWC.apply_image(ret['image'])
+        return ret
 
 
 class CHW2HWC:
@@ -21,10 +26,15 @@ class CHW2HWC:
             image=self.apply_image(image)
         )
 
-    def apply_image(self, image, *args):
+    @staticmethod
+    def apply_image(image, *args):
         image = np.transpose(image, (1, 2, 0))
         image = np.ascontiguousarray(image)
         return image
+
+    def restore(self, ret):
+        ret['image'] = HWC2CHW.apply_image(ret['image'])
+        return ret
 
 
 class BGR2RGB:
