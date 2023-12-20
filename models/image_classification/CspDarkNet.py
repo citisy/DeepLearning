@@ -65,7 +65,7 @@ class C3(nn.Module):
             *(Bottleneck(hidden_ch, hidden_ch, shortcut, g, e=1.0) for _ in range(n))
         )
         self.cv2 = Conv(in_ch, hidden_ch, 1, 1, act=nn.SiLU())
-        self.cv3 = Conv(hidden_ch * 2, out_ch, 1, act=nn.SiLU())  # optional act=FReLU(c2)
+        self.cv3 = Conv(hidden_ch * 2, out_ch, 1, act=nn.SiLU())
 
     def forward(self, x):
         x1 = self.seq1(x)
@@ -75,11 +75,11 @@ class C3(nn.Module):
 
 
 class Bottleneck(nn.Module):
-    def __init__(self, in_ch, out_ch, shortcut=True, g=1, e=0.5):  # ch_in, ch_out, shortcut, groups, expansion
+    def __init__(self, in_ch, out_ch, shortcut=True, g=1, e=0.5):
         super().__init__()
-        c_ = int(out_ch * e)  # hidden channels
-        self.cv1 = Conv(in_ch, c_, 1, 1, act=nn.SiLU())
-        self.cv2 = Conv(c_, out_ch, 3, 1, act=nn.SiLU(), groups=g)
+        hidden_ch = int(out_ch * e)
+        self.cv1 = Conv(in_ch, hidden_ch, 1, 1, act=nn.SiLU())
+        self.cv2 = Conv(hidden_ch, out_ch, 3, 1, act=nn.SiLU(), groups=g)
         self.add = shortcut and in_ch == out_ch
 
     def forward(self, x):
@@ -88,15 +88,17 @@ class Bottleneck(nn.Module):
 
 class SPPF(nn.Module):
     """Spatial Pyramid Pooling - Fast (SPPF) layer for YOLOv5 by Glenn Jocher"""
-    def __init__(self, in_ch, out_ch, k=5):  # equivalent to SPP(k=(5, 9, 13))
+    def __init__(self, in_ch, out_ch, k=5):
         super().__init__()
-        c_ = in_ch // 2  # hidden channels
-        self.cv1 = Conv(in_ch, c_, 1, 1, act=nn.SiLU())
-        self.cv2 = Conv(c_ * 4, out_ch, 1, 1, act=nn.SiLU())
-        self.m = nn.MaxPool2d(kernel_size=k, stride=1, padding=k // 2)
+        hidden_ch = in_ch // 2
+        self.cv1 = Conv(in_ch, hidden_ch, 1, 1, act=nn.SiLU())
+        self.cv2 = Conv(hidden_ch * 4, out_ch, 1, 1, act=nn.SiLU())
+        self.m = nn.MaxPool2d(kernel_size=k, stride=1, padding=k // 2)  # shared pooling
 
     def forward(self, x):
-        x = self.cv1(x)
-        y1 = self.m(x)
+        y1 = self.cv1(x)
         y2 = self.m(y1)
-        return self.cv2(torch.cat((x, y1, y2, self.m(y2)), 1))
+        y3 = self.m(y2)
+        y4 = self.m(y3)
+        y = torch.cat((y1, y2, y3, y4), 1)
+        return self.cv2(y)

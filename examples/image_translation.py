@@ -4,7 +4,7 @@ from torch import optim, nn
 from data_parse.cv_data_parse.data_augmentation import crop, scale, geometry, channel, RandomApply, Apply, complex, pixel_perturbation
 from data_parse import DataRegister
 from processor import Process, DataHooks
-from .image_generate import GanProcess, GanOptimizer
+from .image_generation import GanProcess, GanOptimizer
 from utils import configs, cv_utils, os_lib, log_utils
 
 

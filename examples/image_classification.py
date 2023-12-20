@@ -4,7 +4,6 @@ from torch import optim
 import numpy as np
 from pathlib import Path
 from utils import torch_utils
-from metrics import classifier
 from processor import Process, DataHooks, bundled
 from data_parse.cv_data_parse.base import DataVisualizer, DataRegister
 from data_parse.cv_data_parse.data_augmentation import crop, scale, geometry, channel, RandomApply, Apply
@@ -32,13 +31,14 @@ class ClsProcess(Process):
         return output
 
     def metric(self, **predict_kwargs):
+        from metrics import classification
         container = self.predict(**predict_kwargs)
 
         metric_results = {}
         for name, results in container['model_results'].items():
             trues = np.array(results['trues'])
             preds = np.array(results['preds'])
-            result = classifier.top_metric.f_measure(trues, preds)
+            result = classification.top_metric.f_measure(trues, preds)
 
             result.update(
                 score=result['f']
@@ -230,7 +230,7 @@ class LeNet_mnist(ClsProcess, Mnist):
     Usage:
         .. code-block:: python
 
-            from examples.image_classifier import LeNet_mnist as Process
+            from examples.image_classification import LeNet_mnist as Process
 
             Process().run(max_epoch=10, train_batch_size=256, predict_batch_size=256)
             {'score': 0.9899}
@@ -238,7 +238,7 @@ class LeNet_mnist(ClsProcess, Mnist):
     model_version = 'LeNet'
 
     def set_model(self):
-        from models.image_classifier.LeNet import Model
+        from models.image_classification.LeNet import Model
         self.model = Model(self.in_ch, self.input_size, self.out_features)
 
 
@@ -247,7 +247,7 @@ class LeNet_cifar(ClsProcess, Cifar):
     Usage:
         .. code-block:: python
 
-            from examples.image_classifier import LeNet_cifar as Process
+            from examples.image_classification import LeNet_cifar as Process
 
             Process().run(max_epoch=150, train_batch_size=128, predict_batch_size=256)
             {'score': 0.6082}
@@ -255,7 +255,7 @@ class LeNet_cifar(ClsProcess, Cifar):
     model_version = 'LeNet'
 
     def set_model(self):
-        from models.image_classifier.LeNet import Model
+        from models.image_classification.LeNet import Model
         self.model = Model(self.in_ch, self.input_size, self.out_features)
 
 
@@ -264,7 +264,7 @@ class AlexNet_ImageNet(ClsProcess, ImageNet):
     Usage:
         .. code-block:: python
 
-            from examples.image_classifier import AlexNet_ImageNet as Process
+            from examples.image_classification import AlexNet_ImageNet as Process
 
             Process().run()
             {'p': 0.8461538461538461, 'r': 0.88, 'f': 0.8627450980392156}
@@ -272,7 +272,7 @@ class AlexNet_ImageNet(ClsProcess, ImageNet):
     model_version = 'AlexNet'
 
     def set_model(self):
-        from models.image_classifier.AlexNet import Model
+        from models.image_classification.AlexNet import Model
         self.model = Model(self.in_ch, self.input_size, self.out_features)
 
 
@@ -281,7 +281,7 @@ class Vgg_ImageNet(ClsProcess, ImageNet):
     Usage:
         .. code-block:: python
 
-            from examples.image_classifier import Vgg_ImageNet as Process
+            from examples.image_classification import Vgg_ImageNet as Process
 
             Process().run()
             {'p': 0.9230769230769231, 'r': 0.96, 'f': 0.9411764705882353, 'score': 0.9411764705882353}
@@ -289,7 +289,7 @@ class Vgg_ImageNet(ClsProcess, ImageNet):
     model_version = 'Vgg'
 
     def set_model(self):
-        from models.image_classifier.VGG import Model
+        from models.image_classification.VGG import Model
         self.model = Model(self.in_ch, self.input_size, self.out_features)
 
     def train_data_augment(self, ret):
@@ -308,7 +308,7 @@ class InceptionV1_ImageNet(ClsProcess, ImageNet):
     Usage:
         .. code-block:: python
 
-            from examples.image_classifier import InceptionV1_ImageNet as Process
+            from examples.image_classification import InceptionV1_ImageNet as Process
 
             Process().run()
             {'p': 0.8363636363636363, 'r': 0.92, 'f': 0.8761904761904761, 'score': 0.8761904761904761}
@@ -316,7 +316,7 @@ class InceptionV1_ImageNet(ClsProcess, ImageNet):
     model_version = 'InceptionV1'
 
     def set_model(self):
-        from models.image_classifier.InceptionV1 import Model
+        from models.image_classification.InceptionV1 import Model
         self.model = Model(self.in_ch, self.input_size, self.out_features)
 
 
@@ -325,7 +325,7 @@ class InceptionV3_ImageNet(ClsProcess, ImageNet):
     Usage:
         .. code-block:: python
 
-            from examples.image_classifier import InceptionV3_ImageNet as Process
+            from examples.image_classification import InceptionV3_ImageNet as Process
 
             Process().run()
             {'p': 0.98, 'r': 0.98, 'f': 0.98, 'score': 0.98}
@@ -334,7 +334,7 @@ class InceptionV3_ImageNet(ClsProcess, ImageNet):
     input_size = 299  # special input_size from paper
 
     def set_model(self):
-        from models.image_classifier.InceptionV3 import InceptionV3 as Model
+        from models.image_classification.InceptionV3 import InceptionV3 as Model
         self.model = Model(self.in_ch, self.input_size, self.out_features)
 
 
@@ -343,7 +343,7 @@ class ResNet_ImageNet(ClsProcess, ImageNet):
     Usage:
         .. code-block:: python
 
-            from examples.image_classifier import ResNet_ImageNet as Process
+            from examples.image_classification import ResNet_ImageNet as Process
 
             Process().run()
             {'p': 0.9230769230769231, 'r': 0.96, 'f': 0.9411764705882353, 'score': 0.9411764705882353}
@@ -351,7 +351,7 @@ class ResNet_ImageNet(ClsProcess, ImageNet):
     model_version = 'ResNet'
 
     def set_model(self):
-        from models.image_classifier.ResNet import Model, Res50_config
+        from models.image_classification.ResNet import Model, Res50_config
         self.model = Model(self.in_ch, self.input_size, self.out_features)
 
     def train_data_augment(self, ret):
@@ -370,7 +370,7 @@ class DenseNet_ImageNet(ClsProcess, ImageNet):
     Usage:
         .. code-block:: python
 
-            from examples.image_classifier import DenseNet_ImageNet as Process
+            from examples.image_classification import DenseNet_ImageNet as Process
 
             Process().run()
             {'p': 0.819672131147541, 'r': 1.0, 'f': 0.9009009009009009, 'score': 0.9009009009009009}
@@ -378,7 +378,7 @@ class DenseNet_ImageNet(ClsProcess, ImageNet):
     model_version = 'DenseNet'
 
     def set_model(self):
-        from models.image_classifier.DenseNet import Model
+        from models.image_classification.DenseNet import Model
         self.model = Model(self.in_ch, self.input_size, self.out_features)
 
 
@@ -387,7 +387,7 @@ class SENet_ImageNet(ClsProcess, ImageNet):
     Usage:
         .. code-block:: python
 
-            from examples.image_classifier import SENet_ImageNet as Process
+            from examples.image_classification import SENet_ImageNet as Process
 
             Process().run()
             {'p': 0.847457627118644, 'r': 1.0, 'f': 0.9174311926605504, 'score': 0.9174311926605504}
@@ -395,7 +395,7 @@ class SENet_ImageNet(ClsProcess, ImageNet):
     model_version = 'SENet'
 
     def set_model(self):
-        from models.image_classifier.SEInception import Model
+        from models.image_classification.SEInception import Model
         self.model = Model(self.in_ch, self.input_size, self.out_features)
 
 
@@ -404,7 +404,7 @@ class SqueezeNet_ImageNet(ClsProcess, ImageNet):
     Usage:
         .. code-block:: python
 
-            from examples.image_classifier import SqueezeNet_ImageNet as Process
+            from examples.image_classification import SqueezeNet_ImageNet as Process
 
             Process().run(train_batch_size=32, predict_batch_size=32)
             {'p': 0.7538461538461538, 'r': 0.98, 'f': 0.8521739130434782, 'score': 0.8521739130434782}
@@ -412,7 +412,7 @@ class SqueezeNet_ImageNet(ClsProcess, ImageNet):
     model_version = 'SqueezeNet'
 
     def set_model(self):
-        from models.image_classifier.SqueezeNet import Model
+        from models.image_classification.SqueezeNet import Model
         self.model = Model(self.in_ch, self.input_size, self.out_features)
 
 
@@ -421,7 +421,7 @@ class MobileNetV1_ImageNet(ClsProcess, ImageNet):
     Usage:
         .. code-block:: python
 
-            from examples.image_classifier import MobileNetV1_ImageNet as Process
+            from examples.image_classification import MobileNetV1_ImageNet as Process
 
             Process().run(train_batch_size=32, predict_batch_size=32)
             {'p': 0.9795918367346939, 'r': 0.96, 'f': 0.9696969696969697, 'score': 0.9696969696969697}
@@ -429,7 +429,7 @@ class MobileNetV1_ImageNet(ClsProcess, ImageNet):
     model_version = 'MobileNetV1'
 
     def set_model(self):
-        from models.image_classifier.MobileNetV1 import Model
+        from models.image_classification.MobileNetV1 import Model
         self.model = Model(self.in_ch, self.input_size, self.out_features)
 
 
@@ -438,7 +438,7 @@ class ShuffleNetV1_ImageNet(ClsProcess, ImageNet):
     Usage:
         .. code-block:: python
 
-            from examples.image_classifier import ShuffleNetV1_ImageNet as Process
+            from examples.image_classification import ShuffleNetV1_ImageNet as Process
 
             Process().run(train_batch_size=64, predict_batch_size=64)
             {'p': 0.8679245283018868, 'r': 0.92, 'f': 0.8932038834951457, 'score': 0.8932038834951457}
@@ -446,7 +446,7 @@ class ShuffleNetV1_ImageNet(ClsProcess, ImageNet):
     model_version = 'ShuffleNet'
 
     def set_model(self):
-        from models.image_classifier.ShuffleNetV1 import Model
+        from models.image_classification.ShuffleNetV1 import Model
         self.model = Model(self.in_ch, self.input_size, self.out_features)
 
 
@@ -455,7 +455,7 @@ class IGC_cifar(ClsProcess, Cifar):
     Usage:
         .. code-block:: python
 
-            from examples.image_classifier import IGC_cifar as Process
+            from examples.image_classification import IGC_cifar as Process
 
             Process().run(train_batch_size=64, predict_batch_size=64)
             {'score': 0.8058}
@@ -463,7 +463,7 @@ class IGC_cifar(ClsProcess, Cifar):
     model_version = 'IGC'
 
     def set_model(self):
-        from models.image_classifier.IGCV1 import Model
+        from models.image_classification.IGCV1 import Model
         from models.layers import SimpleInModule
 
         self.model = Model(in_module=SimpleInModule(out_channels=self.in_ch), out_features=self.out_features)
@@ -474,7 +474,7 @@ class CondenseNet_ImageNet(ClsProcess, ImageNet):
     Usage:
         .. code-block:: python
 
-            from examples.image_classifier import CondenseNet_ImageNet as Process
+            from examples.image_classification import CondenseNet_ImageNet as Process
 
             Process().run(train_batch_size=64, predict_batch_size=64)
             {'p': 0.9333333333333333, 'r': 0.84, 'f': 0.8842105263157894, 'score': 0.8842105263157894}
@@ -482,7 +482,7 @@ class CondenseNet_ImageNet(ClsProcess, ImageNet):
     model_version = 'CondenseNet'
 
     def set_model(self):
-        from models.image_classifier.CondenseNet import Model
+        from models.image_classification.CondenseNet import Model
         self.model = Model(self.in_ch, self.input_size, self.out_features)
 
 
@@ -492,7 +492,7 @@ class ViT_ImageNet(ClsProcess, ImageNet):
     Usage:
         .. code-block:: python
 
-            from examples.image_classifier import ViT_ImageNet as Process
+            from examples.image_classification import ViT_ImageNet as Process
 
             Process().run(max_epoch=300, train_batch_size=32, predict_batch_size=32)
             {'p': 0.7049180212308521, 'r': 0.86, 'f': 0.7747742727054547, 'score': 0.7747742727054547}
@@ -500,7 +500,7 @@ class ViT_ImageNet(ClsProcess, ImageNet):
     model_version = 'ViT'
 
     def set_model(self):
-        from models.image_classifier.ViT import Model
+        from models.image_classification.ViT import Model
         self.model = Model(self.in_ch, self.input_size, self.out_features)
 
     def set_optimizer(self):

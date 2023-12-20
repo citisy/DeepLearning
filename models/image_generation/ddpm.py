@@ -14,6 +14,52 @@ PRED_Z = 2
 PRED_V = 3
 
 
+def extract(a, t, x_shape):
+    """return a_t with shape of (b, 1, 1, ...)"""
+    b, *_ = t.shape
+    out = a.gather(-1, t)
+    return out.reshape(b, *((1,) * (len(x_shape) - 1)))
+
+
+def linear_beta_schedule(timesteps):
+    """
+    linear schedule, proposed in original ddpm paper
+    """
+    scale = 1000 / timesteps
+    beta_start = scale * 0.0001
+    beta_end = scale * 0.02
+    return torch.linspace(beta_start, beta_end, timesteps, dtype=torch.float64)
+
+
+def cosine_beta_schedule(timesteps, s=0.008):
+    """
+    cosine schedule
+    as proposed in https://openreview.net/forum?id=-NEXDKk8gZ
+    """
+    steps = timesteps + 1
+    t = torch.linspace(0, timesteps, steps, dtype=torch.float64) / timesteps
+    alphas_cumprod = torch.cos((t + s) / (1 + s) * math.pi * 0.5) ** 2
+    alphas_cumprod = alphas_cumprod / alphas_cumprod[0]
+    betas = 1 - (alphas_cumprod[1:] / alphas_cumprod[:-1])
+    return torch.clip(betas, 0, 0.999)
+
+
+def sigmoid_beta_schedule(timesteps, start=-3, end=3, tau=1):
+    """
+    sigmoid schedule
+    proposed in https://arxiv.org/abs/2212.11972 - Figure 8
+    better for images > 64x64, when used during training
+    """
+    steps = timesteps + 1
+    t = torch.linspace(0, timesteps, steps, dtype=torch.float64) / timesteps
+    v_start = torch.tensor(start / tau).sigmoid()
+    v_end = torch.tensor(end / tau).sigmoid()
+    alphas_cumprod = (-((t * (end - start) + start) / tau).sigmoid() + v_end) / (v_end - v_start)
+    alphas_cumprod = alphas_cumprod / alphas_cumprod[0]
+    betas = 1 - (alphas_cumprod[1:] / alphas_cumprod[:-1])
+    return torch.clip(betas, 0, 0.999)
+
+
 class Model(nn.ModuleList):
     """refer to:
     paper:
@@ -23,7 +69,9 @@ class Model(nn.ModuleList):
         - https://github.com/lucidrains/denoising-diffusion-pytorch
     """
 
-    def __init__(self, img_ch, image_size, timesteps=300, offset_noise_strength=0., objective=PRED_V,
+    def __init__(self, img_ch, image_size,
+                 schedule_func=linear_beta_schedule, timesteps=300,
+                 offset_noise_strength=0., objective=PRED_V,
                  min_snr_loss_weight=False, min_snr_gamma=5, **model_kwargs
                  ):
         super().__init__()
@@ -41,7 +89,7 @@ class Model(nn.ModuleList):
         register_buffer = lambda name, val: self.register_buffer(name, val.to(torch.float32))
 
         # define beta schedule
-        betas = linear_beta_schedule(timesteps=timesteps)  # (timesteps, )
+        betas = schedule_func(timesteps=timesteps)  # (timesteps, )
 
         # define alphas
         alphas = 1. - betas
@@ -149,7 +197,7 @@ class Model(nn.ModuleList):
         return extract(self.sqrt_alphas_cumprod, t, x_0.shape) * noise - extract(self.sqrt_one_minus_alphas_cumprod, t, x_0.shape) * x_0
 
     def loss(self, x_0, t, noise=None, offset_noise_strength=None):
-        x_0 = x_0 * 2 - 1  # normalize
+        x_0 = x_0 * 2 - 1  # normalize, [0, 1] -> [-1, 1]
         if noise is None:
             noise = torch.randn_like(x_0)
 
@@ -214,7 +262,7 @@ class Model(nn.ModuleList):
             images.append(x_t)
 
         images = x_t if not return_all_timesteps else torch.stack(images, dim=1)
-        images = (images + 1) * 0.5  # unnormalize
+        images = (images + 1) * 0.5  # unnormalize, [-1, 1] -> [0, 1]
         return images
 
     @torch.inference_mode()
@@ -248,52 +296,6 @@ class Model(nn.ModuleList):
         posterior_log_variance_clipped = extract(self.posterior_log_variance_clipped, t, x_t.shape)
 
         return posterior_mean, posterior_variance, posterior_log_variance_clipped
-
-
-def extract(a, t, x_shape):
-    """return a_t with shape of (b, 1, 1, ...)"""
-    b, *_ = t.shape
-    out = a.gather(-1, t)
-    return out.reshape(b, *((1,) * (len(x_shape) - 1)))
-
-
-def linear_beta_schedule(timesteps):
-    """
-    linear schedule, proposed in original ddpm paper
-    """
-    scale = 1000 / timesteps
-    beta_start = scale * 0.0001
-    beta_end = scale * 0.02
-    return torch.linspace(beta_start, beta_end, timesteps, dtype=torch.float64)
-
-
-def cosine_beta_schedule(timesteps, s=0.008):
-    """
-    cosine schedule
-    as proposed in https://openreview.net/forum?id=-NEXDKk8gZ
-    """
-    steps = timesteps + 1
-    t = torch.linspace(0, timesteps, steps, dtype=torch.float64) / timesteps
-    alphas_cumprod = torch.cos((t + s) / (1 + s) * math.pi * 0.5) ** 2
-    alphas_cumprod = alphas_cumprod / alphas_cumprod[0]
-    betas = 1 - (alphas_cumprod[1:] / alphas_cumprod[:-1])
-    return torch.clip(betas, 0, 0.999)
-
-
-def sigmoid_beta_schedule(timesteps, start=-3, end=3, tau=1, clamp_min=1e-5):
-    """
-    sigmoid schedule
-    proposed in https://arxiv.org/abs/2212.11972 - Figure 8
-    better for images > 64x64, when used during training
-    """
-    steps = timesteps + 1
-    t = torch.linspace(0, timesteps, steps, dtype=torch.float64) / timesteps
-    v_start = torch.tensor(start / tau).sigmoid()
-    v_end = torch.tensor(end / tau).sigmoid()
-    alphas_cumprod = (-((t * (end - start) + start) / tau).sigmoid() + v_end) / (v_end - v_start)
-    alphas_cumprod = alphas_cumprod / alphas_cumprod[0]
-    betas = 1 - (alphas_cumprod[1:] / alphas_cumprod[:-1])
-    return torch.clip(betas, 0, 0.999)
 
 
 class Model_(nn.Module):

@@ -1,5 +1,5 @@
 import numpy as np
-from . import classifier
+from . import classification
 
 
 class FullConfusionMatrix:
@@ -87,11 +87,11 @@ class SingleConfusionMatrix:
         )
 
 
-class PR(classifier.PR):
+class PR(classification.PR):
     def __init__(self, return_more_info=False, confusion_method=None, **confusion_method_kwarg):
         super().__init__(return_more_info=return_more_info, confusion_method=confusion_method or FullConfusionMatrix, **confusion_method_kwarg)
 
 
-class TopMetric(classifier.TopMetric):
+class TopMetric(classification.TopMetric):
     def __init__(self, pr_method=None, **pr_method_kwarg):
         super().__init__(pr_method=pr_method or PR, **pr_method_kwarg)

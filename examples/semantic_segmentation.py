@@ -3,7 +3,6 @@ import copy
 import numpy as np
 import torch
 from torch import optim, nn
-from metrics import mulit_classifier
 from data_parse.cv_data_parse.data_augmentation import crop, scale, geometry, channel, RandomApply, Apply, complex, pixel_perturbation
 from pathlib import Path
 from PIL import Image
@@ -82,6 +81,8 @@ class SegProcess(Process):
         return super().on_train_epoch_end(*args, **kwargs)
 
     def metric(self, *args, **kwargs):
+        from metrics import multi_classification
+
         container = self.predict(*args, **kwargs)
 
         metric_results = {}
@@ -90,7 +91,7 @@ class SegProcess(Process):
             pred = np.concatenate([i.flatten() for i in results['preds']]) - 1
             true = np.concatenate([i.flatten() for i in results['trues']]) - 1
 
-            result = mulit_classifier.TopMetric(n_class=self.out_features, ignore_class=(-1, 254)).f1(true, pred)
+            result = multi_classification.TopMetric(n_class=self.out_features, ignore_class=(-1, 254)).f1(true, pred)
 
             result.update(
                 score=result['f']

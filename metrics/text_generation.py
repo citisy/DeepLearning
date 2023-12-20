@@ -1,4 +1,4 @@
-from . import classifier
+from . import classification
 from utils import nlp_utils
 
 
@@ -173,12 +173,12 @@ class CharConfusionMatrix:
         )
 
 
-class PR(classifier.PR):
+class PR(classification.PR):
     def __init__(self, return_more_info=False, confusion_method=None, **confusion_method_kwarg):
         super().__init__(return_more_info=return_more_info, confusion_method=confusion_method or LineConfusionMatrix, **confusion_method_kwarg)
 
 
-class TopMetric(classifier.TopMetric):
+class TopMetric(classification.TopMetric):
     """
     only support `f_measure` or `f1`
 

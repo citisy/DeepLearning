@@ -69,7 +69,7 @@ class GetBackbone:
         # backbone = ...   # todo
         # backbone.out_channels = 1280
 
-        from ..image_classifier.ResNet import Backbone, Res34_config
+        from .ResNet import Backbone, Res34_config
 
         default_config = default_config or dict(backbone_config=Res34_config)
         backbone = Backbone(**default_config)
@@ -77,21 +77,21 @@ class GetBackbone:
 
     @staticmethod
     def get_resnet50():
-        from ..image_classifier.ResNet import Backbone, Res50_config
+        from .ResNet import Backbone, Res50_config
 
         backbone = Backbone(**Res50_config)
         return backbone
 
     @staticmethod
     def get_resnet101():
-        from ..image_classifier.ResNet import Backbone, Res101_config
+        from .ResNet import Backbone, Res101_config
 
         backbone = Backbone(**Res101_config)
         return backbone
 
     @staticmethod
     def get_mobilenet(default_config=dict()):
-        from ..image_classifier.MobileNetV1 import Backbone, default_config as config
+        from .MobileNetV1 import Backbone, default_config as config
 
         default_config = default_config or dict(backbone_config=config)
         backbone = Backbone(**default_config)
@@ -107,7 +107,7 @@ class GetBackbone:
 
     @staticmethod
     def get_vgg(default_config=dict()):
-        from ..image_classifier.VGG import Backbone, VGG19_config
+        from .VGG import Backbone, VGG19_config
 
         default_config = default_config or dict(backbone_config=VGG19_config)
         backbone = Backbone(**default_config)

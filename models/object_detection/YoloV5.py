@@ -9,7 +9,7 @@ from ..loss import FocalLoss, IouLoss
 from utils.torch_utils import initialize_layers
 from ..layers import ConvInModule, Cache, Concat
 from . import cls_nms, Iou
-from ..image_classifier.CspDarkNet import Backbone, C3, Conv
+from ..image_classification.CspDarkNet import Backbone, C3, Conv
 
 # default config, base on yolov5l config
 in_module_config = dict(
@@ -135,7 +135,7 @@ class Model(nn.Module):
                 a, h, w = f.shape[1:4]
                 shape = 1, a, h, w, 2  # grid shape
                 y, x = torch.arange(h).to(f), torch.arange(w).to(f)
-                yv, xv = torch.meshgrid(y, x)
+                yv, xv = torch.meshgrid(y, x, indexing='ij')    # note, low version pytorch, do not add `indexing`
                 grid = torch.stack((xv, yv), 2).expand(shape)
                 self.grid.append(grid)
 

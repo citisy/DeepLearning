@@ -243,7 +243,7 @@ class WGAN(GanProcess):
     hidden_ch = 100
 
     def set_model(self):
-        from models.image_generate.wgan import Model
+        from models.image_generation.wgan import Model
         self.model = Model(
             input_size=self.input_size,
             in_ch=self.in_ch,
@@ -337,7 +337,7 @@ class WGAN_Mnist(WGAN, Mnist):
     Usage:
         .. code-block:: python
 
-            from examples.image_generate import WGAN_Mnist as Process
+            from examples.image_generation import WGAN_Mnist as Process
 
             Process().run(max_epoch=1000, train_batch_size=64, check_period=10000, save_maxsize=10, metric_kwargs=dict(is_visualize=True))
     """
@@ -447,7 +447,7 @@ class StyleGan(GanProcess):
     model_version = 'StyleGAN'
 
     def set_model(self):
-        from models.image_generate.StyleGAN import Model
+        from models.image_generation.StyleGAN import Model
 
         self.model = Model(
             img_ch=self.in_ch,
@@ -573,7 +573,7 @@ class StyleGan_Mnist(StyleGan, Mnist):
     Usage:
         .. code-block:: python
 
-            from examples.image_generate import StyleGan_Mnist as Process
+            from examples.image_generation import StyleGan_Mnist as Process
 
             Process().run(max_epoch=2000, train_batch_size=64, check_period=20000, max_save_weight_num=10, metric_kwargs=dict(is_visualize=True))
     """
@@ -584,7 +584,7 @@ class StyleGan_Lsun(StyleGan, Lsun):
     Usage:
         .. code-block:: python
 
-            from examples.image_generate import StyleGan_Lsun as Process
+            from examples.image_generation import StyleGan_Lsun as Process
 
             Process().run(max_epoch=200, train_batch_size=32, check_period=20000, max_save_weight_num=10, metric_kwargs=dict(is_visualize=True))
     """
@@ -595,7 +595,7 @@ class StyleGan_CelebA(StyleGan, CelebA):
     Usage:
         .. code-block:: python
 
-            from examples.image_generate import StyleGan_CelebA as Process
+            from examples.image_generation import StyleGan_CelebA as Process
 
             Process().run(max_epoch=200, train_batch_size=32, check_period=20000, max_save_weight_num=10, metric_kwargs=dict(is_visualize=True))
             {'score': 134.8424}
@@ -655,7 +655,7 @@ class Ddpm(DiProcess):
     model_version = 'Ddpm'
 
     def set_model(self):
-        from models.image_generate.ddpm import Model
+        from models.image_generation.ddpm import Model
         self.model = Model(
             img_ch=self.in_ch,
             image_size=self.input_size,
@@ -670,7 +670,7 @@ class Ddpm_CelebA(Ddpm, CelebA):
     Usage:
         .. code-block:: python
 
-            from examples.image_generate import Ddpm_CelebA as Process
+            from examples.image_generation import Ddpm_CelebA as Process
 
             Process().run(max_epoch=200, train_batch_size=32, check_period=20000, max_save_weight_num=10, metric_kwargs=dict(is_visualize=True))
     """
@@ -682,7 +682,7 @@ class Dpim(DiProcess):
     model_version = 'Ddpm'
 
     def set_model(self):
-        from models.image_generate.ddim import Model
+        from models.image_generation.ddim import Model
         self.model = Model(
             img_ch=self.in_ch,
             image_size=self.input_size,
@@ -697,7 +697,7 @@ class Ddim_CelebA(Dpim, CelebA):
     Usage:
         .. code-block:: python
 
-            from examples.image_generate import Ddpm_CelebA as Process
+            from examples.image_generation import Ddpm_CelebA as Process
 
             Process().run(max_epoch=200, train_batch_size=32, check_period=20000, max_save_weight_num=10, metric_kwargs=dict(is_visualize=True))
             {'score': 64.1675}
@@ -709,7 +709,7 @@ class Ddim_CelebAHQ(Dpim, CelebAHQ):
     Usage:
         .. code-block:: python
 
-            from examples.image_generate import Ddim_CelebAHQ as Process
+            from examples.image_generation import Ddim_CelebAHQ as Process
 
             Process().run(max_epoch=200, train_batch_size=4, check_period=20000, max_save_weight_num=10, metric_kwargs=dict(is_visualize=True))
     """
