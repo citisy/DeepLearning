@@ -94,7 +94,7 @@ class PR:
         """recall"""
         r = {}
         if acc_tp is None:
-            r = self.confusion_matrix.tp(true, pred)
+            r.update(self.confusion_matrix.tp(true, pred, **r))
             acc_tp = r.pop('acc_tp')
 
         if acc_cp is None:
@@ -116,7 +116,7 @@ class PR:
         """precision"""
         r = {}
         if acc_tp is None:
-            r = self.confusion_matrix.tp(true, pred)
+            r.update(self.confusion_matrix.tp(true, pred, **r))
             acc_tp = r.pop('acc_tp')
 
         if acc_op is None:
@@ -138,11 +138,11 @@ class PR:
         """fallout"""
         r = {}
         if acc_fp is None:
-            r = self.confusion_matrix.fp(true, pred)
+            r.update(self.confusion_matrix.fp(true, pred, **r))
             acc_fp = r.pop('acc_fp')
 
         if acc_cn is None:
-            r = self.confusion_matrix.cn(true, **r)
+            r.update(self.confusion_matrix.cn(true, **r))
             acc_cn = r.pop('acc_cn')
 
         ret = dict(
@@ -157,20 +157,26 @@ class PR:
         return ret
 
     def acc(self, true=None, pred=None, acc_tp=None, acc_tn=None, **kwargs):
+        """accuracy, only apply for 2-class problem"""
         r = {}
         if acc_tp is None:
-            r = self.confusion_matrix.tp(true, pred)
+            r.update(self.confusion_matrix.tp(true, pred, **r))
             acc_tp = r.pop('acc_tp')
 
         if acc_tn is None:
-            r = self.confusion_matrix.tn(true, **r)
+            r.update(self.confusion_matrix.tn(true, pred, **r))
             acc_tn = r.pop('acc_tn')
 
-        return dict(
+        ret = dict(
             acc=(acc_tp + acc_tn) / len(true),
             acc_tp=acc_tp,
             acc_tn=acc_tn
         )
+
+        if self.return_more_info:
+            ret.update(r)
+
+        return ret
 
 
 class TopMetric:
