@@ -6,7 +6,7 @@ from data_parse.cv_data_parse.data_augmentation import crop, scale, geometry, ch
 from data_parse import DataRegister
 from pathlib import Path
 from data_parse.cv_data_parse.base import DataVisualizer
-from processor import Process, DataHooks, bundled, BaseDataset, MixDataset, IterDataset
+from processor import Process, DataHooks, bundled, BaseImgDataset, MixDataset, IterImgDataset
 from utils import configs, cv_utils, os_lib, torch_utils
 
 
@@ -117,13 +117,27 @@ class DataProcess(DataHooks):
 
         return ret
 
-    def save_char_dict(self, char_dict):
-        saver = os_lib.Saver(stdout_method=self.log)
-        saver.save_json(char_dict, f'{self.work_dir}/char_dict.json')
+    word_dict: dict
+    vocab_fn = 'vocab.txt'
 
-    def load_char_dict(self):
+    def load_vocab(self):
         loader = os_lib.Loader(stdout_method=self.log)
-        return loader.load_json(f'{self.work_dir}/char_dict.json')
+        return loader.auto_load(f'{self.work_dir}/{self.vocab_fn}')
+
+    def save_vocab(self, vocab):
+        saver = os_lib.Saver(stdout_method=self.log)
+        saver.auto_save(vocab, f'{self.work_dir}/{self.vocab_fn}')
+
+    def make_vocab(self):
+        raise NotImplemented
+
+    def get_vocab(self):
+        try:
+            vocab = self.load_vocab()
+        except OSError:
+            vocab = self.make_vocab()
+
+        self.word_dict = {c: i for i, c in enumerate(vocab)}
 
 
 class MJSynth(DataProcess):
@@ -135,6 +149,12 @@ class MJSynth(DataProcess):
     out_features = 36  # 26 for a-z + 10 for 0-9
     max_seq_len = 25
 
+    def make_vocab(self):
+        from data_parse.cv_data_parse.MJSynth import Loader
+        vocab = [' '] + Loader.lower_char_list
+        self.save_vocab(vocab)
+        return vocab
+
     def get_train_data(self, *args, **kwargs):
         from data_parse.cv_data_parse.MJSynth import Loader
 
@@ -144,14 +164,6 @@ class MJSynth(DataProcess):
             return_lower=True,
             max_size=self.train_data_num,
         )[0]
-
-        try:
-            char_dict = self.load_char_dict()
-        except:
-            char_dict = {c: i + 1 for i, c in enumerate(loader.lower_char_list)}
-        self.model.char2id = char_dict
-        self.model.id2char = {v: k for k, v in char_dict.items()}
-        self.save_char_dict(char_dict)
 
         return iter_data
 
@@ -165,10 +177,6 @@ class MJSynth(DataProcess):
             max_size=self.val_data_num,
         )[0]
 
-        char_dict = self.load_char_dict()
-        self.model.char2id = char_dict
-        self.model.id2char = {v: k for k, v in char_dict.items()}
-
         return iter_data
 
 
@@ -176,13 +184,18 @@ class SynthText(DataProcess):
     # so slow...
     dataset_version = 'SynthText'
     data_dir = 'data/SynthText'
-    train_dataset_ins = IterDataset
+    train_dataset_ins = IterImgDataset
     train_dataset_ins.length = DataProcess.train_data_num
 
     input_size = (100, 32)  # make sure that image_w / 4 - 1 > max_len
     in_ch = 1
     out_features = 62  # 26 * 2 for a-z + 10 for 0-9
     max_seq_len = 25
+
+    def make_vocab(self):
+        from data_parse.cv_data_parse.SynthOcrText import Loader
+        loader = Loader(self.data_dir, verbose=False)
+        return loader.get_char_list()
 
     def get_train_data(self, *args, **kwargs):
         from data_parse.cv_data_parse.SynthOcrText import Loader
@@ -192,17 +205,6 @@ class SynthText(DataProcess):
             image_type=DataRegister.GRAY_ARRAY, generator=True,
             max_size=self.train_data_num,
         )[0]
-
-        try:
-            char_dict = self.load_char_dict()
-        except:
-            char_list = loader.get_char_list()
-            char_list.remove(' ')
-            char_dict = {c: i + 1 for i, c in enumerate(char_list)}
-
-        self.model.char2id = char_dict
-        self.model.id2char = {v: k for k, v in char_dict.items()}
-        self.save_char_dict(char_dict)
 
         return iter_data
 
@@ -214,10 +216,6 @@ class SynthText(DataProcess):
             image_type=DataRegister.GRAY_ARRAY, generator=False,
             max_size=self.val_data_num,
         )[0]
-
-        char_dict = self.load_char_dict()
-        self.model.char2id = char_dict
-        self.model.id2char = {v: k for k, v in char_dict.items()}
 
         return iter_data
 
@@ -233,6 +231,18 @@ class MixMJSynthSynthText(DataProcess):
     in_ch = 1
     out_features = 62  # 26 * 2 for a-z + 10 for 0-9
     max_seq_len = 25
+
+    def make_vocab(self):
+        from data_parse.cv_data_parse.MJSynth import Loader
+        loader1 = Loader(self.data_dir1)
+
+        from data_parse.cv_data_parse.SynthOcrText import Loader
+        loader2 = Loader(self.data_dir2, verbose=False)
+
+        char_set = set(loader1.char_list)
+        char_list = loader2.get_char_list()
+        char_set |= set(char_list)
+        return list(char_set)
 
     def get_train_data(self, *args, **kwargs):
         from data_parse.cv_data_parse.MJSynth import Loader
@@ -252,22 +262,9 @@ class MixMJSynthSynthText(DataProcess):
             image_type=DataRegister.GRAY_ARRAY, generator=True,
             max_size=num,
         )[0]
-        IterDataset.length = num
+        IterImgDataset.length = num
 
-        try:
-            char_dict = self.load_char_dict()
-        except:
-            char_set = set(loader1.char_list)
-            char_list = loader2.get_char_list()
-            char_list.remove(' ')
-            char_set |= set(char_list)
-            char_dict = {c: i + 1 for i, c in enumerate(char_set)}
-
-        self.model.char2id = char_dict
-        self.model.id2char = {v: k for k, v in char_dict.items()}
-        self.save_char_dict(char_dict)
-
-        return (iter_data1, BaseDataset), (iter_data2, IterDataset)
+        return (iter_data1, BaseImgDataset), (iter_data2, IterImgDataset)
 
     def get_val_data(self, *args, **kwargs):
         from data_parse.cv_data_parse.MJSynth import Loader
@@ -279,10 +276,6 @@ class MixMJSynthSynthText(DataProcess):
             max_size=self.val_data_num,
         )[0]
 
-        char_dict = self.load_char_dict()
-        self.model.char2id = char_dict
-        self.model.id2char = {v: k for k, v in char_dict.items()}
-
         return iter_data
 
 
@@ -292,11 +285,13 @@ class CRNN(TrProcess):
     def set_model(self):
         from models.text_recognition.crnn import Model
 
+        self.get_vacab()
         self.model = Model(
             in_ch=self.in_ch,
             input_size=self.input_size,
             out_features=self.out_features,
-            max_seq_len=self.max_seq_len
+            max_seq_len=self.max_seq_len,
+            char2id=self.word_dict
         )
 
     def set_optimizer(self):
@@ -342,11 +337,13 @@ class Svtr(TrProcess):
 
     def set_model(self):
         from models.text_recognition.svtr import Model
+        self.get_vacab()
         self.model = Model(
             in_ch=self.in_ch,
             input_size=self.input_size,
             out_features=self.out_features,
-            max_seq_len=self.max_seq_len
+            max_seq_len=self.max_seq_len,
+            char2id=self.word_dict
         )
 
     def set_optimizer(self):

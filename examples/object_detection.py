@@ -9,13 +9,13 @@ from data_parse.cv_data_parse.data_augmentation import crop, scale, geometry, ch
 from data_parse import DataRegister
 from pathlib import Path
 from data_parse.cv_data_parse.base import DataVisualizer
-from processor import Process, DataHooks, bundled, BaseDataset
+from processor import Process, DataHooks, bundled, BaseImgDataset
 from utils import configs, cv_utils, torch_utils
 
 
-class OdDataset(BaseDataset):
+class OdDataset(BaseImgDataset):
     def process_one(self, idx):
-        ret = copy.deepcopy(self.data[idx])
+        ret = copy.deepcopy(self.iter_data[idx])
         if isinstance(ret['image'], str):
             ret['image_path'] = ret['image']
             ret['image'] = cv2.imread(ret['image'])

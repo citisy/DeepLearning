@@ -8,13 +8,13 @@ from data_parse.cv_data_parse.data_augmentation import crop, scale, geometry, ch
 from pathlib import Path
 from PIL import Image
 from data_parse.cv_data_parse.base import DataVisualizer
-from processor import Process, DataHooks, bundled, BaseDataset
+from processor import Process, DataHooks, bundled, BaseImgDataset
 from utils import visualize, torch_utils, configs
 
 
-class SegDataset(BaseDataset):
+class SegDataset(BaseImgDataset):
     def process_one(self, idx):
-        ret = copy.deepcopy(self.data[idx])
+        ret = copy.deepcopy(self.iter_data[idx])
         if isinstance(ret['image'], str):
             ret['image_path'] = ret['image']
             ret['image'] = cv2.imread(ret['image'])

@@ -8,7 +8,7 @@ from data_parse.cv_data_parse.data_augmentation import crop, scale, geometry, ch
 from data_parse import DataRegister
 from pathlib import Path
 from data_parse.cv_data_parse.base import DataVisualizer
-from processor import Process, DataHooks, bundled, BaseDataset, model_process
+from processor import Process, DataHooks, bundled, model_process
 from utils import configs, cv_utils, os_lib, log_utils, torch_utils
 from datetime import datetime
 
@@ -408,7 +408,7 @@ class Lsun(DataProcess):
 class CelebA(DataProcess):
     dataset_version = 'CelebA'
     data_dir = 'data/CelebA'
-    train_data_num = 50000
+    train_data_num = 40000
     input_size = 128
     in_ch = 3
 
