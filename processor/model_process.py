@@ -61,7 +61,7 @@ class CheckpointHooks:
             ckpt.update(save_items)
         torch.save(ckpt, save_path, **kwargs)
 
-    device = '0'
+    device: str
 
     def save_torchscript(self, save_path, trace_input=None, model_warp=None, **kwargs):
         if trace_input is None:
@@ -335,7 +335,7 @@ class ModelHooks:
 
         self.set_mode(train=True)
 
-        _counters = ['start_epoch', 'total_nums', 'total_steps']
+        _counters = ['epoch', 'total_nums', 'total_steps']
         for c in _counters:
             self.counters.setdefault(c, 0)
 
@@ -351,7 +351,7 @@ class ModelHooks:
 
     def on_train(self, container, max_epoch=100, **kwargs):
 
-        for i in range(self.counters['start_epoch'], max_epoch):
+        for i in range(self.counters['epoch'], max_epoch):
             self.on_train_epoch_start(container, **kwargs)
             pbar = tqdm(container['train_dataloader'], desc=visualize.TextVisualize.highlight_str(f'Train {i}/{max_epoch}'))
             self.register_logger('pbar', pbar.set_postfix)
@@ -365,10 +365,10 @@ class ModelHooks:
             if self.on_train_epoch_end(container, **kwargs):
                 break
 
-    def on_train_epoch_start(self, container, _counters=('per_epoch_loss', 'per_epoch_nums', 'epoch'), **kwargs):
+    def on_train_epoch_start(self, container, _counters=('per_epoch_loss', 'per_epoch_nums'), **kwargs):
         container['epoch_start_time'] = time.time()
         for c in _counters:
-            self.counters.setdefault(c, 0)
+            self.counters[c] = 0
 
     def on_train_step_start(self, rets, container, **kwargs):
         pass

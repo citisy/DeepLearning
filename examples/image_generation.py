@@ -144,10 +144,11 @@ class IgProcess(Process):
         super().on_val_end(container, **kwargs)
 
     def visualize(self, rets, model_results, n, **kwargs):
+        vis_num = self.counters['vis_num']
         for name, results in model_results.items():
             vis_rets = []
             for name2, images in results.items():
-                vis_rets.append([{'image': image, '_id': f'{name2}.{self.counters["vis_num"]}.jpg'} for image in images[:n]])
+                vis_rets.append([{'image': image, '_id': f'{name2}.{vis_num}.jpg'} for image in images[vis_num:vis_num + n]])
 
             vis_rets = [r for r in zip(*vis_rets)]
             cache_dir = f'{self.cache_dir}/{self.counters["total_nums"]}/{name}'
@@ -169,7 +170,7 @@ class GanProcess(IgProcess):
             self._model_info(module, **kwargs)
 
     def on_train_epoch_start(self, container, **kwargs):
-        _counters = ('per_epoch_loss', 'per_epoch_nums', 'epoch', 'total_loss_g', 'total_loss_d')
+        _counters = ('per_epoch_loss', 'per_epoch_nums', 'per_epoch_loss.g', 'per_epoch_loss.d')
         super().on_train_epoch_start(container, _counters=_counters, **kwargs)
 
     def on_backward(self, output, container, **kwargs):
@@ -186,14 +187,14 @@ class GanProcess(IgProcess):
             if k.startswith('loss'):
                 losses[k] = v.item()
 
-        self.counters['total_loss_g'] += losses['loss.g']
-        self.counters['total_loss_d'] += losses['loss.d']
-        mean_loss_g = self.counters['total_loss_g'] / self.counters['per_epoch_nums']
-        mean_loss_d = self.counters['total_loss_d'] / self.counters['per_epoch_nums']
+        self.counters['per_epoch_loss.g'] += losses['loss.g']
+        self.counters['per_epoch_loss.d'] += losses['loss.d']
+        mean_loss_g = self.counters['per_epoch_loss.g'] / self.counters['per_epoch_nums']
+        mean_loss_d = self.counters['per_epoch_loss.d'] / self.counters['per_epoch_nums']
 
         losses.update({
-            'mean_loss_d': mean_loss_d,
-            'mean_loss_g': mean_loss_g,
+            'mean_loss.d': mean_loss_d,
+            'mean_loss.g': mean_loss_g,
         })
 
         mem_info = {
@@ -597,7 +598,7 @@ class StyleGan_CelebA(StyleGan, CelebA):
 
             from examples.image_generation import StyleGan_CelebA as Process
 
-            Process().run(max_epoch=200, train_batch_size=32, check_period=20000, max_save_weight_num=10, metric_kwargs=dict(is_visualize=True))
+            Process().run(max_epoch=50, train_batch_size=32, check_period=20000, max_save_weight_num=10, metric_kwargs=dict(is_visualize=True))
             {'score': 134.8424}
     """
 
