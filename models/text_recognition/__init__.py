@@ -27,7 +27,6 @@ class BaseTextRecModel(nn.Module):
         self.backbone = backbone
         self.neck = neck
         self.head = head if head is not None else nn.Linear(neck_out_features, self.out_features)
-        self.criterion = nn.CTCLoss(blank=0, reduction='mean')
         initialize_layers(self)
 
     def forward(self, x, true_label=None):
@@ -52,13 +51,13 @@ class BaseTextRecModel(nn.Module):
         true_label = torch.cat(true_label).to(device).long()
         true_label_lens = torch.tensor(true_label_lens, device=device).long()
 
-        return self.criterion(pred_label, true_label, pred_label_lens, true_label_lens)
+        return F.ctc_loss(pred_label, true_label, pred_label_lens, true_label_lens, blank=self.char2id[' '], reduction='mean')
 
     def embedding(self, context):
         labels = []
         lens = []
         for text in context:
-            label = [self.char2id.get(char, 0) for char in text[:self.max_seq_len]]
+            label = [self.char2id.get(char, self.char2id[' ']) for char in text[:self.max_seq_len]]
             lens.append(len(label))
             labels.append(torch.tensor(label))
 
