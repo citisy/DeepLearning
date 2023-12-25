@@ -32,13 +32,6 @@ class OdDataset(BaseImgDataset):
 
 
 class OdProcess(Process):
-    use_ema = False
-
-    def set_aux_model(self):
-        if self.use_ema:
-            self.ema = torch_utils.EMA()
-            self.aux_model = {'ema': self.ema.copy(self.model)}
-
     def on_train_start(self, container, max_epoch=None, **kwargs):
         super().on_train_start(container, **kwargs)
         self.set_scheduler(max_epoch=max_epoch)

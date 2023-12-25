@@ -8,8 +8,8 @@ from datetime import datetime
 from typing import List, Optional, Callable, Dict, Tuple
 from tqdm import tqdm
 from . import bundled, data_process
-from utils import os_lib, configs, visualize, log_utils
-from utils.torch_utils import Export
+from utils import os_lib, configs, visualize, log_utils, torch_utils
+
 
 MODEL = 1
 WEIGHT = 2
@@ -73,7 +73,7 @@ class CheckpointHooks:
         model.to(self.device)
 
         # note, check model in eval mode first
-        model = Export.to_torchscript(model, *trace_input, **kwargs)
+        model = torch_utils.Export.to_torchscript(model, *trace_input, **kwargs)
         model.save(save_path)
 
     def save_onnx(self, save_path, trace_input=None, model_warp=None, **kwargs):
@@ -84,7 +84,7 @@ class CheckpointHooks:
         if model_warp is not None:
             model = model_warp(model)
         model.to(self.device)
-        Export.to_onnx(model, save_path, *trace_input, **kwargs)
+        torch_utils.Export.to_onnx(model, save_path, *trace_input, **kwargs)
 
     def save_triton(self, save_path, **kwargs):
         raise NotImplementedError
@@ -171,7 +171,6 @@ class CheckpointHooks:
 
 class ModelHooks:
     model: nn.Module
-    aux_model: Dict[str, nn.Module]
     optimizer: Optional
     stopper: Optional
     scheduler: Optional
@@ -184,8 +183,14 @@ class ModelHooks:
     def set_model(self):
         raise NotImplementedError
 
+    use_ema = False
+    ema: Optional
+    aux_model: Dict[str, nn.Module]
+
     def set_aux_model(self):
-        raise NotImplementedError
+        if self.use_ema:
+            self.ema = torch_utils.EMA()
+            self.aux_model = {'ema': self.ema.copy(self.model)}
 
     def set_mode(self, train=True):
         if train:

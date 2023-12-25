@@ -35,13 +35,6 @@ class SegProcess(Process):
     def set_optimizer(self):
         self.optimizer = optim.SGD(self.model.parameters(), lr=0.001, momentum=0.9, weight_decay=1e-4)
 
-    use_ema = False
-
-    def set_aux_model(self):
-        if self.use_ema:
-            self.ema = torch_utils.EMA()
-            self.aux_model = {'ema': self.ema.copy(self.model)}
-
     def on_train_start(self, container, batch_size=16, max_epoch=None, **kwargs):
         super().on_train_start(container, batch_size=batch_size, **kwargs)
 
