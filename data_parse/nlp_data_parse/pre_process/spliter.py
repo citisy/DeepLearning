@@ -6,7 +6,9 @@ paragraphs (List[str]): all original lines, the lines contain the sep symbol
 chunks (List[str]): each line has the same length possibly
 """
 import re
+import unicodedata
 from typing import List
+from utils.excluded.charset_dict import utf8_int_dict
 
 
 def paragraphs_from_article(article: str, sep='\n') -> List[str]:
@@ -17,50 +19,131 @@ def article_from_paragraphs(paragraphs: List[str]) -> str:
     return ''.join(paragraphs)
 
 
-def filter_func(s, filter_blank=False, filter_pattern=None, keep_pattern=None):
+def filter_text(s, filter_blank=False, filter_pattern=None, keep_pattern=None):
     if filter_blank:
         s = ''.join(s.split())
 
     if filter_pattern:
         if isinstance(filter_pattern, (list, tuple)):
-            for p in filter_pattern:
-                s = re.sub(p, '', s)
-        else:
-            s = re.sub(filter_pattern, '', s)
+            filter_pattern = re.compile('|'.join([i.pattern for i in filter_pattern]))
+        s = re.sub(filter_pattern, '', s)
 
     if keep_pattern:
         if isinstance(keep_pattern, (list, tuple)):
-            for p in keep_pattern:
-                s = ''.join(re.findall(p, s))
-        else:
-            s = ''.join(re.findall(keep_pattern, s))
+            keep_pattern = re.compile('|'.join([i.pattern for i in keep_pattern]))
+        s = ''.join(re.findall(keep_pattern, s))
 
     return s
 
 
-def segments_from_paragraphs(paragraphs: List[str], sep=None, **filter_kwargs) -> List[List[str]]:
+def _is_punctuation(char):
+    """Checks whether `char` is a punctuation character.
+    treat all non-letter/number ASCII as punctuation"""
+    cp = ord(char)
+    for span in utf8_int_dict['en_pr']:
+        if span[0] <= cp <= span[1]:
+            return True
+    cat = unicodedata.category(char)
+    if cat.startswith("P"):
+        return True
+    return False
+
+
+def split_punctuation(seg):
+    output = []
+    for text in seg:
+        chars = list(text)
+        i = 0
+        start_new_word = True
+        while i < len(chars):
+            char = chars[i]
+            if _is_punctuation(char):
+                output.append([char])
+                start_new_word = True
+            else:
+                if start_new_word:
+                    output.append([])
+                start_new_word = False
+                output[-1].append(char)
+            i += 1
+
+    return [''.join(x) for x in output]
+
+
+def word_piece(seg, vocab):
+    output_tokens = []
+    for token in seg:
+        chars = list(token)
+        is_bad = False
+        start = 0
+        sub_tokens = []
+        while start < len(chars):
+            end = len(chars)
+            cur_substr = None
+            while start < end:
+                substr = "".join(chars[start:end])
+                if start > 0:
+                    substr = "##" + substr
+                if substr in vocab:
+                    cur_substr = substr
+                    break
+                end -= 1
+            if cur_substr is None:
+                is_bad = True
+                break
+            sub_tokens.append(cur_substr)
+            start = end
+
+        if is_bad:
+            output_tokens.append(token)
+        else:
+            output_tokens.extend(sub_tokens)
+    return output_tokens
+
+
+def segments_from_paragraphs(
+        paragraphs: List[str], sep=None, is_split_punctuation=True,
+        is_word_piece=False, vocab=None, **filter_kwargs
+) -> List[List[str]]:
     """
+    Args:
+        paragraphs:
+        sep:
+        is_split_punctuation:
+        is_word_piece:
+        vocab: for `word_piece`
+        **filter_kwargs: kwargs for `filter_text()`
+
     Usage:
         >>> segments_from_paragraphs(['hello world!'])
-        [['hello', 'world!']]
+        [['hello', 'world', '!']]
 
         >>> segments_from_paragraphs(['hello world!'], filter_blank=True)
-        [['helloworld!']]
+        [['helloworld', '!']]
 
         >>> from utils.excluded.charset_dict import utf8_pattern_dict
-        >>> segments_from_paragraphs(['hello world!'], filter_pattern=utf8_pattern_dict['en_pr'])
+        >>> segments_from_paragraphs(['hello world!'], filter_pattern=utf8_pattern_dict['en_pr'], is_split_punctuation=False)
         [['hello', 'world']]
 
-        >>> segments_from_paragraphs(['hello world!'], keep_pattern=utf8_pattern_dict['en'])
-        [['helloworld']]
+        >>> segments_from_paragraphs(['hello world!'], keep_pattern=(utf8_pattern_dict['en'], re.compile(' ')))
+        [['hello', 'world']]
+
     """
     segments = []
     for line in paragraphs:
-        line = filter_func(line, **filter_kwargs)
+        line = filter_text(line, **filter_kwargs)
         if sep == '':
-            segments.append(list(line))
+            seg = list(line)
         else:
-            segments.append(line.split(sep))
+            seg = line.split(sep)
+
+        if is_split_punctuation:
+            seg = split_punctuation(seg)
+
+        if is_word_piece:
+            seg = word_piece(seg, vocab)
+
+        segments.append(seg)
 
     return segments
 
@@ -83,7 +166,7 @@ def segments_from_paragraphs_by_jieba(paragraphs: List[str], **filter_kwargs) ->
     """
     import jieba
 
-    paragraphs = map(lambda x: filter_func(x, **filter_kwargs), paragraphs)
+    paragraphs = map(lambda x: filter_text(x, **filter_kwargs), paragraphs)
     segments = map(jieba.lcut, paragraphs)
 
     return list(segments)
@@ -172,4 +255,3 @@ def truncate_by_stop_symbol(line, pattern: re.Pattern) -> tuple:
         is_matched = False
 
     return left, right, is_matched
-

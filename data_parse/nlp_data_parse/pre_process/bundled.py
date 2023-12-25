@@ -1,5 +1,4 @@
 import copy
-import random
 import numpy as np
 from . import sp_token_dict
 
@@ -18,17 +17,18 @@ def add_token(segments, start_token=None, end_token=None):
     return segments
 
 
-def random_mask(segments, word_dict, unk_tag, mask_token=sp_token_dict['mask'], non_mask_tag=-100):
+def random_mask(segments, word_dict, unk_tag, mask_token=sp_token_dict['mask'], non_mask_tag=-100, mask_prob=0.15):
     segments = copy.deepcopy(segments)
     vocab = list(word_dict.keys())
     mask_tags = []
 
     for segment in segments:
-        mask_tag = []
+        mask_probs = np.random.uniform(0., 1., len(segment))
+        mask_tag = np.where(mask_probs < mask_prob, -1, non_mask_tag)
+
         for i, word in enumerate(segment):
-            prob = random.random()
-            if prob < 0.15:  # 15% to mask
-                prob /= 0.15
+            if mask_tag[i] == -1:   # 15% to mask
+                prob = mask_probs[i] / mask_prob
 
                 # 80% to add [MASK] token
                 if prob < 0.8:
@@ -38,10 +38,8 @@ def random_mask(segments, word_dict, unk_tag, mask_token=sp_token_dict['mask'], 
                 elif prob < 0.9:
                     segment[i] = np.random.choice(vocab)
 
-                mask_tag.append(word_dict.get(word, unk_tag))
-
-            else:
-                mask_tag.append(non_mask_tag)
+                mask_tag[i] = word_dict.get(word, unk_tag)
+        mask_tag = mask_tag.tolist()
         mask_tags.append(mask_tag)
 
     return segments, mask_tags
