@@ -99,10 +99,7 @@ class SegProcess(Process):
         images = torch.stack(images)
         images = images / 255
 
-        models = {self.model_name: self.model}
-        if hasattr(self, 'aux_model'):
-            models.update(self.aux_model)
-
+        models = container['models']
         model_results = {}
         for name, model in models.items():
             outputs = model(images)

@@ -18,9 +18,6 @@ class ClsProcess(Process):
         images = images / 255
         output = self.model(images, _class)
 
-        if hasattr(self, 'aux_model'):
-            self.ema.step(self.model, self.aux_model['ema'])
-
         return output
 
     def metric(self, **predict_kwargs):
@@ -46,10 +43,7 @@ class ClsProcess(Process):
         images = torch.stack(images)
         images = images / 255
 
-        models = {self.model_name: self.model}
-        if hasattr(self, 'aux_model'):
-            models.update(self.aux_model)
-
+        models = container['models']
         model_results = {}
         for name, model in models.items():
             outputs = model(images)

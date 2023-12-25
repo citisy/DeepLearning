@@ -104,9 +104,6 @@ class Pix2pix(GanProcess):
         loss_g.backward()
         self.optimizer.optimizer_g.step()
 
-        if hasattr(self, 'aux_model'):
-            self.ema.step(self.model, self.aux_model['ema'])
-
         return {
             'loss.g': loss_g,
             'loss.d': loss_d,
@@ -119,10 +116,7 @@ class Pix2pix(GanProcess):
         container['val_dataloader'] = val_dataloader
 
     def on_val_step(self, rets, container, **kwargs) -> dict:
-        models = {self.model_name: self.model}
-        if hasattr(self, 'aux_model'):
-            models.update(self.aux_model)
-
+        models = container['models']
         images_a = [torch.from_numpy(ret.pop('image')).to(self.device, non_blocking=True, dtype=torch.float) for ret in rets]
         images_a = torch.stack(images_a)
 
@@ -231,9 +225,6 @@ class CycleGan(GanProcess):
         loss_d.backward()
         optimizer_d.step()
 
-        if hasattr(self, 'aux_model'):
-            self.ema.step(self.model, self.aux_model['ema'])
-
         return {
             'loss.g': loss_g,
             'loss.d': loss_d,
@@ -246,10 +237,7 @@ class CycleGan(GanProcess):
         container['val_dataloader'] = val_dataloader
 
     def on_val_step(self, rets, container, **kwargs) -> dict:
-        models = {self.model_name: self.model}
-        if hasattr(self, 'aux_model'):
-            models.update(self.aux_model)
-
+        models = container['models']
         images_a = [torch.from_numpy(ret.pop('image')).to(self.device, non_blocking=True, dtype=torch.float) for ret in rets]
         images_a = torch.stack(images_a)
 

@@ -17,9 +17,6 @@ class TrProcess(Process):
         images = torch.stack(images)
         output = self.model(images, text)
 
-        if hasattr(self, 'aux_model'):
-            self.ema.step(self.model, self.aux_model['ema'])
-
         return output
 
     def metric(self, **kwargs):
@@ -41,10 +38,7 @@ class TrProcess(Process):
         images = [torch.from_numpy(ret.pop('image')).to(self.device, non_blocking=True, dtype=torch.float) for ret in rets]
         images = torch.stack(images)
 
-        models = {self.model_name: self.model}
-        if hasattr(self, 'aux_model'):
-            models.update(self.aux_model)
-
+        models = container['models']
         model_results = {}
         for name, model in models.items():
             outputs = model(images)

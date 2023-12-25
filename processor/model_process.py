@@ -391,6 +391,9 @@ class ModelHooks:
         self.optimizer.step()
         self.optimizer.zero_grad()
 
+        if hasattr(self, 'ema'):
+            self.ema.step(self.model, self.aux_model['ema'])
+
     def on_train_step_end(self, rets, outputs, container, more_log=False, **kwargs):
         loss = outputs['loss']
         self.counters['total_nums'] += len(rets)
@@ -531,6 +534,12 @@ class ModelHooks:
         self.counters['vis_num'] = 0
         self.counters.setdefault('epoch', -1)
         container['model_results'] = dict()
+
+        models = {self.model_name: self.model}
+        if hasattr(self, 'aux_model'):
+            models.update(self.aux_model)
+
+        container['models'] = models
 
     def on_val_step_start(self, rets, container, **kwargs):
         pass

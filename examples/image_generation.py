@@ -277,9 +277,6 @@ class WGAN(GanProcess):
             images = images.data.mul(255).clamp_(0, 255).permute(0, 2, 3, 1).to("cpu", torch.uint8).numpy()
             real_x.extend(list(images)[:self.val_data_num - len(real_x)])
 
-        if hasattr(self, 'aux_model'):
-            self.ema.step(self.model, self.aux_model['ema'])
-
         return {
             'loss.g': loss_g,
             'loss.d': loss_d,
@@ -311,10 +308,7 @@ class WGAN(GanProcess):
     def on_val_step(self, rets, container, **kwargs) -> dict:
         noise_x = rets
 
-        models = {self.model_name: self.model}
-        if hasattr(self, 'aux_model'):
-            models.update(self.aux_model)
-
+        models = container['models']
         model_results = {}
         for name, model in models.items():
             fake_x = model.net_g(noise_x)
@@ -498,9 +492,6 @@ class StyleGan(GanProcess):
             images = images.data.mul(255).clamp_(0, 255).permute(0, 2, 3, 1).to("cpu", torch.uint8).numpy()
             real_x.extend(list(images)[:self.val_data_num - len(real_x)])
 
-        if hasattr(self, 'aux_model'):
-            self.ema.step(self.model, self.aux_model['ema'])
-
         return {
             'loss.g': loss_g,
             'loss.d': loss_d,
@@ -547,10 +538,7 @@ class StyleGan(GanProcess):
     def on_val_step(self, rets, container, vis_batch_size=64, **kwargs) -> dict:
         noise_x, w_style = rets
 
-        models = {self.model_name: self.model}
-        if hasattr(self, 'aux_model'):
-            models.update(self.aux_model)
-
+        models = container['models']
         model_results = {}
         for name, model in models.items():
             fake_x = model.net_g(w_style, noise_x)
@@ -608,9 +596,6 @@ class DiProcess(IgProcess):
             images = images.data.mul(255).clamp_(0, 255).permute(0, 2, 3, 1).to("cpu", torch.uint8).numpy()
             real_x.extend(list(images)[:self.val_data_num - len(real_x)])
 
-        if hasattr(self, 'aux_model'):
-            self.ema.step(self.model, self.aux_model['ema'])
-
         return output
 
     def get_val_data(self, *args, **kwargs):
@@ -631,10 +616,7 @@ class DiProcess(IgProcess):
     def on_val_step(self, rets, container, **kwargs) -> dict:
         noise_x = rets
 
-        models = {self.model_name: self.model}
-        if hasattr(self, 'aux_model'):
-            models.update(self.aux_model)
-
+        models = container['models']
         model_results = {}
         for name, model in models.items():
             fake_x = model(noise_x)
