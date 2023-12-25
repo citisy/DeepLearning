@@ -2,6 +2,7 @@ import torch
 from torch import nn
 import torch.nn.functional as F
 import numpy as np
+from collections import OrderedDict
 
 
 class SimpleInModule(nn.Sequential):
@@ -45,7 +46,7 @@ class Conv(nn.Sequential):
     def __init__(self, in_ch, out_ch, k, s=1, p=None,
                  is_act=True, act=None,
                  is_norm=True, norm=None,
-                 is_drop=True, drop_prob=0.7,
+                 is_drop=True, drop_prob=0.5,
                  mode='cna', **conv_kwargs):
         """
 
@@ -72,26 +73,26 @@ class Conv(nn.Sequential):
         self.stride = s
         self.padding = p
 
-        layers = []
+        layers = OrderedDict()
 
         for i, m in enumerate(mode):
             if m == 'c':
-                layers.append(nn.Conv2d(in_ch, out_ch, k, s, p, **conv_kwargs))
+                layers['conv'] = (nn.Conv2d(in_ch, out_ch, k, s, p, **conv_kwargs))
             elif m == 'n' and is_norm:
                 if norm is None:
                     j = mode.index('c')
-                    if i < j:   # norm first
+                    if i < j:  # norm first
                         norm_ch = in_ch
                     else:
                         norm_ch = out_ch
                     norm = nn.BatchNorm2d(norm_ch)
-                layers.append(norm)
+                layers['norm'] = norm
             elif m == 'a' and is_act:
-                layers.append(act or nn.ReLU(True))
+                layers['act'] = act or nn.ReLU()
             elif m == 'd' and is_drop:
-                layers.append(nn.Dropout(drop_prob))
+                layers['drop'] = nn.Dropout(drop_prob)
 
-        super().__init__(*layers)
+        super().__init__(layers)
 
     @staticmethod
     def auto_p(k, s):
@@ -107,7 +108,7 @@ class ConvT(nn.Sequential):
     def __init__(self, in_ch, out_ch, k, s=1, p=None,
                  is_act=True, act=None,
                  is_norm=True, norm=None,
-                 is_drop=True, drop_prob=0.7,
+                 is_drop=True, drop_prob=0.5,
                  mode='cna', only_upsample=False,
                  **conv_kwargs):
         """
@@ -142,11 +143,11 @@ class ConvT(nn.Sequential):
             self.kernel_size = k
             self.padding = p
 
-            layers = []
+            layers = OrderedDict()
 
             for i, m in enumerate(mode):
                 if m == 'c':
-                    layers.append(nn.ConvTranspose2d(in_ch, out_ch, k, s, p, **conv_kwargs))
+                    layers['conv'] = nn.ConvTranspose2d(in_ch, out_ch, k, s, p, **conv_kwargs)
                 elif m == 'n' and is_norm:
                     if norm is None:
                         j = mode.index('c')
@@ -155,13 +156,13 @@ class ConvT(nn.Sequential):
                         else:
                             norm_ch = out_ch
                         norm = nn.BatchNorm2d(norm_ch)
-                    layers.append(norm)
+                    layers['norm'] = norm
                 elif m == 'a' and is_act:
-                    layers.append(act or nn.ReLU(True))
+                    layers['act'] = act or nn.ReLU(True)
                 elif m == 'd' and is_drop:
-                    layers.append(nn.Dropout(drop_prob))
+                    layers['drop'] = nn.Dropout(drop_prob)
 
-        super().__init__(*layers)
+        super().__init__(layers)
 
     @staticmethod
     def auto_p(k, s):
@@ -178,7 +179,7 @@ class Linear(nn.Sequential):
                  linear=None,
                  is_act=True, act=None,
                  is_norm=True, norm=None,
-                 is_drop=True, drop_prob=0.7,
+                 is_drop=True, drop_prob=0.5,
                  mode='lna',
                  **linear_kwargs
                  ):
@@ -186,30 +187,30 @@ class Linear(nn.Sequential):
         self.is_norm = is_norm
         self.is_drop = is_drop
 
-        layers = []
+        layers = OrderedDict()
 
         for i, m in enumerate(mode):
             if m == 'l':
                 if linear is None:
                     linear = nn.Linear
-                layers.append(linear(in_features, out_features, **linear_kwargs))
+                layers['linear'] = linear(in_features, out_features, **linear_kwargs)
             elif m == 'n' and is_norm:
                 if norm is None:
                     j = mode.index('l')
-                    if i < j:   # norm first
+                    if i < j:  # norm first
                         norm_features = in_features
                     else:
                         norm_features = out_features
                     norm = nn.BatchNorm1d(norm_features)
-                layers.append(norm)
+                layers['norm'] = norm
             elif m == 'a' and is_act:
-                layers.append(act or nn.Sigmoid())
+                layers['act'] = act or nn.Sigmoid()
             elif m == 'd' and is_drop:
-                layers.append(nn.Dropout(drop_prob))
+                layers['drop'] = nn.Dropout(drop_prob)
 
         self.in_features = in_features
         self.out_features = out_features
-        super().__init__(*layers)
+        super().__init__(layers)
 
 
 class EqualLinear(nn.Module):
