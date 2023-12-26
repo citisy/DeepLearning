@@ -10,7 +10,6 @@ from tqdm import tqdm
 from . import bundled, data_process
 from utils import os_lib, configs, visualize, log_utils, torch_utils
 
-
 MODEL = 1
 WEIGHT = 2
 ONNX = 3
@@ -268,6 +267,15 @@ class ModelHooks:
         s += template % ('sum', '', params, grads, '')
         self.log(s)
         return infos
+
+    def model_visual(self):
+        """https://github.com/spfrommer/torchexplorer
+        sudo apt-get install libgraphviz-dev graphviz
+        pip install torchexplorer
+        todo: there are some bugs, for example, do not support dict type output. Find another better visual tool.
+        """
+        import torchexplorer
+        torchexplorer.watch(self.model, log=['io', 'params'], disable_inplace=True, backend='standalone')
 
     def fit(self, **kwargs):
         """
