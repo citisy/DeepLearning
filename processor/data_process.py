@@ -149,3 +149,24 @@ class DataHooks:
             return torch.randint(255, (batch_size, self.in_ch, self.input_size, self.input_size), dtype=torch.uint8, device=self.device)
         elif input_type == 'image_norm':
             return torch.rand(batch_size, self.in_ch, self.input_size, self.input_size, device=self.device)
+
+    vocab_fn = 'vocab.txt'
+
+    def load_vocab(self):
+        loader = os_lib.Loader(stdout_method=self.log)
+        return loader.auto_load(f'{self.work_dir}/{self.vocab_fn}')
+
+    def save_vocab(self, vocab):
+        saver = os_lib.Saver(stdout_method=self.log)
+        saver.auto_save(vocab, f'{self.work_dir}/{self.vocab_fn}')
+
+    def make_vocab(self):
+        raise NotImplemented
+
+    def get_vocab(self):
+        try:
+            vocab = self.load_vocab()
+        except OSError:
+            vocab = self.make_vocab()
+
+        return vocab

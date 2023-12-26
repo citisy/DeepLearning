@@ -105,25 +105,9 @@ class DataProcess(DataHooks):
         return ret
 
     word_dict: dict
-    vocab_fn = 'vocab.txt'
-
-    def load_vocab(self):
-        loader = os_lib.Loader(stdout_method=self.log)
-        return loader.auto_load(f'{self.work_dir}/{self.vocab_fn}')
-
-    def save_vocab(self, vocab):
-        saver = os_lib.Saver(stdout_method=self.log)
-        saver.auto_save(vocab, f'{self.work_dir}/{self.vocab_fn}')
-
-    def make_vocab(self):
-        raise NotImplemented
 
     def get_vocab(self):
-        try:
-            vocab = self.load_vocab()
-        except OSError:
-            vocab = self.make_vocab()
-
+        vocab = super().get_vocab()
         self.word_dict = {c: i for i, c in enumerate(vocab)}
 
 
