@@ -4,15 +4,16 @@ from torch import nn
 import torch.nn.functional as F
 from utils import torch_utils
 from ..layers import Linear
-from einops import rearrange, repeat
 from einops.layers.torch import Rearrange
 
-tiny = dict(hidden_size=128, num_hidden_layers=2, num_attention_heads=2)
-mini = dict(hidden_size=256, num_hidden_layers=4, num_attention_heads=4)
-small = dict(hidden_size=512, num_hidden_layers=4, num_attention_heads=8)
-medium = dict(hidden_size=512, num_hidden_layers=8, num_attention_heads=8)
-base = dict(hidden_size=768, num_hidden_layers=12, num_attention_heads=12)
-large = dict(hidden_size=1024, num_hidden_layers=24, num_attention_heads=16)
+
+class Config:
+    tiny = dict(hidden_size=128, num_hidden_layers=2, num_attention_heads=2)
+    mini = dict(hidden_size=256, num_hidden_layers=4, num_attention_heads=4)
+    small = dict(hidden_size=512, num_hidden_layers=4, num_attention_heads=8)
+    medium = dict(hidden_size=512, num_hidden_layers=8, num_attention_heads=8)
+    base = dict(hidden_size=768, num_hidden_layers=12, num_attention_heads=12)
+    large = dict(hidden_size=1024, num_hidden_layers=24, num_attention_heads=16)
 
 
 class Model(nn.Module):
@@ -25,13 +26,13 @@ class Model(nn.Module):
         - https://github.com/codertimo/BERT-pytorch
     """
 
-    def __init__(self, vocab_size, sp_tag_dict, bert_config=base):
+    def __init__(self, vocab_size, seq_len, sp_tag_dict, n_segment=1, nsp_out_features=2, bert_config=Config.base):
         super().__init__()
         self.sp_tag_dict = sp_tag_dict
 
-        self.bert = Bert(vocab_size, sp_tag_dict, **bert_config)
-        self.nsp = NSP(self.bert.hidden_size)
-        self.mlm = MLM(self.bert.hidden_size, vocab_size, sp_tag_dict['non_mask'])
+        self.bert = Bert(vocab_size, seq_len, sp_tag_dict, n_segment, **bert_config)
+        self.nsp = NSP(self.bert.out_features, nsp_out_features)
+        self.mlm = MLM(self.bert.out_features, vocab_size, sp_tag_dict['non_mask'])
 
         torch_utils.initialize_layers(self)
 
@@ -67,9 +68,9 @@ class Model(nn.Module):
 class NSP(nn.Module):
     """Next Sentence Prediction"""
 
-    def __init__(self, input_size, output_size=2):
+    def __init__(self, in_features, out_features=2):
         super().__init__()
-        self.fcn = nn.Linear(input_size, output_size)
+        self.fcn = nn.Linear(in_features, out_features)
 
     def forward(self, x):
         x = self.fcn(x[:, 0])  # select the first output
@@ -82,10 +83,10 @@ class NSP(nn.Module):
 class MLM(nn.Module):
     """Masked Language Model"""
 
-    def __init__(self, input_size, output_size, non_mask_tag):
+    def __init__(self, in_features, out_features, non_mask_tag):
         super().__init__()
         self.non_mask_tag = non_mask_tag
-        self.fcn = nn.Linear(input_size, output_size)
+        self.fcn = nn.Linear(in_features, out_features)
 
     def forward(self, x):
         x = self.fcn(x)
@@ -97,15 +98,13 @@ class MLM(nn.Module):
 
 
 class Bert(nn.Module):
-    def __init__(self, vocab_size, sp_tag_dict, hidden_size=768, num_hidden_layers=12, num_attention_heads=12, drop_prob=0.1):
+    def __init__(self, vocab_size, seq_len, sp_tag_dict, n_segment, hidden_size=768, num_hidden_layers=12, num_attention_heads=12, drop_prob=0.1):
         super().__init__()
-        self.hidden_size = hidden_size
-        self.num_hidden_layers = num_hidden_layers
-        self.num_attention_heads = num_attention_heads
-        self.sp_tag_dict = sp_tag_dict
-
-        self.embedding = BERTEmbedding(vocab_size, hidden_size, sp_tag_dict)
+        self.embedding = BERTEmbedding(vocab_size, hidden_size, seq_len, sp_tag_dict, n_segment=n_segment, drop_prob=drop_prob)
         self.transformer_blocks = nn.ModuleList([TransformerBlock(hidden_size, num_attention_heads, hidden_size * 4, drop_prob) for _ in range(num_hidden_layers)])
+
+        self.out_features = hidden_size
+        self.sp_tag_dict = sp_tag_dict
 
     def forward(self, x, segment_info):
         mask = (x == self.sp_tag_dict['pad'])[:, None, None].repeat(1, 1, x.size(1), 1)  # mask pad
@@ -119,11 +118,11 @@ class Bert(nn.Module):
 class BERTEmbedding(nn.Module):
     """TokenEmbedding + PositionalEmbedding + SegmentEmbedding"""
 
-    def __init__(self, vocab_size, embedding_dim, sp_tag_dict, drop_prob=0.1):
+    def __init__(self, vocab_size, embedding_dim, seq_len, sp_tag_dict, n_segment=1, drop_prob=0.1):
         super().__init__()
         self.token = nn.Embedding(vocab_size, embedding_dim, padding_idx=sp_tag_dict['pad'])
-        self.position = PositionalEmbedding(self.token.embedding_dim)
-        self.segment = nn.Embedding(3, self.token.embedding_dim, padding_idx=sp_tag_dict['seg_pad'])
+        self.position = PositionalEmbedding(seq_len, embedding_dim)
+        self.segment = nn.Embedding(n_segment + 1, embedding_dim, padding_idx=sp_tag_dict['seg_pad'])  # add 1 to apply pad token
         self.dropout = nn.Dropout(drop_prob)
         self.embedding_dim = embedding_dim
 
@@ -133,17 +132,19 @@ class BERTEmbedding(nn.Module):
 
 
 class PositionalEmbedding(nn.Module):
-    def __init__(self, d_model, max_len=512):
+    def __init__(self, num_embeddings, embedding_dim):
         super().__init__()
-        pe = torch.zeros(max_len, d_model).float()
-        position = torch.arange(0, max_len).float().unsqueeze(1)
-        div_term = (torch.arange(0, d_model, 2).float() * -(math.log(10000.0) / d_model)).exp()
+        pe = torch.zeros(num_embeddings, embedding_dim).float()
+        position = torch.arange(0, num_embeddings).float().unsqueeze(1)
+        div_term = (torch.arange(0, embedding_dim, 2).float() * -(math.log(10000.0) / embedding_dim)).exp()
 
         pe[:, 0::2] = torch.sin(position * div_term)
         pe[:, 1::2] = torch.cos(position * div_term)
 
         pe = pe.unsqueeze(0)
         self.register_buffer('pe', pe)
+        self.num_embeddings = num_embeddings
+        self.embedding_dim = embedding_dim
 
     def forward(self, x):
         return self.pe[:, :x.size(1)]
