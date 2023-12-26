@@ -154,14 +154,17 @@ class IgProcess(Process):
 
 class GanProcess(IgProcess):
     def model_info(self, **kwargs):
+        from utils.torch_utils import ModuleInfo
+
         modules = dict(
             d=self.model.net_d,
             g=self.model.net_g,
         )
 
         for key, module in modules.items():
-            self.logger.info(f'net {key} module info:')
-            self._model_info(module, **kwargs)
+            s, infos = ModuleInfo.std_profile(module, **kwargs)
+            self.log(f'net {key} module info:')
+            self.log(s)
 
     def on_train_epoch_start(self, container, **kwargs):
         _counters = ('per_epoch_loss', 'per_epoch_nums', 'per_epoch_loss.g', 'per_epoch_loss.d')
@@ -451,6 +454,8 @@ class StyleGan(GanProcess):
         self.optimizer = GanOptimizer(optimizer_d, optimizer_g)
 
     def model_info(self, **kwargs):
+        from utils.torch_utils import ModuleInfo
+
         modules = dict(
             s=self.model.net_s,
             d=self.model.net_d,
@@ -458,8 +463,9 @@ class StyleGan(GanProcess):
         )
 
         for key, module in modules.items():
-            self.logger.info(f'net {key} module info:')
-            self._model_info(module, **kwargs)
+            s, infos = ModuleInfo.std_profile(module, **kwargs)
+            self.log(f'net {key} module info:')
+            self.log(s)
 
     per_gp_step = 4
     per_pp_step = 32

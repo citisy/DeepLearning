@@ -175,6 +175,8 @@ class CycleGan(GanProcess):
         self.optimizer = GanOptimizer(optimizer_d, optimizer_g)
 
     def model_info(self, depth=None, **kwargs):
+        from utils.torch_utils import ModuleInfo
+
         modules = dict(
             d_a=self.model.net_d_a,
             d_b=self.model.net_d_b,
@@ -183,8 +185,9 @@ class CycleGan(GanProcess):
         )
 
         for key, module in modules.items():
-            self.logger.info(f'net {key} module info:')
-            self._model_info(module, depth, **kwargs)
+            s, infos = ModuleInfo.std_profile(module, **kwargs)
+            self.log(f'net {key} module info:')
+            self.log(s)
 
     def on_train_start(self, container, **kwargs):
         super().on_train_start(container, **kwargs)

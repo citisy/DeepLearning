@@ -6,6 +6,49 @@ from torch import nn
 
 class ModuleInfo:
     @classmethod
+    def std_profile(cls, model, depth=None, human_readable=True):
+        from .visualize import TextVisualize
+
+        profile = cls.profile_per_layer(model, depth=depth)
+        cols = ('name', 'module', 'params', 'grads', 'args')
+        lens = [-1] * len(cols)
+        infos = []
+        for p in profile:
+            info = (
+                p[0],
+                p[1],
+                TextVisualize.num_to_human_readable_str(p[2]["params"]) if human_readable else p[2]["params"],
+                TextVisualize.num_to_human_readable_str(p[2]["grads"]) if human_readable else p[2]["grads"],
+                TextVisualize.dict_to_str(p[2]["args"])
+            )
+            infos.append(info)
+            for i, s in enumerate(info):
+                l = len(str(s))
+                if lens[i] < l:
+                    lens[i] = l
+
+        template = ''
+        for l in lens:
+            template += f'%-{l + 3}s'
+
+        s = 'module info: \n'
+        s += template % cols + '\n'
+        s += template % tuple('-' * l for l in lens) + '\n'
+
+        for info in infos:
+            s += template % info + '\n'
+
+        params = sum([p[2]["params"] for p in profile])
+        grads = sum([p[2]["grads"] for p in profile])
+        if human_readable:
+            params = TextVisualize.num_to_human_readable_str(params)
+            grads = TextVisualize.num_to_human_readable_str(grads)
+
+        s += template % tuple('-' * l for l in lens) + '\n'
+        s += template % ('sum', '', params, grads, '')
+        return s, infos
+
+    @classmethod
     def profile_per_layer(cls, module: nn.Module, depth=None):
         profiles = []
 
@@ -54,6 +97,10 @@ class ModuleInfo:
             args['i_size'] = module.input_size
         if hasattr(module, 'output_size'):
             args['o_size'] = module.output_size
+        if hasattr(module, 'num_embeddings'):
+            args['n_emb'] = module.num_embeddings
+        if hasattr(module, 'embedding_dim'):
+            args['emb_dim'] = module.embedding_dim
         if hasattr(module, 'kernel_size'):
             k = module.kernel_size
             if isinstance(k, (list, tuple)):
@@ -111,7 +158,7 @@ def initialize_layers(module, init_gain=0.02, init_type='normal'):
             elif t in [nn.Hardswish, nn.LeakyReLU, nn.ReLU, nn.ReLU6, nn.SiLU]:
                 m.inplace = True
 
-            elif t in [nn.Conv2d, nn.Linear]:
+            elif t in [nn.Conv2d, nn.Linear, nn.Embedding]:
                 if init_type == 'normal':
                     nn.init.normal_(m.weight, 0.0, init_gain)
                 elif init_type == 'xavier':

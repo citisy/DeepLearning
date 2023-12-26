@@ -224,47 +224,9 @@ class ModelHooks:
         self.scaler = torch.cuda.amp.GradScaler(enabled=True)
 
     def model_info(self, **kwargs):
-        return self._model_info(self.model, **kwargs)
-
-    def _model_info(self, model, depth=None, human_readable=True):
         from utils.torch_utils import ModuleInfo
-        profile = ModuleInfo.profile_per_layer(model, depth=depth)
-        cols = ('name', 'module', 'params', 'grads', 'args')
-        lens = [-1] * len(cols)
-        infos = []
-        for p in profile:
-            info = (
-                p[0],
-                p[1],
-                visualize.TextVisualize.num_to_human_readable_str(p[2]["params"]) if human_readable else p[2]["params"],
-                visualize.TextVisualize.num_to_human_readable_str(p[2]["grads"]) if human_readable else p[2]["grads"],
-                visualize.TextVisualize.dict_to_str(p[2]["args"])
-            )
-            infos.append(info)
-            for i, s in enumerate(info):
-                l = len(str(s))
-                if lens[i] < l:
-                    lens[i] = l
 
-        template = ''
-        for l in lens:
-            template += f'%-{l + 3}s'
-
-        s = 'module info: \n'
-        s += template % cols + '\n'
-        s += template % tuple('-' * l for l in lens) + '\n'
-
-        for info in infos:
-            s += template % info + '\n'
-
-        params = sum([p[2]["params"] for p in profile])
-        grads = sum([p[2]["grads"] for p in profile])
-        if human_readable:
-            params = visualize.TextVisualize.num_to_human_readable_str(params)
-            grads = visualize.TextVisualize.num_to_human_readable_str(grads)
-
-        s += template % tuple('-' * l for l in lens) + '\n'
-        s += template % ('sum', '', params, grads, '')
+        s, infos = ModuleInfo.std_profile(self.model, **kwargs)
         self.log(s)
         return infos
 
