@@ -6,14 +6,14 @@ from typing import Optional
 
 
 class BaseDataset(Dataset):
-    augment_func: Optional
-
-    def __init__(self, iter_data, **kwargs):
+    def __init__(self, iter_data,  augment_func=None, complex_augment_func=None, **kwargs):
         self.iter_data = iter_data
+        self.augment_func = augment_func
+        self.complex_augment_func = complex_augment_func
         self.__dict__.update(**kwargs)
 
     def __getitem__(self, idx):
-        return self.iter_data[idx]
+        return self.augment_func(self.iter_data[idx])
 
     def __len__(self):
         return len(self.iter_data)
@@ -25,9 +25,7 @@ class BaseDataset(Dataset):
 
 class BaseImgDataset(BaseDataset):
     def __init__(self, iter_data, augment_func=None, complex_augment_func=None):
-        super().__init__(iter_data)
-        self.augment_func = augment_func
-        self.complex_augment_func = complex_augment_func
+        super().__init__(iter_data, augment_func, complex_augment_func)
         self.loader = os_lib.Loader(verbose=False)
 
     def __getitem__(self, idx):
