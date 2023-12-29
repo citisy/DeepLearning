@@ -7,18 +7,62 @@ import pandas as pd
 import re
 
 
-class RandomTextPairsDataset(BaseDataset):
+class RandomChoiceTextPairsDataset(BaseDataset):
+    """for Next Sentence Prediction"""
+
     def __getitem__(self, idx):
         """all text pair in iter_data is the true text pair"""
-        texts = self.iter_data[idx]['texts']
-        _class = 1
-        if np.random.random() < 0.5:  # 50% to select another text as the false sample
-            tmp = np.random.choice(self.iter_data)['texts']
-            texts = (texts[0], tmp[1])
+        ret = self.iter_data[idx]
+        texts = ret['texts']
+        segments = ret['segments']
+        segment_tags = ret['segment_tags']
+
+        # 50% to select another text as the false sample
+        if np.random.random() < 0.5:
+            next_ret = np.random.choice(self.iter_data)
+            next_text = next_ret['texts'][1]
+            next_segment = next_ret['segments'][1]
+            next_segment_tag = next_ret['segment_tags'][1]
+
+            texts = (texts[0], next_text)
+            segments = (segments[0], next_segment)
+            segment_tags = (segment_tags[0], next_segment_tag)
             _class = 0
+
+        else:
+            _class = 1
 
         ret = dict(
             texts=texts,
+            segments=segments,
+            segment_tags=segment_tags,
+            _class=_class
+        )
+
+        return self.augment_func(ret)
+
+
+class RandomReverseTextPairsDataset(BaseDataset):
+    """for Sentence Order Prediction"""
+
+    def __getitem__(self, idx):
+        ret = self.iter_data[idx]
+        text = ret['text']
+        segment = ret['segment']
+        segment_tag = ret['segment_tag']
+
+        # 50% to reverse the text
+        if np.random.random() < 0.5:
+            next_segment = segment[::-1]
+            _class = 0
+        else:
+            next_segment = segment
+            _class = 1
+
+        ret = dict(
+            texts=(text, text),
+            segment_pair=(segment, next_segment),
+            segment_tag_pairs=(segment_tag, [2] * len(segment_tag)),
             _class=_class
         )
 
@@ -173,6 +217,11 @@ class TextPairProcess(DataProcess):
         self.log(f'mean seq len is {np.mean(s)}, max seq len is {np.max(s)}, min seq len is {np.min(s)}')
 
     def train_data_augment(self, ret, train=True) -> dict:
+        """
+        - dynamic mask(todo: add whole word mask)
+        - add special token
+        - encode(token id + segment id)
+        """
         ret = dict(ori_texts=ret['texts'])
         segment_pairs = [ret['segment_pair']]
         segment_tag_pairs = [ret['segment_tag_pair']]
@@ -271,6 +320,7 @@ class Bert(Process):
 
     def set_optimizer(self):
         # todo, use the optimizer config from paper(lr=1e-4, betas=(0.9, 0.999), weight_decay=0.1), the training is failed
+        # in RoBERTa, beta_2=0.98
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=1e-4, betas=(0.5, 0.999))
 
     def on_train_step(self, rets, container, **kwargs) -> dict:

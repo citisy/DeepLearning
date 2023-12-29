@@ -40,16 +40,10 @@ class SST2(TextProcess):
 
 
 class Bert(BertNSP):
-    pretrain_model: str
-
     def set_model(self):
         from models.text_classification.bert import Model
         self.get_vocab()
         self.model = Model(self.vocab_size, seq_len=self.seq_len, sp_tag_dict=self.sp_tag_dict)
-
-        if hasattr(self, 'pretrain_model'):
-            ckpt = torch.load(self.pretrain_model, map_location=self.device)
-            self.model.load_state_dict(ckpt['model'], strict=False)
 
     def set_optimizer(self):
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=1e-5, betas=(0.5, 0.999))
@@ -62,8 +56,8 @@ class Bert_CoLA(Bert, CoLA):
 
             from examples.text_pair_classification import Bert_SST2 as Process
 
-            Process(train_pretrain=True).run(max_epoch=100, train_batch_size=128, predict_batch_size=128, check_period=3)
-            {'score': 0.78096}  # no pretrain data, use SST2 data to train directly
+            Process(pretrain_model='model_data/bert/simple_text/model.pth').run(max_epoch=100, train_batch_size=128, predict_batch_size=128, check_period=3)
+            {'score': 0.78096}  # use pretrain_model
     """
 
     def metric(self, *args, **kwargs) -> dict:
@@ -93,6 +87,9 @@ class Bert_SST2(Bert, SST2):
 
             from examples.text_pair_classification import Bert_SST2 as Process
 
-            Process(train_pretrain=True).run(max_epoch=100, train_batch_size=128, predict_batch_size=128, check_period=3)
+            Process().run(max_epoch=100, train_batch_size=128, predict_batch_size=128, check_period=3)
             {'score': 0.78096}  # no pretrain data, use SST2 data to train directly
+
+            Process(pretrain_model='model_data/bert/simple_text/model.pth').run(max_epoch=100, train_batch_size=128, predict_batch_size=128, check_period=3)
+            {'score': 0.78096}  # use pretrain_model
     """

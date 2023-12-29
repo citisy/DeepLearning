@@ -88,6 +88,7 @@ class Process(
 
         # note that, it must be set device before load_state_dict()
         self.model.to(self.device)
+        self.load_pertain()
 
         if not hasattr(self, 'optimizer') or self.optimizer is None:
             self.set_optimizer()

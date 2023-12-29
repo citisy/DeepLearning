@@ -111,16 +111,14 @@ class RTE(TextPairProcess):
 
 
 class Bert(BertNSP):
-    pretrain_model: str
-
     def set_model(self):
         from models.text_pair_classification.bert import Model
 
         self.get_vocab()
         self.model = Model(self.vocab_size, seq_len=self.seq_len, sp_tag_dict=self.sp_tag_dict)
-        if hasattr(self, 'pretrain_model'):
-            ckpt = torch.load(self.pretrain_model, map_location=self.device)
-            self.model.load_state_dict(ckpt['model'], strict=False)
+
+    def set_optimizer(self):
+        self.optimizer = torch.optim.Adam(self.model.parameters(), lr=1e-5, betas=(0.5, 0.999))
 
 
 class Bert_MNLI(Bert, MNLI):

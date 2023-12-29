@@ -167,6 +167,12 @@ class CheckpointHooks:
         JIT: load_jit
     }
 
+    pretrain_model: str
+
+    def load_pertain(self):
+        if hasattr(self, 'pretrain_model'):
+            self.load(self.pretrain_model)
+
 
 class ModelHooks:
     model: nn.Module
