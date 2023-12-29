@@ -51,8 +51,8 @@ def joint(text_pairs, sep_token=sp_token_dict['sep'], keep_end=True):
         seg = []
         for s in segments_pair:
             seg += s + [sep_token]
-            if not keep_end:
-                seg = seg[:-1]
+        if not keep_end:
+            seg = seg[:-1]
         segments.append(seg)
     return segments
 
@@ -70,6 +70,7 @@ def pad(segments, seq_len, pad_token=sp_token_dict['pad']):
 
 
 def align(segments, seq_len, start_token=None, end_token=None, pad_token=sp_token_dict['pad']):
+    """[[seg]] -> [[start_token], [seg], [end_token], [pad_token]]"""
     segments = add_token(segments, start_token=start_token, end_token=end_token)
     segments = truncate(segments, seq_len=seq_len)
     segments = pad(segments, seq_len=seq_len, pad_token=pad_token)

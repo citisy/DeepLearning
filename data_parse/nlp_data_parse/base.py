@@ -179,7 +179,7 @@ class DataSaver:
     def __call__(self, *args, **kwargs):
         return self.save(*args, **kwargs)
 
-    def save(self, data, set_type=DataRegister.FULL, image_type=DataRegister.PATH, **kwargs):
+    def save(self, data, set_type=DataRegister.FULL, **kwargs):
         """
 
         Args:
@@ -188,9 +188,6 @@ class DataSaver:
             set_type(list or DataRegister): a DataRegister type or a list of them
                 ALL -> DataLoader.default_set_type
                 other set_type -> [set_type]
-            image_type(DataRegister): `DataRegister.PATH` or `DataRegister.ARRAY`
-                PATH -> a str of image abs path
-                IMAGE -> a np.ndarray of image, read from cv2, as (h, w, c)
 
         """
         if set_type == DataRegister.FULL:
@@ -208,7 +205,7 @@ class DataSaver:
             if self.verbose:
                 iter_data = tqdm(iter_data, desc=visualize.TextVisualize.highlight_str(f'Save {set_type.value} dataset'))
 
-            self._call(iter_data, set_type=set_type, image_type=image_type, **kwargs)
+            self._call(iter_data, set_type=set_type, **kwargs)
 
     def mkdirs(self, **kwargs):
         os_lib.mk_dir(self.data_dir)
