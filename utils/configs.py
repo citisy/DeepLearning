@@ -185,3 +185,92 @@ def parse_params_example(path, parser) -> dict:
     config = merge_dict(config, params_params_from_arg(parser))
 
     return config
+
+
+def parse_pydantic(model: 'pydantic.BaseModel', return_example=False) -> dict:
+    schema = model.schema()
+    ret = parse_pydantic_schema(schema, schema.get('definitions', {}))
+    if return_example:
+        ret = parse_pydantic_dict(ret)
+
+    return ret
+
+
+def parse_pydantic_schema(schema: dict, definitions={}) -> dict:
+    ret = {}
+    required = schema.get('required', [])
+    for name, attr in schema['properties'].items():
+        types = parse_pydantic_attr(attr)
+        for i, _type in enumerate(types):
+            if isinstance(_type, dict):
+                for v in _type.values():
+                    for ii, __type in enumerate(v['types']):
+                        if __type in definitions:
+                            v['types'][ii] = parse_pydantic_schema(definitions[__type], definitions)
+            else:
+                if _type in definitions:
+                    types[i] = parse_pydantic_schema(definitions[_type], definitions)
+
+        ret[name] = dict(
+            types=types,
+            is_required=name in required,
+        )
+
+    return ret
+
+
+def parse_pydantic_attr(attr: dict) -> list:
+    def parse(a):
+        if 'type' in a:
+            _type = a['type']
+        elif '$ref' in a:
+            obj = a['$ref']
+            _type = obj.split('/')[-1]
+        else:
+            _type = ''
+        return _type
+
+    types = []
+    tmp = types
+    a = attr
+    while 'items' in a or 'additionalProperties' in a or 'allOf' in a:
+        if 'items' in a:
+            _type = parse(a)
+            tmp.append(_type)
+            a = a['items']
+
+        elif 'additionalProperties' in a:
+            _type = parse(a)
+            _tmp = []
+            tmp.append({_type: dict(types=_tmp, is_required=True)})
+            tmp = _tmp
+            a = a['additionalProperties']
+
+        elif 'allOf' in a:
+            _type = parse(a['allOf'][0])
+            a = a['allOf'][0]
+
+    _type = parse(a)
+    if _type:
+        tmp.append(_type)
+
+    return types
+
+
+def parse_pydantic_dict(ret: dict) -> dict:
+    d = {}
+    for k, v in ret.items():
+        a = []
+        b = a
+        for _type in v['types']:
+            if isinstance(_type, dict):
+                b.append(parse_pydantic_dict(_type))
+            elif _type == 'array':
+                c = []
+                b.append(c)
+                b = c
+            else:
+                b.append(_type)
+        d[k] = a[0]
+
+    return d

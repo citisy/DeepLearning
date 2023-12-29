@@ -453,12 +453,12 @@ def non_max_suppression(boxes, conf, iou_method, threshold=0.6):
 
 
 def grid_lines_to_cells(cols, rows, w, h):
-    """
+    """cells created by given grid lines
 
     Args:
         cols: (nx, )
         rows: (ny, )
-        w: weight of grid
+        w: width of grid
         h: height of grid
 
     Returns:
@@ -482,7 +482,7 @@ def grid_lines_to_cells(cols, rows, w, h):
 
 
 def box_inside_grid_cells(bboxes, cells):
-    """distinguish the bboxes belong to the giving grid cells
+    """distinguish the bboxes belonged to the given grid cells
 
     Args:
         bboxes: (m, 4)
@@ -498,7 +498,7 @@ def box_inside_grid_cells(bboxes, cells):
 
 
 def box_inside_grid_lines(bboxes, cols, rows, w, h):
-    """distinguish the bboxes belong to the giving grid lines
+    """distinguish the bboxes belonged to the given grid lines
 
     Args:
         bboxes: (m, 4)
@@ -515,7 +515,7 @@ def box_inside_grid_lines(bboxes, cols, rows, w, h):
 
 
 def box_include_grid_cells(bboxes, cells, iou_thres=0.1):
-    """distinguish the bboxes include giving grid cells
+    """distinguish the bboxes included in given grid cells
 
     Args:
         bboxes: (m, 4)
@@ -532,7 +532,7 @@ def box_include_grid_cells(bboxes, cells, iou_thres=0.1):
 
 
 def box_include_grid_lines(bboxes, cols, rows, w, h):
-    """distinguish the bboxes include giving grid lines
+    """distinguish the bboxes included in given grid lines
 
     Args:
         bboxes:
@@ -549,10 +549,10 @@ def box_include_grid_lines(bboxes, cols, rows, w, h):
 
 
 def lines_to_boxes(lines, oblique=True):
-    """giving the lines, combine them to the bboxes
+    """bboxes created by given lines
 
     Args:
-        lines: (n, 4), 2 for (x1, y1, x2, y2)
+        lines: (n, 4), 4 for (x1, y1, x2, y2)
         oblique:
             False, all lines perpendicular to axis
             True, any directional lines

@@ -441,3 +441,13 @@ class MemoryInfo:
         )
 
         return info
+
+
+def class_info(ins):
+    import inspect
+    args = inspect.getfullargspec(ins.__init__).args
+    args.pop(0)
+    return dict(
+        doc=ins.__doc__,
+        args=args
+    )

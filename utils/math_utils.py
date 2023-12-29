@@ -2,7 +2,7 @@ import numpy as np
 
 
 def argsort_and_unique(x, thres=0, keep_small=True):
-    """
+    """sort the 1-D araay and ignore the slim difference
     Args:
         x: 1-D array
         thres: merge values if the difference of two values lower than the thres
@@ -13,7 +13,7 @@ def argsort_and_unique(x, thres=0, keep_small=True):
         y: x after sorted
 
     Usage:
-        >>> # jsut sort the values
+        >>> # just sort the values
         >>> x = [1, 2, 3, 4, 5]
         >>> order, _ = argsort_and_unique(x)
         >>> order
@@ -24,12 +24,12 @@ def argsort_and_unique(x, thres=0, keep_small=True):
         >>> order, y = argsort_and_unique(x, thres=1)
         >>> order
         [0 0 1 1 2]
-        >>> y
+        >>> y   # 2, 4 will be ignored
         [1 3 5]
 
         >>> # if two values are merged, keep the large one
         >>> _, y = argsort_and_unique(x, thres=1, keep_small=False)
-        >>> y
+        >>> y   # 'cause keep the bigger item, 1, 3 will be ignored
         [2 4 5]
 
         >>> x = [7, 5, 2, 1, 4]
@@ -69,11 +69,11 @@ def argsort_and_unique(x, thres=0, keep_small=True):
 
 
 def arg_order_sort_2D(x, key=None, **kwargs):
-    """
+    """sort the 2-D araay following the columns index, different to `np.argsort()`
     Args:
         x (np.ndarray): 2-D array, (m, n)
         key (tuple): indexs fall in [0, n)
-        **kwargs: see also `argsort_and_unique()`
+        **kwargs: kwargs for `argsort_and_unique()`
 
     Returns:
         arg (np.ndarray): 1-D array (m, )
@@ -108,11 +108,11 @@ def arg_order_sort_2D(x, key=None, **kwargs):
 
 
 def order_sort_2D(x, key=None, **kwargs):
-    """
+    """sort the 2-D araay following the columns index, different to `np.sort()`
     Args:
         x (np.ndarray): 2-D array, (m, n)
         key (tuple): indexs fall in [0, n)
-        **kwargs: see also `argsort_and_unique()`
+        **kwargs: kwargs for `argsort_and_unique()`
 
     Returns:
         y (np.ndarray): 2-D array (m, n), x after sorted
@@ -132,3 +132,14 @@ def order_sort_2D(x, key=None, **kwargs):
     """
     arg = arg_order_sort_2D(x, key=key, **kwargs)
     return x[arg]
+
+
+def transpose(x):
+    """transpose the list, same behaviour to `np.transpose()`
+    Args:
+        x (List[list]): 2-D list
+
+    Usage:
+
+    """
+    return list(zip(*x))

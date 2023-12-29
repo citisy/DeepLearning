@@ -461,20 +461,33 @@ class FileCacher:
     def __call__(self, *args, **kwargs):
         return self.cache_one(*args, **kwargs)
 
-    def cache_one(self, obj, file_name=None):
-        file_name = (file_name or str(uuid.uuid1())) + auto_suffix(obj)
+    def get_fn(self, obj, file_name=None, file_stem=None):
+        if file_name:
+            file_name = file_name
+        elif file_stem:
+            file_name = file_stem + auto_suffix(obj)
+        else:
+            file_name = str(uuid.uuid1()) + auto_suffix(obj)
+
+        return file_name
+
+    def cache_one(self, obj, file_name=None, file_stem=None):
+        file_name = self.get_fn(obj, file_name, file_stem)
         path = f'{self.cache_dir}/{file_name}'
         self.delete_over_range(suffix=Path(path).suffix)
         self.saver.auto_save(obj, path)
         return file_name
 
-    def cache_batch(self, objs, file_names=None):
-        file_names = file_names or [str(uuid.uuid1()) + auto_suffix(obj) for obj in objs]
-        for obj, file_name in zip(objs, file_names):
+    def cache_batch(self, objs, file_names=None, file_stems=None):
+        file_names = file_names or [None] * len(objs)
+        file_stems = file_stems or [None] * len(objs)
+        _fns = []
+        for obj, file_name, file_stem in zip(objs, file_names, file_stems):
+            file_name = self.get_fn(obj, file_name, file_stem)
             path = f'{self.cache_dir}/{file_name}'
             self.delete_over_range(suffix=Path(path).suffix)
             self.saver.auto_save(obj, path)
-        return file_names
+        return _fns
 
     def delete_over_range(self, suffix=''):
         if not self.max_size:
