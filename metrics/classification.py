@@ -178,6 +178,32 @@ class PR:
 
         return ret
 
+    def mcc(self, true, pred, **kwargs):
+        """Matthews correlation coefficient"""
+        ret = {}
+        ret.update(self.confusion_matrix.tp(true, pred))
+        ret.update(self.confusion_matrix.tn(true, pred))
+        ret.update(self.confusion_matrix.fp(true, pred))
+        ret.update(self.confusion_matrix.fn(true, pred))
+
+        acc_tp = ret.pop('acc_tp')
+        acc_tn = ret.pop('acc_tn')
+        acc_fp = ret.pop('acc_fp')
+        acc_fn = ret.pop('acc_fn')
+
+        result = dict(
+            mcc=(acc_tp * acc_tn - acc_fp * acc_fn) / np.sqrt((acc_tp + acc_fp) * (acc_tp + acc_fn) * (acc_tn + acc_fp) * (acc_tn + acc_fn)),
+            acc_tp=acc_tp,
+            acc_tn=acc_tn,
+            acc_fp=acc_fp,
+            acc_fn=acc_fn
+        )
+
+        if self.return_more_info:
+            result.update(ret)
+
+        return result
+
 
 class TopMetric:
     def __init__(self, return_more_info=False, pr_method=None, **pr_method_kwarg):

@@ -26,43 +26,64 @@ class Model(nn.Module):
         - https://github.com/codertimo/BERT-pytorch
     """
 
-    def __init__(self, vocab_size, seq_len, sp_tag_dict, n_segment=1, nsp_out_features=2, bert_config=Config.base):
+    def __init__(
+            self, vocab_size, seq_len, sp_tag_dict,
+            n_segment=1, bert_config=Config.base,
+            is_nsp=True, nsp_out_features=2,
+            is_mlm=True
+    ):
         super().__init__()
         self.sp_tag_dict = sp_tag_dict
+        self.is_nsp = is_nsp
+        self.is_mlm = is_mlm
 
         self.bert = Bert(vocab_size, seq_len, sp_tag_dict, n_segment, **bert_config)
-        self.nsp = NSP(self.bert.out_features, nsp_out_features)
-        self.mlm = MLM(self.bert.out_features, vocab_size, sp_tag_dict['non_mask'])
+        if is_nsp:
+            self.nsp = NSP(self.bert.out_features, nsp_out_features)
+        if is_mlm:
+            self.mlm = MLM(self.bert.out_features, vocab_size, sp_tag_dict['non_mask'])
 
         torch_utils.initialize_layers(self)
 
     def forward(self, x, segment_label, next_true=None, mask_true=None):
         x = self.bert(x, segment_label)
-        next_pred = self.nsp(x)
-        mask_pred = self.mlm(x)
+
+        outputs = {}
+
+        next_pred = None
+        if self.is_nsp:
+            next_pred = self.nsp(x)
+            outputs['next_pred'] = next_pred
+
+        mask_pred = None
+        if self.is_mlm:
+            mask_pred = self.mlm(x)
+            outputs['mask_pred'] = mask_pred
 
         losses = {}
         if self.training:
-            losses = self.loss(next_pred, mask_pred, next_true, mask_true)
+            losses = self.loss(x.device, next_pred, mask_pred, next_true, mask_true)
 
-        return dict(
-            next_pred=next_pred,
-            mask_pred=mask_pred,
-            **losses
-        )
+        outputs.update(losses)
+        return outputs
 
-    def loss(self, next_pred, mask_pred, next_true=None, mask_true=None):
-        next_loss = self.nsp.loss(next_pred, next_true)
-        mask_loss = self.mlm.loss(mask_pred, mask_true)
+    def loss(self, device, next_pred=None, mask_pred=None, next_true=None, mask_true=None):
+        losses = {}
+        loss = torch.zeros(1, device=device)
 
-        return {
-            'loss.next': next_loss,
-            'loss.mask': mask_loss,
-            'loss': next_loss + mask_loss
-        }
+        if self.is_nsp:
+            next_loss = self.nsp.loss(next_pred, next_true)
+            loss += next_loss
+            losses['loss.next'] = next_loss
 
-    def post_process(self):
-        pass
+        if self.is_mlm:
+            mask_loss = self.mlm.loss(mask_pred, mask_true)
+            loss += mask_loss
+            losses['loss.mask'] = mask_loss
+
+        losses['loss'] = loss
+
+        return losses
 
 
 class NSP(nn.Module):
