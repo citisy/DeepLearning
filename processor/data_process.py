@@ -2,18 +2,21 @@ import copy
 import torch
 from torch.utils.data import Dataset, DataLoader
 from utils import os_lib
-from typing import Optional
+from typing import Optional, List
 
 
 class BaseDataset(Dataset):
-    def __init__(self, iter_data,  augment_func=None, complex_augment_func=None, **kwargs):
+    def __init__(self, iter_data, augment_func=None, **kwargs):
         self.iter_data = iter_data
         self.augment_func = augment_func
-        self.complex_augment_func = complex_augment_func
         self.__dict__.update(**kwargs)
 
     def __getitem__(self, idx):
-        return self.augment_func(self.iter_data[idx])
+        ret = self.iter_data[idx]
+        if self.augment_func:
+            ret = self.augment_func(ret)
+
+        return ret
 
     def __len__(self):
         return len(self.iter_data)
@@ -24,8 +27,10 @@ class BaseDataset(Dataset):
 
 
 class BaseImgDataset(BaseDataset):
-    def __init__(self, iter_data, augment_func=None, complex_augment_func=None):
-        super().__init__(iter_data, augment_func, complex_augment_func)
+    complex_augment_func: Optional
+
+    def __init__(self, iter_data, augment_func=None, complex_augment_func=None, **kwargs):
+        super().__init__(iter_data, augment_func, complex_augment_func=complex_augment_func, **kwargs)
         self.loader = os_lib.Loader(verbose=False)
 
     def __getitem__(self, idx):
@@ -49,8 +54,24 @@ class BaseImgDataset(BaseDataset):
         return ret
 
 
+class IterDataset(BaseDataset):
+    """input iter_data is a generator not a list"""
+    length: int     # one epoch num steps
+
+    def __getitem__(self, idx):
+        ret = next(self.iter_data)
+        if self.augment_func:
+            ret = self.augment_func(ret)
+
+        return ret
+
+    def __len__(self):
+        return self.length
+
+
 class IterImgDataset(BaseImgDataset):
-    length: int
+    """input iter_data is a generator not a list"""
+    length: int     # one epoch num steps
 
     def process_one(self, *args):
         ret = next(self.iter_data)
@@ -69,12 +90,47 @@ class IterImgDataset(BaseImgDataset):
         return self.length
 
 
+class BatchIterDataset(BaseDataset):
+    """input iter_data is a generator not a list, each iter would generate a batch data"""
+    length: int     # one epoch num steps
+    batch_size: int
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.caches = []
+
+    def __getitem__(self, idx):
+        if not self.caches:
+            self.caches = next(self.iter_data)
+
+        ret = self.caches.pop()
+
+        if self.augment_func:
+            ret = self.augment_func(ret)
+
+        return ret
+
+    def __len__(self):
+        return self.length
+
+
 class MixDataset(BaseDataset):
+    """input more than one iter_data"""
+
     def __init__(self, obj, **kwargs):
+        """
+
+        Args:
+            obj (list):
+                iter_data, iter_data for dataset_instance
+                dataset_instance, an instance like `BaseDataset()`
+            **kwargs:
+                kwargs for dataset_instance
+        """
         super().__init__(None)
         self.datasets = []
-        for data, dataset_instance in obj:
-            self.datasets.append(dataset_instance(data, **kwargs))
+        for iter_data, dataset_instance in obj:
+            self.datasets.append(dataset_instance(iter_data, **kwargs))
 
         self.nums = [len(_) for _ in self.datasets]
 

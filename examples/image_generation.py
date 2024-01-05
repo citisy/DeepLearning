@@ -7,7 +7,7 @@ from data_parse.cv_data_parse.data_augmentation import crop, scale, geometry, ch
 from data_parse import DataRegister
 from pathlib import Path
 from data_parse.cv_data_parse.base import DataVisualizer
-from processor import Process, DataHooks, bundled, model_process
+from processor import Process, DataHooks, bundled, model_process, IterImgDataset
 from utils import configs, cv_utils, os_lib, log_utils, torch_utils
 from datetime import datetime
 
@@ -307,7 +307,7 @@ class Lsun(DataProcess):
 class CelebA(DataProcess):
     dataset_version = 'CelebA'
     data_dir = 'data/CelebA'
-    train_data_num = 40000
+    train_data_num = 40000  # do not set too large, 'cause images will be cached in memory
     input_size = 128
     in_ch = 3
 
@@ -323,10 +323,33 @@ class CelebA(DataProcess):
         return iter_data
 
 
+class IterCelebA(DataProcess):
+    """prepared data by generator, can load all the image data, but slower"""
+    train_dataset_ins = IterImgDataset
+
+    dataset_version = 'CelebA'
+    data_dir = 'data/CelebA'
+    train_data_num = None
+    input_size = 128
+    in_ch = 3
+
+    def get_train_data(self, *args, **kwargs):
+        from data_parse.cv_data_parse.CelebA import ZipLoader as Loader
+
+        loader = Loader(self.data_dir)
+
+        def gen():
+            while True:
+                for ret in loader.load(generator=True, img_task='align', max_size=self.train_data_num)[0]:
+                    yield ret
+
+        return gen()
+
+
 class CelebAHQ(DataProcess):
     dataset_version = 'CelebAHQ'
     data_dir = 'data/CelebAHQ'
-    train_data_num = 40000
+    train_data_num = 40000  # do not set too large, 'cause images will be cached in memory
 
     input_size = 1024
     in_ch = 3
@@ -492,6 +515,18 @@ class StyleGan_CelebA(StyleGan, CelebA):
         .. code-block:: python
 
             from examples.image_generation import StyleGan_CelebA as Process
+
+            Process().run(max_epoch=50, train_batch_size=32, check_period=20000, max_save_weight_num=10, metric_kwargs=dict(is_visualize=True))
+            {'score': 134.8424}
+    """
+
+
+class StyleGan_IterCelebA(StyleGan, IterCelebA):
+    """
+    Usage:
+        .. code-block:: python
+
+            from examples.image_generation import StyleGan_IterCelebA as Process
 
             Process().run(max_epoch=50, train_batch_size=32, check_period=20000, max_save_weight_num=10, metric_kwargs=dict(is_visualize=True))
             {'score': 134.8424}
