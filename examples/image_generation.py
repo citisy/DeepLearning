@@ -3,7 +3,6 @@ import cv2
 import numpy as np
 import torch
 from torch import optim, nn
-from metrics import image_generation
 from data_parse.cv_data_parse.data_augmentation import crop, scale, geometry, channel, RandomApply, Apply, complex, pixel_perturbation
 from data_parse import DataRegister
 from pathlib import Path
@@ -30,85 +29,33 @@ class GanOptimizer:
 
 
 class IgProcess(Process):
+    use_early_stop = False
+    check_on_train_period = model_process.STEP
     val_data_num = 64 * 8
 
     def on_train_start(self, container, **kwargs):
+        from metrics import image_generation
+
         super().on_train_start(container, **kwargs)
-        container['real_x'] = []
-        container['cls_model'] = image_generation.get_default_cls_model(device=self.device)
+        container['metric_kwargs'].update(
+            real_x=[],
+            fid_cls_model=image_generation.get_default_cls_model(device=self.device)
+        )
 
-    def _on_train_step_end(self, container, check_period=None, batch_size=None, max_save_weight_num=None, **kwargs):
-        total_nums = self.counters['total_nums']
-        if check_period and total_nums % check_period < batch_size:
-            self.trace({'total_nums': total_nums}, bundled.WANDB)
+    def metric(self, real_x=None, fid_cls_model=None, **kwargs):
+        from metrics import image_generation
 
-            losses = container.get('losses')
-            if losses is not None:
-                for k, v in losses.items():
-                    self.trace({f'loss/{k}': v}, bundled.WANDB)
-                    if np.isnan(v) or np.isinf(v):
-                        container['end_flag'] = True
-                        self.log(f'Train will be stop soon, got {v} value from {k}')
-
-            epoch_start_time = container.get('epoch_start_time')
-            if epoch_start_time is not None:
-                self.trace({'time_consume': (time.time() - epoch_start_time) / 60}, bundled.WANDB)
-
-            results = self.metric(
-                real_x=container.get('real_x'),
-                cls_model=container.get('cls_model'),
-                val_dataloader=container.get('val_dataloader'),
-                **container.get('metric_kwargs', {})
-            )
-
-            scores = {}
-            for name, result in results.items():
-                scores[f'val_score/{name}'] = result['score']
-
-            self.trace(scores, bundled.WANDB)
-            self.log(f'val log: total_nums: {total_nums}, score: {scores}')
-
-            self.set_mode(train=True)
-
-            ckpt = {
-                'optimizer': self.optimizer.state_dict(),
-                'counters': self.counters,
-                'wandb_id': self.wandb_id,
-                'date': datetime.now().isoformat()
-            }
-
-            self.save(f'{self.work_dir}/{total_nums}.pth', save_type=model_process.WEIGHT, save_items=ckpt)
-            os_lib.FileCacher(f'{self.work_dir}/', max_size=max_save_weight_num, stdout_method=self.log).delete_over_range(suffix='pth')
-            self.log_trace(bundled.WANDB)
-
-    def on_train_step_end(self, rets, outputs, container, check_period=None, batch_size=None, max_save_weight_num=None, **kwargs):
-        super().on_train_step_end(rets, outputs, container, **kwargs)
-        self._on_train_step_end(container, check_period=check_period, batch_size=batch_size, max_save_weight_num=max_save_weight_num, **kwargs)
-
-    def on_train_epoch_end(self, container, **kwargs) -> bool:
-        """eval strategy will work on on_train_step_end()"""
-        self.counters['epoch'] += 1
-        return container.get('end_flag', False)
-
-    def metric(self, real_x=None, cls_model=None, **kwargs):
         container = self.predict(**kwargs)
         metric_results = {}
         for name, results in container['model_results'].items():
             if real_x is not None and 'fake_x' in results:
-                score = image_generation.fid(real_x, results['fake_x'], cls_model=cls_model, device=self.device)
+                score = image_generation.fid(real_x, results['fake_x'], cls_model=fid_cls_model, device=self.device)
                 result = dict(score=score)
                 metric_results[name] = result
             else:
                 metric_results[name] = {'score': None}
 
         return metric_results
-
-    def on_val_start(self, container, model=None, **kwargs):
-        """except loading val data"""
-        self.set_mode(train=False)
-        self.counters['vis_num'] = 0
-        self.counters.setdefault('epoch', -1)
-        container['model_results'] = dict()
 
     def on_val_reprocess(self, rets, model_results, container, **kwargs):
         for name, results in model_results.items():
@@ -127,15 +74,13 @@ class IgProcess(Process):
                 results[name2] = np.stack(items)
                 num_batch = results[name2].shape[0]
 
-        for i in range(0, num_batch, num_synth_per_image):
-            if is_visualize:
+        if is_visualize:
+            for i in range(0, num_batch, num_synth_per_image):
                 max_vis_num = max_vis_num or float('inf')
                 n = min(num_synth_per_image, max_vis_num - self.counters['vis_num'])
                 if n > 0:
                     self.visualize(None, container['model_results'], n, **kwargs)
                     self.counters['vis_num'] += n
-
-        super().on_val_end(container, **kwargs)
 
     def visualize(self, rets, model_results, n, **kwargs):
         vis_num = self.counters['vis_num']
@@ -166,46 +111,8 @@ class GanProcess(IgProcess):
             self.log(f'net {key} module info:')
             self.log(s)
 
-    def on_train_epoch_start(self, container, **kwargs):
-        _counters = ('per_epoch_loss', 'per_epoch_nums', 'per_epoch_loss.g', 'per_epoch_loss.d')
-        super().on_train_epoch_start(container, _counters=_counters, **kwargs)
-
     def on_backward(self, output, container, **kwargs):
-        """has been completed in on_train_step() already"""
-
-    def on_train_step_end(self, rets, output, container, more_log=False, check_period=None, batch_size=None, max_save_weight_num=None, **kwargs):
-        # add net g and net d log info
-        self.counters['total_nums'] += len(rets)
-        self.counters['total_steps'] += 1
-        self.counters['per_epoch_nums'] += len(rets)
-
-        losses = {}
-        for k, v in output.items():
-            if k.startswith('loss'):
-                losses[k] = v.item()
-
-        self.counters['per_epoch_loss.g'] += losses['loss.g']
-        self.counters['per_epoch_loss.d'] += losses['loss.d']
-        mean_loss_g = self.counters['per_epoch_loss.g'] / self.counters['per_epoch_nums']
-        mean_loss_d = self.counters['per_epoch_loss.d'] / self.counters['per_epoch_nums']
-
-        losses.update({
-            'mean_loss.d': mean_loss_d,
-            'mean_loss.g': mean_loss_g,
-        })
-
-        mem_info = {
-            'cpu_info': log_utils.MemoryInfo.get_process_mem_info(),
-            'gpu_info': log_utils.MemoryInfo.get_gpu_mem_info()
-        } if more_log else {}
-
-        self.log({
-            'total_nums': self.counters['total_nums'],
-            **losses,
-            **mem_info
-        }, 'pbar')
-
-        self._on_train_step_end(container, check_period=check_period, batch_size=batch_size, max_save_weight_num=max_save_weight_num, **kwargs)
+        """has been completed in `on_train_step()` yet"""
 
 
 class Mnist(DataHooks):
@@ -275,7 +182,7 @@ class WGAN(GanProcess):
             self.optimizer.optimizer_g.step()
             self.optimizer.optimizer_g.zero_grad()
 
-        real_x = container['real_x']
+        real_x = container['metric_kwargs']['real_x']
         if len(real_x) < self.val_data_num:
             images = images.data.mul(255).clamp_(0, 255).permute(0, 2, 3, 1).to("cpu", torch.uint8).numpy()
             real_x.extend(list(images)[:self.val_data_num - len(real_x)])
@@ -297,7 +204,7 @@ class WGAN(GanProcess):
         return val_obj
 
     def on_val_start(self, container, val_dataloader=None, batch_size=16, dataloader_kwargs=dict(), **kwargs):
-        super().on_val_start(container, **kwargs)
+        super().on_val_start(container, load_data=False, **kwargs)
 
         val_noise = val_dataloader if val_dataloader is not None else self.get_val_data()
         num_batch = val_noise.shape[0]
@@ -493,7 +400,7 @@ class StyleGan(GanProcess):
         loss_g.backward()
         self.optimizer.optimizer_g.step()
 
-        real_x = container['real_x']
+        real_x = container['metric_kwargs']['real_x']
         if len(real_x) < self.val_data_num:
             images = images.data.mul(255).clamp_(0, 255).permute(0, 2, 3, 1).to("cpu", torch.uint8).numpy()
             real_x.extend(list(images)[:self.val_data_num - len(real_x)])
@@ -515,7 +422,7 @@ class StyleGan(GanProcess):
         return val_obj
 
     def on_val_start(self, container, val_dataloader=(None, None, None), batch_size=16, trunc_psi=0.6, **kwargs):
-        super().on_val_start(container, **kwargs)
+        super().on_val_start(container, load_data=False, **kwargs)
         model = self.model
 
         noise_xs, noise_zs, truncate_zs = val_dataloader if val_dataloader is not None else self.get_val_data()
@@ -597,7 +504,7 @@ class DiProcess(IgProcess):
         images = torch.stack(images)
         output = self.model(images)
 
-        real_x = container['real_x']
+        real_x = container['metric_kwargs']['real_x']
         if len(real_x) < self.val_data_num:
             images = images.data.mul(255).clamp_(0, 255).permute(0, 2, 3, 1).to("cpu", torch.uint8).numpy()
             real_x.extend(list(images)[:self.val_data_num - len(real_x)])
@@ -609,7 +516,7 @@ class DiProcess(IgProcess):
         return val_obj
 
     def on_val_start(self, container, val_dataloader=None, batch_size=16, dataloader_kwargs=dict(), **kwargs):
-        super().on_val_start(container, **kwargs)
+        super().on_val_start(container, load_data=False, **kwargs)
         val_noise = val_dataloader if val_dataloader is not None else self.get_val_data()
         num_batch = val_noise.shape[0]
 

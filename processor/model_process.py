@@ -16,6 +16,9 @@ ONNX = 3
 JIT = 4
 TRITON = 5
 
+STEP = 1
+EPOCH = 2
+
 
 class CheckpointHooks:
     logger: Optional
@@ -177,7 +180,6 @@ class CheckpointHooks:
 class ModelHooks:
     model: nn.Module
     optimizer: Optional
-    stopper: Optional
     scheduler: Optional
     scaler: Optional
     device: Optional[str]
@@ -212,9 +214,13 @@ class ModelHooks:
     def set_optimizer(self):
         self.optimizer = optim.Adam(self.model.parameters())
 
+    use_early_stop = True
+    stopper: Optional
+
     def set_stopper(self):
-        from utils.torch_utils import EarlyStopping
-        self.stopper = EarlyStopping(patience=10, min_epoch=10, ignore_min_score=0.1, stdout_method=self.log)
+        if self.use_early_stop:
+            from utils.torch_utils import EarlyStopping
+            self.stopper = EarlyStopping(patience=10, min_period=10, ignore_min_score=0.1, stdout_method=self.log)
 
     lrf = 0.01
 
@@ -298,8 +304,11 @@ class ModelHooks:
     model_name: str
     get_train_dataloader: 'data_process.DataHooks.get_train_dataloader'
     get_val_dataloader: 'data_process.DataHooks.get_val_dataloader'
+    save: 'CheckpointHooks.save'
+    counters: dict
 
     def on_train_start(self, container, batch_size=16, metric_kwargs=dict(), return_val_dataloader=True, dataloader_kwargs=dict(), **kwargs):
+        metric_kwargs = metric_kwargs.copy()
         metric_kwargs.setdefault('batch_size', batch_size)
         metric_kwargs.setdefault('dataloader_kwargs', {})
         metric_kwargs['dataloader_kwargs'] = configs.merge_dict(dataloader_kwargs, metric_kwargs['dataloader_kwargs'])
@@ -323,12 +332,13 @@ class ModelHooks:
         container['train_dataloader'] = self.get_train_dataloader(batch_size=batch_size, **dataloader_kwargs)
 
         if return_val_dataloader:
-            container['val_dataloader'] = self.get_val_dataloader(batch_size=batch_size, **dataloader_kwargs)
+            metric_kwargs['val_dataloader'] = self.get_val_dataloader(batch_size=batch_size, **dataloader_kwargs)
 
         container['metric_kwargs'] = metric_kwargs
 
     register_logger: 'bundled.LogHooks.register_logger'
     log_methods: dict
+    check_on_train_period: int = EPOCH
 
     def on_train(self, container, max_epoch=100, **kwargs):
 
@@ -346,7 +356,7 @@ class ModelHooks:
             if self.on_train_epoch_end(container, **kwargs):
                 break
 
-    def on_train_epoch_start(self, container, _counters=('per_epoch_loss', 'per_epoch_nums'), **kwargs):
+    def on_train_epoch_start(self, container, _counters=('per_epoch_nums',), **kwargs):
         container['epoch_start_time'] = time.time()
         for c in _counters:
             self.counters[c] = 0
@@ -377,11 +387,15 @@ class ModelHooks:
         self.counters['per_epoch_loss'] += loss.item()
         self.counters['per_epoch_nums'] += len(rets)
 
-        mean_loss = self.counters['per_epoch_loss'] / self.counters['per_epoch_nums']
-        losses = {'mean_loss': mean_loss}
+        losses = {}
         for k, v in outputs.items():
             if k.startswith('loss'):
-                losses[k] = v.item()
+                v = v.item()
+                n = f'per_epoch_{k}'
+                self.counters[n] = self.counters.get(n, 0) + v
+                losses[k] = v
+                losses[f'mean_{k}'] = self.counters[n] / self.counters['per_epoch_nums']
+
         container['losses'] = losses
 
         mem_info = {
@@ -394,64 +408,87 @@ class ModelHooks:
             **mem_info
         }, 'pbar')
 
-    save: 'CheckpointHooks.save'
-    counters: dict
+        if self.check_on_train_period == STEP:
+            self._check_on_train_step_end(container, **kwargs)
 
-    def on_train_epoch_end(self, container, check_period=None, batch_size=None, **kwargs) -> bool:
-        end_flag = False
-        epoch = self.counters['epoch']
+    def on_train_epoch_end(self, container, **kwargs) -> bool:
         self.counters['epoch'] += 1
+        if self.check_on_train_period == EPOCH:
+            self._check_on_train_epoch_end(container, **kwargs)
+        return container.get('end_flag', False)  # cancel the training when end_flag is True
+
+    def _check_on_train_step_end(self, container, check_period=None, batch_size=None, save_multi_weight=False, max_save_weight_num=None, **kwargs):
+        total_nums = self.counters['total_nums']
+        if check_period and total_nums % check_period < batch_size:
+            self.trace({'total_nums': total_nums}, (bundled.LOGGING, bundled.WANDB))
+
+            ckpt = self._check_train(container, save_multi_weight, max_save_weight_num, total_nums)
+            self.log_trace(bundled.LOGGING)
+
+            self._check_metric(container, ckpt, total_nums)
+            self.log_trace(bundled.WANDB)
+
+    def _check_on_train_epoch_end(self, container, check_period=None, save_multi_weight=False, max_save_weight_num=None, **kwargs):
+        epoch = self.counters['epoch'] - 1  # epoch in counters is the next epoch, not the last
         self.trace({'epoch': epoch}, (bundled.LOGGING, bundled.WANDB))
 
+        ckpt = self._check_train(container, save_multi_weight, max_save_weight_num, epoch)
+        self.log_trace(bundled.LOGGING)
+
+        if check_period and epoch % check_period == check_period - 1:
+            self._check_metric(container, ckpt, epoch)
+        self.log_trace(bundled.WANDB)
+
+    def _check_train(self, container, save_multi_weight, max_save_weight_num, check_num):
         losses = container.get('losses')
         if losses is not None:
             for k, v in losses.items():
                 self.trace({f'loss/{k}': v}, (bundled.LOGGING, bundled.WANDB))
                 if np.isnan(v) or np.isinf(v):
-                    end_flag = True
+                    container['end_flag'] = True
                     self.log(f'Train will be stop soon, got {v} value from {k}')
 
         epoch_start_time = container.get('epoch_start_time')
         if epoch_start_time is not None:
             self.trace({'time_consume': (time.time() - epoch_start_time) / 60}, (bundled.LOGGING, bundled.WANDB))
 
-        self.log_trace(bundled.LOGGING)
         ckpt = {
             'optimizer': self.optimizer.state_dict(),
-            'stopper': self.stopper.state_dict(),
             'counters': self.counters,
             'wandb_id': self.wandb_id,
             'date': datetime.now().isoformat()
         }
 
+        if hasattr(self, 'stopper'):
+            ckpt['stopper'] = self.stopper.state_dict()
+
         if hasattr(self, 'aux_model'):
             ckpt['aux_model'] = {k: v.state_dict() for k, v in self.aux_model.items()}
 
-        self.save(f'{self.work_dir}/last.pth', save_type=WEIGHT, save_items=ckpt)
+        if save_multi_weight:
+            self.save(f'{self.work_dir}/{check_num}.pth', save_type=WEIGHT, save_items=ckpt)
+            os_lib.FileCacher(f'{self.work_dir}/', max_size=max_save_weight_num, stdout_method=self.log).delete_over_range(suffix='pth')
+        else:
+            self.save(f'{self.work_dir}/last.pth', save_type=WEIGHT, save_items=ckpt)
 
-        if check_period and epoch % check_period == check_period - 1:
-            results = self.metric(
-                val_dataloader=container.get('val_dataloader'),
-                **container.get('metric_kwargs', {})
-            )
+        return ckpt
 
-            scores = {}
-            for name, result in results.items():
-                scores[f'val_score/{name}'] = result['score']
+    def _check_metric(self, container, ckpt, check_num):
+        results = self.metric(**container.get('metric_kwargs', {}))
+        scores = {}
+        for name, result in results.items():
+            scores[f'val_score/{name}'] = result['score']
 
-            self.trace(scores, bundled.WANDB)
-            self.log(f'val log: epoch: {epoch}, score: {scores}')
+        self.trace(scores, bundled.WANDB)
+        self.log(f'val log: score: {scores}')
+        self.set_mode(train=True)
 
+        if hasattr(self, 'stopper'):
             score = results[self.model_name]['score']
-
             if score > self.stopper.best_score:
                 self.save(f'{self.work_dir}/best.pth', save_type=WEIGHT, save_items=ckpt)
 
-            end_flag = end_flag or self.stopper(epoch=epoch, score=score)
-            self.set_mode(train=True)
-
-        self.log_trace(bundled.WANDB)
-        return end_flag
+            container['end_flag'] = container['end_flag'] or self.stopper(check_num, score)
 
     def on_train_end(self, container, **kwargs):
         self.wandb.finish()
@@ -479,7 +516,6 @@ class ModelHooks:
             suggest to include mainly the following parameters:
                 val_dataloader:
                 batch_size:
-                model:
                 is_visualize:
                 max_vis_num:
                 save_ret_func:
@@ -503,8 +539,9 @@ class ModelHooks:
 
         return container
 
-    def on_val_start(self, container, val_dataloader=None, batch_size=16, dataloader_kwargs=dict(), model=None, **kwargs):
-        container['val_dataloader'] = val_dataloader if val_dataloader is not None else self.get_val_dataloader(batch_size=batch_size, **dataloader_kwargs)
+    def on_val_start(self, container, load_data=True, val_dataloader=None, batch_size=16, dataloader_kwargs=dict(), **kwargs):
+        if load_data:
+            container['val_dataloader'] = val_dataloader if val_dataloader is not None else self.get_val_dataloader(batch_size=batch_size, **dataloader_kwargs)
 
         self.set_mode(train=False)
         self.counters['vis_num'] = 0
