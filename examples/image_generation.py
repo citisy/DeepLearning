@@ -334,9 +334,13 @@ class IterCelebA(DataProcess):
     in_ch = 3
 
     def get_train_data(self, *args, **kwargs):
-        from data_parse.cv_data_parse.CelebA import ZipLoader as Loader
+        from data_parse.cv_data_parse.CelebA import ZipLoader as Loader, info
 
         loader = Loader(self.data_dir)
+        if self.train_data_num:
+            self.train_dataset_ins.length = self.train_data_num
+        else:
+            self.train_dataset_ins.length = info[1]['len']
 
         def gen():
             while True:
