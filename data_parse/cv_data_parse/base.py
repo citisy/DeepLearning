@@ -5,7 +5,7 @@ import numpy as np
 from tqdm import tqdm
 from pathlib import Path
 from collections import defaultdict
-from utils import os_lib, converter, visualize
+from utils import os_lib, converter, visualize, cv_utils
 from typing import List
 from numbers import Number
 from .. import DataRegister
@@ -108,7 +108,6 @@ class DataLoader:
         return self.load(*args, **kwargs)
 
     def load(self, set_type=None, image_type=None, generator=True,
-             use_multiprocess=False, n_process=5,
              **load_kwargs):
         """
         Args:
@@ -150,12 +149,6 @@ class DataLoader:
         r = []
         for set_type in set_types:
             pbar = self._call(set_type=set_type, image_type=image_type, **load_kwargs)
-
-            if use_multiprocess:
-                from multiprocessing.pool import Pool
-
-                pool = Pool(n_process)
-                pbar = pool.imap(fake_func, pbar)
 
             if self.verbose:
                 pbar = tqdm(pbar, desc=visualize.TextVisualize.highlight_str(f'Load {set_type.value} dataset'))
@@ -502,7 +495,7 @@ class DataVisualizer:
                 if '_id' in r:
                     _id = r['_id']
 
-            image = self.concat_images(images)
+            image = cv_utils.splice_image(images)
             self.saver.save_img(image, f'{self.save_dir}/{_id}')
             vis_num += 1
             if return_image:
@@ -542,14 +535,3 @@ class DataVisualizer:
                 image = visualize.ImageVisualize.box(image, bboxes, colors=colors)
 
         return image
-
-    def concat_images(self, images):
-        n = len(images)
-        if n < 4:
-            return np.concatenate(images, 1)
-
-        n_col = int(np.ceil(np.sqrt(n)))
-        n_row = int(np.ceil(n / n_col))
-        images += [np.zeros_like(images[0])] * (n_col * n_row - n)
-        images = [np.concatenate(images[i: i + n_col], 1) for i in range(0, len(images), n_col)]
-        return np.concatenate(images, 0)

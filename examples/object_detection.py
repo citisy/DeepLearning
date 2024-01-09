@@ -180,7 +180,7 @@ class OdProcess(Process):
             )
 
     def fragment_predict(self, image: np.ndarray, **kwargs):
-        images, coors = cv_utils.fragment_image(image, max_size=self.input_size, over_ratio=0.5, overlap_ratio=0.2)
+        images, coors = cv_utils.fragment_image(image, size=self.input_size, over_ratio=0.5, overlap_ratio=0.2)
         results = self.batch_predict(images)
 
         bboxes = []

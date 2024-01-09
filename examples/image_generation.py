@@ -7,7 +7,7 @@ from data_parse.cv_data_parse.data_augmentation import crop, scale, geometry, ch
 from data_parse import DataRegister
 from pathlib import Path
 from data_parse.cv_data_parse.base import DataVisualizer
-from processor import Process, DataHooks, bundled, model_process, IterImgDataset
+from processor import Process, DataHooks, bundled, model_process, BatchIterImgDataset
 from utils import configs, cv_utils, os_lib, log_utils, torch_utils
 from datetime import datetime
 
@@ -324,8 +324,7 @@ class CelebA(DataProcess):
 
 
 class IterCelebA(DataProcess):
-    """prepared data by generator, can load all the image data, but slower"""
-    train_dataset_ins = IterImgDataset
+    train_dataset_ins = BatchIterImgDataset
 
     dataset_version = 'CelebA'
     data_dir = 'data/CelebA'
@@ -334,20 +333,26 @@ class IterCelebA(DataProcess):
     in_ch = 3
 
     def get_train_data(self, *args, **kwargs):
-        from data_parse.cv_data_parse.CelebA import ZipLoader as Loader, info
+        """before get data, run the following script first
 
-        loader = Loader(self.data_dir)
-        if self.train_data_num:
-            self.train_dataset_ins.length = self.train_data_num
-        else:
-            self.train_dataset_ins.length = info[1]['len']
+        from data_parse.cv_data_parse.CelebA import ZipLoader as Loader, DataRegister
+        from data_parse.cv_data_parse.SimpleGridImage import Saver
 
-        def gen():
-            while True:
-                for ret in loader.load(generator=True, img_task='align', max_size=self.train_data_num)[0]:
-                    yield ret
+        loader = Loader(data_dir)
+        saver = Saver(data_dir)
 
-        return gen()
+        per_images = 100
+        batch_rets = []
+        for i, ret in enumerate(loader.load(generator=True,img_task='align')[0]):
+            batch_rets.append(ret)
+            if i % per_images == per_images - 1:
+                saver([[batch_rets]], task='img_align_celeba_bind')
+                batch_rets = []
+        """
+        from data_parse.cv_data_parse.SimpleGridImage import Loader
+
+        loader = Loader(self.data_dir, image_suffix='jpg')
+        return lambda: loader.load(generator=False, task='img_align_celeba_bind', size=(178, 218), max_size=self.train_data_num)[0]
 
 
 class CelebAHQ(DataProcess):
@@ -532,8 +537,9 @@ class StyleGan_IterCelebA(StyleGan, IterCelebA):
 
             from examples.image_generation import StyleGan_IterCelebA as Process
 
-            Process().run(max_epoch=50, train_batch_size=32, check_period=20000, max_save_weight_num=10, metric_kwargs=dict(is_visualize=True))
-            {'score': 134.8424}
+            Process().run(max_epoch=50, train_batch_size=32, check_period=20000, max_save_weight_num=10,
+                          metric_kwargs=dict(is_visualize=True),
+                          dataloader_kwargs=dict(shuffle=False))
     """
 
 

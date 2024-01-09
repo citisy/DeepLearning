@@ -354,25 +354,34 @@ class PixBox:
 
 
 def fragment_image(image: np.ndarray,
-                   max_size=None, grid=None,
+                   size=None, grid=None,
                    overlap_size=None, overlap_ratio=None,
                    over_size=None, over_ratio=None
                    ):
-    """fragment large image to small pieces
+    """fragment a large image to small pieces images
 
     Args:
         image:
-        max_size:
+        size:
+            e.g. `(100,200)` means tear image with 100*200 pixels
         grid:
+            e.g. `(6,7)` means tear image into 6*7 pieces
+            note, would be something wrong when overlap_size or overlap_ratio is not None
         overlap_size:
+            e.g. `(40, 50)` means one piece has 40 pixels in width overlapping with other pieces
+            and 50 pixels in height overlapping with other pieces
         overlap_ratio:
+            e.g. `(0.4, 0.5)` means one piece has (0.4 * size) pixels in width overlapping with other pieces
+            and (0.5 * size) pixels in height overlapping with other pieces
         over_size:
+            the size of last image is less than over_size will not be fragmented
         over_ratio:
+            the size of last image is less than (over_ratio * size) will not be fragmented
 
     Usage:
 
         >>> image = np.zeros((2000, 3000, 3))
-        >>> images, coors = fragment_image(image, max_size=1000, overlap_size=100, over_ratio=0.5)
+        >>> images, coors = fragment_image(image, size=1000, overlap_size=100, over_ratio=0.5)
         >>> coors
         [(0, 0, 1000, 1000), (0, 900, 1000, 2000), (900, 0, 1900, 1000), (900, 900, 1900, 2000), (1800, 0, 3000, 1000), (1800, 900, 3000, 2000)]
         >>> [img.shape for img in images]
@@ -380,10 +389,9 @@ def fragment_image(image: np.ndarray,
     """
     h, w = image.shape[:2]
 
-    if max_size:
-        size = (max_size, max_size) if isinstance(max_size, int) else max_size
+    if size:
+        size = (size, size) if isinstance(size, int) else size
     elif grid:
-        # would be something wrong when overlap_size or overlap_ratio is not None
         size = (int(np.ceil(h / grid)), int(np.ceil(w / grid)))
     else:
         raise f'must be set max_size or grid, can not be None all of them'
@@ -406,7 +414,7 @@ def fragment_image(image: np.ndarray,
 
     images = []
     coors = []
-    if max_size:
+    if size:
         for i in range(0, w, size[0] - overlap_size[0]):
             for j in range(0, h, size[1] - overlap_size[1]):
                 x1, y1, x2, y2 = i, j, min(i + size[0], w), min(j + size[1], h)
@@ -424,6 +432,31 @@ def fragment_image(image: np.ndarray,
                 images.append(image[y1:y2, x1:x2])
 
     return images, coors
+
+
+def splice_image(images, grid=None, pad_values=None):
+    """Splicing small pieces images into a large image"""
+
+    n = len(images)
+
+    if not n:
+        return np.empty((0, 0, 3))
+
+    if grid:
+        n_col, n_row = grid
+    else:
+        if n < 4:
+            n_col, n_row = n, 1
+        else:    # reshape to square possibly
+            n_col = int(np.ceil(np.sqrt(n)))
+            n_row = int(np.ceil(n / n_col))
+
+    pad_values = pad_values if pad_values is not None else 0
+    pad_image = np.full_like(images[0], pad_values)
+
+    images += [pad_image] * (n_col * n_row - n)
+    images = [np.concatenate(images[i: i + n_col], 1) for i in range(0, len(images), n_col)]
+    return np.concatenate(images, 0)
 
 
 def non_max_suppression(boxes, conf, iou_method, threshold=0.6):

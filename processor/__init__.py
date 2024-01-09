@@ -112,11 +112,11 @@ class Process(
 
         # also add metric_kwargs to fit_kwargs, 'cause there will be metric strategy while fitting
         fit_kwargs.setdefault('metric_kwargs', metric_kwargs)
+        fit_kwargs.setdefault('dataloader_kwargs', dict(num_workers=min(train_batch_size, 16)))
         self.fit(
             max_epoch=max_epoch,
             batch_size=train_batch_size,
             check_period=check_period,
-            dataloader_kwargs=dict(num_workers=min(train_batch_size, 16)),
             **fit_kwargs
         )
 
@@ -125,9 +125,9 @@ class Process(
         # self.load(self.model_path, save_type=WEIGHT)
         # self.load(f'{self.work_dir}/last.pth', save_type=WEIGHT)
 
+        metric_kwargs.setdefault('dataloader_kwargs', dict(num_workers=min(predict_batch_size or train_batch_size, 16)))
         r = self.metric(
             batch_size=predict_batch_size or train_batch_size,
-            dataloader_kwargs=dict(num_workers=min(predict_batch_size or train_batch_size, 16)),
             **metric_kwargs
         )
         for k, v in r.items():

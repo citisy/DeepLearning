@@ -1,6 +1,6 @@
 import copy
 import torch
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import DataLoader, Dataset, IterableDataset, get_worker_info
 from utils import os_lib
 from typing import Optional, List
 
@@ -55,8 +55,10 @@ class BaseImgDataset(BaseDataset):
 
 
 class IterDataset(BaseDataset):
-    """input iter_data is a generator not a list"""
-    length: int     # one epoch num steps
+    """input iter_data is an Iterator not a list,
+    it will get repeat data in multiprocess DataLoader mode,
+    or set `worker_init_fn()` specially to support multiprocess"""
+    length: int  # one epoch num steps
 
     def __getitem__(self, idx):
         ret = next(self.iter_data)
@@ -70,8 +72,10 @@ class IterDataset(BaseDataset):
 
 
 class IterImgDataset(BaseImgDataset):
-    """input iter_data is a generator not a list"""
-    length: int     # one epoch num steps
+    """input iter_data is an Iterator not a list
+    it will get repeat data in multiprocess DataLoader mode,
+    or set `worker_init_fn()` specially to support multiprocess"""
+    length: int  # one epoch num steps
 
     def process_one(self, *args):
         ret = next(self.iter_data)
@@ -90,10 +94,66 @@ class IterImgDataset(BaseImgDataset):
         return self.length
 
 
-class BatchIterDataset(BaseDataset):
-    """input iter_data is a generator not a list, each iter would generate a batch data"""
-    length: int     # one epoch num steps
-    batch_size: int
+class BatchIterDataset(IterableDataset):
+    """input iter_data is a type of List[Iterator]
+    support multiprocess DataLoader mode"""
+
+    def __init__(self, get_func, augment_func=None, **kwargs):
+        self.get_func = get_func
+        self.augment_func = augment_func
+        self.__dict__.update(**kwargs)
+
+    def __iter__(self):
+        iter_data = self.get_func()
+        worker_info = get_worker_info()
+        if worker_info is None:
+            for batch_rets in iter_data:
+                for ret in batch_rets:
+                    yield self.process_one(ret)
+        else:
+            worker_id = worker_info.id
+            for i in range(0, len(iter_data), worker_info.num_workers):
+                j = i + worker_id
+                if j < len(iter_data):
+                    for ret in iter_data[j]:
+                        yield self.process_one(ret)
+
+    def process_one(self, ret):
+        ret = copy.deepcopy(ret)
+        if self.augment_func:
+            ret = self.augment_func(ret)
+
+        return ret
+
+    @staticmethod
+    def collate_fn(batch):
+        return list(batch)
+
+
+class BatchIterImgDataset(BatchIterDataset):
+    def __init__(self, iter_data, augment_func=None, **kwargs):
+        super().__init__(iter_data, augment_func, **kwargs)
+        self.loader = os_lib.Loader(verbose=False)
+
+    def process_one(self, ret):
+        ret = copy.deepcopy(ret)
+        if isinstance(ret['image'], str):
+            ret['image_path'] = ret['image']
+            ret['image'] = self.loader.load_img(ret['image'])
+
+        ret['ori_image'] = ret['image']
+
+        if self.augment_func:
+            ret = self.augment_func(ret)
+
+        return ret
+
+
+class IterBatchDataset(BaseDataset):
+    """input iter_data is a type of Iterator[List]
+    it will get repeat data in multiprocess DataLoader mode,
+    or set `worker_init_fn()` specially to support multiprocess"""
+    length: int  # one epoch num steps
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
@@ -160,11 +220,12 @@ class DataHooks:
             complex_augment_func=self.__dict__.get('complex_data_augment')
         )
 
+        dataloader_kwargs.setdefault('shuffle', True)
+        dataloader_kwargs.setdefault('pin_memory', True)
+
         return DataLoader(
             train_dataset,
-            shuffle=True,
-            pin_memory=True,
-            collate_fn=train_dataset.collate_fn,
+            collate_fn=train_dataset.collate_fn if hasattr(train_dataset, 'collate_fn') else None,
             **dataloader_kwargs
         )
 
