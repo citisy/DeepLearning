@@ -17,15 +17,15 @@ net_s_config = dict(
 
 net_g_config = dict(
     network_capacity=16,
-    # attn_layers=[4, 5],
+    attn_layers=[4, 5],
     const_input=True
 )
 
 net_d_config = dict(
     network_capacity=16,
     fq_dict_size=512,
-    # fq_layers=[4, 5],
-    # attn_layers=[4, 5]
+    fq_layers=[4, 5],
+    attn_layers=[4, 5]
 )
 
 
@@ -54,19 +54,7 @@ class Model(nn.ModuleList):
         self.pl_mean = None
 
         # init weights
-        # initialize_layers(self, init_type='kaiming')
-        self._init_weights()
-
-    def _init_weights(self):
-        for m in self.modules():
-            if type(m) in {nn.Conv2d, nn.Linear}:
-                nn.init.kaiming_normal_(m.weight, a=0, mode='fan_in', nonlinearity='leaky_relu')
-
-        for block in self.net_g.blocks:
-            nn.init.zeros_(block.to_noise1.weight)
-            nn.init.zeros_(block.to_noise2.weight)
-            nn.init.zeros_(block.to_noise1.bias)
-            nn.init.zeros_(block.to_noise2.bias)
+        initialize_layers(self, init_type='kaiming')
 
     def loss_d(self, real_x, use_gp=False):
         batch_size = real_x.shape[0]
@@ -332,7 +320,6 @@ class Conv2DMod(nn.Module):
         self.demod = demod
         self.weight = nn.Parameter(torch.randn((out_ch, in_ch, k, k)))
         self.eps = eps
-        nn.init.kaiming_normal_(self.weight, a=0, mode='fan_in', nonlinearity='leaky_relu')
 
     def initialize_layers(self):
         nn.init.kaiming_normal_(self.weight, a=0, mode='fan_in', nonlinearity='leaky_relu')
@@ -392,7 +379,7 @@ class Discriminator(nn.Module):
         out_features = 1
 
         self.out = nn.Sequential(
-            Conv(in_ch, in_ch, 3, p=1, act=nn.LeakyReLU(0.2), is_norm=False),
+            Conv(in_ch, in_ch, 3, p=1, mode='ca', act=nn.LeakyReLU(0.2)),
             nn.Flatten(),
             nn.LazyLinear(out_features)
         )
@@ -419,8 +406,8 @@ class DiscriminatorBlock(nn.Module):
         super().__init__()
         self.conv = nn.Conv2d(in_ch, out_ch, 1, stride=(2 if not is_last else 1))
         self.conv_seq = nn.Sequential(
-            Conv(in_ch, out_ch, 3, act=nn.LeakyReLU(0.2), is_norm=False),
-            Conv(out_ch, out_ch, 3, act=nn.LeakyReLU(0.2), is_norm=False),
+            Conv(in_ch, out_ch, 3, mode='ca', act=nn.LeakyReLU(0.2)),
+            Conv(out_ch, out_ch, 3, mode='ca', act=nn.LeakyReLU(0.2)),
         )
 
         self.down_sample = nn.Sequential(
@@ -457,9 +444,8 @@ class AttentionBlock(nn.Sequential):
                 ConvAttention(in_ch),
             ), is_act=False),
             Residual(nn.Sequential(
-                ChannelNorm(in_ch),
-                Conv(in_ch, in_ch * 2, 1, act=nn.LeakyReLU(0.2, inplace=True), is_norm=False),
-                Conv(in_ch * 2, in_ch, 1, is_act=False, is_norm=False),
+                Conv(in_ch, in_ch * 2, 1, mode='nca', act=nn.LeakyReLU(0.2, inplace=True), norm=ChannelNorm(in_ch)),
+                Conv(in_ch * 2, in_ch, 1, mode='c'),
             ), is_act=False)
         )
 
@@ -490,12 +476,13 @@ class ConvAttention(nn.Module):
             nn.Conv2d(in_ch, tmp_ch * 2, 1, bias=False)
         )
 
-        self.to_out = Conv(tmp_ch, in_ch, 1, act=nn.GELU(), is_norm=False, mode='ac')
+        self.to_out = Conv(tmp_ch, in_ch, 1, mode='ac', act=nn.GELU())
 
     def forward(self, fmap):
-        h, x, y = self.heads, *fmap.shape[-2:]
-        q, k, v = (self.to_q(fmap), *self.to_kv(fmap).chunk(2, dim=1))
-        q, k, v = map(lambda t: rearrange(t, 'b (h c) x y -> (b h) (x y) c', h=h), (q, k, v))
+        x, y = fmap.shape[-2:]
+        q = self.to_q(fmap)
+        k, v = self.to_kv(fmap).chunk(2, dim=1)
+        q, k, v = map(lambda t: rearrange(t, 'b (h c) x y -> (b h) (x y) c', h=self.heads), (q, k, v))
 
         q = q.softmax(dim=-1)
         k = k.softmax(dim=-2)
@@ -504,7 +491,7 @@ class ConvAttention(nn.Module):
 
         context = einsum('b n d, b n e -> b d e', k, v)
         out = einsum('b n d, b d e -> b n e', q, context)
-        out = rearrange(out, '(b h) (x y) d -> b (h d) x y', h=h, x=x, y=y)
+        out = rearrange(out, '(b h) (x y) d -> b (h d) x y', h=self.heads, x=x, y=y)
 
         return self.to_out(out)
 
