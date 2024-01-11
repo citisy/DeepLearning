@@ -1,4 +1,3 @@
-import time
 import cv2
 import numpy as np
 import torch
@@ -8,8 +7,6 @@ from data_parse import DataRegister
 from pathlib import Path
 from data_parse.cv_data_parse.base import DataVisualizer
 from processor import Process, DataHooks, bundled, model_process, BatchIterImgDataset
-from utils import configs, cv_utils, os_lib, log_utils, torch_utils
-from datetime import datetime
 
 
 class GanOptimizer:
@@ -30,7 +27,7 @@ class GanOptimizer:
 
 class IgProcess(Process):
     use_early_stop = False
-    check_on_train_period = model_process.STEP
+    check_strategy = model_process.STEP
     val_data_num = 64 * 8
 
     def on_train_start(self, container, **kwargs):
@@ -112,7 +109,9 @@ class GanProcess(IgProcess):
             self.log(s)
 
     def on_backward(self, output, container, **kwargs):
-        """has been completed in `on_train_step()` yet"""
+        """loss backward has been completed in `on_train_step()` already"""
+        if hasattr(self, 'ema'):
+            self.ema.step(self.model, self.aux_model['ema'])
 
 
 class Mnist(DataHooks):
@@ -384,6 +383,11 @@ class StyleGan(GanProcess):
             img_ch=self.in_ch,
             image_size=self.input_size,
         )
+        self.warmup()
+
+    def warmup(self):
+        """init some params"""
+        self.model.net_d(torch.randn((1, self.in_ch, self.input_size, self.input_size)))
 
     def set_optimizer(self):
         generator_params = list(self.model.net_g.parameters()) + list(self.model.net_s.parameters())
@@ -427,7 +431,7 @@ class StyleGan(GanProcess):
         self.optimizer.optimizer_g.zero_grad()
         loss_g = self.model.loss_g(
             images,
-            use_pp=(self.counters['total_steps'] > self.min_pp_step and self.counters['total_steps'] % self.per_gp_step == 0)
+            use_pp=(self.counters['total_steps'] > self.min_pp_step and self.counters['total_steps'] % self.per_pp_step == 0)
         )
         loss_g.backward()
         self.optimizer.optimizer_g.step()

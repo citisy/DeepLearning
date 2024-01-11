@@ -78,7 +78,7 @@ class Model(nn.ModuleList):
 
         # r = real_y - fake_y.mean()
         # f = fake_y - real_y.mean()
-        loss = (F.relu(1 + r) + F.relu(1 - f)).mean() #+ (fake_q_loss + real_q_loss).mean()
+        loss = (F.relu(1 + r) + F.relu(1 - f)).mean() + (fake_q_loss + real_q_loss).mean()
 
         if use_gp:
             # gradient penalty
