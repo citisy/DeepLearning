@@ -214,6 +214,18 @@ class Iou:
 
         return inter / (area2 + self.eps)
 
+    def b_iou(self, box1, box2, inter=None):
+        """Bidirectional iou
+        Area(box1 & box2) / min{Area(box1), Area(box2)}"""
+        box1, box2 = np.array(box1), np.array(box2)
+
+        if inter is None:
+            inter = Area.intersection_areas(box1, box2)
+
+        u_iou1 = self.u_iou(box1, box2, inter=inter)
+        u_iou2 = self.u_iou(box2, box1, inter=inter.T).T
+        return np.maximum(u_iou1, u_iou2)
+
     def m_iou(self, box1, box2, inter=None):
         """mean iou
         (u_iou(box1, box2) + u_iou(box2, box1).T) / 2

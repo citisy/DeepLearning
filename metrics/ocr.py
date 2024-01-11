@@ -1,9 +1,8 @@
-import json
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
 from . import object_detection, text_generation
-from data_parse.nlp_data_parse.pre_process import FineGrainedSpliter
+from data_parse.nlp_data_parse.pre_process import spliter
 from utils import os_lib
 
 
@@ -131,8 +130,8 @@ class EasyMetric:
             'ROUGE-W': text_generation.TopMetric(confusion_method=text_generation.WordLCSConfusionMatrix, lcs_method=nlp_utils.Sequencer.weighted_longest_common_subsequence),
         }
 
-        det_cut_text = FineGrainedSpliter.segments_from_paragraphs_by_jieba(det_text)
-        gt_cut_text = FineGrainedSpliter.segments_from_paragraphs_by_jieba(gt_text)
+        det_cut_text = spliter.segments_from_paragraphs_by_jieba(det_text)
+        gt_cut_text = spliter.segments_from_paragraphs_by_jieba(gt_text)
 
         ret.update({k: v.f_measure(det_cut_text, gt_cut_text) for k, v in _ret.items()})
 
