@@ -4,7 +4,7 @@ from torch.nn import functional as F
 from . import BaseSemSegModel
 from ..layers import Conv, Linear, ConvInModule, OutModule, ConvT
 # from ..image_classifier.VGG import Backbone, VGG16_config
-from ..image_classifier.ResNet import Backbone, Res50_config, Res101_config
+from ..image_classification.ResNet import Backbone, Res50_config, Res101_config
 from utils.torch_utils import initialize_layers
 
 
