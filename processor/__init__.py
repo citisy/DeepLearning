@@ -96,6 +96,9 @@ class Process(
         if not hasattr(self, 'stopper') or self.stopper is None:
             self.set_stopper()
 
+        if not hasattr(self, 'scaler') or self.scaler is None:
+            self.set_scaler()
+
         try_init_components = [self.set_aux_model]
         for components in try_init_components:
             try:

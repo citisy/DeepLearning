@@ -32,10 +32,8 @@ class OdDataset(BaseImgDataset):
 
 
 class OdProcess(Process):
-    def on_train_start(self, container, max_epoch=None, **kwargs):
-        super().on_train_start(container, **kwargs)
-        self.set_scheduler(max_epoch=max_epoch)
-        self.set_scaler()
+    use_scaler = True
+    use_scheduler = True
 
     def on_train_step(self, rets, container, **kwargs) -> dict:
         images = [torch.from_numpy(ret.pop('image')).to(self.device, non_blocking=True, dtype=torch.float) for ret in rets]
@@ -54,24 +52,6 @@ class OdProcess(Process):
             output = self.model(images, gt_boxes, gt_cls)
 
         return output
-
-    def on_backward(self, output, container, batch_size=16, accumulate=64, **kwargs):
-        loss = output['loss']
-
-        self.scaler.scale(loss).backward()
-        if self.counters['total_nums'] % accumulate < batch_size:
-            self.scaler.unscale_(self.optimizer)  # unscale gradients
-            torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=10.0)  # clip gradients
-            self.scaler.step(self.optimizer)  # optimizer.step
-            self.scaler.update()
-            self.optimizer.zero_grad()
-
-            if hasattr(self, 'aux_model'):
-                self.ema.step(self.model, self.aux_model['ema'])
-
-    def on_train_epoch_end(self, *args, **kwargs) -> bool:
-        self.scheduler.step()
-        return super().on_train_epoch_end(*args, **kwargs)
 
     def metric(self, **kwargs):
         container = self.predict(**kwargs)

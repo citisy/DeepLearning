@@ -32,14 +32,11 @@ class SegDataset(BaseImgDataset):
 
 
 class SegProcess(Process):
+    use_scaler = True
+    use_scheduler = True
+
     def set_optimizer(self):
         self.optimizer = optim.SGD(self.model.parameters(), lr=0.001, momentum=0.9, weight_decay=1e-4)
-
-    def on_train_start(self, container, batch_size=16, max_epoch=None, **kwargs):
-        super().on_train_start(container, batch_size=batch_size, **kwargs)
-
-        self.set_scheduler(max_epoch=max_epoch)
-        self.set_scaler()
 
     def on_train_step(self, rets, container, **kwargs) -> dict:
         images = [torch.from_numpy(ret.pop('image')).to(self.device, non_blocking=True, dtype=torch.float) for ret in rets]
@@ -54,24 +51,6 @@ class SegProcess(Process):
             output = self.model(images, pix_images)
 
         return output
-
-    def on_backward(self, output, container, batch_size=16, accumulate=64, **kwargs):
-        loss = output['loss']
-
-        self.scaler.scale(loss).backward()
-        if self.counters['total_nums'] % accumulate < batch_size:
-            self.scaler.unscale_(self.optimizer)  # unscale gradients
-            torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=10.0)  # clip gradients
-            self.scaler.step(self.optimizer)  # optimizer.step
-            self.scaler.update()
-            self.optimizer.zero_grad()
-
-            if hasattr(self, 'aux_model'):
-                self.ema.step(self.model, self.aux_model['ema'])
-
-    def on_train_epoch_end(self, *args, **kwargs) -> bool:
-        self.scheduler.step()
-        return super().on_train_epoch_end(*args, **kwargs)
 
     def metric(self, *args, **kwargs):
         from metrics import multi_classification

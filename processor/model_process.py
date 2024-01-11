@@ -63,7 +63,7 @@ class CheckpointHooks:
             ckpt.update(save_items)
         torch.save(ckpt, save_path, **kwargs)
 
-    device: str
+    device: str = None
 
     def save_torchscript(self, save_path, trace_input=None, model_warp=None, **kwargs):
         if trace_input is None:
@@ -174,7 +174,7 @@ class CheckpointHooks:
 
     def load_pertain(self):
         if hasattr(self, 'pretrain_model'):
-            self.load(self.pretrain_model)
+            self.load(self.pretrain_model, save_items=())
 
 
 class ModelHooks:
@@ -228,12 +228,18 @@ class ModelHooks:
         # return (1 - x / max_epoch) * (1.0 - self.lrf) + self.lrf
         return ((1 - math.cos(x * math.pi / max_epoch)) / 2) * (self.lrf - 1) + 1  # cos_lr
 
+    use_scheduler = False
+
     def set_scheduler(self, max_epoch):
-        self.scheduler = optim.lr_scheduler.LambdaLR(self.optimizer, lr_lambda=lambda x: self.lf(x, max_epoch))
-        self.scheduler.last_epoch = -1
+        if self.use_scheduler:
+            self.scheduler = optim.lr_scheduler.LambdaLR(self.optimizer, lr_lambda=lambda x: self.lf(x, max_epoch))
+            self.scheduler.last_epoch = -1
+
+    use_scaler = False
 
     def set_scaler(self):
-        self.scaler = torch.cuda.amp.GradScaler(enabled=True)
+        if self.use_scaler:
+            self.scaler = torch.cuda.amp.GradScaler(enabled=True)
 
     def model_info(self, **kwargs):
         from utils.torch_utils import ModuleInfo
@@ -307,7 +313,7 @@ class ModelHooks:
     save: 'CheckpointHooks.save'
     counters: dict
 
-    def on_train_start(self, container, batch_size=16, metric_kwargs=dict(), return_val_dataloader=True, dataloader_kwargs=dict(), **kwargs):
+    def on_train_start(self, container, batch_size=None, metric_kwargs=dict(), return_val_dataloader=True, dataloader_kwargs=dict(), max_epoch=None, **kwargs):
         metric_kwargs = metric_kwargs.copy()
         metric_kwargs.setdefault('batch_size', batch_size)
         metric_kwargs.setdefault('dataloader_kwargs', {})
@@ -324,8 +330,9 @@ class ModelHooks:
         self.wandb_id = wandb_run.id
 
         self.set_mode(train=True)
+        self.set_scheduler(max_epoch=max_epoch)
 
-        _counters = ['epoch', 'total_nums', 'total_steps']
+        _counters = ['epoch', 'total_nums', 'total_steps', 'check_nums']
         for c in _counters:
             self.counters.setdefault(c, 0)
 
@@ -335,13 +342,14 @@ class ModelHooks:
             metric_kwargs['val_dataloader'] = self.get_val_dataloader(batch_size=batch_size, **dataloader_kwargs)
 
         container['metric_kwargs'] = metric_kwargs
+        container['end_flag'] = False
+        container['last_check_time'] = time.time()
 
     register_logger: 'bundled.LogHooks.register_logger'
     log_methods: dict
-    check_on_train_period: int = EPOCH
+    check_strategy: int = EPOCH
 
     def on_train(self, container, max_epoch=100, **kwargs):
-
         for i in range(self.counters['epoch'], max_epoch):
             self.on_train_epoch_start(container, **kwargs)
             pbar = tqdm(container['train_dataloader'], desc=visualize.TextVisualize.highlight_str(f'Train {i}/{max_epoch}'))
@@ -357,7 +365,6 @@ class ModelHooks:
                 break
 
     def on_train_epoch_start(self, container, _counters=('per_epoch_nums',), **kwargs):
-        container['epoch_start_time'] = time.time()
         for c in _counters:
             self.counters[c] = 0
 
@@ -371,30 +378,48 @@ class ModelHooks:
         """
         raise NotImplementedError
 
-    def on_backward(self, outputs, container, **kwargs):
+    def on_backward(self, outputs, container, accumulate=None, batch_size=None, **kwargs):
         loss = outputs['loss']
-        loss.backward()
-        self.optimizer.step()
-        self.optimizer.zero_grad()
+
+        if self.use_scaler:
+            self.scaler.scale(loss).backward()
+        else:
+            loss.backward()
+
+        if accumulate:
+            if self.counters['total_nums'] % accumulate < batch_size:
+                self._backward()
+        else:
+            self._backward()
 
         if hasattr(self, 'ema'):
             self.ema.step(self.model, self.aux_model['ema'])
 
+    def _backward(self):
+        if self.use_scaler:
+            self.scaler.unscale_(self.optimizer)  # unscale gradients
+            torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=10.0)  # clip gradients
+            self.scaler.step(self.optimizer)  # optimizer.step
+            self.scaler.update()
+        else:
+            self.optimizer.step()
+
+        self.optimizer.zero_grad()
+
     def on_train_step_end(self, rets, outputs, container, more_log=False, **kwargs):
-        loss = outputs['loss']
         self.counters['total_nums'] += len(rets)
         self.counters['total_steps'] += 1
-        self.counters['per_epoch_loss'] += loss.item()
         self.counters['per_epoch_nums'] += len(rets)
+        self.counters['check_nums'] += len(rets)
 
         losses = {}
         for k, v in outputs.items():
             if k.startswith('loss'):
                 v = v.item()
-                n = f'per_epoch_{k}'
+                n = f'check_{k}'
                 self.counters[n] = self.counters.get(n, 0) + v
                 losses[k] = v
-                losses[f'mean_{k}'] = self.counters[n] / self.counters['per_epoch_nums']
+                losses[f'mean_{k}'] = self.counters[n] / self.counters['check_nums']
 
         container['losses'] = losses
 
@@ -408,12 +433,14 @@ class ModelHooks:
             **mem_info
         }, 'pbar')
 
-        if self.check_on_train_period == STEP:
+        if self.check_strategy == STEP:
             self._check_on_train_step_end(container, **kwargs)
 
     def on_train_epoch_end(self, container, **kwargs) -> bool:
         self.counters['epoch'] += 1
-        if self.check_on_train_period == EPOCH:
+        if self.use_scheduler:
+            self.scheduler.step()
+        if self.check_strategy == EPOCH:
             self._check_on_train_epoch_end(container, **kwargs)
         return container.get('end_flag', False)  # cancel the training when end_flag is True
 
@@ -448,9 +475,15 @@ class ModelHooks:
                     container['end_flag'] = True
                     self.log(f'Train will be stop soon, got {v} value from {k}')
 
-        epoch_start_time = container.get('epoch_start_time')
-        if epoch_start_time is not None:
-            self.trace({'time_consume': (time.time() - epoch_start_time) / 60}, (bundled.LOGGING, bundled.WANDB))
+            for k in self.counters:
+                if k.startswith('check_'):
+                    self.counters[k] = 0
+
+        last_check_time = container.get('last_check_time')
+        if last_check_time is not None:
+            now = time.time()
+            self.trace({'time_consume': (now - last_check_time) / 60}, (bundled.LOGGING, bundled.WANDB))
+            container['last_check_time'] = now
 
         ckpt = {
             'optimizer': self.optimizer.state_dict(),
@@ -477,7 +510,9 @@ class ModelHooks:
         results = self.metric(**container.get('metric_kwargs', {}))
         scores = {}
         for name, result in results.items():
-            scores[f'val_score/{name}'] = result['score']
+            for k, v in result.items():
+                if k.startswith('score'):
+                    scores[f'val_score/{name}.{k}'] = v
 
         self.trace(scores, bundled.WANDB)
         self.log(f'val log: score: {scores}')
