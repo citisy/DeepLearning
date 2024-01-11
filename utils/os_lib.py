@@ -65,6 +65,15 @@ class Saver:
         self.stderr_method = stderr_method
         self.stderr_fmt = stderr_fmt
 
+        self.funcs = {
+            suffixes_dict['json']: self.save_json,
+            suffixes_dict['txt']: self.save_txt,
+            suffixes_dict['pkl']: self.save_pkl,
+            suffixes_dict['joblib']: self.save_joblib,
+            suffixes_dict['img']: self.save_img,
+            suffixes_dict['csv']: self.save_csv
+        }
+
     def stdout(self, path):
         self.stdout_method(self.stdout_fmt % path)
 
@@ -75,18 +84,10 @@ class Saver:
         suffix = Path(path).suffix.lower()
         mk_parent_dir(path)
 
-        if suffix in suffixes_dict['json']:
-            self.save_json(obj, path, **kwargs)
-        elif suffix in suffixes_dict['txt']:
-            self.save_txt(obj, path, **kwargs)
-        elif suffix in suffixes_dict['pkl']:
-            self.save_pkl(obj, path, **kwargs)
-        elif suffix in suffixes_dict['joblib']:
-            self.save_joblib(obj, path, **kwargs)
-        elif suffix in suffixes_dict['img']:
-            self.save_img(obj, path, **kwargs)
-        elif suffix in suffixes_dict['csv']:
-            self.save_csv(obj, path, **kwargs)
+        for k, func in self.funcs.items():
+            if suffix in k:
+                func(obj, path, **kwargs)
+                break
         else:
             self.save_bytes(obj, path, **kwargs)
 
@@ -98,7 +99,8 @@ class Saver:
 
     def save_txt(self, obj: iter, path, sep='\n', **kwargs):
         with open(path, 'w', encoding='utf8', errors='ignore') as f:
-            f.write(sep.join(obj))
+            for o in obj:
+                f.write(f'{o}{sep}')
 
         self.stdout(path)
 
@@ -221,24 +223,25 @@ class Loader:
         self.stdout_method = stdout_method if verbose else FakeIo()
         self.stdout_fmt = stdout_fmt
 
+        self.funcs = {
+            suffixes_dict['json']: self.load_json,
+            suffixes_dict['yml']: self.load_yaml,
+            suffixes_dict['ini']: self.load_ini,
+            suffixes_dict['txt']: self.load_txt,
+            suffixes_dict['pkl']: self.load_pkl,
+            suffixes_dict['img']: self.load_img,
+        }
+
     def stdout(self, path):
         self.stdout_method(self.stdout_fmt % path)
 
     def auto_load(self, path: str):
         suffix = Path(path).suffix.lower()
 
-        if suffix in suffixes_dict['json']:
-            obj = self.load_json(path)
-        elif suffix in suffixes_dict['yml']:
-            obj = self.load_yaml(path)
-        elif suffix in suffixes_dict['ini']:
-            obj = self.load_ini(path)
-        elif suffix in suffixes_dict['txt']:
-            obj = self.load_txt(path)
-        elif suffix in suffixes_dict['pkl']:
-            obj = self.load_pkl(path)
-        elif suffix in suffixes_dict['img']:
-            obj = self.load_img(path)
+        for k, func in self.funcs.items():
+            if suffix in k:
+                obj = func(path)
+                break
         else:
             obj = self.load_bytes(path)
 
@@ -496,18 +499,18 @@ class FileCacher:
         caches = [str(_) for _ in self.cache_dir.glob(f'*{suffix}')]
 
         if len(caches) > self.max_size:
-            ctime = [os.path.getctime(fp) for fp in caches]
-            min_ctime = min(ctime)
-            old_path = caches[ctime.index(min_ctime)]
             try:
+                ctime = [os.path.getctime(fp) for fp in caches]
+                min_ctime = min(ctime)
+                old_path = caches[ctime.index(min_ctime)]
                 os.remove(old_path)
+                self.stdout_method(self.stdout_fmt % old_path)
+                return old_path
+
             except FileNotFoundError:
                 # todo: if it occur, number of file would be greater than max_size
                 self.stdout_method('Two process thread were crashed while deleting file possibly')
                 return
-
-            self.stdout_method(self.stdout_fmt % old_path)
-            return old_path
 
     def get_one(self, file_name=None):
         if file_name is None:
