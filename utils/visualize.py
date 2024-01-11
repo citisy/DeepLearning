@@ -1,3 +1,4 @@
+import re
 import cv2
 import numpy as np
 import inspect
@@ -230,13 +231,20 @@ class TextVisualize:
         return '\033[' + terminal_cmap['end'] + 'm'
 
     @classmethod
-    def highlight_str(cls, text, types=None, fmt=''):
+    def highlight_str(cls, text, types=None, fmt='', start='', end='', return_list=False, **kwargs):
         """hightlight a string
 
         Args:
-            text(str):
-            types(str or tuple): one of keys of `terminal_cmap', if fmt is not set, default is `('blue', 'bold')`
-            fmt(str): highlight format, fmt like '... %s ...'
+            text(str or tuple):
+                apply for `fmt % text`
+            types(str or tuple):
+                one of keys of `terminal_cmap',
+                unuse when start and end is set,
+                if fmt is not set, default is `('blue', 'bold')`
+            fmt(str): highlight format, fmt like '<left>%s<right>'
+            start(object):
+            end(object)
+            return_list(bool)
 
         Examples:
             >>> TextVisualize.highlight_str('hello')
@@ -249,61 +257,96 @@ class TextVisualize:
         if not (types or fmt):
             types = ('blue', 'bold')
 
-        start, end = '', ''
         if types:
-            start = cls.get_start(types)
-            end = cls.get_end(types)
+            start = start or cls.get_start(types)
+            end = end or cls.get_end(types)
 
         if not fmt:
             fmt = '%s'
 
-        fmt = start + fmt + end
-        return fmt % text
+        fmt = fmt % text
+        s = [start, fmt, end]
+        return s if return_list else ''.join(s)
 
     @classmethod
-    def highlight_subtext(cls, text, span, wing_length=None, types=None, fmt=''):
+    def highlight_subtext(cls, text, span, highlight_obj=None,
+                          keep_len=None, left_abbr='...', right_abbr='...',
+                          auto_truncate=False, truncate_pattern=None,
+                          return_list=False, **kwargs):
         """highlight a string where giving by span of a text
         See Also `TextVisualize.highlight_str`
 
         Args:
             text(str):
             span(tuple):
-            wing_length(int): limit str output. No limit if None, else exceeding part collapse to '...'
-            types(str or tuple):
-            fmt(str):
+            highlight_obj(List[str]):
+            keep_len(int):
+                limit output str length, the len gives the length of left and right str.
+                No limit if None, or exceeding part collapse to abbr str
+            left_abbr(str)
+            right_abbr(str)
+            auto_truncate(bool): if true, truncate the text
+            truncate_pattern(re.Patern)
+            return_list(bool)
+            kwargs: see also `TextVisualize.highlight_str()` to get more info
 
         Examples:
-            >>> TextVisualize.highlight_subtext('hello', (2, 4))
+            >>> TextVisualize.highlight_subtext('123,4567,890abc', (5, 7))
+            >>> TextVisualize.highlight_subtext('123,4567,890abc', (5, 7), keep_len=5)
+            >>> TextVisualize.highlight_subtext('123,4567,890abc', (5, 7), keep_len=5, auto_truncate=True)
 
         """
-        if wing_length:
-            left = max(0, span[0] - wing_length)
-            right = min(len(text), span[1] + wing_length)
-            left_abbr = '...' if left != 0 else ''
-            right_abbr = '...' if right != len(text) else ''
-            s = (
-                    left_abbr
-                    + text[left:span[0]]
-                    + cls.highlight_str(text[span[0]:span[1]], types, fmt)
-                    + text[span[1]:right]
-                    + right_abbr
-            )
+        if not highlight_obj:
+            highlight_obj = cls.highlight_str(text[span[0]:span[1]], return_list=return_list, **kwargs)
+        highlight_obj = highlight_obj if return_list else [highlight_obj]
+
+        if keep_len:
+            left = max(0, span[0] - keep_len)
+            right = min(len(text), span[1] + keep_len)
+
+            if auto_truncate:
+                truncate_pattern = truncate_pattern or re.compile(r'[。\.!\?！？;；,，]')
+                a = text[left:right]
+                r = truncate_pattern.split(a)
+                if len(r) >= 3:  # make sure that returning one sentence at least
+                    if left > 0 and not truncate_pattern.match(text[left - 1]):
+                        left += len(r[0]) + 1
+
+                    if right < len(text) - 1 and not truncate_pattern.match(text[right + 1]):
+                        right -= len(r[-1])
+
+            left_abbr = left_abbr if left > 0 else ''
+            right_abbr = right_abbr if right < len(text) else ''
+
+            s = [
+                left_abbr,
+                text[left:span[0]],
+                *highlight_obj,
+                text[span[1]:right],
+                right_abbr,
+            ]
 
         else:
-            s = text[:span[0]] + cls.highlight_str(text[span[0]:span[1]], types, fmt) + text[span[1]:]
+            s = [
+                text[:span[0]],
+                *highlight_obj,
+                text[span[1]:]
+            ]
 
-        return s
+        return s if return_list else ''.join(s)
 
     @classmethod
-    def highlight_subtexts(cls, text, spans, types=None, fmt=''):
+    def highlight_subtexts(cls, text, spans, highlight_objs=None, fmt='', return_list=False, **kwargs):
         """highlight multiple strings where giving by spans of a text
         See Also `TextVisualize.highlight_str`
 
         Args:
             text(str):
             spans(List[tuple]):
-            types(str or tuple):
+            highlight_objs(List[List[str]):
             fmt(str or list):
+            return_list(bool)
+            kwargs: see also `TextVisualize.highlight_str()` to get more info
 
         Examples:
             >>> TextVisualize.highlight_subtexts('hello world', [(2, 3), (6, 7)])
@@ -312,54 +355,88 @@ class TextVisualize:
 
         arg = np.argsort(spans, axis=0)
 
-        s = ''
-        tmp = 0
+        s = []
+        a = 0
         for i in arg[:, 0]:
             span = spans[i]
-            assert tmp <= span[0], f'{span = } overlap, please check'
+            assert a <= span[0], f'{span = } overlap, please check'
 
-            _fmt = fmt[i] if isinstance(fmt, list) else fmt
-            s += text[tmp:span[0]] + cls.highlight_str(text[span[0]:span[1]], types, _fmt)
-            tmp = span[1]
+            if highlight_objs:
+                highlight_obj = highlight_objs[i]
+            else:
+                _fmt = fmt[i] if isinstance(fmt, list) else fmt
+                highlight_obj = cls.highlight_str(text[span[0]:span[1]], fmt=_fmt, return_list=return_list, **kwargs)
 
-        s += text[tmp:]
+            highlight_obj = highlight_obj if return_list else [highlight_obj]
+            s += [text[a:span[0]]] + highlight_obj
+            a = span[1]
 
-        return s
+        s.append(text[a:])
+
+        return s if return_list else ''.join(s)
 
     @classmethod
-    def mark_subtext(cls, text, span, mark, types=('blue', 'bold'), fmt='(%s -> %s)', **kwargs):
-        """
+    def mark_subtext(cls, text, span, mark, types=('blue', 'bold'), fmt='', **kwargs):
+        """highlight a string with mark symbols
+
         Examples:
             >>> TextVisualize.mark_subtext('hello', (2, 4), 'ii')
             >>> TextVisualize.mark_subtext('hello', (2, 4), 'ii', fmt='%s(to %s)')
         """
-        a, b = fmt.split('%s', 1)
-        fmt = a + '%s' + b % mark
-        return cls.highlight_subtext(text, span, types=types, fmt=fmt, **kwargs)
+        fmt = fmt or '(%s -> %s)'
+        highlight_obj = cls.highlight_str((text[span[0]:span[1]], mark), types=types, fmt=fmt, **kwargs)
+        return cls.highlight_subtext(text, span, highlight_obj, **kwargs)
 
     @classmethod
-    def mark_subtexts(cls, text, spans, marks, types=('blue', 'bold'), fmt=''):
+    def mark_subtexts(cls, text, spans, marks, types=('blue', 'bold'), fmt='', **kwargs):
         """
         Examples:
             >>> TextVisualize.mark_subtexts('hello world', [(2, 3), (6, 7)], ['i', 'v'])
             >>> TextVisualize.mark_subtexts('hello world', [(2, 3), (6, 7)], ['i', 'v'], fmt='%s(to %s)')
         """
         _fmt = []
-        for mark in marks:
-            tmp = fmt or '(%s -> %s)'
-            a, b = tmp.split('%s', 1)
-            _fmt = a + '%s' + b % mark
-        return cls.highlight_subtexts(text, spans, types=types, fmt=_fmt)
+        highlight_objs = []
+        for i, (span, mark) in enumerate(zip(spans, marks)):
+            _fmt = fmt[i] if isinstance(fmt, list) else fmt
+            highlight_obj = cls.highlight_str((text[span[0]:span[1]], mark), types=types, fmt=_fmt, **kwargs)
+            highlight_objs.append(highlight_obj)
+        return cls.highlight_subtexts(text, spans, highlight_objs, **kwargs)
 
     @staticmethod
-    def num_to_human_readable_str(num: int):
-        for suffix in ['b', 'K', 'M', 'G', 'T']:
-            if num >= 1024:
-                num /= 1024.
+    def num_to_human_readable_str(num: int, factor=1024., suffixes=('b', 'K', 'M', 'G', 'T')):
+        """
+        Examples:
+            >>> TextVisualize.num_to_human_readable_str(1234567)
+            1.18 M
+            >>> TextVisualize.num_to_human_readable_str(1234567, factor=1e3)
+            1.23 M
+            >>> TextVisualize.num_to_human_readable_str(1234567, factor=(60., 60., 24.), suffixes=('s', 'm', 'h'))
+            14.29 h
+        """
+        if not isinstance(factor, (list, tuple)):
+            factor = [factor] * len(suffixes)
+
+        for suffix, f in zip(suffixes, factor):
+            if num >= f:
+                num /= f
             else:
                 return f'{num:.2f} {suffix}'
 
-    @staticmethod
-    def dict_to_str(dic: dict):
-        tmp = [f'{k}={v}' for k, v in dic.items()]
-        return ','.join(tmp)
+        return f'{num:.2f} {suffix}'
+
+    @classmethod
+    def dict_to_str(cls, dic: dict, return_list=False):
+        """
+        Examples:
+            >>> TextVisualize.dict_to_str({'a': 1, 'b': {'c': 2, 'd': 3}})
+            a=1,b.c=2,b.d=3
+        """
+        s = []
+        for k, v in dic.items():
+            if isinstance(v, dict):
+                v = cls.dict_to_str(v, return_list=True)
+                for vv in v:
+                    s.append(f'{k}.{vv}')
+            else:
+                s.append(f'{k}={v}')
+        return s if return_list else ','.join(s)
