@@ -2,6 +2,7 @@ import copy
 import math
 import torch
 from torch import nn
+from collections import OrderedDict
 
 
 class ModuleInfo:
@@ -195,44 +196,44 @@ def bilinear_kernel(in_channels, out_channels, kernel_size):
 
 
 class EarlyStopping:
-    def __init__(self, thres=0.005, patience=None, min_epoch=0, ignore_min_score=-1,
+    def __init__(self, thres=0.005, patience=None, min_period=0, ignore_min_score=-1,
                  verbose=True, stdout_method=print):
         self.thres = thres
         self.best_score = -1
-        self.best_epoch = 0
-        self.acc_epoch = 0
-        self.last_epoch = 0
-        self.min_epoch = min_epoch
+        self.best_period = 0
+        self.acc_period = 0
+        self.last_period = 0
+        self.min_period = min_period
         self.ignore_min_score = ignore_min_score
         self.patience = patience or float('inf')
         self.verbose = verbose
         self.stdout_method = stdout_method
 
-    def __call__(self, epoch, score):
-        if epoch < self.min_epoch or score < self.ignore_min_score:
-            self.last_epoch = epoch
+    def __call__(self, period, score):
+        if period < self.min_period or score < self.ignore_min_score:
+            self.last_period = period
             return False
 
         if score - self.best_score > self.thres:
-            self.acc_epoch = 0
+            self.acc_period = 0
         elif abs(self.best_score - score) <= self.thres:
-            self.acc_epoch += epoch - self.last_epoch
+            self.acc_period += period - self.last_period
 
         if score > self.best_score:
-            self.best_epoch = epoch
+            self.best_period = period
             self.best_score = score
 
-        self.last_epoch = epoch
-        stop = self.acc_epoch >= self.patience
+        self.last_period = period
+        stop = self.acc_period >= self.patience
         if stop and self.verbose:
-            self.stdout_method(f'Early Stopping training. Best results observed at epoch {self.best_epoch}, and best score is {self.best_score}')
+            self.stdout_method(f'Early Stopping training. Best results observed at period {self.best_period}, and best score is {self.best_score}')
         return stop
 
     def state_dict(self):
         return dict(
-            last_epoch=self.last_epoch,
-            acc_epoch=self.acc_epoch,
-            best_epoch=self.best_epoch,
+            last_epoch=self.last_period,
+            acc_epoch=self.acc_period,
+            best_epoch=self.best_period,
             best_score=self.best_score
         )
 
@@ -323,7 +324,7 @@ class EMA:
 
     @torch.no_grad()
     def update_attr(self, model, ema_model):
-        # beta is larger, weights are closed to old model
+        # larger the beta, more closed the weights to the old model
         beta = self.decay(self.cur_step)
 
         msd = de_parallel(model).state_dict()  # model state_dict
@@ -348,3 +349,32 @@ class EMA:
             self.update_attr(model, ema_model)
         self.cur_step += 1
         return self.cur_step
+
+
+def convert_state_dict(state_dict: OrderedDict, convert_dict: dict):
+    """
+    Usages:
+        .. code-block:: python
+
+            model1 = ...
+            model2 = ...
+            convert_dict = {'before': 'after', 'before.a': 'after.aa'}
+
+            state_dict = model1.state_dict()    # OrderedDict([('before.a.weight', tensor(...)), ('before.b.weight', tensor(...)), ('same.weight', tensor(...))])
+            state_dict = convert_state_dict(state_dict, convert_dict)   # OrderedDict([('after.aa.weight', tensor(...)), ('after.b.weight', tensor(...)), ('same.weight', tensor(...))])
+            model2.load_state_dict(state_dict)
+    """
+    from .nlp_utils import PrefixTree
+
+    tree = PrefixTree(list(convert_dict.keys()), list(convert_dict.keys()), unique=True)
+    d = OrderedDict()
+
+    for k, v in state_dict.items():
+        a = tree.get(k, return_last=True)
+        if a in convert_dict:
+            k = k.replace(a, convert_dict[a])
+        d[k] = v
+
+    return d
+
+

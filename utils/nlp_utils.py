@@ -8,7 +8,7 @@ class Sequencer:
     @staticmethod
     def n_grams(segments: List[List[str]], n_gram=2) -> List[set]:
         """
-        Usages:
+        Examples:
             >>> Sequencer.n_grams([['a', 'b', 'c', 'd', 'e']])
             [{('d', 'e'), ('a', 'b'), ('b', 'c'), ('c', 'd')}]
 
@@ -41,7 +41,7 @@ class Sequencer:
     def longest_common_subsequence(cls, a: List[str], b: List[str]) -> dict:
         """longest common subsequence(LCS)
 
-        Usages:
+        Examples:
             >>> Sequencer.longest_common_subsequence(['a', 'b', 'c', 'd', 'e'], ['a', 'b', 'b', 'c', 'd', 'e'])
             {'lcs': ['a', 'b', 'c', 'd', 'e'], 'score': 5}
         """
@@ -65,7 +65,7 @@ class Sequencer:
     def weighted_longest_common_subsequence(cls, a, b, f=lambda x: x ** 2, f_inv=lambda x: x ** 0.5) -> dict:
         """weighted longest common subsequence(WLCS)
 
-        Usages:
+        Examples:
             >>> Sequencer.weighted_longest_common_subsequence(['a', 'b', 'c', 'd', 'e'], ['a', 'b', 'b', 'c', 'd', 'e'])
             {'lcs': ['a', 'b', 'c', 'd', 'e'], 'score': 4.123105625617661}
         """
@@ -92,3 +92,55 @@ class Sequencer:
             lcs=cls.search_seq(a, b, c),
             score=f_inv(c[m, n])
         )
+
+
+class PrefixTree:
+    def __init__(self, words, values=None, unique=False, end_flag=True):
+        self.unique = unique
+        self.end_flag = end_flag
+        self.tree = dict()
+        self.build(words, values)
+
+    def build(self, words, values=None):
+        for i, word in enumerate(words):
+            value = values[i] if values else None
+            self.update(word, value)
+
+    def get(self, word, default=None, return_trace=False, return_last=False):
+        tmp = self.tree
+        last = default
+        for i, w in enumerate(word):
+            tmp = tmp.get(w)
+            if tmp is None:
+                if return_trace:
+                    return word[:i]
+                elif return_last:
+                    return last
+                else:
+                    return default
+            else:
+                last = tmp.get(self.end_flag, last)
+
+        if return_trace:
+            r = word
+        elif return_last:
+            r = last
+        else:
+            r = default
+
+        return tmp.get(self.end_flag, r)
+
+    def update(self, word, value=None):
+        this_dict = self.tree
+
+        for cid, char in enumerate(word):
+            this_dict = this_dict.setdefault(char, dict())
+
+            if cid == len(word) - 1:  # last one
+                if value:
+                    if self.unique:
+                        this_dict[self.end_flag] = value
+                    else:
+                        this_dict.setdefault(self.end_flag, []).append(value)
+                else:
+                    this_dict[self.end_flag] = None
