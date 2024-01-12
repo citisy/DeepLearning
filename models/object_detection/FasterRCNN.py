@@ -5,7 +5,7 @@ from torch import nn, Tensor
 import torch.nn.functional as F
 from ..layers import Conv, Linear, ConvInModule
 from . import cls_nms
-from ..image_classifier import GetBackbone
+from ..image_classification import GetBackbone
 from utils.torch_utils import initialize_layers
 
 in_module_config = dict(
@@ -73,25 +73,25 @@ class Model(nn.Module):
 
         initialize_layers(self)
 
-    def forward(self, images, gt_boxes=None, gt_cls=None):
+    def forward(self, x, gt_boxes=None, gt_cls=None):
         """
         Arguments:
-            images (Tensor):
+            x (Tensor):
             gt_boxes (List[Tensor]):
             gt_cls (List[Tensor])
 
         Returns:
             result (dict[Tensor]):
         """
-        image_size = images.shape[-2:]
+        image_size = x.shape[-2:]
 
-        features = self.input(images)
+        features = self.input(x)
         features = self.backbone(features)
 
         if isinstance(features, torch.Tensor):
             features = [features]
 
-        proposals, neck_loss = self.neck(images, features, gt_boxes, gt_cls)
+        proposals, neck_loss = self.neck(x, features, gt_boxes, gt_cls)
         det_reg, det_cls, proposals, head_loss = self.head(features, proposals, image_size, gt_boxes, gt_cls)
 
         if self.training:

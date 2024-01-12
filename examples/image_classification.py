@@ -3,21 +3,28 @@ import torch
 from torch import optim
 import numpy as np
 from pathlib import Path
-from utils import torch_utils
 from processor import Process, DataHooks, bundled
 from data_parse.cv_data_parse.base import DataVisualizer, DataRegister
 from data_parse.cv_data_parse.data_augmentation import crop, scale, geometry, channel, RandomApply, Apply
 
 
 class ClsProcess(Process):
-    def on_train_step(self, rets, container, **kwargs) -> dict:
+    def get_model_inputs(self, rets, train=True):
         images = [torch.from_numpy(ret.pop('image')).to(self.device, non_blocking=True, dtype=torch.float) for ret in rets]
-        _class = [torch.tensor(ret['_class']).to(self.device) for ret in rets]
         images = torch.stack(images)
-        _class = torch.stack(_class)
         images = images / 255
-        output = self.model(images, _class)
+        inputs = dict(x=images)
 
+        if train:
+            _class = [torch.tensor(ret['_class']).to(self.device) for ret in rets]
+            _class = torch.stack(_class)
+            inputs.update(true_label=_class)
+
+        return inputs
+
+    def on_train_step(self, rets, container, **kwargs) -> dict:
+        inputs = self.get_model_inputs(rets)
+        output = self.model(**inputs)
         return output
 
     def metric(self, **predict_kwargs):
@@ -39,14 +46,11 @@ class ClsProcess(Process):
         return metric_results
 
     def on_val_step(self, rets, container, **kwargs) -> dict:
-        images = [torch.from_numpy(ret.pop('image')).to(self.device, non_blocking=True, dtype=torch.float) for ret in rets]
-        images = torch.stack(images)
-        images = images / 255
-
+        inputs = self.get_model_inputs(rets, train=False)
         models = container['models']
         model_results = {}
         for name, model in models.items():
-            outputs = model(images)
+            outputs = model(**inputs)
 
             model_results[name] = dict(
                 outputs=outputs['pred'],
@@ -87,17 +91,14 @@ class Mnist(DataHooks):
     input_size = 28
     out_features = 10
 
-    def get_train_data(self):
+    def get_data(self, *args, train=True, **kwargs):
         from data_parse.cv_data_parse.Mnist import Loader
 
         loader = Loader(self.data_dir)
-        return loader(set_type=DataRegister.TRAIN, image_type=DataRegister.ARRAY, generator=False)[0]
-
-    def get_val_data(self):
-        from data_parse.cv_data_parse.Mnist import Loader
-
-        loader = Loader(self.data_dir)
-        return loader(set_type=DataRegister.TEST, image_type=DataRegister.ARRAY, generator=False)[0]
+        if train:
+            return loader(set_type=DataRegister.TRAIN, image_type=DataRegister.ARRAY, generator=False)[0]
+        else:
+            return loader(set_type=DataRegister.TEST, image_type=DataRegister.ARRAY, generator=False)[0]
 
     aug = Apply([
         RandomApply([
@@ -107,12 +108,10 @@ class Mnist(DataHooks):
     ])
     post_aug = channel.HWC2CHW()
 
-    def train_data_augment(self, ret):
-        ret.update(self.aug(**ret))
-        ret.update(self.post_aug(**ret))
-        return ret
+    def data_augment(self, ret, train=True) -> dict:
+        if train:
+            ret.update(self.aug(**ret))
 
-    def val_data_augment(self, ret):
         ret.update(self.post_aug(**ret))
         return ret
 
@@ -125,17 +124,14 @@ class Cifar(DataHooks):
     input_size = 32
     out_features = 10
 
-    def get_train_data(self):
+    def get_data(self, *args, train=True, **kwargs):
         from data_parse.cv_data_parse.Cifar import Loader
 
         loader = Loader(self.data_dir)
-        return loader(set_type=DataRegister.TRAIN, image_type=DataRegister.ARRAY, generator=False)[0]
-
-    def get_val_data(self):
-        from data_parse.cv_data_parse.Cifar import Loader
-
-        loader = Loader(self.data_dir)
-        return loader(set_type=DataRegister.TEST, image_type=DataRegister.ARRAY, generator=False)[0]
+        if train:
+            return loader(set_type=DataRegister.TRAIN, image_type=DataRegister.ARRAY, generator=False)[0]
+        else:
+            return loader(set_type=DataRegister.TEST, image_type=DataRegister.ARRAY, generator=False)[0]
 
 
 class ImageNet(DataHooks):
@@ -146,48 +142,43 @@ class ImageNet(DataHooks):
     input_size = 224
     out_features = 2
 
-    def get_train_data(self):
+    def get_data(self, *args, train=True, **kwargs):
         from data_parse.cv_data_parse.ImageNet import Loader
 
         convert_class = {7: 0, 40: 1}
 
-        def convert_func(ret):
-            ret['_class'] = convert_class[ret['_class']]
-            return ret
-
-        loader = Loader(self.data_dir)
-        loader.on_end_convert = convert_func
-
-        data = loader(set_type=DataRegister.TRAIN, image_type=DataRegister.ARRAY, generator=False,
-                      wnid=[
-                          'n02124075',  # Egyptian cat,
-                          'n02110341'  # dalmatian, coach dog, carriage dog
-                      ]
-                      )[0]
-
-        return data
-
-    def get_val_data(self):
-        from data_parse.cv_data_parse.ImageNet import Loader
-
-        convert_class = {7: 0, 40: 1}
-
-        def convert_func(ret):
-            if ret['_class'] in convert_class:
+        if train:
+            def convert_func(ret):
                 ret['_class'] = convert_class[ret['_class']]
-            return ret
+                return ret
 
-        def filter_func(ret):
-            if ret['_class'] in [7, 40]:
-                return True
+            loader = Loader(self.data_dir)
+            loader.on_end_convert = convert_func
 
-        loader = Loader(self.data_dir)
-        loader.on_end_filter = filter_func
+            return loader(
+                set_type=DataRegister.TRAIN, image_type=DataRegister.ARRAY, generator=False,
+                wnid=[
+                    'n02124075',  # Egyptian cat,
+                    'n02110341'  # dalmatian, coach dog, carriage dog
+                ]
+            )[0]
 
-        data = loader(set_type=DataRegister.VAL, image_type=DataRegister.PATH, generator=False)[0]
-        data = list(map(convert_func, data))
+        else:
+            def convert_func(ret):
+                if ret['_class'] in convert_class:
+                    ret['_class'] = convert_class[ret['_class']]
+                return ret
 
-        return data
+            def filter_func(ret):
+                if ret['_class'] in [7, 40]:
+                    return True
+
+            loader = Loader(self.data_dir)
+            loader.on_end_filter = filter_func
+            iter_data = loader(set_type=DataRegister.VAL, image_type=DataRegister.PATH, generator=False)[0]
+            iter_data = list(map(convert_func, iter_data))
+
+            return iter_data
 
     def train_data_augment(self, ret):
         ret.update(scale.Proportion()(**ret, dst=256))

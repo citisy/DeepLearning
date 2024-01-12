@@ -7,16 +7,23 @@ from data_parse import DataRegister
 from pathlib import Path
 from data_parse.cv_data_parse.base import DataVisualizer
 from processor import Process, DataHooks, bundled, BaseImgDataset, MixDataset, IterImgDataset
-from utils import configs, cv_utils, os_lib, torch_utils
 
 
 class TrProcess(Process):
-    def on_train_step(self, rets, container, **kwargs) -> dict:
+    def get_model_inputs(self, rets, train=True):
         images = [torch.from_numpy(ret.pop('image')).to(self.device, non_blocking=True, dtype=torch.float) for ret in rets]
-        text = [ret['text'] for ret in rets]
         images = torch.stack(images)
-        output = self.model(images, text)
+        inputs = dict(x=images)
+        if train:
+            inputs.update(
+                true_label=[ret['text'] for ret in rets]
+            )
 
+        return inputs
+
+    def on_train_step(self, rets, container, **kwargs) -> dict:
+        inputs = self.get_model_inputs(rets)
+        output = self.model(**inputs)
         return output
 
     def metric(self, **kwargs):
@@ -35,13 +42,12 @@ class TrProcess(Process):
         return metric_results
 
     def on_val_step(self, rets, container, **kwargs) -> dict:
-        images = [torch.from_numpy(ret.pop('image')).to(self.device, non_blocking=True, dtype=torch.float) for ret in rets]
-        images = torch.stack(images)
+        inputs = self.get_model_inputs(rets, train=False)
 
         models = container['models']
         model_results = {}
         for name, model in models.items():
-            outputs = model(images)
+            outputs = model(**inputs)
 
             model_results[name] = dict(
                 outputs=outputs['pred'],
@@ -91,14 +97,9 @@ class DataProcess(DataHooks):
         channel.HWC2CHW()
     ])
 
-    def train_data_augment(self, ret) -> dict:
-        ret.update(self.aug(**ret))
-        ret.update(dst=self.input_size)
-        ret.update(self.post_aug(**ret))
-
-        return ret
-
-    def val_data_augment(self, ret) -> dict:
+    def data_augment(self, ret, train=True) -> dict:
+        if train:
+            ret.update(self.aug(**ret))
         ret.update(dst=self.input_size)
         ret.update(self.post_aug(**ret))
 
@@ -126,29 +127,22 @@ class MJSynth(DataProcess):
         self.save_vocab(vocab)
         return vocab
 
-    def get_train_data(self, *args, **kwargs):
+    def get_data(self, *args, train=True, **kwargs):
         from data_parse.cv_data_parse.MJSynth import Loader
 
         loader = Loader(self.data_dir)
-        iter_data = loader.load(
-            set_type=DataRegister.TRAIN, image_type=DataRegister.GRAY_ARRAY, generator=False,
-            return_lower=True,
-            max_size=self.train_data_num,
-        )[0]
-
-        return iter_data
-
-    def get_val_data(self, *args, **kwargs):
-        from data_parse.cv_data_parse.MJSynth import Loader
-
-        loader = Loader(self.data_dir)
-        iter_data = loader.load(
-            set_type=DataRegister.VAL, image_type=DataRegister.GRAY_ARRAY, generator=False,
-            return_lower=True,
-            max_size=self.val_data_num,
-        )[0]
-
-        return iter_data
+        if train:
+            return loader.load(
+                set_type=DataRegister.TRAIN, image_type=DataRegister.GRAY_ARRAY, generator=False,
+                return_lower=True,
+                max_size=self.train_data_num,
+            )[0]
+        else:
+            return loader.load(
+                set_type=DataRegister.VAL, image_type=DataRegister.GRAY_ARRAY, generator=False,
+                return_lower=True,
+                max_size=self.val_data_num,
+            )[0]
 
 
 class SynthText(DataProcess):
@@ -168,27 +162,20 @@ class SynthText(DataProcess):
         loader = Loader(self.data_dir, verbose=False)
         return loader.get_char_list()
 
-    def get_train_data(self, *args, **kwargs):
+    def get_data(self, *args, train=True, **kwargs):
         from data_parse.cv_data_parse.SynthOcrText import Loader
 
         loader = Loader(self.data_dir, verbose=False)
-        iter_data = loader.load(
-            image_type=DataRegister.GRAY_ARRAY, generator=True,
-            max_size=self.train_data_num,
-        )[0]
-
-        return iter_data
-
-    def get_val_data(self, *args, **kwargs):
-        from data_parse.cv_data_parse.SynthOcrText import Loader
-
-        loader = Loader(self.data_dir)
-        iter_data = loader.load(
-            image_type=DataRegister.GRAY_ARRAY, generator=False,
-            max_size=self.val_data_num,
-        )[0]
-
-        return iter_data
+        if train:
+            return loader.load(
+                image_type=DataRegister.GRAY_ARRAY, generator=True,
+                max_size=self.train_data_num,
+            )[0]
+        else:
+            return loader.load(
+                image_type=DataRegister.GRAY_ARRAY, generator=False,
+                max_size=self.val_data_num,
+            )[0]
 
 
 class MixMJSynthSynthText(DataProcess):
@@ -215,39 +202,35 @@ class MixMJSynthSynthText(DataProcess):
         char_set |= set(char_list)
         return list(char_set)
 
-    def get_train_data(self, *args, **kwargs):
+    def get_data(self, *args, train=True, **kwargs):
         from data_parse.cv_data_parse.MJSynth import Loader
 
         loader1 = Loader(self.data_dir1)
-        num = int(self.train_data_num * self.dataset_ratio[0])
-        iter_data1 = loader1.load(
-            set_type=DataRegister.TRAIN, image_type=DataRegister.GRAY_ARRAY, generator=False,
-            max_size=num,
-        )[0]
+        if train:
+            num = int(self.train_data_num * self.dataset_ratio[0])
+            iter_data1 = loader1.load(
+                set_type=DataRegister.TRAIN, image_type=DataRegister.GRAY_ARRAY, generator=False,
+                max_size=num,
+            )[0]
 
-        from data_parse.cv_data_parse.SynthOcrText import Loader
+            from data_parse.cv_data_parse.SynthOcrText import Loader
 
-        loader2 = Loader(self.data_dir2, verbose=False)
-        num = int(self.train_data_num * self.dataset_ratio[1])
-        iter_data2 = loader2.load(
-            image_type=DataRegister.GRAY_ARRAY, generator=True,
-            max_size=num,
-        )[0]
-        IterImgDataset.length = num
+            loader2 = Loader(self.data_dir2, verbose=False)
+            num = int(self.train_data_num * self.dataset_ratio[1])
+            iter_data2 = loader2.load(
+                image_type=DataRegister.GRAY_ARRAY, generator=True,
+                max_size=num,
+            )[0]
+            IterImgDataset.length = num
 
-        return (iter_data1, BaseImgDataset), (iter_data2, IterImgDataset)
+            return (iter_data1, BaseImgDataset), (iter_data2, IterImgDataset)
 
-    def get_val_data(self, *args, **kwargs):
-        from data_parse.cv_data_parse.MJSynth import Loader
-
-        loader = Loader(self.data_dir1)
-        iter_data = loader.load(
-            set_type=DataRegister.VAL, image_type=DataRegister.GRAY_ARRAY, generator=False,
-            return_lower=True,
-            max_size=self.val_data_num,
-        )[0]
-
-        return iter_data
+        else:
+            return loader1.load(
+                set_type=DataRegister.VAL, image_type=DataRegister.GRAY_ARRAY, generator=False,
+                return_lower=True,
+                max_size=self.val_data_num,
+            )[0]
 
 
 class CRNN(TrProcess):

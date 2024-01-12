@@ -237,7 +237,7 @@ class WGAN_Mnist(WGAN, Mnist):
 
             from examples.image_generation import WGAN_Mnist as Process
 
-            Process().run(max_epoch=1000, train_batch_size=64, check_period=10000, save_maxsize=10, metric_kwargs=dict(is_visualize=True))
+            Process().run(max_epoch=1000, train_batch_size=64, fit_kwargs=dict(check_period=40000, max_save_weight_num=10), metric_kwargs=dict(is_visualize=True))
     """
 
 
@@ -288,19 +288,12 @@ class Lsun(DataProcess):
         from data_parse.cv_data_parse.lsun import Loader
 
         loader = Loader(self.data_dir)
-        iter_data = loader.load(
+
+        return loader.load(
             set_type=DataRegister.MIX, image_type=DataRegister.ARRAY, generator=False,
             task='cat',
             max_size=self.train_data_num
         )[0]
-
-        # iter_data = loader.load(
-        #     set_type=DataRegister.TRAIN, image_type=DataRegister.ARRAY, generator=False,
-        #     task='church_outdoor',
-        #     max_size=self.train_data_num
-        # )[0]
-
-        return iter_data
 
 
 class CelebA(DataProcess):
@@ -507,7 +500,11 @@ class StyleGan_Mnist(StyleGan, Mnist):
 
             from examples.image_generation import StyleGan_Mnist as Process
 
-            Process().run(max_epoch=2000, train_batch_size=64, check_period=20000, max_save_weight_num=10, metric_kwargs=dict(is_visualize=True))
+            Process(device=0).run(
+                max_epoch=200, train_batch_size=32,
+                fit_kwargs=dict(check_period=40000, max_save_weight_num=10),
+                metric_kwargs=dict(is_visualize=True, max_vis_num=64 * 8),
+            )
     """
 
 
@@ -518,7 +515,11 @@ class StyleGan_Lsun(StyleGan, Lsun):
 
             from examples.image_generation import StyleGan_Lsun as Process
 
-            Process().run(max_epoch=200, train_batch_size=32, check_period=20000, max_save_weight_num=10, metric_kwargs=dict(is_visualize=True))
+            Process(device=0).run(
+                max_epoch=100, train_batch_size=32,
+                fit_kwargs=dict(check_period=40000, max_save_weight_num=10),
+                metric_kwargs=dict(is_visualize=True, max_vis_num=64 * 8),
+            )
     """
 
 
@@ -529,7 +530,11 @@ class StyleGan_CelebA(StyleGan, CelebA):
 
             from examples.image_generation import StyleGan_CelebA as Process
 
-            Process().run(max_epoch=50, train_batch_size=32, check_period=20000, max_save_weight_num=10, metric_kwargs=dict(is_visualize=True))
+            Process(device=0).run(
+                max_epoch=50, train_batch_size=32,
+                fit_kwargs=dict(check_period=40000, max_save_weight_num=10),
+                metric_kwargs=dict(is_visualize=True, max_vis_num=64 * 8),
+            )
             {'score': 134.8424}
     """
 
@@ -541,9 +546,12 @@ class StyleGan_IterCelebA(StyleGan, IterCelebA):
 
             from examples.image_generation import StyleGan_IterCelebA as Process
 
-            Process().run(max_epoch=50, train_batch_size=32, check_period=20000, max_save_weight_num=10,
-                          metric_kwargs=dict(is_visualize=True),
-                          dataloader_kwargs=dict(shuffle=False))
+            Process(device=0).run(
+                max_epoch=10, train_batch_size=32,
+                fit_kwargs=dict(check_period=40000, max_save_weight_num=10, dataloader_kwargs=dict(shuffle=False, drop_last=True, num_workers=16)),
+                metric_kwargs=dict(is_visualize=True, max_vis_num=64 * 8),
+            )
+            {'score': 63.01491}
     """
 
 
@@ -611,7 +619,11 @@ class Ddpm_CelebA(Ddpm, CelebA):
 
             from examples.image_generation import Ddpm_CelebA as Process
 
-            Process().run(max_epoch=200, train_batch_size=32, check_period=20000, max_save_weight_num=10, metric_kwargs=dict(is_visualize=True))
+            Process(device=0).run(
+                max_epoch=50, train_batch_size=32,
+                fit_kwargs=dict(check_period=40000, max_save_weight_num=10),
+                metric_kwargs=dict(is_visualize=True, max_vis_num=64 * 8),
+            )
     """
 
 
@@ -638,7 +650,11 @@ class Ddim_CelebA(Dpim, CelebA):
 
             from examples.image_generation import Ddpm_CelebA as Process
 
-            Process().run(max_epoch=200, train_batch_size=32, check_period=20000, max_save_weight_num=10, metric_kwargs=dict(is_visualize=True))
+            Process(device=0).run(
+                max_epoch=50, train_batch_size=32,
+                fit_kwargs=dict(check_period=40000, max_save_weight_num=10),
+                metric_kwargs=dict(is_visualize=True, max_vis_num=64 * 8),
+            )
             {'score': 64.1675}
     """
 
@@ -650,5 +666,9 @@ class Ddim_CelebAHQ(Dpim, CelebAHQ):
 
             from examples.image_generation import Ddim_CelebAHQ as Process
 
-            Process().run(max_epoch=200, train_batch_size=4, check_period=20000, max_save_weight_num=10, metric_kwargs=dict(is_visualize=True))
+            Process(device=0).run(
+                max_epoch=50, train_batch_size=32,
+                fit_kwargs=dict(check_period=40000, max_save_weight_num=10),
+                metric_kwargs=dict(is_visualize=True, max_vis_num=64 * 8),
+            )
     """

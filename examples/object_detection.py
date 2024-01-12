@@ -35,21 +35,31 @@ class OdProcess(Process):
     use_scaler = True
     use_scheduler = True
 
-    def on_train_step(self, rets, container, **kwargs) -> dict:
+    def get_model_inputs(self, rets, train=True):
         images = [torch.from_numpy(ret.pop('image')).to(self.device, non_blocking=True, dtype=torch.float) for ret in rets]
-        gt_boxes = [torch.from_numpy(ret['bboxes']).to(self.device) for ret in rets]
-        gt_cls = [torch.from_numpy(ret['classes']).to(self.device) for ret in rets]
         images = torch.stack(images)
 
         # note that, if the images have the same shape, minmax after stack if possible
         # it can reduce about 20 seconds per epoch to voc dataset
         images = images / 255
 
+        r = dict(x=images)
+        if train:
+            r.update(
+                gt_boxes=[torch.from_numpy(ret['bboxes']).to(self.device) for ret in rets],
+                gt_cls=[torch.from_numpy(ret['classes']).to(self.device) for ret in rets]
+            )
+
+        return r
+
+    def on_train_step(self, rets, container, **kwargs) -> dict:
+        inputs = self.get_model_inputs(rets, train=True)
+
         # note that, amp method can make the model run in dtype of half
         # even though input has dtype of torch.half and weight has dtype of torch.float
         # so that, it would run in lower memory and cost less time
         with torch.cuda.amp.autocast(True):
-            output = self.model(images, gt_boxes, gt_cls)
+            output = self.model(**inputs)
 
         return output
 
@@ -86,9 +96,7 @@ class OdProcess(Process):
         return metric_results
 
     def on_val_step(self, rets, container, **kwargs) -> dict:
-        images = [torch.from_numpy(ret.pop('image')).to(self.device) for ret in rets]
-        images = torch.stack(images)
-        images = images / 255
+        inputs = self.get_model_inputs(rets, train=False)
 
         models = {self.model_name: self.model}
         if hasattr(self, 'aux_model'):
@@ -96,14 +104,11 @@ class OdProcess(Process):
 
         model_results = {}
         for name, model in models.items():
-            outputs = model(images)
+            outputs = model(**inputs)
             outputs = [{k: v.to('cpu').numpy() for k, v in t.items()} for t in outputs]
 
             preds = []
-            for i in range(len(images)):
-                output = outputs[i]
-                ret = rets[i]
-
+            for (output, ret) in zip(outputs, rets):
                 output = configs.merge_dict(ret, output)
                 output = self.val_data_restore(output)
                 preds.append(dict(
@@ -210,27 +215,25 @@ class Voc(OdDataProcess):
 
     cls_alias: dict
 
-    def get_train_data(self):
+    def get_data(self, *args, train=True, **kwargs):
         from data_parse.cv_data_parse.Voc import Loader
 
         loader = Loader(self.data_dir)
         self.cls_alias = loader.classes
 
-        return loader(set_type=DataRegister.TRAIN, image_type=DataRegister.PATH, generator=False,
-                      task='',
-                      max_size=self.train_data_num
-                      )[0]
+        if train:
+            return loader(
+                set_type=DataRegister.TRAIN, image_type=DataRegister.PATH, generator=False,
+                task='',
+                max_size=self.train_data_num
+            )[0]
 
-    def get_val_data(self):
-        from data_parse.cv_data_parse.Voc import Loader
-
-        loader = Loader(self.data_dir)
-        self.cls_alias = loader.classes
-
-        return loader(set_type=DataRegister.VAL, image_type=DataRegister.PATH, generator=False,
-                      task='',
-                      max_size=self.val_data_num,
-                      )[0]
+        else:
+            return loader(
+                set_type=DataRegister.VAL, image_type=DataRegister.PATH, generator=False,
+                task='',
+                max_size=self.val_data_num,
+            )[0]
 
     aug = RandomApply([geometry.HFlip()])
 
@@ -240,13 +243,10 @@ class Voc(OdDataProcess):
         channel.HWC2CHW()
     ])
 
-    def train_data_augment(self, ret):
-        ret.update(self.aug(**ret))
-        ret.update(dst=self.input_size)
-        ret.update(self.post_aug(**ret))
-        return ret
+    def data_augment(self, ret, train=True) -> dict:
+        if train:
+            ret.update(self.aug(**ret))
 
-    def val_data_augment(self, ret):
         ret.update(dst=self.input_size)
         ret.update(self.post_aug(**ret))
         return ret
@@ -263,7 +263,7 @@ class FastererRCNN_Voc(OdProcess, Voc):
 
             from examples.object_detect import FastererRCNN_Voc as Process
 
-            Process().run()
+            Process(device=0).run(max_epoch=150, train_batch_size=32, accumulate=192)
             {'score': 0.3910}
     """
     model_version = 'FastererRCNN'
@@ -369,7 +369,7 @@ class YoloV5_Voc(YoloV5, Voc, Yolov5Aug):
 
             from examples.object_detect import YoloV5_Voc as Process
 
-            Process().run(max_epoch=500)
+            Process(device=0).run(max_epoch=150, train_batch_size=32, accumulate=192)
             {'score': 0.3529}
     """
 
@@ -383,7 +383,7 @@ class Yolov5Dataset(Yolov5Aug):
 
     input_size = 640  # special input_size from official yolov5
 
-    def get_train_data(self):
+    def get_data(self, *args, train=True, **kwargs):
         from data_parse.cv_data_parse.YoloV5 import Loader, DataRegister
 
         convert_func = lambda ret: cv_utils.CoordinateConvert.mid_xywh2top_xyxy(
@@ -394,24 +394,11 @@ class Yolov5Dataset(Yolov5Aug):
 
         loader = Loader(self.data_dir)
         loader.on_end_convert = convert_func
-        data = loader(set_type=DataRegister.TRAIN, image_type=DataRegister.PATH, generator=False, sub_dir='')[0]
 
-        return data
-
-    def get_val_data(self):
-        from data_parse.cv_data_parse.YoloV5 import Loader, DataRegister
-
-        convert_func = lambda ret: cv_utils.CoordinateConvert.mid_xywh2top_xyxy(
-            ret['bboxes'],
-            wh=(ret['image'].shape[1], ret['image'].shape[0]),
-            blow_up=True
-        )
-
-        loader = Loader(self.data_dir)
-        loader.on_end_convert = convert_func
-        data = loader(set_type=DataRegister.VAL, image_type=DataRegister.PATH, generator=False, sub_dir='')[0]
-
-        return data
+        if train:
+            return loader(set_type=DataRegister.TRAIN, image_type=DataRegister.PATH, generator=False, sub_dir='')[0]
+        else:
+            return loader(set_type=DataRegister.VAL, image_type=DataRegister.PATH, generator=False, sub_dir='')[0]
 
 
 class YoloV5_yolov5(YoloV5, Yolov5Dataset):

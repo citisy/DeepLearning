@@ -38,17 +38,23 @@ class SegProcess(Process):
     def set_optimizer(self):
         self.optimizer = optim.SGD(self.model.parameters(), lr=0.001, momentum=0.9, weight_decay=1e-4)
 
-    def on_train_step(self, rets, container, **kwargs) -> dict:
+    def get_model_inputs(self, rets, train=True):
         images = [torch.from_numpy(ret.pop('image')).to(self.device, non_blocking=True, dtype=torch.float) for ret in rets]
         images = torch.stack(images)
-
-        pix_images = [torch.from_numpy(ret.pop('pix_image')).to(self.device, non_blocking=True, dtype=torch.long) for ret in rets]
-        pix_images = torch.stack(pix_images)
-
         images = images / 255
+        r = dict(x=images)
+        if train:
+            pix_images = [torch.from_numpy(ret.pop('pix_image')).to(self.device, non_blocking=True, dtype=torch.long) for ret in rets]
+            pix_images = torch.stack(pix_images)
+            r.update(pix_images=pix_images)
+
+        return r
+
+    def on_train_step(self, rets, container, **kwargs) -> dict:
+        inputs = self.get_model_inputs(rets)
 
         with torch.cuda.amp.autocast(True):
-            output = self.model(images, pix_images)
+            output = self.model(**inputs)
 
         return output
 
@@ -74,21 +80,15 @@ class SegProcess(Process):
         return metric_results
 
     def on_val_step(self, rets, container, **kwargs) -> dict:
-        images = [torch.from_numpy(ret.pop('image')).to(self.device, non_blocking=True, dtype=torch.float) for ret in rets]
-        images = torch.stack(images)
-        images = images / 255
-
+        inputs = self.get_model_inputs(rets, train=False)
         models = container['models']
         model_results = {}
         for name, model in models.items():
-            outputs = model(images)
+            outputs = model(**inputs)
             outputs = outputs.cpu().numpy().astype(np.uint8)
 
             preds = []
-            for i in range(len(images)):
-                output = outputs[i]
-                ret = rets[i]
-
+            for (output, ret) in zip(outputs, rets):
                 output = configs.merge_dict(ret, {'image': output})
                 output = self.val_data_restore(output)
                 preds.append(output['image'])
@@ -176,36 +176,27 @@ class Voc(SegDataProcess):
         channel.HWC2CHW()
     ])
 
-    def get_train_data(self):
+    def get_data(self, *args, train=True, **kwargs):
         from data_parse.cv_data_parse.Voc import Loader, DataRegister, SEG_CLS
 
         loader = Loader(self.data_dir)
-        return loader(set_type=DataRegister.TRAIN, generator=False, image_type=DataRegister.PATH, set_task=SEG_CLS)[0]
+        if train:
+            return loader(set_type=DataRegister.TRAIN, generator=False, image_type=DataRegister.PATH, set_task=SEG_CLS)[0]
+        else:
+            return loader(set_type=DataRegister.VAL, generator=False, image_type=DataRegister.PATH, set_task=SEG_CLS)[0]
 
-    def get_val_data(self):
-        from data_parse.cv_data_parse.Voc import Loader, DataRegister, SEG_CLS
+    def data_augment(self, ret, train=True) -> dict:
+        if train:
+            ret.update(self.rand_aug1(**ret))
+            ret.update(self.rand_aug2(**ret))
 
-        loader = Loader(self.data_dir)
-        return loader(set_type=DataRegister.VAL, generator=False, image_type=DataRegister.PATH, set_task=SEG_CLS)[0]
-
-    def train_data_augment(self, ret):
-        ret.update(self.rand_aug1(**ret))
-        ret.update(self.rand_aug2(**ret))
         ret.update(dst=self.input_size)
         ret.update(self.aug(**ret))
         ret.update(self.post_aug(**ret))
 
         pix_image = ret['pix_image']
-        pix_image = self.rand_aug1.apply_image(pix_image, ret)
-        pix_image = self.pix_aug.apply_image(pix_image, ret)
-        ret['pix_image'] = pix_image
-        return ret
-
-    def val_data_augment(self, ret):
-        ret.update(dst=self.input_size)
-        ret.update(self.aug(**ret))
-        ret.update(self.post_aug(**ret))
-        pix_image = ret['pix_image']
+        if train:
+            pix_image = self.rand_aug1.apply_image(pix_image, ret)
         pix_image = self.pix_aug.apply_image(pix_image, ret)
         ret['pix_image'] = pix_image
         return ret

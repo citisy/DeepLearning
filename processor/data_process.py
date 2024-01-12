@@ -241,25 +241,37 @@ class DataHooks:
         )
 
     def get_train_data(self, *args, **kwargs):
-        raise NotImplementedError
+        return self.get_data(*args, train=True, **kwargs)
 
     def get_val_data(self, *args, **kwargs):
+        return self.get_data(*args, train=False, **kwargs)
+
+    def get_data(self, *args, train=True, **kwargs):
         raise NotImplementedError
 
     def train_data_preprocess(self, iter_data):
-        return iter_data
+        return self.data_preprocess(iter_data, train=True)
 
     def train_data_augment(self, ret) -> dict:
-        return ret
+        return self.data_augment(ret, train=True)
 
     def val_data_preprocess(self, iter_data):
-        return iter_data
+        return self.data_preprocess(iter_data, train=False)
 
     def val_data_augment(self, ret) -> dict:
+        return self.data_augment(ret, train=False)
+
+    def data_preprocess(self, iter_data, train=True):
+        return iter_data
+
+    def data_augment(self, ret, train=True) -> dict:
         return ret
 
     def val_data_restore(self, ret) -> dict:
         return ret
+
+    def get_model_inputs(self, rets, train=True):
+        return rets
 
     def gen_example_data(self, batch_size=1, input_type='image_norm', **kwargs):
         if input_type == 'image':

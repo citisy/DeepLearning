@@ -109,7 +109,7 @@ class Process(
         self.log(f'{torch.__version__ = }')
         self.log(f'{self.device = }')
 
-    def run(self, max_epoch=100, train_batch_size=16, predict_batch_size=None, check_period=None, fit_kwargs=dict(), metric_kwargs=dict()):
+    def run(self, max_epoch=100, train_batch_size=16, predict_batch_size=None, fit_kwargs=dict(), metric_kwargs=dict()):
         self.init()
         self.model_info()
 
@@ -119,7 +119,6 @@ class Process(
         self.fit(
             max_epoch=max_epoch,
             batch_size=train_batch_size,
-            check_period=check_period,
             **fit_kwargs
         )
 
