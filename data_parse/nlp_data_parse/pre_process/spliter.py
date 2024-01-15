@@ -78,6 +78,22 @@ def split_punctuation(seg):
     return [''.join(x) for x in output]
 
 
+def strip_accents(seg):
+    """Strips accents from a piece of text.
+    e.g.: 'ü' -> 'u'"""
+    r = []
+    for text in seg:
+        text = unicodedata.normalize("NFD", text)
+        output = []
+        for char in text:
+            cat = unicodedata.category(char)
+            if cat == "Mn":
+                continue
+            output.append(char)
+        r.append("".join(output))
+    return r
+
+
 def word_piece(seg, vocab):
     output_tokens = []
     for token in seg:
@@ -138,7 +154,7 @@ def segments_from_paragraphs(paragraphs: List[str], verbose=False, **kwargs) -> 
 
 
 def segment_from_line(
-        line, sep=None, is_split_punctuation=True,
+        line, sep=None, is_split_punctuation=True, is_strip_accents=True,
         is_word_piece=False, vocab=None, **filter_kwargs):
     """
 
@@ -146,6 +162,7 @@ def segment_from_line(
         line:
         sep:
         is_split_punctuation:
+        is_strip_accents:
         is_word_piece:
         vocab: for `word_piece`
         **filter_kwargs: kwargs for `filter_text()`
@@ -159,6 +176,9 @@ def segment_from_line(
 
     if is_split_punctuation:
         seg = split_punctuation(seg)
+
+    if is_strip_accents:
+        seg = strip_accents(seg)
 
     if is_word_piece:
         seg = word_piece(seg, vocab)

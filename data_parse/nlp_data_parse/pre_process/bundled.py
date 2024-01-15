@@ -61,17 +61,19 @@ def truncate(segments, seq_len):
     return [s[:seq_len] for s in segments]
 
 
-def pad(segments, seq_len, pad_token=sp_token_dict['pad']):
+def pad(segments, max_seq_len, pad_token=sp_token_dict['pad']):
     _segments = []
     for s in segments:
-        pad_len = seq_len - len(s)
+        pad_len = max_seq_len - len(s)
         _segments.append(s + [pad_token] * pad_len)
     return _segments
 
 
-def align(segments, seq_len, start_token=None, end_token=None, pad_token=sp_token_dict['pad']):
+def align(segments, max_seq_len, start_token=None, end_token=None, auto_pad=True, pad_token=sp_token_dict['pad']):
     """[[seg]] -> [[start_token], [seg], [end_token], [pad_token]]"""
     segments = add_token(segments, start_token=start_token, end_token=end_token)
-    segments = truncate(segments, seq_len=seq_len)
-    segments = pad(segments, seq_len=seq_len, pad_token=pad_token)
+    segments = truncate(segments, seq_len=max_seq_len)
+    if auto_pad:
+        max_seq_len = min(max(len(s) for s in segments), max_seq_len)
+    segments = pad(segments, max_seq_len=max_seq_len, pad_token=pad_token)
     return segments
