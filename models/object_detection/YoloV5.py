@@ -11,69 +11,80 @@ from ..layers import ConvInModule, Cache, Concat
 from . import cls_nms, Iou
 from ..image_classification.CspDarkNet import Backbone, C3, Conv
 
-# default config, base on yolov5l config
-in_module_config = dict(
-    in_ch=3,
-    input_size=640,
-)
-backbone_config = (64, (3, 6, 9, 3), (1, 2))
-neck_config = dict(n_c3=3)
-head_config = dict(
-    anchors=[  # length of wh
-        [(10, 13), (16, 30), (33, 23)],
-        [(30, 61), (62, 45), (59, 119)],
-        [(116, 90), (156, 198), (373, 326)],
-    ],
-    stride=(8, 16, 32)
-)
 
-default_model_multiple = {
-    'yolov5x': dict(depth_multiple=1.33, width_multiple=1.25),
-    'yolov5l': dict(depth_multiple=1, width_multiple=1),
-    'yolov5m': dict(depth_multiple=0.67, width_multiple=0.75),
-    'yolov5s': dict(depth_multiple=0.33, width_multiple=0.50),
-    'yolov5n': dict(depth_multiple=0.33, width_multiple=0.25),
-}
+class Config:
+    # default config, base on yolov5l config
+    in_module_config = dict(
+        in_ch=3,
+        input_size=640,
+    )
+    backbone_config = (64, (3, 6, 9, 3), (1, 2))
+    neck_config = dict(n_c3=3)
+    head_config = dict(
+        anchors=[  # length of wh
+            [(10, 13), (16, 30), (33, 23)],
+            [(30, 61), (62, 45), (59, 119)],
+            [(116, 90), (156, 198), (373, 326)],
+        ],
+        stride=(8, 16, 32)
+    )
 
+    default_model_multiple = {
+        'yolov5x': dict(depth_multiple=1.33, width_multiple=1.25),
+        'yolov5l': dict(depth_multiple=1, width_multiple=1),
+        'yolov5m': dict(depth_multiple=0.67, width_multiple=0.75),
+        'yolov5s': dict(depth_multiple=0.33, width_multiple=0.50),
+        'yolov5n': dict(depth_multiple=0.33, width_multiple=0.25),
+    }
 
-def make_config(backbone_config=backbone_config, neck_config=neck_config, depth_multiple=1, width_multiple=1):
-    """
-    Args:
-        depth_multiple: model depth multiple
-        width_multiple: layer channel multiple
+    @classmethod
+    def get(cls, name='yolov5l'):
+        return dict(
+            in_module_config=cls.in_module_config,
+            **cls.make_config(cls.backbone_config, cls.neck_config, **cls.default_model_multiple[name]),
+            head_config=cls.head_config
+        )
 
-    Usage:
-        .. code-block:: python
+    @staticmethod
+    def make_config(backbone_config=backbone_config, neck_config=neck_config, depth_multiple=1, width_multiple=1):
+        """
+        Args:
+            depth_multiple: model depth multiple
+            width_multiple: layer channel multiple
 
-            from models.object_detection.YoloV5 import make_config, default_model_multiple
-            Model(**make_config(**default_model_multiple['yolov5m']))
-    """
-    compute_width = lambda x: math.ceil(x * width_multiple / 8) * 8  # make sure that it is multiple of 8
-    compute_deep = lambda n: max(round(n * depth_multiple), 1) if n > 1 else n  # depth gain
+        Usage:
+            .. code-block:: python
 
-    out_ch, n_conv, cache_block_idx = backbone_config
-    out_ch = compute_width(out_ch)
-    n_conv_ = [compute_deep(_) for _ in n_conv]
-    backbone_config = (out_ch, tuple(n_conv_), cache_block_idx)
-    neck_config = neck_config.copy()
-    neck_config['n_c3'] = compute_deep(neck_config['n_c3'])
+                from models.object_detection.YoloV5 import make_config, default_model_multiple
+                Model(**make_config(**default_model_multiple['yolov5m']))
+        """
+        compute_width = lambda x: math.ceil(x * width_multiple / 8) * 8  # make sure that it is multiple of 8
+        compute_deep = lambda n: max(round(n * depth_multiple), 1) if n > 1 else n  # depth gain
 
-    return dict(backbone_config=backbone_config, neck_config=neck_config)
+        out_ch, n_conv, cache_block_idx = backbone_config
+        out_ch = compute_width(out_ch)
+        n_conv_ = [compute_deep(_) for _ in n_conv]
+        backbone_config = (out_ch, tuple(n_conv_), cache_block_idx)
+        neck_config = neck_config.copy()
+        neck_config['n_c3'] = compute_deep(neck_config['n_c3'])
 
+        return dict(backbone_config=backbone_config, neck_config=neck_config)
 
-def auto_anchors(iter_data, img_size, head_config=head_config, **kwargs):
-    """
-    Usage:
-        .. code-block:: python
+    @staticmethod
+    def auto_anchors(iter_data, img_size, head_config=head_config, **kwargs):
+        """
+        Usage:
+            .. code-block:: python
 
-            from models.object_detection.YoloV5 import auto_anchors
-            head_config = auto_anchors(iter_data, img_size)
-            Model(head_config=head_config)
-    """
-    anchors = AutoAnchor(iter_data, img_size=img_size, **kwargs).run(head_config['anchors'], head_config['stride'])
-    head_config['anchors'] = anchors
+                from models.object_detection.YoloV5 import auto_anchors
+                head_config = auto_anchors(iter_data, img_size)
+                Model(head_config=head_config)
+        """
+        anchors = AutoAnchor(iter_data, img_size=img_size, **kwargs).run(head_config['anchors'], head_config['stride'])
+        head_config = head_config.copy()
+        head_config['anchors'] = anchors
 
-    return head_config
+        return head_config
 
 
 class Model(nn.Module):
@@ -82,8 +93,8 @@ class Model(nn.Module):
     def __init__(
             self, n_classes,
             in_module=None, backbone=None, neck=None, head=None,
-            in_module_config=in_module_config, backbone_config=backbone_config,
-            neck_config=neck_config, head_config=head_config,
+            in_module_config=Config.in_module_config, backbone_config=Config.backbone_config,
+            neck_config=Config.neck_config, head_config=Config.head_config,
             conf_thres=0.1, nms_thres=0.6, max_det=300
     ):
         super().__init__()
@@ -135,7 +146,7 @@ class Model(nn.Module):
                 a, h, w = f.shape[1:4]
                 shape = 1, a, h, w, 2  # grid shape
                 y, x = torch.arange(h).to(f), torch.arange(w).to(f)
-                yv, xv = torch.meshgrid(y, x, indexing='ij')    # note, low version pytorch, do not add `indexing`
+                yv, xv = torch.meshgrid(y, x, indexing='ij')  # note, low version pytorch, do not add `indexing`
                 grid = torch.stack((xv, yv), 2).expand(shape)
                 self.grid.append(grid)
 
