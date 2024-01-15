@@ -30,11 +30,11 @@ class IgProcess(Process):
     check_strategy = model_process.STEP
     val_data_num = 64 * 8
 
-    def on_train_start(self, container, **kwargs):
+    def on_train_start(self, **kwargs):
         from metrics import image_generation
 
-        super().on_train_start(container, **kwargs)
-        container['metric_kwargs'].update(
+        super().on_train_start(**kwargs)
+        self.train_container['metric_kwargs'].update(
             real_x=[],
             fid_cls_model=image_generation.get_default_cls_model(device=self.device)
         )
@@ -54,19 +54,19 @@ class IgProcess(Process):
 
         return metric_results
 
-    def on_val_reprocess(self, rets, model_results, container, **kwargs):
+    def on_val_reprocess(self, rets, model_results, **kwargs):
         for name, results in model_results.items():
-            r = container['model_results'].setdefault(name, dict())
+            r = self.val_container['model_results'].setdefault(name, dict())
             for n, items in results.items():
                 r.setdefault(n, []).extend(items)
 
-    def on_val_step_end(self, rets, outputs, container, **kwargs):
+    def on_val_step_end(self, rets, outputs, **kwargs):
         """visualize will work on on_val_end() instead of here,
         because to combine small images into a large image"""
 
-    def on_val_end(self, container, num_synth_per_image=64, is_visualize=False, max_vis_num=None, **kwargs):
+    def on_val_end(self, num_synth_per_image=64, is_visualize=False, max_vis_num=None, **kwargs):
         # {name1: {name2: items}}
-        for name, results in container['model_results'].items():
+        for name, results in self.val_container['model_results'].items():
             for name2, items in results.items():
                 results[name2] = np.stack(items)
                 num_batch = results[name2].shape[0]
@@ -76,7 +76,7 @@ class IgProcess(Process):
                 max_vis_num = max_vis_num or float('inf')
                 n = min(num_synth_per_image, max_vis_num - self.counters['vis_num'])
                 if n > 0:
-                    self.visualize(None, container['model_results'], n, **kwargs)
+                    self.visualize(None, self.val_container['model_results'], n, **kwargs)
                     self.counters['vis_num'] += n
 
     def visualize(self, rets, model_results, n, **kwargs):
@@ -108,7 +108,7 @@ class GanProcess(IgProcess):
             self.log(f'net {key} module info:')
             self.log(s)
 
-    def on_backward(self, output, container, **kwargs):
+    def on_backward(self, output, **kwargs):
         """loss backward has been completed in `on_train_step()` already"""
         if hasattr(self, 'ema'):
             self.ema.step(self.model, self.aux_model['ema'])
@@ -159,7 +159,7 @@ class WGAN(GanProcess):
         optimizer_g = optim.Adam(self.model.net_g.parameters(), lr=0.00005, betas=(0.5, 0.999))
         self.optimizer = GanOptimizer(optimizer_d, optimizer_g)
 
-    def on_train_step(self, rets, container, batch_size=16, **kwargs) -> dict:
+    def on_train_step(self, rets, batch_size=16, **kwargs) -> dict:
         images = [torch.from_numpy(ret.pop('image')).to(self.device, non_blocking=True, dtype=torch.float) for ret in rets]
         images = torch.stack(images)
 
@@ -181,7 +181,7 @@ class WGAN(GanProcess):
             self.optimizer.optimizer_g.step()
             self.optimizer.optimizer_g.zero_grad()
 
-        real_x = container['metric_kwargs']['real_x']
+        real_x = self.train_container['metric_kwargs']['real_x']
         if len(real_x) < self.val_data_num:
             images = images.data.mul(255).clamp_(0, 255).permute(0, 2, 3, 1).to("cpu", torch.uint8).numpy()
             real_x.extend(list(images)[:self.val_data_num - len(real_x)])
@@ -202,8 +202,8 @@ class WGAN(GanProcess):
         val_obj = self.model.gen_noise(self.val_data_num, self.device)
         return val_obj
 
-    def on_val_start(self, container, val_dataloader=None, batch_size=16, dataloader_kwargs=dict(), **kwargs):
-        super().on_val_start(container, load_data=False, **kwargs)
+    def on_val_start(self, val_dataloader=None, batch_size=16, dataloader_kwargs=dict(), **kwargs):
+        super().on_val_start(load_data=False, **kwargs)
 
         val_noise = val_dataloader if val_dataloader is not None else self.get_val_data()
         num_batch = val_noise.shape[0]
@@ -212,12 +212,12 @@ class WGAN(GanProcess):
             for i in range(0, num_batch, batch_size):
                 yield val_noise[i: i + batch_size]
 
-        container['val_dataloader'] = gen()
+        self.val_container['val_dataloader'] = gen()
 
-    def on_val_step(self, rets, container, **kwargs) -> dict:
+    def on_val_step(self, rets, **kwargs) -> dict:
         noise_x = rets
 
-        models = container['models']
+        models = self.val_container['models']
         model_results = {}
         for name, model in models.items():
             fake_x = model.net_g(noise_x)
@@ -407,7 +407,7 @@ class StyleGan(GanProcess):
     per_pp_step = 32
     min_pp_step = 5000
 
-    def on_train_step(self, rets, container, **kwargs) -> dict:
+    def on_train_step(self, rets, **kwargs) -> dict:
         images = [torch.from_numpy(ret.pop('image')).to(self.device, non_blocking=True, dtype=torch.float) for ret in rets]
         images = torch.stack(images)
 
@@ -429,7 +429,7 @@ class StyleGan(GanProcess):
         loss_g.backward()
         self.optimizer.optimizer_g.step()
 
-        real_x = container['metric_kwargs']['real_x']
+        real_x = self.train_container['metric_kwargs']['real_x']
         if len(real_x) < self.val_data_num:
             images = images.data.mul(255).clamp_(0, 255).permute(0, 2, 3, 1).to("cpu", torch.uint8).numpy()
             real_x.extend(list(images)[:self.val_data_num - len(real_x)])
@@ -450,8 +450,8 @@ class StyleGan(GanProcess):
 
         return val_obj
 
-    def on_val_start(self, container, val_dataloader=(None, None, None), batch_size=16, trunc_psi=0.6, **kwargs):
-        super().on_val_start(container, load_data=False, **kwargs)
+    def on_val_start(self, val_dataloader=(None, None, None), batch_size=16, trunc_psi=0.6, **kwargs):
+        super().on_val_start(load_data=False, **kwargs)
         model = self.model
 
         noise_xs, noise_zs, truncate_zs = val_dataloader if val_dataloader is not None else self.get_val_data()
@@ -466,8 +466,6 @@ class StyleGan(GanProcess):
             w_style = trunc_psi * (w_style - truncate_w_style) + truncate_w_style
             w_styles.append((w_style, num_layer))
         w_styles = torch.cat([t[:, None, :].expand(-1, n, -1) for t, n in w_styles], dim=1)
-        container['w_styles'] = w_styles
-        container['noise_xs'] = noise_xs
 
         def gen():
             for i in range(0, num_batch, batch_size):
@@ -475,12 +473,12 @@ class StyleGan(GanProcess):
                 w_style = w_styles[i: i + batch_size]
                 yield noise_x, w_style
 
-        container['val_dataloader'] = gen()
+        self.val_container['val_dataloader'] = gen()
 
-    def on_val_step(self, rets, container, vis_batch_size=64, **kwargs) -> dict:
+    def on_val_step(self, rets, vis_batch_size=64, **kwargs) -> dict:
         noise_x, w_style = rets
 
-        models = container['models']
+        models = self.val_container['models']
         model_results = {}
         for name, model in models.items():
             fake_x = model.net_g(w_style, noise_x)
@@ -556,12 +554,12 @@ class StyleGan_IterCelebA(StyleGan, IterCelebA):
 
 
 class DiProcess(IgProcess):
-    def on_train_step(self, rets, container, **kwargs) -> dict:
+    def on_train_step(self, rets, **kwargs) -> dict:
         images = [torch.from_numpy(ret.pop('image')).to(self.device, non_blocking=True, dtype=torch.float) for ret in rets]
         images = torch.stack(images)
         output = self.model(images)
 
-        real_x = container['metric_kwargs']['real_x']
+        real_x = self.train_container['metric_kwargs']['real_x']
         if len(real_x) < self.val_data_num:
             images = images.data.mul(255).clamp_(0, 255).permute(0, 2, 3, 1).to("cpu", torch.uint8).numpy()
             real_x.extend(list(images)[:self.val_data_num - len(real_x)])
@@ -572,8 +570,8 @@ class DiProcess(IgProcess):
         val_obj = self.model.gen_x_t(self.val_data_num, device=self.device)
         return val_obj
 
-    def on_val_start(self, container, val_dataloader=None, batch_size=16, dataloader_kwargs=dict(), **kwargs):
-        super().on_val_start(container, load_data=False, **kwargs)
+    def on_val_start(self, val_dataloader=None, batch_size=16, dataloader_kwargs=dict(), **kwargs):
+        super().on_val_start(load_data=False, **kwargs)
         val_noise = val_dataloader if val_dataloader is not None else self.get_val_data()
         num_batch = val_noise.shape[0]
 
@@ -581,12 +579,12 @@ class DiProcess(IgProcess):
             for i in range(0, num_batch, batch_size):
                 yield val_noise[i: i + batch_size]
 
-        container['val_dataloader'] = gen()
+        self.val_container['val_dataloader'] = gen()
 
-    def on_val_step(self, rets, container, **kwargs) -> dict:
+    def on_val_step(self, rets, **kwargs) -> dict:
         noise_x = rets
 
-        models = container['models']
+        models = self.val_container['models']
         model_results = {}
         for name, model in models.items():
             fake_x = model(noise_x)

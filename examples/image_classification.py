@@ -22,7 +22,7 @@ class ClsProcess(Process):
 
         return inputs
 
-    def on_train_step(self, rets, container, **kwargs) -> dict:
+    def on_train_step(self, rets, **kwargs) -> dict:
         inputs = self.get_model_inputs(rets)
         output = self.model(**inputs)
         return output
@@ -45,9 +45,9 @@ class ClsProcess(Process):
 
         return metric_results
 
-    def on_val_step(self, rets, container, **kwargs) -> dict:
+    def on_val_step(self, rets, **kwargs) -> dict:
         inputs = self.get_model_inputs(rets, train=False)
-        models = container['models']
+        models = self.val_container['models']
         model_results = {}
         for name, model in models.items():
             outputs = model(**inputs)
@@ -59,9 +59,9 @@ class ClsProcess(Process):
 
         return model_results
 
-    def on_val_reprocess(self, rets, model_results, container, **kwargs):
+    def on_val_reprocess(self, rets, model_results, **kwargs):
         for name, results in model_results.items():
-            r = container['model_results'].setdefault(name, dict())
+            r = self.val_container['model_results'].setdefault(name, dict())
             r.setdefault('trues', []).extend([ret['_class'] for ret in rets])
             r.setdefault('preds', []).extend(results['preds'])
 

@@ -83,7 +83,7 @@ class Pix2pix(GanProcess):
             real_b=images_b
         )
 
-    def on_train_step(self, rets, container, **kwargs) -> dict:
+    def on_train_step(self, rets, **kwargs) -> dict:
         inputs = self.get_model_inputs(rets)
         real_a = inputs['real_a']
         real_b = inputs['real_b']
@@ -105,18 +105,18 @@ class Pix2pix(GanProcess):
             'loss.d': loss_d,
         }
 
-    def on_val_start(self, container, val_dataloader=None, dataloader_kwargs=dict(), **kwargs):
-        super().on_val_start(container, **kwargs)
+    def on_val_start(self, val_dataloader=None, dataloader_kwargs=dict(), **kwargs):
+        super().on_val_start(**kwargs)
         if val_dataloader is None:
             val_dataloader = self.get_val_dataloader(**dataloader_kwargs)
-        container['val_dataloader'] = val_dataloader
+        self.val_container['val_dataloader'] = val_dataloader
 
-    def on_val_step(self, rets, container, **kwargs) -> dict:
+    def on_val_step(self, rets, **kwargs) -> dict:
         inputs = self.get_model_inputs(rets)
         real_a = inputs['real_a']
         real_b = inputs['real_b']
 
-        models = container['models']
+        models = self.val_container['models']
         model_results = {}
         for name, model in models.items():
             fake_b = model.net_g(real_a)
@@ -180,10 +180,10 @@ class CycleGan(GanProcess):
             self.log(f'net {key} module info:')
             self.log(s)
 
-    def on_train_start(self, container, **kwargs):
-        super().on_train_start(container, **kwargs)
-        container['fake_a_cacher'] = os_lib.MemoryCacher(max_size=50, verbose=False)
-        container['fake_b_cacher'] = os_lib.MemoryCacher(max_size=50, verbose=False)
+    def on_train_start(self, **kwargs):
+        super().on_train_start(**kwargs)
+        self.train_container['fake_a_cacher'] = os_lib.MemoryCacher(max_size=50, verbose=False)
+        self.train_container['fake_b_cacher'] = os_lib.MemoryCacher(max_size=50, verbose=False)
 
     lambda_a = 10
     lambda_b = 10
@@ -200,7 +200,7 @@ class CycleGan(GanProcess):
             real_b=images_b
         )
 
-    def on_train_step(self, rets, container, **kwargs) -> dict:
+    def on_train_step(self, rets, **kwargs) -> dict:
         optimizer_d, optimizer_g = self.optimizer.optimizer_d, self.optimizer.optimizer_g
 
         net_g_a = self.model.net_g_a
@@ -220,8 +220,8 @@ class CycleGan(GanProcess):
         optimizer_g.step()
 
         optimizer_d.zero_grad()
-        loss_d_a = self.model.loss_d(real_a, fake_a, net_d_b, container['fake_a_cacher'])
-        loss_d_b = self.model.loss_d(real_b, fake_b, net_d_a, container['fake_b_cacher'])
+        loss_d_a = self.model.loss_d(real_a, fake_a, net_d_b, self.train_container['fake_a_cacher'])
+        loss_d_b = self.model.loss_d(real_b, fake_b, net_d_a, self.train_container['fake_b_cacher'])
         loss_d = loss_d_a + loss_d_b
         loss_d.backward()
         optimizer_d.step()
@@ -231,18 +231,18 @@ class CycleGan(GanProcess):
             'loss.d': loss_d,
         }
 
-    def on_val_start(self, container, val_dataloader=None, dataloader_kwargs=dict(), **kwargs):
-        super().on_val_start(container, **kwargs)
+    def on_val_start(self, val_dataloader=None, dataloader_kwargs=dict(), **kwargs):
+        super().on_val_start(**kwargs)
         if val_dataloader is None:
             val_dataloader = self.get_val_dataloader(**dataloader_kwargs)
-        container['val_dataloader'] = val_dataloader
+        self.val_container['val_dataloader'] = val_dataloader
 
-    def on_val_step(self, rets, container, **kwargs) -> dict:
+    def on_val_step(self, rets, **kwargs) -> dict:
         inputs = self.get_model_inputs(rets)
         real_a = inputs['real_a']
         real_b = inputs['real_b']
 
-        models = container['models']
+        models = self.val_container['models']
         model_results = {}
         for name, model in models.items():
             fake_b = model.net_g_a(real_a)

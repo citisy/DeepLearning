@@ -52,7 +52,7 @@ class OdProcess(Process):
 
         return r
 
-    def on_train_step(self, rets, container, **kwargs) -> dict:
+    def on_train_step(self, rets, **kwargs) -> dict:
         inputs = self.get_model_inputs(rets, train=True)
 
         # note that, amp method can make the model run in dtype of half
@@ -95,15 +95,11 @@ class OdProcess(Process):
 
         return metric_results
 
-    def on_val_step(self, rets, container, **kwargs) -> dict:
+    def on_val_step(self, rets, **kwargs) -> dict:
         inputs = self.get_model_inputs(rets, train=False)
 
-        models = {self.model_name: self.model}
-        if hasattr(self, 'aux_model'):
-            models.update(self.aux_model)
-
         model_results = {}
-        for name, model in models.items():
+        for name, model in self.val_container['models'].items():
             outputs = model(**inputs)
             outputs = [{k: v.to('cpu').numpy() for k, v in t.items()} for t in outputs]
 
@@ -124,9 +120,9 @@ class OdProcess(Process):
 
         return model_results
 
-    def on_val_reprocess(self, rets, model_results, container, **kwargs):
+    def on_val_reprocess(self, rets, model_results, **kwargs):
         for name, results in model_results.items():
-            r = container['model_results'].setdefault(name, dict())
+            r = self.val_container['model_results'].setdefault(name, dict())
             trues = r.setdefault('trues', [])
             preds = r.setdefault('preds', [])
             for ret, pred in zip(rets, results['preds']):
@@ -282,15 +278,19 @@ class YoloV5(OdProcess):
     model_version = 'YoloV5'
 
     def set_model(self):
-        # auto anchors
-        # from models.object_detection.YoloV5 import auto_anchors
-        # head_config = auto_anchors(self.get_train_data(), input_size)
-
+        """use auto anchors
+        from models.object_detection.YoloV5 import Model, Config
+        head_config = Config.auto_anchors(self.get_train_data(), input_size)
+        self.model = Model(
+            self.n_classes,
+            in_module_config=dict(in_ch=self.in_ch, input_size=self.input_size),
+            head_config=head_config
+        )
+        """
         from models.object_detection.YoloV5 import Model
         self.model = Model(
             self.n_classes,
             in_module_config=dict(in_ch=self.in_ch, input_size=self.input_size),
-            # head_config=head_config
         )
 
     def set_optimizer(self):
