@@ -88,8 +88,8 @@ def fake_func(x):
 class DataLoader:
     """
     for implementation, usually override the following methods:
-        _call(): prepare the data, and return an iterable function warped by `gen_data()`
-        get_ret(): logic of parsing the data, and return a dict of result
+        _call(): called by `load()`, which preparing the data, and returning an iterable function warped by `gen_data()`
+        get_ret(): called by `gen_data()`, which is logic of parsing the data, and return a dict of result
     """
     default_set_type = [DataRegister.TRAIN, DataRegister.TEST]
     default_data_type = DataRegister.FULL
@@ -119,10 +119,6 @@ class DataLoader:
                 ARRAY -> a np.ndarray of image, read from cv2, as (h, w, c)
             generator(bool):
                 return a generator if True else a list
-            use_multiprocess(bool):
-                whether used multiprocess to load data or not
-            n_process(int):
-                num of process pools to execute if used multiprocess
             load_kwargs:
                 see also `_call` function to get more details of load_kwargs
                 see also 'gen_data' function to get more details of gen_kwargs
@@ -161,22 +157,21 @@ class DataLoader:
         return r
 
     def _call(self, **gen_kwargs):
-        """prepare the data, and return an iterable function warped by `gen_data()`
+        """called by `load()`, which preparing the data, and returning an iterable function warped by `gen_data()`
+        usually, defined where can find the data file, or how to read the file to memory, etc.
+        for implementation, used like the following scripts:
+
+            def _call(self, **gen_kwargs):
+                gen_func = iter(...)
+                return self.gen_data(gen_func, **gen_kwargs)
 
         Args:
             gen_kwargs:
-                see also `gen_data` function to get more details of gen_kwargs
-                see also `get_ret` function to get more details of get_kwargs
+                kwargs for `self.gen_data()`, to see the funtion to get more info
 
         Returns:
-            a generator which yield a dict of data
+            an iterator which yield a dict of data
 
-        Usage:
-            .. code-block:: python
-
-            def _call(self, **gen_kwargs)
-                gen_func = ...
-                return self.gen_data(gen_func, **gen_kwargs)
         """
         raise NotImplementedError
 
@@ -185,9 +180,11 @@ class DataLoader:
 
         Args:
             gen_func:
-            max_size: num of loaded data
+                an iterator
+            max_size:
+                num of loaded data
             **get_kwargs:
-                see also `get_ret` function to get more details of get_kwargs
+                kwargs for `self.get_ret()`, to see the funtion to get more info
 
         Yields
             a dict of result data
@@ -220,7 +217,7 @@ class DataLoader:
             gen_func.close()
 
     def get_ret(self, obj, image_type=DataRegister.PATH, **kwargs) -> dict:
-        """logic of parsing the data, and return a dict of result"""
+        """called by `gen_data()`, which is logic of parsing the data, and return a dict of result"""
         raise NotImplementedError
 
     def load_cache(self, save_name):
