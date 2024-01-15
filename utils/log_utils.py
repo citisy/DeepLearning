@@ -451,3 +451,16 @@ def class_info(ins):
         doc=ins.__doc__,
         args=args
     )
+
+
+def get_class_annotations(cls):
+    if not hasattr(cls, '__annotations__'):
+        return dict()
+
+    annotations = cls.__annotations__
+
+    for parent_cls in cls.__bases__:
+        parent_annotations = get_class_annotations(parent_cls)
+        annotations.update(parent_annotations)
+
+    return annotations

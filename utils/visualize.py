@@ -310,10 +310,14 @@ class TextVisualize:
                 r = truncate_pattern.split(a)
                 if len(r) >= 3:  # make sure that returning one sentence at least
                     if left > 0 and not truncate_pattern.match(text[left - 1]):
-                        left += len(r[0]) + 1
+                        _ = left + len(r[0]) + 1
+                        if _ < span[0]:
+                            left = _
 
                     if right < len(text) - 1 and not truncate_pattern.match(text[right + 1]):
-                        right -= len(r[-1])
+                        _ = right - len(r[-1])
+                        if _ > span[1]:
+                            right = _
 
             left_abbr = left_abbr if left > 0 else ''
             right_abbr = right_abbr if right < len(text) else ''

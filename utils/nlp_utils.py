@@ -1,4 +1,5 @@
 from typing import List
+import re
 
 
 class Sequencer:
@@ -107,28 +108,45 @@ class PrefixTree:
             self.update(word, value)
 
     def get(self, word, default=None, return_trace=False, return_last=False):
+        if not word:
+            return default
+
         tmp = self.tree
+        tmp2 = None
         last = default
         for i, w in enumerate(word):
-            tmp = tmp.get(w)
-            if tmp is None:
-                if return_trace:
-                    return word[:i]
-                elif return_last:
-                    return last
+            next_tmp = tmp.get(w)
+
+            # find `{}` token
+            if next_tmp is None:
+                for k, v in tmp.items():
+                    if k is self.end_flag:
+                        continue
+
+                    if re.match(r'\{.+\}', k):
+                        next_tmp = v
+                        tmp2 = v
+                        break
                 else:
-                    return default
+                    next_tmp = tmp2
+
+            tmp = next_tmp
+            if tmp is None:     # search fail, return
+                break
             else:
                 last = tmp.get(self.end_flag, last)
 
         if return_trace:
-            r = word
+            r = word[:i]
         elif return_last:
             r = last
         else:
             r = default
 
-        return tmp.get(self.end_flag, r)
+        if tmp is None:
+            return r
+        else:
+            return tmp.get(self.end_flag, r)
 
     def update(self, word, value=None):
         this_dict = self.tree

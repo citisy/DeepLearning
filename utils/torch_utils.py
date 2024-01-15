@@ -3,6 +3,7 @@ import math
 import torch
 from torch import nn
 from collections import OrderedDict
+import re
 
 
 class ModuleInfo:
@@ -358,23 +359,81 @@ def convert_state_dict(state_dict: OrderedDict, convert_dict: dict):
 
             model1 = ...
             model2 = ...
-            convert_dict = {'before': 'after', 'before.a': 'after.aa'}
+            convert_dict = {'before': 'after', 'before.a': 'after.aa', 'before.a.{0}.a': 'after.b.{0}.b}
 
-            state_dict = model1.state_dict()    # OrderedDict([('before.a.weight', tensor(...)), ('before.b.weight', tensor(...)), ('same.weight', tensor(...))])
-            state_dict = convert_state_dict(state_dict, convert_dict)   # OrderedDict([('after.aa.weight', tensor(...)), ('after.b.weight', tensor(...)), ('same.weight', tensor(...))])
+            state_dict = model1.state_dict()
+            # OrderedDict([('before.a.weight', ...), ('before.b.weight', ...), ('before.a.1.a.weight', ...), ('same.weight', ...)])
+
+            state_dict = convert_state_dict(state_dict, convert_dict)
+            # OrderedDict([('after.aa.weight', ...), ('after.b.weight', ...), ('before.b.1.b.weight', ...), ('same.weight', ...)])
+
             model2.load_state_dict(state_dict)
     """
     from .nlp_utils import PrefixTree
 
-    tree = PrefixTree(list(convert_dict.keys()), list(convert_dict.keys()), unique=True)
+    def parse(s):
+        """''a.{0}.a'' -> ('a', '.', '{0}', '.', 'a')"""
+        r = []
+        flag = True
+        tmp = ''
+        for ss in s:
+            tmp += ss
+            if ss == '{':
+                flag = False
+            elif ss == '}':
+                flag = True
+
+            if flag:
+                r.append(tmp)
+                tmp = ''
+
+        return tuple(r)
+
+    c = {}
+    for a, b in convert_dict.items():
+        a = parse(a)
+        b = parse(b)
+        c[a] = b
+
+    tree = PrefixTree(list(c.keys()), list(c.keys()), unique=True)
     d = OrderedDict()
 
     for k, v in state_dict.items():
         a = tree.get(k, return_last=True)
-        if a in convert_dict:
-            k = k.replace(a, convert_dict[a])
+        if a in c:
+            b = c[a]
+
+            # get pattern
+            p = ''
+            pa = ''
+            flag = False
+            for s in a:
+                if re.match(r'\{.+\}', s):
+                    p += '(.+?)'
+                    pa += '%s'
+                    flag = True
+                else:
+                    p += s
+                    pa += s
+
+            if flag:
+                ra = re.findall(p, k)[0]
+                if isinstance(ra, str):
+                    ra = (ra, )
+                pa = pa % ra
+
+                pb = ''
+                i = 0
+                for s in b:
+                    if re.match(r'\{.+\}', s):
+                        pb += ra[i]
+                        i += 1
+                    else:
+                        pb += s
+            else:
+                pb = ''.join(b)
+
+            k = k.replace(pa, pb)
         d[k] = v
 
     return d
-
-
