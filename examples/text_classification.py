@@ -1,52 +1,52 @@
 import torch
 import numpy as np
-from .text_pretrain import TextProcess, BertNSP
+from .text_pretrain import TextProcess, Bert as Bert_
 
 
 class CoLA(TextProcess):
     dataset_version = 'CoLA'
     data_dir = 'data/CoLA'
-    seq_len = 16  # mean seq_len = 11.95
 
-    def get_train_data(self, *args, **kwargs):
+    # mean seq len is 9.327213191439597, max seq len is 45, min seq len is 2
+    max_seq_len = 64
+    n_classes = 2
+
+    def get_data(self, *args, train=True, **kwargs):
         from data_parse.nlp_data_parse.CoLA import Loader, DataRegister
         loader = Loader(self.data_dir)
-
-        return loader.load(set_type=DataRegister.TRAIN, max_size=self.train_data_num, generator=False)[0]
-
-    def get_val_data(self, *args, **kwargs):
-        from data_parse.nlp_data_parse.CoLA import Loader, DataRegister
-        loader = Loader(self.data_dir)
-
-        return loader.load(set_type=DataRegister.DEV, max_size=self.val_data_num, generator=False)[0]
+        if train:
+            return loader.load(set_type=DataRegister.TRAIN, max_size=self.train_data_num, generator=False)[0]
+        else:
+            return loader.load(set_type=DataRegister.DEV, max_size=self.val_data_num, generator=False)[0]
 
 
 class SST2(TextProcess):
     dataset_version = 'SST2'
     data_dir = 'data/SST2'
-    seq_len = 16  # mean seq_len = 11.95
 
-    def get_train_data(self, *args, **kwargs):
+    # mean seq len is 11.319262349849293, max seq len is 64, min seq len is 1
+    max_seq_len = 64
+    n_classes = 2
+
+    def get_data(self, *args, train=True, **kwargs):
         from data_parse.nlp_data_parse.SST2 import Loader, DataRegister
         loader = Loader(self.data_dir)
-
-        return loader.load(set_type=DataRegister.TRAIN, max_size=self.train_data_num, generator=False)[0]
-
-    def get_val_data(self, *args, **kwargs):
-        from data_parse.nlp_data_parse.SST2 import Loader, DataRegister
-        loader = Loader(self.data_dir)
-
-        return loader.load(set_type=DataRegister.DEV, max_size=self.val_data_num, generator=False)[0]
+        if train:
+            return loader.load(set_type=DataRegister.TRAIN, max_size=self.train_data_num, generator=False)[0]
+        else:
+            return loader.load(set_type=DataRegister.DEV, max_size=self.val_data_num, generator=False)[0]
 
 
-class Bert(BertNSP):
+class Bert(Bert_):
+    is_mlm = False  # only nsp strategy
+
     def set_model(self):
         from models.text_classification.bert import Model
         self.get_vocab()
-        self.model = Model(self.vocab_size, seq_len=self.seq_len, sp_tag_dict=self.sp_tag_dict)
+        self.model = Model(self.vocab_size, sp_tag_dict=self.sp_tag_dict, out_features=self.n_classes)
 
     def set_optimizer(self):
-        self.optimizer = torch.optim.Adam(self.model.parameters(), lr=1e-5, betas=(0.5, 0.999))
+        self.optimizer = torch.optim.AdamW(self.model.parameters(), lr=5e-5)
 
 
 class Bert_CoLA(Bert, CoLA):
@@ -54,10 +54,11 @@ class Bert_CoLA(Bert, CoLA):
     Usage:
         .. code-block:: python
 
-            from examples.text_pair_classification import Bert_SST2 as Process
+            from examples.text_pair_classification import Bert_CoLA as Process
 
-            Process(pretrain_model='model_data/bert/simple_text/model.pth').run(max_epoch=100, train_batch_size=128, predict_batch_size=128, check_period=3)
-            {'score': 0.78096}  # use pretrain_model
+            # about 200M data pretrain
+            Process(pretrain_model='...').run(max_epoch=5, train_batch_size=128, fit_kwargs=dict(check_period=1))
+            {'score': 0.10233}# Matthew's Corr
     """
 
     def metric(self, *args, **kwargs) -> dict:
@@ -87,9 +88,24 @@ class Bert_SST2(Bert, SST2):
 
             from examples.text_pair_classification import Bert_SST2 as Process
 
-            Process().run(max_epoch=100, train_batch_size=128, predict_batch_size=128, check_period=3)
-            {'score': 0.78096}  # no pretrain data, use SST2 data to train directly
+            # no pretrain data, use SST2 data to train directly
+            Process().run(max_epoch=100, train_batch_size=128, fit_kwargs=dict(check_period=1))
+            {'score': 0.78899}     # acc
 
-            Process(pretrain_model='model_data/bert/simple_text/model.pth').run(max_epoch=100, train_batch_size=128, predict_batch_size=128, check_period=3)
-            {'score': 0.78096}  # use pretrain_model
+            # about 200M data pretrain
+            Process(pretrain_model='...').run(max_epoch=5, train_batch_size=128, fit_kwargs=dict(check_period=1))
+            {'score': 0.83142}     # acc
+    """
+
+
+class BertFull_SST2(Bert_, SST2):
+    """
+    Usage:
+        .. code-block:: python
+
+            from examples.text_pair_classification import BertFull_SST2 as Process
+
+            # no pretrain data, use SST2 data to train with nsp and mlm directly
+            Process().run(max_epoch=5, train_batch_size=128, fit_kwargs=dict(check_period=1))
+            {'score': 0.78096}     # acc
     """
