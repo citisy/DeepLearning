@@ -43,6 +43,9 @@ class Process(
         and then, you can set special value of `input_size` when called like that:
             MyProcess(input_size=512, ...)
 
+        can use the following code to get all possible input kwargs
+            from utils.log_utils import get_class_annotations
+            print(get_class_annotations(MyProcess))
     """
 
     def __init__(self, **kwargs):

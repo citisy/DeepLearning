@@ -334,9 +334,6 @@ class ModelHooks:
         )
         self.wandb_id = wandb_run.id
 
-        self.set_mode(train=True)
-        self.set_scheduler(max_epoch=max_epoch)
-
         _counters = ['epoch', 'total_nums', 'total_steps', 'check_nums']
         for c in _counters:
             self.counters.setdefault(c, 0)
@@ -344,11 +341,14 @@ class ModelHooks:
         self.train_container['train_dataloader'] = train_dataloader if train_dataloader is not None else self.get_train_dataloader(batch_size=batch_size, **dataloader_kwargs)
 
         if check_period:
-            metric_kwargs['val_dataloader'] = val_dataloader if val_dataloader is not None else self.get_val_dataloader(batch_size=batch_size, **dataloader_kwargs)
+            metric_kwargs.setdefault('val_dataloader', val_dataloader if val_dataloader is not None else self.get_val_dataloader(batch_size=batch_size, **dataloader_kwargs))
 
         self.train_container['metric_kwargs'] = metric_kwargs
         self.train_container['end_flag'] = False
         self.train_container['last_check_time'] = time.time()
+
+        self.set_mode(train=True)
+        self.set_scheduler(max_epoch=max_epoch)
 
     register_logger: 'bundled.LogHooks.register_logger'
     log_methods: dict
@@ -449,29 +449,29 @@ class ModelHooks:
             self._check_on_train_epoch_end(**kwargs)
         return self.train_container.get('end_flag', False)  # cancel the training when end_flag is True
 
-    def _check_on_train_step_end(self, check_period=None, batch_size=None, save_multi_weight=False, max_save_weight_num=None, **kwargs):
+    def _check_on_train_step_end(self, check_period=None, batch_size=None, max_save_weight_num=None, **kwargs):
         total_nums = self.counters['total_nums']
         if check_period and total_nums % check_period < batch_size:
             self.trace({'total_nums': total_nums}, (bundled.LOGGING, bundled.WANDB))
 
-            ckpt = self._check_train(save_multi_weight, max_save_weight_num, total_nums)
+            ckpt = self._check_train(max_save_weight_num, total_nums)
             self.log_trace(bundled.LOGGING)
 
-            self._check_metric(ckpt, total_nums, save_multi_weight)
+            self._check_metric(ckpt, total_nums, max_save_weight_num)
             self.log_trace(bundled.WANDB)
 
-    def _check_on_train_epoch_end(self, check_period=None, save_multi_weight=False, max_save_weight_num=None, **kwargs):
+    def _check_on_train_epoch_end(self, check_period=None, max_save_weight_num=None, **kwargs):
         epoch = self.counters['epoch'] - 1  # epoch in counters is the next epoch, not the last
         self.trace({'epoch': epoch}, (bundled.LOGGING, bundled.WANDB))
 
-        ckpt = self._check_train(save_multi_weight, max_save_weight_num, epoch)
+        ckpt = self._check_train(max_save_weight_num, epoch)
         self.log_trace(bundled.LOGGING)
 
         if check_period and epoch % check_period == check_period - 1:
-            self._check_metric(ckpt, epoch, save_multi_weight)
+            self._check_metric(ckpt, epoch, max_save_weight_num)
         self.log_trace(bundled.WANDB)
 
-    def _check_train(self, save_multi_weight, max_save_weight_num, check_num):
+    def _check_train(self, max_save_weight_num, check_num):
         losses = self.train_container.get('losses')
         if losses is not None:
             for k, v in losses.items():
@@ -503,17 +503,15 @@ class ModelHooks:
         if hasattr(self, 'aux_model'):
             ckpt['aux_model'] = {k: v.state_dict() for k, v in self.aux_model.items()}
 
-        if save_multi_weight == 0:
-            pass
-        elif save_multi_weight:
+        if not isinstance(max_save_weight_num, int):    # None
+            self.save(f'{self.work_dir}/last.pth', save_type=WEIGHT, save_items=ckpt)
+        elif max_save_weight_num > 0:
             self.save(f'{self.work_dir}/{check_num}.pth', save_type=WEIGHT, save_items=ckpt)
             os_lib.FileCacher(f'{self.work_dir}/', max_size=max_save_weight_num, stdout_method=self.log).delete_over_range(suffix='pth')
-        else:
-            self.save(f'{self.work_dir}/last.pth', save_type=WEIGHT, save_items=ckpt)
 
         return ckpt
 
-    def _check_metric(self, ckpt, check_num, save_multi_weight):
+    def _check_metric(self, ckpt, check_num, max_save_weight_num):
         results = self.metric(**self.train_container.get('metric_kwargs', {}))
         scores = {}
         for name, result in results.items():
@@ -528,9 +526,7 @@ class ModelHooks:
         if hasattr(self, 'stopper'):
             score = results[self.model_name]['score']
             if score > self.stopper.best_score:
-                if save_multi_weight == 0:
-                    pass
-                else:
+                if not isinstance(max_save_weight_num, int) or max_save_weight_num > 0:
                     self.save(f'{self.work_dir}/best.pth', save_type=WEIGHT, save_items=ckpt)
 
             self.train_container['end_flag'] = self.train_container['end_flag'] or self.stopper(check_num, score)
