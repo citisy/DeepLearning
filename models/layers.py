@@ -288,5 +288,5 @@ class Residual(nn.Module):
         else:
             self.act = nn.Identity()
 
-    def forward(self, x):
-        return self.act(self.fn(x) + self.project_fn(x))
+    def forward(self, x, **kwargs):
+        return self.act(self.fn(x, **kwargs) + self.project_fn(x))

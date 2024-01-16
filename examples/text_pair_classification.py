@@ -114,10 +114,10 @@ class Bert_MNLI(Bert, MNLI):
 
             # about 200M data pretrain
             Process(pretrain_model='...', task='matched').run(max_epoch=5, train_batch_size=128, fit_kwargs=dict(check_period=1))
-            {'score': 0.66727}  # match acc
+            {'score': 0.6782}  # match acc
 
             Process(pretrain_model='...', task='mismatched').run(max_epoch=5, train_batch_size=128, fit_kwargs=dict(check_period=1))
-            {'score': 0.66727}  # mismatch acc
+            {'score': 0.6891}  # mismatch acc
     """
 
 
@@ -149,6 +149,15 @@ class Bert_QNLI(Bert, QNLI):
             Process(pretrain_model='...').run(max_epoch=5, train_batch_size=128, fit_kwargs=dict(check_period=1))
             {'score': 0.8002}   # acc
 
+            # use weights from huggingface
+            from transformers import BertForSequenceClassification
+            from models.text_pair_classification.bert import convert_hf_weights
+
+            process = Process()
+            model = BertForSequenceClassification.from_pretrained('...', num_labels=2)
+            process.model.load_state_dict(convert_hf_weights(model.state_dict()))
+            process.run(max_epoch=5, train_batch_size=128, fit_kwargs=dict(check_period=1))
+            {'score': 0.89254}   # acc
     """
 
 

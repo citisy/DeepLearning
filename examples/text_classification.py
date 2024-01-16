@@ -57,8 +57,9 @@ class Bert_CoLA(Bert, CoLA):
             from examples.text_pair_classification import Bert_CoLA as Process
 
             # about 200M data pretrain
+            # it seems that the pretraining model has significantly influenced  the score
             Process(pretrain_model='...').run(max_epoch=5, train_batch_size=128, fit_kwargs=dict(check_period=1))
-            {'score': 0.10233}# Matthew's Corr
+            {'score': 0.10233}  # Matthew's Corr
     """
 
     def metric(self, *args, **kwargs) -> dict:
@@ -95,6 +96,17 @@ class Bert_SST2(Bert, SST2):
             # about 200M data pretrain
             Process(pretrain_model='...').run(max_epoch=5, train_batch_size=128, fit_kwargs=dict(check_period=1))
             {'score': 0.83142}     # acc
+
+            # use weights from huggingface
+            from transformers import BertForSequenceClassification
+            from models.text_pair_classification.bert import convert_hf_weights
+
+            process = Process()
+            model = BertForSequenceClassification.from_pretrained('...', num_labels=1)
+            state_dict = convert_hf_weights(model.state_dict())
+            process.model.load_state_dict(state_dict)
+            process.run(max_epoch=5, train_batch_size=128, fit_kwargs=dict(check_period=1))
+            {'score': 0.92316}   # acc
     """
 
 

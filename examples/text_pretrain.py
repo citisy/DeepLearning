@@ -62,7 +62,7 @@ class RandomReverseTextPairsDataset(BaseDataset):
         ret = dict(
             texts=(text, text),
             segment_pair=(segment, next_segment),
-            segment_tag_pair=(segment_tag, [2] * len(segment_tag)),
+            segment_tag_pair=(segment_tag, [1] * len(segment_tag)),
             _class=_class
         )
 
@@ -95,10 +95,7 @@ class DataProcess(DataHooks):
         self.vocab = set(vocab)
         self.vocab_size = len(vocab)
         self.sp_tag_dict = {k: self.word_dict[v] for k, v in sp_token_dict.items()}
-        self.sp_tag_dict.update(
-            non_mask=-100,
-            seg_pad=0
-        )
+        self.sp_tag_dict.update(non_mask=-100)
 
     def _filter_func(self, x):
         if re.search('[0-9]', x):
@@ -135,14 +132,14 @@ class TextProcess(DataProcess):
             for segment in segments:
                 iter_data.append(dict(
                     segment=segment,
-                    segment_tag=[1] * len(segment),
+                    segment_tag=[0] * len(segment),
                     text=' '.join(segment)
                 ))
         else:
             for ret, segment in zip(iter_data, segments):
                 ret.update(
                     segment=segment,
-                    segment_tag=[1] * len(segment),
+                    segment_tag=[0] * len(segment),
                     text=' '.join(segment)
                 )
         return iter_data
@@ -199,7 +196,7 @@ class TextPairProcess(DataProcess):
             # todo, replace unused token by unknown word here, and then save the vocab
             ret.update(
                 segment_pair=segment_pair,
-                segment_tag_pair=([1] * len(segment_pair[0]), [2] * len(segment_pair[1]))
+                segment_tag_pair=([0] * len(segment_pair[0]), [1] * len(segment_pair[1]))
             )
 
         return iter_data
@@ -242,7 +239,7 @@ class TextPairProcess(DataProcess):
             ret.update(mask_tag=mask_tags[0])
 
         segments = bundled.joint(segment_pairs, sep_token=sp_token_dict['sep'], keep_end=False)
-        segment_tags = bundled.joint(segment_tag_pairs, sep_token=1, keep_end=False)
+        segment_tags = bundled.joint(segment_tag_pairs, sep_token=0, keep_end=False)
 
         ret.update(
             segment=segments[0],
@@ -339,22 +336,37 @@ class Bert(Process):
         # in RoBERTa, beta_2=0.98
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=1e-4, betas=(0.5, 0.999))
 
+    def set_scheduler(self, max_epoch):
+        if self.use_scheduler:
+            from transformers import get_scheduler
+
+            num_training_steps = max_epoch * len(self.train_container['train_dataloader'])
+            self.scheduler = get_scheduler(
+                "linear",
+                optimizer=self.optimizer,
+                num_warmup_steps=0,
+                num_training_steps=num_training_steps,
+            )
+
     def get_model_inputs(self, rets, train=True):
         segments = [ret['segment'] for ret in rets]
+        attention_mask = [[True] * len(seg) for seg in segments]
         segments = bundled.align(segments, max_seq_len=self.max_seq_len, start_token=sp_token_dict['cls'], end_token=sp_token_dict['sep'], pad_token=sp_token_dict['pad'])
+        attention_mask = bundled.align(attention_mask,  max_seq_len=self.max_seq_len, start_token=True, end_token=True, pad_token=False)
         token_tags = encoder.simple(segments, self.word_dict, unk_tag=self.sp_tag_dict['unk'])
 
         segment_tags = [ret['segment_tag'] for ret in rets]
-        segment_tags = bundled.align(segment_tags, max_seq_len=self.max_seq_len, start_token=1, end_token=2, pad_token=self.sp_tag_dict['seg_pad'])
+        segment_tags = bundled.align(segment_tags, max_seq_len=self.max_seq_len, start_token=0, end_token=1, pad_token=0)
 
         token_tags = torch.tensor(token_tags).to(self.device)
         segment_tags = torch.tensor(segment_tags).to(self.device)
-        mask = segment_tags == self.sp_tag_dict['seg_pad']
+        attention_mask = torch.tensor(attention_mask).to(self.device)
+        # attention_mask = segment_tags == self.sp_tag_dict['seg_pad']
 
         r = dict(
             x=token_tags,
             segment_label=segment_tags,
-            attention_mask=mask,
+            attention_mask=attention_mask,
         )
 
         if train:
@@ -378,6 +390,11 @@ class Bert(Process):
             output = self.model(**rets)
 
         return output
+
+    def _backward(self):
+        super()._backward()
+        if self.use_scheduler:
+            self.scheduler.step()
 
     def metric(self, *args, return_score='full', **kwargs) -> dict:
         """
@@ -480,6 +497,7 @@ class Bert(Process):
         pass
 
     def on_val_end(self, is_visualize=False, max_vis_num=None, **kwargs):
+        # todo: make a file to be submitted to https://gluebenchmark.com directly
         if is_visualize:
             for name, results in self.val_container['model_results'].items():
                 data = []
