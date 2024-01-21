@@ -34,6 +34,16 @@
 
 [预训练-GPT系列](https://www.citisy.site/posts/31506.html)
 
+## 任务流程相关
+
+[数学工具-常用分类任务评估指标](https://www.citisy.site/posts/20745.html)
+
+[数学工具-常用回归任务评估指标](https://www.citisy.site/posts/28243.html)
+
+[数学工具-常用聚类任务评估指标](https://www.citisy.site/posts/37258.html)
+
+[数学工具-常用目标检测任务评估指标](https://www.citisy.site/posts/35178.html)
+
 # 目录结构
 
 ```
