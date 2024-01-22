@@ -5,7 +5,7 @@ from torch import nn
 from einops.layers.torch import Rearrange
 
 from utils import torch_utils
-from ..layers import Linear, Residual
+from ..layers import Linear, Residual, SelfAttention2D
 
 
 def convert_hf_weights(state_dict):
@@ -235,7 +235,7 @@ class TransformerBlock(nn.Module):
     def __init__(self, hidden_size, num_attention_heads, feed_forward_hidden, drop_prob=0.1):
         super().__init__()
         self.res1 = Residual(
-            SelfAttention(num_attention_heads, d_model=hidden_size, drop_prob=drop_prob),
+            SelfAttention2D(n_heads=num_attention_heads, model_dim=hidden_size, drop_prob=drop_prob),
             act=nn.LayerNorm(hidden_size)
         )
 
@@ -252,42 +252,3 @@ class TransformerBlock(nn.Module):
         x = self.res1(x, attention_mask=attention_mask)
         x = self.res2(x)
         return x
-
-
-class SelfAttention(nn.Module):
-    def __init__(self, num_heads, d_model, drop_prob=0.1):
-        super().__init__()
-        assert d_model % num_heads == 0
-
-        d_k = d_model // num_heads
-        self.to_qkv = nn.ModuleList([nn.Sequential(
-            nn.Linear(d_model, d_model),
-            Rearrange('b s (n dk)-> b n s dk', dk=d_k, n=num_heads)
-        ) for _ in range(3)])
-        self.dropout = nn.Dropout(drop_prob)
-        self.to_out = nn.Sequential(
-            Rearrange('b n s dk -> b s (n dk)'),
-            Linear(d_model, d_model, mode='ld', drop_prob=drop_prob)
-        )
-
-    def attend(self, q, k, v, attention_mask=None):
-        """Scaled Dot-Product Attention
-        attn(q, k, v) = softmax(qk'/sqrt(dk))*v"""
-        s = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(q.size(-1))
-
-        if attention_mask is not None:  # mask pad
-            attention_mask = ~attention_mask.to(dtype=torch.bool)
-            attention_mask = attention_mask[:, None, None].repeat(1, 1, s.size(2), 1)  # mask pad
-            s = s.masked_fill(attention_mask, torch.finfo(s.dtype).min)  # support fp16
-
-        attn = F.softmax(s, dim=-1)
-        attn = self.dropout(attn)
-        attn = torch.matmul(attn, v)
-
-        return attn
-
-    def forward(self, x, attention_mask=None):
-        q, k, v = [m(x) for m in self.to_qkv]
-        x = self.attend(q, k, v, attention_mask=attention_mask)
-
-        return self.to_out(x)

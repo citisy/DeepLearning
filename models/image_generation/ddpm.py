@@ -4,7 +4,7 @@ from torch import nn, einsum
 from einops import rearrange, repeat, reduce
 import torch
 import torch.nn.functional as F
-from ..layers import Linear, Conv, Residual
+from ..layers import Linear, Conv, Residual, SelfAttention3D, LinearSelfAttention3D
 from utils.torch_utils import initialize_layers
 from functools import partial
 from einops.layers.torch import Rearrange
@@ -12,6 +12,18 @@ from einops.layers.torch import Rearrange
 PRED_X0 = 1
 PRED_Z = 2
 PRED_V = 3
+
+
+class Config:
+    in_module_config = dict()
+    backbone_config = dict()
+
+    @classmethod
+    def get(cls, name=None):
+        return dict(
+            in_module_config=cls.in_module_config,
+            backbone_config=cls.backbone_config
+        )
 
 
 def extract(a, t, x_shape):
@@ -72,7 +84,7 @@ class Model(nn.ModuleList):
     def __init__(self, img_ch, image_size,
                  schedule_func=linear_beta_schedule, timesteps=300,
                  offset_noise_strength=0., objective=PRED_V,
-                 min_snr_loss_weight=False, min_snr_gamma=5, **model_kwargs
+                 min_snr_loss_weight=False, min_snr_gamma=5, model_kwargs=Config.get()
                  ):
         super().__init__()
         self.image_size = image_size
@@ -85,6 +97,11 @@ class Model(nn.ModuleList):
         # pred_v -> model(x_t, t) = v_t = z_t \sqrt ca_t - x_0 * \sqrt{1-ca_t}
         self.objective = objective
 
+        self.register_schedule(schedule_func, timesteps, min_snr_loss_weight, min_snr_gamma)
+        self.model = Diffusion(**model_kwargs)
+        self.self_condition = False
+
+    def register_schedule(self, schedule_func, timesteps, min_snr_loss_weight, min_snr_gamma):
         # helper function to register buffer from float64 to float32
         register_buffer = lambda name, val: self.register_buffer(name, val.to(torch.float32))
 
@@ -127,15 +144,12 @@ class Model(nn.ModuleList):
         if min_snr_loss_weight:
             maybe_clipped_snr.clamp_(max=min_snr_gamma)
 
-        if objective == PRED_Z:
+        if self.objective == PRED_Z:
             register_buffer('loss_weight', maybe_clipped_snr / snr)
-        elif objective == PRED_X0:
+        elif self.objective == PRED_X0:
             register_buffer('loss_weight', maybe_clipped_snr)
-        elif objective == PRED_V:
+        elif self.objective == PRED_V:
             register_buffer('loss_weight', maybe_clipped_snr / (snr + 1))
-
-        self.model = Model_(**model_kwargs)
-        self.self_condition = False
 
     def forward(self, x):
         if self.training:
@@ -298,7 +312,7 @@ class Model(nn.ModuleList):
         return posterior_mean, posterior_variance, posterior_log_variance_clipped
 
 
-class Model_(nn.Module):
+class Diffusion(nn.Module):
     def __init__(self, in_ch=3, hidden_ch=64,
                  in_module_config=dict(), backbone_config=dict(),
                  ):
@@ -363,7 +377,6 @@ class Backbone(nn.Module):
         )
 
         num_stages = len(dim_factors)
-        is_full_attn = [False] * (num_stages - 1) + [True]
 
         if isinstance(attn_heads, int):
             attn_heads = [attn_heads] * num_stages
@@ -371,20 +384,20 @@ class Backbone(nn.Module):
         if isinstance(attn_dim_heads, int):
             attn_dim_heads = [attn_dim_heads] * num_stages
 
-        self.downs = nn.ModuleList([])
-        self.ups = nn.ModuleList([])
         res_block = partial(ResnetBlock, groups=resnet_block_groups, time_emb_dim=time_dim)
 
         in_ch = dim
+        self.downs = nn.ModuleList([])
         for i in range(num_stages):
             is_bottom = i == num_stages - 1
-            attn_layer = Attention if is_full_attn[i] else LinearAttention
+            attn_layer = SelfAttention3D if is_bottom else partial(LinearSelfAttention3D, norm=RMSNorm(in_ch))
             out_ch = dim * dim_factors[i]
 
             self.downs.append(nn.ModuleList([
                 res_block(in_ch, in_ch),
                 res_block(in_ch, in_ch),
-                attn_layer(in_ch, dim_head=attn_dim_heads[i], heads=attn_heads[i]),
+                RMSNorm(in_ch),
+                attn_layer(in_ch, head_dim=attn_dim_heads[i], n_heads=attn_heads[i]),
                 nn.Conv2d(in_ch, out_ch, 3, padding=1) if is_bottom else nn.Sequential(
                     Rearrange('b c (h p1) (w p2) -> b (c p1 p2) h w', p1=2, p2=2),
                     nn.Conv2d(in_ch * 4, out_ch, 1)
@@ -395,18 +408,21 @@ class Backbone(nn.Module):
 
         out_ch = in_ch
         self.mid_block1 = res_block(out_ch, out_ch)
-        self.mid_attn = Attention(out_ch, heads=attn_heads[-1], dim_head=attn_dim_heads[-1])
+        self.mid_attn = SelfAttention3D(out_ch, n_heads=attn_heads[-1], head_dim=attn_dim_heads[-1])
         self.mid_block2 = res_block(out_ch, out_ch)
 
+        self.ups = nn.ModuleList([])
         for i in reversed(range(num_stages)):
             is_top = i == 0
-            attn_layer = Attention if is_full_attn[i] else LinearAttention
+            is_bottom = i == num_stages - 1
+            attn_layer = SelfAttention3D if is_bottom else partial(LinearSelfAttention3D, norm=RMSNorm(out_ch))
             in_ch = dim if i == 0 else dim * dim_factors[i - 1]
 
             self.ups.append(nn.ModuleList([
                 res_block(out_ch + in_ch, out_ch),
                 res_block(out_ch + in_ch, out_ch),
-                attn_layer(out_ch, dim_head=attn_dim_heads[i], heads=attn_heads[i]),
+                RMSNorm(out_ch),
+                attn_layer(out_ch, head_dim=attn_dim_heads[i], n_heads=attn_heads[i]),
                 nn.Conv2d(out_ch, in_ch, 3, padding=1) if is_top else nn.Sequential(
                     nn.Upsample(scale_factor=2, mode='nearest'),
                     nn.Conv2d(out_ch, in_ch, 3, padding=1)
@@ -422,11 +438,12 @@ class Backbone(nn.Module):
         t = self.time_mlp(time)
         h = []
 
-        for block1, block2, attn, downsample in self.downs:
+        for block1, block2, norm, attn, downsample in self.downs:
             x = block1(x, t)
             h.append(x)
 
             x = block2(x, t)
+            x = norm(x)
             x = attn(x) + x
             h.append(x)
 
@@ -436,12 +453,13 @@ class Backbone(nn.Module):
         x = self.mid_attn(x) + x
         x = self.mid_block2(x, t)
 
-        for block1, block2, attn, upsample in self.ups:
+        for block1, block2, norm, attn, upsample in self.ups:
             x = torch.cat((x, h.pop()), dim=1)
             x = block1(x, t)
 
             x = torch.cat((x, h.pop()), dim=1)
             x = block2(x, t)
+            x = norm(x)
             x = attn(x) + x
 
             x = upsample(x)
@@ -523,78 +541,6 @@ class ResBlock(nn.Module):
         return x
 
 
-class LinearAttention(nn.Module):
-    def __init__(self, dim, heads=4, dim_head=32, num_mem_kv=4):
-        super().__init__()
-        self.scale = dim_head ** -0.5
-        self.heads = heads
-        hidden_dim = dim_head * heads
-
-        self.norm = RMSNorm(dim)
-        self.mem_kv = nn.Parameter(torch.randn(2, heads, dim_head, num_mem_kv))
-        self.to_qkv = nn.Conv2d(dim, hidden_dim * 3, 1, bias=False)
-        self.to_out = Conv(hidden_dim, dim, 1, mode='cn', norm=RMSNorm(dim))
-
-    def forward(self, x):
-        b, c, h, w = x.shape
-
-        x = self.norm(x)
-
-        qkv = self.to_qkv(x).chunk(3, dim=1)
-        q, k, v = map(lambda t: rearrange(t, 'b (h c) x y -> b h c (x y)', h=self.heads), qkv)
-
-        mk, mv = map(lambda t: repeat(t, 'h c n -> b h c n', b=b), self.mem_kv)
-        k, v = map(partial(torch.cat, dim=-1), ((mk, k), (mv, v)))
-
-        q = q.softmax(dim=-2)
-        k = k.softmax(dim=-1)
-
-        q = q * self.scale
-
-        context = torch.einsum('b h d n, b h e n -> b h d e', k, v)
-        out = torch.einsum('b h d e, b h d n -> b h e n', context, q)
-        out = rearrange(out, 'b h c (x y) -> b (h c) x y', h=self.heads, x=h, y=w)
-        return self.to_out(out)
-
-
-class Attention(nn.Module):
-    def __init__(self, dim, heads=4, dim_head=32, num_mem_kv=4, dropout=0.):
-        super().__init__()
-        self.heads = heads
-        hidden_dim = dim_head * heads
-
-        self.norm = RMSNorm(dim)
-        self.to_qkv = nn.Conv2d(dim, hidden_dim * 3, 1, bias=False)
-        self.mem_kv = nn.Parameter(torch.randn(2, heads, num_mem_kv, dim_head))
-        self.attn_dropout = nn.Dropout(dropout)
-        self.to_out = nn.Conv2d(hidden_dim, dim, 1)
-
-    def forward(self, x):
-        b, c, h, w = x.shape
-        x = self.norm(x)
-
-        qkv = self.to_qkv(x).chunk(3, dim=1)
-        q, k, v = map(lambda t: rearrange(t, 'b (h c) x y -> b h (x y) c', h=self.heads), qkv)
-
-        mk, mv = map(lambda t: repeat(t, 'h n d -> b h n d', b=b), self.mem_kv)
-        k, v = map(partial(torch.cat, dim=-2), ((mk, k), (mv, v)))
-
-        scale = q.shape[-1] ** -0.5
-
-        # similarity
-        sim = einsum(f"b h i d, b h j d -> b h i j", q, k) * scale
-
-        # attention
-        attn = sim.softmax(dim=-1)
-        attn = self.attn_dropout(attn)
-
-        # aggregate values
-        out = einsum(f"b h i j, b h j d -> b h i d", attn, v)
-
-        out = rearrange(out, 'b h (x y) d -> b (h d) x y', x=h, y=w)
-        return self.to_out(out)
-
-
 class RMSNorm(nn.Module):
     def __init__(self, dim):
         super().__init__()
@@ -602,63 +548,3 @@ class RMSNorm(nn.Module):
 
     def forward(self, x):
         return F.normalize(x, dim=1) * self.g * (x.shape[1] ** 0.5)
-
-
-class Attend(nn.Module):
-    """work for pytorch > 2.0"""
-
-    def __init__(self, dropout=0., ):
-        super().__init__()
-        self.dropout = dropout
-        self.attn_dropout = nn.Dropout(dropout)
-
-        # determine efficient attention configs for cuda and cpu
-        self.cpu_config = dict(
-            enable_flash=True,
-            enable_math=True,
-            enable_mem_efficient=True
-        )
-
-        self.cuda_config = None
-
-        if not torch.cuda.is_available():
-            return
-
-        device_properties = torch.cuda.get_device_properties(torch.device('cuda'))
-        if device_properties.major == 8 and device_properties.minor == 0:
-            self.cuda_config = dict(
-                enable_flash=True,
-                enable_math=False,
-                enable_mem_efficient=False
-            )
-        else:
-            self.cuda_config = dict(
-                enable_flash=False,
-                enable_math=True,
-                enable_mem_efficient=True
-            )
-
-    def forward(self, q, k, v):
-        """
-        einstein notation
-        b - batch
-        h - heads
-        n, i, j - sequence length (base sequence length, source, target)
-        d - feature dimension
-        """
-
-        _, heads, q_len, _ = q.shape
-
-        q, k, v = map(lambda t: t.contiguous(), (q, k, v))
-
-        # Check if there is a compatible device for flash attention
-        config = self.cuda_config if q.is_cuda else self.cpu_config
-
-        # pytorch 2.0 flash attn: q, k, v, mask, dropout, causal, softmax_scale
-        with torch.backends.cuda.sdp_kernel(**config._asdict()):
-            out = F.scaled_dot_product_attention(
-                q, k, v,
-                dropout_p=self.dropout if self.training else 0.
-            )
-
-        return out

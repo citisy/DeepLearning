@@ -3,6 +3,9 @@ from torch import nn
 import torch.nn.functional as F
 import numpy as np
 from collections import OrderedDict
+from functools import partial
+from einops.layers.torch import Rearrange
+from einops import rearrange, repeat, reduce
 
 
 class SimpleInModule(nn.Sequential):
@@ -57,9 +60,11 @@ class Conv(nn.Sequential):
             s: stride
             p: padding size, None for full padding
             act (nn.Module): activation function
-            mode (str):
-                'c' gives convolution function, 'n' gives normalization function, 'a' gives activate function
-                e.g. 'cna' gives conv - norm - act
+            mode (str): e.g. 'cna' gives conv - norm - act
+                - 'c' gives convolution function
+                - 'n' gives normalization function
+                - 'a' gives activate function
+                - 'd' gives dropout function
 
         """
         if p is None:
@@ -228,6 +233,225 @@ class EqualLinear(nn.Module):
         return F.linear(x, self.weight * self.lr_mul, bias=self.bias * self.lr_mul)
 
 
+def get_attention_input(n_heads=None, model_dim=None, head_dim=None):
+    if n_heads and model_dim:
+        assert model_dim % n_heads == 0
+        head_dim = model_dim // n_heads
+    elif n_heads and head_dim:
+        model_dim = n_heads * head_dim
+    elif model_dim and head_dim:
+        assert model_dim % head_dim == 0
+        n_heads = model_dim // head_dim
+    else:
+        raise ValueError('Must set two of [n_heads, model_dim, head_dim] at the same time')
+
+    return n_heads, model_dim, head_dim
+
+
+class SelfAttention2D(nn.Module):
+    def __init__(self, n_heads=None, model_dim=None, head_dim=None, drop_prob=0.1):
+        """self attention build by linear function
+        attn(q, k, v) = softmax(qk'/sqrt(dk))*v
+
+        Args:
+            n_heads:
+            model_dim: d_model
+            head_dim: d_k
+            drop_prob:
+        """
+        super().__init__()
+        n_heads, model_dim, head_dim = get_attention_input(n_heads, model_dim, head_dim)
+        self.scale = head_dim ** -0.5
+
+        self.to_qkv = nn.ModuleList([nn.Sequential(
+            nn.Linear(model_dim, model_dim),
+            Rearrange('b s (n dk)-> b n s dk', dk=head_dim, n=n_heads)
+        ) for _ in range(3)])
+        self.dropout = nn.Dropout(drop_prob)
+        self.to_out = nn.Sequential(
+            Rearrange('b n s dk -> b s (n dk)'),
+            Linear(model_dim, model_dim, mode='ld', drop_prob=drop_prob)
+        )
+
+    def attend(self, q, k, v, attention_mask=None):
+        """Scaled Dot-Product Attention"""
+        # similarity
+        sim = torch.matmul(q, k.transpose(-2, -1)) / self.scale
+
+        if attention_mask is not None:  # mask pad
+            attention_mask = ~attention_mask.to(dtype=torch.bool)
+            attention_mask = attention_mask[:, None, None].repeat(1, 1, sim.size(2), 1)  # mask pad
+            sim = sim.masked_fill(attention_mask, torch.finfo(sim.dtype).min)  # support fp16
+
+        attn = F.softmax(sim, dim=-1)
+        attn = self.dropout(attn)
+        attn = torch.matmul(attn, v)
+
+        return attn
+
+    def forward(self, x, attention_mask=None):
+        q, k, v = [m(x) for m in self.to_qkv]
+        x = self.attend(q, k, v, attention_mask=attention_mask)
+
+        return self.to_out(x)
+
+
+class SelfAttention3D(nn.Module):
+    def __init__(self, in_dim, n_heads=None, model_dim=None, head_dim=None, n_mem_size=4, drop_prob=0.):
+        """self attention build by conv function
+        attn(q, k, v) = softmax(qk'/sqrt(dk))*v
+
+        Args:
+            in_dim:
+            n_heads:
+            model_dim:
+            head_dim:
+            n_mem_size:
+            drop_prob:
+        """
+        super().__init__()
+        n_heads, model_dim, head_dim = get_attention_input(n_heads, model_dim, head_dim)
+        self.scale = head_dim ** -0.5
+        self.n_heads = n_heads
+
+        # different to linear function, each conv filter and feature map is independent
+        # so can use a conv layer to compute, and then, chunk it
+        self.to_qkv = nn.Conv2d(in_dim, model_dim * 3, 1, bias=False)
+        self.mem_kv = nn.Parameter(torch.randn(2, n_heads, n_mem_size, head_dim))
+        self.dropout = nn.Dropout(drop_prob)
+        self.to_out = nn.Conv2d(model_dim, in_dim, 1)
+
+    def attend(self, q, k, v):
+        """Scaled Dot-Product Attention"""
+        # similarity
+        # s means image size, s = i + j, i = h * w
+        sim = torch.einsum(f"b n i d, b n s d -> b n i s", q, k) * self.scale
+
+        # attention
+        attn = sim.softmax(dim=-1)
+        attn = self.dropout(attn)
+
+        # aggregate values
+        attn = torch.einsum(f"b n i s, b n s d -> b n i d", attn, v)
+        return attn
+
+    def forward(self, x):
+        b, c, h, w = x.shape
+        qkv = self.to_qkv(x).chunk(3, dim=1)
+        q, k, v = map(lambda t: rearrange(t, 'b (n d) h w -> b n (h w) d', n=self.n_heads), qkv)
+        mk, mv = map(lambda t: repeat(t, 'n j d -> b n j d', b=q.shape[0]), self.mem_kv)
+        k, v = map(partial(torch.cat, dim=-2), ((mk, k), (mv, v)))
+
+        x = self.attend(q, k, v)
+        x = rearrange(x, 'b n (h w) d -> b (n d) h w', h=h, w=w)
+        return self.to_out(x)
+
+
+class LinearSelfAttention3D(nn.Module):
+    def __init__(self, in_dim, n_heads=None, model_dim=None, head_dim=None, n_mem_size=4, norm=None):
+        """linear self attention build by conv function, to reduce the computation
+        attn(q, k, v) = softmax(k)*v*softmax(q)/sqrt(dk)
+        refer to: https://arxiv.org/pdf/2006.16236.pdf
+
+        Args:
+            in_dim:
+            n_heads:
+            model_dim:
+            head_dim:
+            n_mem_size:
+            norm:
+        """
+        super().__init__()
+        n_heads, model_dim, head_dim = get_attention_input(n_heads, model_dim, head_dim)
+        self.scale = head_dim ** -0.5
+        self.n_heads = n_heads
+
+        self.to_qkv = nn.Conv2d(in_dim, model_dim * 3, 1, bias=False)
+        self.mem_kv = nn.Parameter(torch.randn(2, n_heads, head_dim, n_mem_size))
+        self.to_out = Conv(model_dim, in_dim, 1, mode='cn', norm=norm)
+
+    def attend(self, q, k, v):
+        q = q.softmax(dim=-2)
+        k = k.softmax(dim=-1)
+
+        q = q * self.scale
+
+        context = torch.einsum('b n i s, b n j s -> b n i j', k, v)  # d = i = j
+        context = torch.einsum('b n i j, b n i s -> b n j s', context, q)
+        return context
+
+    def forward(self, x):
+        b, c, h, w = x.shape
+        qkv = self.to_qkv(x).chunk(3, dim=1)
+        q, k, v = map(lambda t: rearrange(t, 'b (n d) h w -> b n d (h w)', n=self.n_heads), qkv)
+        mk, mv = map(lambda t: repeat(t, 'n d j -> b n d j', b=b), self.mem_kv)
+        k, v = map(partial(torch.cat, dim=-1), ((mk, k), (mv, v)))
+
+        x = self.attend(q, k, v)
+        x = rearrange(x, 'b n d (h w) -> b (n d) h w', n=self.n_heads, h=h, w=w)
+        return self.to_out(x)
+
+
+class FlashAttend(nn.Module):
+    """requires pytorch > 2.0
+    refer to: https://arxiv.org/pdf/2205.14135.pdf"""
+
+    def __init__(self, drop_prob=0.):
+        super().__init__()
+        self.drop_prob = drop_prob
+
+        # determine efficient attention configs for cuda and cpu
+        self.cpu_config = dict(
+            enable_flash=True,
+            enable_math=True,
+            enable_mem_efficient=True
+        )
+
+        self.cuda_config = None
+
+        if not torch.cuda.is_available():
+            return
+
+        device_properties = torch.cuda.get_device_properties(torch.device('cuda'))
+        if device_properties.major == 8 and device_properties.minor == 0:
+            self.cuda_config = dict(
+                enable_flash=True,
+                enable_math=False,
+                enable_mem_efficient=False
+            )
+        else:
+            self.cuda_config = dict(
+                enable_flash=False,
+                enable_math=True,
+                enable_mem_efficient=True
+            )
+
+    def forward(self, q, k, v):
+        """
+        einstein notation
+        b - batch
+        h - heads
+        n, i, j - sequence length (base sequence length, source, target)
+        d - feature dimension
+        """
+
+        _, heads, q_len, _ = q.shape
+
+        q, k, v = map(lambda t: t.contiguous(), (q, k, v))
+
+        # Check if there is a compatible device for flash attention
+        config = self.cuda_config if q.is_cuda else self.cpu_config
+
+        # pytorch 2.0 flash attn: q, k, v, mask, dropout, causal, softmax_scale
+        with torch.backends.cuda.sdp_kernel(**config._asdict()):
+            out = F.scaled_dot_product_attention(
+                q, k, v,
+                dropout_p=self.drop_prob if self.training else 0.
+            )
+
+        return out
+
+
 class Cache(nn.Module):
     def __init__(self, idx=None, replace=True):
         super().__init__()
@@ -235,6 +459,7 @@ class Cache(nn.Module):
         self.replace = replace
 
     def forward(self, x, features: list):
+        """f_i = x"""
         if self.idx is not None:
             if self.replace:
                 features[self.idx] = x
@@ -252,7 +477,8 @@ class Concat(nn.Module):
         self.dim = dim
         self.replace = replace
 
-    def forward(self, x, features):
+    def forward(self, x, features: list):
+        """x <- concat(x, f_i)"""
         x = torch.cat([x, features[self.idx]], self.dim)
 
         if self.replace:
@@ -267,7 +493,8 @@ class Add(nn.Module):
         self.idx = idx
         self.replace = replace
 
-    def forward(self, x, features):
+    def forward(self, x, features: list):
+        """x <- x + f_i"""
         x += features[self.idx]
 
         if self.replace:
@@ -277,8 +504,7 @@ class Add(nn.Module):
 
 
 class Residual(nn.Module):
-    def __init__(self, fn, project_fn=None,
-                 is_act=True, act=None):
+    def __init__(self, fn, project_fn=None, is_act=True, act=None):
         super().__init__()
         self.fn = fn
         self.project_fn = project_fn or nn.Identity()
