@@ -10,23 +10,33 @@ from torch.autograd import grad
 from ..layers import Linear, Conv, EqualLinear, Residual
 from utils.torch_utils import initialize_layers
 
-net_s_config = dict(
-    n_layers=8,
-    lr_mul=0.1,
-)
 
-net_g_config = dict(
-    network_capacity=16,
-    attn_layers=[4, 5],
-    const_input=True
-)
+class Config:
+    net_s_config = dict(
+        n_layers=8,
+        lr_mul=0.1,
+    )
 
-net_d_config = dict(
-    network_capacity=16,
-    fq_dict_size=512,
-    fq_layers=[4, 5],
-    attn_layers=[4, 5]
-)
+    net_g_config = dict(
+        network_capacity=16,
+        attn_layers=[4, 5],
+        const_input=True
+    )
+
+    net_d_config = dict(
+        network_capacity=16,
+        fq_dict_size=512,
+        fq_layers=[4, 5],
+        attn_layers=[4, 5]
+    )
+
+    @classmethod
+    def get(cls, name=None):
+        return dict(
+            net_s_config=cls.net_s_config,
+            net_g_config=cls.net_g_config,
+            net_d_config=cls.net_d_config
+        )
 
 
 class Model(nn.ModuleList):
@@ -40,7 +50,7 @@ class Model(nn.ModuleList):
     """
 
     def __init__(self, img_ch, image_size, net_g_in_ch=512,
-                 net_s_config=net_s_config, net_g_config=net_g_config, net_d_config=net_d_config,
+                 net_s_config=Config.net_s_config, net_g_config=Config.net_g_config, net_d_config=Config.net_d_config,
                  ):
         super().__init__()
         self.image_size = image_size

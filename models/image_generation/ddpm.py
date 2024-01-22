@@ -4,8 +4,7 @@ from torch import nn, einsum
 from einops import rearrange, repeat, reduce
 import torch
 import torch.nn.functional as F
-from ..layers import Linear, Conv, Residual, SelfAttention3D, LinearSelfAttention3D
-from utils.torch_utils import initialize_layers
+from ..layers import Linear, Conv, SelfAttention3D, LinearSelfAttention3D
 from functools import partial
 from einops.layers.torch import Rearrange
 
@@ -15,8 +14,17 @@ PRED_V = 3
 
 
 class Config:
-    in_module_config = dict()
-    backbone_config = dict()
+    in_module_config = dict(self_condition=False)
+    backbone_config = dict(
+        learned_sinusoidal_cond=False,
+        random_fourier_features=False,
+        learned_sinusoidal_dim=16,
+        sinusoidal_pos_emb_theta=10000,
+        resnet_block_groups=8,
+        dim_factors=(1, 2, 4, 8),
+        attn_heads=4,
+        attn_dim_heads=32
+    )
 
     @classmethod
     def get(cls, name=None):
@@ -159,36 +167,40 @@ class Model(nn.ModuleList):
         else:
             return self.post_process(x)
 
-    def model_predictions(self, x_t, t, x_self_cond=None, clip_x_start=False, rederive_pred_noise=False):
+    def model_predictions(self, x_t, t, x_self_cond=None, clip_x_start=False,
+                          return_pred_noise=False, rederive_pred_noise=False):
         """x_t, t -> pred_z_t, x_0"""
         model_output = self.model(x_t, t, x_self_cond)
 
+        pred_noise = None
         if self.objective == PRED_Z:
             pred_noise = model_output
             x_0 = self.predict_start_from_noise(x_t, t, pred_noise)
             if clip_x_start:
                 x_0 = torch.clamp(x_0, min=-1., max=1.)
 
-            if clip_x_start and rederive_pred_noise:
+            if return_pred_noise and clip_x_start and rederive_pred_noise:
                 pred_noise = self.predict_noise_from_start(x_t, t, x_0)
 
         elif self.objective == PRED_X0:
             x_0 = model_output
             if clip_x_start:
                 x_0 = torch.clamp(x_0, min=-1., max=1.)
-            pred_noise = self.predict_noise_from_start(x_t, t, x_0)
+            if return_pred_noise:
+                pred_noise = self.predict_noise_from_start(x_t, t, x_0)
 
         elif self.objective == PRED_V:
             v = model_output
             x_0 = self.predict_start_from_v(x_t, t, v)
             if clip_x_start:
                 x_0 = torch.clamp(x_0, min=-1., max=1.)
-            pred_noise = self.predict_noise_from_start(x_t, t, x_0)
+            if return_pred_noise:
+                pred_noise = self.predict_noise_from_start(x_t, t, x_0)
 
         else:
             raise ValueError(f'unknown objective {self.objective}')
 
-        return pred_noise, x_0
+        return x_0, pred_noise
 
     def predict_start_from_v(self, x_t, t, v):
         # x_0 = x_t * \sqrt ca_t - v_t * \sqrt{1-ca_t}
@@ -232,7 +244,7 @@ class Model(nn.ModuleList):
         x_self_cond = None
         if self.self_condition and random() < 0.5:
             with torch.inference_mode():
-                _, x_self_cond = self.model_predictions(x_t, t)
+                x_self_cond, _ = self.model_predictions(x_t, t)
                 x_self_cond.detach_()
 
         pred = self.model(x_t, t, x_self_cond)
@@ -291,7 +303,7 @@ class Model(nn.ModuleList):
         return x_t_1, x_0
 
     def p_mean_variance(self, x_t, t, x_self_cond=None, clip_denoised=True):
-        _, x_0 = self.model_predictions(x_t, t, x_self_cond)
+        x_0, _ = self.model_predictions(x_t, t, x_self_cond)
 
         if clip_denoised:
             x_0.clamp_(-1., 1.)

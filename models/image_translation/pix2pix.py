@@ -1,17 +1,27 @@
 import torch
 import torch.nn as nn
 from ..layers import Conv
-from ..semantic_segmentation.Unet import CurBlock, unet256_config
+from ..semantic_segmentation.Unet import UnetBlock, unet256_config
 from utils.torch_utils import initialize_layers
+import functools
 
-net_g_config = dict(
-    conv_config=unet256_config
-)
 
-net_d_config = dict(
-    hidden_ch=64,
-    n_conv=3,
-)
+class Config:
+    net_g_config = dict(
+        conv_config=unet256_config
+    )
+
+    net_d_config = dict(
+        hidden_ch=64,
+        n_layers=3,
+    )
+
+    @classmethod
+    def get(cls, name=None):
+        return dict(
+            net_g_config=cls.net_g_config,
+            net_d_config=cls.net_g_config
+        )
 
 
 class Model(nn.ModuleList):
@@ -23,7 +33,7 @@ class Model(nn.ModuleList):
         - https://github.com/junyanz/pytorch-CycleGAN-and-pix2pix
     """
 
-    def __init__(self, in_ch, net_g_config=net_g_config, net_d_config=net_d_config,
+    def __init__(self, in_ch, net_g_config=Config.net_g_config, net_d_config=Config.net_d_config,
                  net_g=None, net_d=None,
                  lambda_l1=100.0, real_label=1., fake_label=0.,
                  **kwargs):
@@ -81,29 +91,31 @@ class NetG(nn.Sequential):
     def __init__(self, conv_config=unet256_config):
         in_ches, hidden_ches, out_ches = conv_config
         super().__init__(
-            CurBlock(in_ches, hidden_ches, out_ches),
+            UnetBlock(in_ches, hidden_ches, out_ches),
             nn.Tanh()
         )
 
 
-class NetD(nn.Module):
-    def __init__(self, in_ch, hidden_ch=64, n_conv=3):
-        super().__init__()
+class NetD(nn.Sequential):
+    """PatchGAN discriminator"""
 
-        layers = [Conv(in_ch, hidden_ch, k=4, s=2, p=1, bias=True, act=nn.LeakyReLU(0.2), is_norm=False)]
+    def __init__(self, in_ch, hidden_ch=64, n_layers=3, norm_layer=nn.BatchNorm2d):
+        if isinstance(norm_layer, functools.partial):  # no need to use bias as BatchNorm2d has affine parameters
+            use_bias = isinstance(norm_layer.func, nn.InstanceNorm2d)
+        else:
+            use_bias = isinstance(norm_layer, nn.InstanceNorm2d)
+
+        layers = [Conv(in_ch, hidden_ch, k=4, s=2, p=1, bias=use_bias, mode='ca', act=nn.LeakyReLU(0.2))]
 
         out_ch = hidden_ch
-        for n in range(1, n_conv + 1):
+        for n in range(1, n_layers + 1):
             in_ch = out_ch
             out_ch = hidden_ch * min(2 ** n, 8)
 
-            if n == n_conv:
-                layers.append(Conv(in_ch, out_ch, k=4, s=1, p=1, act=nn.LeakyReLU(0.2)))
+            if n == n_layers:
+                layers.append(Conv(in_ch, out_ch, 4, s=1, p=1, bias=use_bias, mode='cna', act=nn.LeakyReLU(0.2), norm=norm_layer(out_ch)))
             else:
-                layers.append(Conv(in_ch, out_ch, k=4, s=2, p=1, act=nn.LeakyReLU(0.2)))
+                layers.append(Conv(in_ch, out_ch, 4, s=2, p=1, bias=use_bias, mode='cna', act=nn.LeakyReLU(0.2), norm=norm_layer(out_ch)))
 
-        layers.append(Conv(out_ch, 1, k=4, s=1, p=1, bias=True, is_norm=False, is_act=False))
-        self.conv_seq = nn.Sequential(*layers)
-
-    def forward(self, x):
-        return self.conv_seq(x)
+        layers.append(Conv(out_ch, 1, 4, s=1, p=1, mode='c'))
+        super().__init__(*layers)

@@ -2,13 +2,15 @@ import random
 import torch
 import torch.nn as nn
 from ..layers import Conv, ConvT
-from .pix2pix import NetD, net_d_config
-from ..image_classifier.ResNet import ResBlock
+from .pix2pix import NetD, Config as Config_
+from ..image_classification.ResNet import ResBlock
 from utils.torch_utils import initialize_layers
 
-net_g_config = dict(
-    n_res_blocks=9
-)
+
+class Config(Config_):
+    net_g_config = dict(
+        n_res_blocks=9
+    )
 
 
 class Model(nn.ModuleList):
@@ -19,7 +21,7 @@ class Model(nn.ModuleList):
         - https://github.com/junyanz/pytorch-CycleGAN-and-pix2pix
     """
 
-    def __init__(self, in_ch, net_g_config=net_g_config, net_d_config=net_d_config,
+    def __init__(self, in_ch, net_g_config=Config.net_g_config, net_d_config=Config.net_d_config,
                  net_g=None, net_d=None,
                  lambda_identity=0.5, real_label=1., fake_label=0.,
                  **kwargs):

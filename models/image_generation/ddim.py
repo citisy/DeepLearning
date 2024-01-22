@@ -43,7 +43,7 @@ class Model(Model_):
         t = torch.full((x_t.shape[0],), t, device=x_t.device, dtype=torch.long)
         prev_t = torch.full((x_t.shape[0],), prev_t, device=x_t.device, dtype=torch.long)
 
-        pred_noise, x_0 = self.model_predictions(x_t, t, x_self_cond)
+        x_0, pred_noise = self.model_predictions(x_t, t, x_self_cond, return_pred_noise=True)
 
         # s_t = \eta * \sqrt{(1−ca_{t−1})/(1−ca_t)} * \sqrt{1−ca_t/ca_{t−1}}
         alpha_cumprod_t = extract(self.alphas_cumprod, t, x_t.shape)
