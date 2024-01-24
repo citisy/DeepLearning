@@ -58,4 +58,4 @@
 
 # 运行环境
 
-所有脚本均在`python==3.8`，`pytorch==1.13` 环境下运行通过
+所有脚本均在`python==3.8, pytorch==1.11, torchvision==0.12` 环境下运行通过
