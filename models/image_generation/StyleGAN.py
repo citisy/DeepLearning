@@ -8,6 +8,7 @@ import torch
 import torch.nn.functional as F
 from torch.autograd import grad
 from ..layers import Linear, Conv, EqualLinear, Residual
+from ..losses import HingeGanLoss
 from utils.torch_utils import initialize_layers
 
 
@@ -19,15 +20,15 @@ class Config:
 
     net_g_config = dict(
         network_capacity=16,
-        attn_layers=[4, 5],
+        attn_layers=[-1, -2],
         const_input=True
     )
 
     net_d_config = dict(
         network_capacity=16,
         fq_dict_size=512,
-        fq_layers=[4, 5],
-        attn_layers=[4, 5]
+        fq_layers=[-1, -2],
+        attn_layers=[-1, -2]
     )
 
     @classmethod
@@ -60,6 +61,7 @@ class Model(nn.ModuleList):
         self.net_s = StyleMap(net_g_in_ch, **net_s_config)
         self.net_g = Generator(net_g_in_ch, out_ch=img_ch, num_layers=self.num_layers, **net_g_config)
         self.net_d = Discriminator(img_ch, num_layers=self.num_layers, **net_d_config)
+        self.disc_loss_fn = HingeGanLoss()
 
         self.pl_mean = None
 
@@ -83,12 +85,7 @@ class Model(nn.ModuleList):
         real_x.requires_grad_(True)
         real_y, real_q_loss = self.net_d(real_x)
 
-        r = real_y
-        f = fake_y
-
-        # r = real_y - fake_y.mean()
-        # f = fake_y - real_y.mean()
-        loss = (F.relu(1 + r) + F.relu(1 - f)).mean() + (fake_q_loss + real_q_loss).mean()
+        loss = self.disc_loss_fn(real_y, fake_y)
 
         if use_gp:
             # gradient penalty
@@ -172,11 +169,12 @@ class StyleMap(nn.Module):
 
 
 class Generator(nn.Module):
-    def __init__(self, in_ch, out_ch=3, num_layers=6, network_capacity=16, attn_layers=[], const_input=True):
+    def __init__(self, in_ch, out_ch=3, num_layers=6, network_capacity=16, attn_layers=(), const_input=True):
         super().__init__()
         self.in_channels = in_ch
         self.out_channels = out_ch
 
+        attn_layers = [i % num_layers for i in attn_layers]
         out_ches = [network_capacity * (2 ** (i + 1)) for i in range(num_layers)][::-1]
         out_ches = [min(network_capacity * 32, out_ch) for out_ch in out_ches]  # max=512
         out_ch = out_ches[0]
@@ -360,10 +358,12 @@ class Conv2DMod(nn.Module):
 
 
 class Discriminator(nn.Module):
-    def __init__(self, in_ch, num_layers=6, network_capacity=16, fq_layers=[], fq_dict_size=256, attn_layers=[]):
+    def __init__(self, in_ch, num_layers=6, network_capacity=16, fq_layers=(), fq_dict_size=256, attn_layers=()):
         super().__init__()
         self.in_channels = in_ch
 
+        attn_layers = [i % num_layers for i in attn_layers]
+        fq_layers = [i % num_layers for i in fq_layers]
         out_ches = [(network_capacity * 4) * (2 ** i) for i in range(num_layers + 1)]
         out_ches = [min(network_capacity * 32, out_ch) for out_ch in out_ches]  # max=512
 

@@ -297,7 +297,8 @@ class SelfAttention2D(nn.Module):
 
 
 class SelfAttention3D(nn.Module):
-    def __init__(self, in_dim, n_heads=None, model_dim=None, head_dim=None, n_mem_size=4, drop_prob=0.):
+    def __init__(self, in_dim, n_heads=None, model_dim=None, head_dim=None,
+                 use_mem_kv=True, n_mem_size=4, drop_prob=0., **conv_kwargs):
         """self attention build by conv function
         attn(q, k, v) = softmax(qk'/sqrt(dk))*v
 
@@ -313,11 +314,15 @@ class SelfAttention3D(nn.Module):
         n_heads, model_dim, head_dim = get_attention_input(n_heads, model_dim, head_dim)
         self.scale = head_dim ** -0.5
         self.n_heads = n_heads
+        self.use_mem_kv = use_mem_kv
 
         # different to linear function, each conv filter and feature map is independent
         # so can use a conv layer to compute, and then, chunk it
-        self.to_qkv = nn.Conv2d(in_dim, model_dim * 3, 1, bias=False)
-        self.mem_kv = nn.Parameter(torch.randn(2, n_heads, n_mem_size, head_dim))
+        self.to_qkv = nn.Conv2d(in_dim, model_dim * 3, 1, **conv_kwargs)
+
+        if use_mem_kv:
+            self.mem_kv = nn.Parameter(torch.randn(2, n_heads, n_mem_size, head_dim))
+
         self.dropout = nn.Dropout(drop_prob)
         self.to_out = nn.Conv2d(model_dim, in_dim, 1)
 
@@ -339,8 +344,10 @@ class SelfAttention3D(nn.Module):
         b, c, h, w = x.shape
         qkv = self.to_qkv(x).chunk(3, dim=1)
         q, k, v = map(lambda t: rearrange(t, 'b (n d) h w -> b n (h w) d', n=self.n_heads), qkv)
-        mk, mv = map(lambda t: repeat(t, 'n j d -> b n j d', b=q.shape[0]), self.mem_kv)
-        k, v = map(partial(torch.cat, dim=-2), ((mk, k), (mv, v)))
+
+        if self.use_mem_kv:
+            mk, mv = map(lambda t: repeat(t, 'n j d -> b n j d', b=q.shape[0]), self.mem_kv)
+            k, v = map(partial(torch.cat, dim=-2), ((mk, k), (mv, v)))
 
         x = self.attend(q, k, v)
         x = rearrange(x, 'b n (h w) d -> b (n d) h w', h=h, w=w)
@@ -348,7 +355,8 @@ class SelfAttention3D(nn.Module):
 
 
 class LinearSelfAttention3D(nn.Module):
-    def __init__(self, in_dim, n_heads=None, model_dim=None, head_dim=None, n_mem_size=4, norm=None):
+    def __init__(self, in_dim, n_heads=None, model_dim=None, head_dim=None,
+                 use_mem_kv=True, n_mem_size=4, norm=None, **conv_kwargs):
         """linear self attention build by conv function, to reduce the computation
         attn(q, k, v) = softmax(k)*v*softmax(q)/sqrt(dk)
         refer to: https://arxiv.org/pdf/2006.16236.pdf
@@ -365,9 +373,13 @@ class LinearSelfAttention3D(nn.Module):
         n_heads, model_dim, head_dim = get_attention_input(n_heads, model_dim, head_dim)
         self.scale = head_dim ** -0.5
         self.n_heads = n_heads
+        self.use_mem_kv = use_mem_kv
 
-        self.to_qkv = nn.Conv2d(in_dim, model_dim * 3, 1, bias=False)
-        self.mem_kv = nn.Parameter(torch.randn(2, n_heads, head_dim, n_mem_size))
+        self.to_qkv = nn.Conv2d(in_dim, model_dim * 3, 1, **conv_kwargs)
+
+        if use_mem_kv:
+            self.mem_kv = nn.Parameter(torch.randn(2, n_heads, head_dim, n_mem_size))
+
         self.to_out = Conv(model_dim, in_dim, 1, mode='cn', norm=norm)
 
     def attend(self, q, k, v):
@@ -384,8 +396,10 @@ class LinearSelfAttention3D(nn.Module):
         b, c, h, w = x.shape
         qkv = self.to_qkv(x).chunk(3, dim=1)
         q, k, v = map(lambda t: rearrange(t, 'b (n d) h w -> b n d (h w)', n=self.n_heads), qkv)
-        mk, mv = map(lambda t: repeat(t, 'n d j -> b n d j', b=b), self.mem_kv)
-        k, v = map(partial(torch.cat, dim=-1), ((mk, k), (mv, v)))
+
+        if self.use_mem_kv:
+            mk, mv = map(lambda t: repeat(t, 'n d j -> b n d j', b=b), self.mem_kv)
+            k, v = map(partial(torch.cat, dim=-1), ((mk, k), (mv, v)))
 
         x = self.attend(q, k, v)
         x = rearrange(x, 'b n d (h w) -> b (n d) h w', n=self.n_heads, h=h, w=w)

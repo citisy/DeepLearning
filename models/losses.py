@@ -1,9 +1,10 @@
 import torch
 from torch import nn
+import torch.nn.functional as F
 
 
 class BCEBlurWithLogitsLoss(nn.Module):
-    # BCEwithLogitLoss() with reduced missing label effects.
+    # BCEWithLogitLoss() with reduced missing label effects.
     def __init__(self, alpha=0.05):
         super().__init__()
         self.loss_fcn = nn.BCEWithLogitsLoss(reduction='none')  # must be nn.BCEWithLogitsLoss()
@@ -83,6 +84,7 @@ class IouLoss(nn.Module):
             if used, set in 3 which is the default value of paper
             https://arxiv.org/pdf/2101.08158.pdf
     """
+
     def __init__(self, iou_method=None, gamma=0):
         super().__init__()
         if iou_method is None:
@@ -106,3 +108,8 @@ class IouLoss(nn.Module):
         loss = torch.pow(ori_iou, self.gamma) * loss
         loss = loss.mean()
         return loss, iou
+
+
+class HingeGanLoss(nn.Module):
+    def forward(self, real_y, fake_y):
+        return F.relu(1. - real_y).mean() + F.relu(1. + fake_y).mean()

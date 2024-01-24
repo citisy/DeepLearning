@@ -5,7 +5,7 @@ import numpy as np
 from tqdm import tqdm
 import cv2
 from utils import os_lib, visualize
-from ..loss import FocalLoss, IouLoss
+from ..losses import FocalLoss, IouLoss
 from utils.torch_utils import initialize_layers
 from ..layers import ConvInModule, Cache, Concat
 from . import cls_nms, Iou

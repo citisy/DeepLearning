@@ -24,7 +24,7 @@ class Model(BaseSemSegModel):
         in_ches[0] = in_ch
         out_ches[0] = self.out_features
         # top(outer) -> bottom(inner)
-        self.backbone = CurBlock(in_ches, hidden_ches, out_ches)
+        self.backbone = UnetBlock(in_ches, hidden_ches, out_ches)
         initialize_layers(self)
 
     def forward(self, x, pix_images=None):
@@ -32,7 +32,7 @@ class Model(BaseSemSegModel):
         return super().forward(x, pix_images)
 
 
-class CurBlock(nn.Module):
+class UnetBlock(nn.Module):
     def __init__(self, in_ches, hidden_ches, out_ches, layer_idx=0,
                  get_down_layer_func=None, get_up_layer_func=None):
         super().__init__()
@@ -49,7 +49,7 @@ class CurBlock(nn.Module):
 
         # sub
         if not is_bottom:
-            layers.append(CurBlock(
+            layers.append(UnetBlock(
                 in_ches, hidden_ches, out_ches,
                 layer_idx=layer_idx + 1,
                 get_down_layer_func=get_down_layer_func,
