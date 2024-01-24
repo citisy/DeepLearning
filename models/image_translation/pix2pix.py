@@ -101,11 +101,11 @@ class NetD(nn.Sequential):
 
     def __init__(self, in_ch, hidden_ch=64, n_layers=3, norm_layer=nn.BatchNorm2d):
         if isinstance(norm_layer, functools.partial):  # no need to use bias as BatchNorm2d has affine parameters
-            use_bias = isinstance(norm_layer.func, nn.InstanceNorm2d)
+            use_bias = norm_layer.func is not nn.BatchNorm2d
         else:
-            use_bias = isinstance(norm_layer, nn.InstanceNorm2d)
+            use_bias = norm_layer is not nn.BatchNorm2d
 
-        layers = [Conv(in_ch, hidden_ch, k=4, s=2, p=1, bias=use_bias, mode='ca', act=nn.LeakyReLU(0.2))]
+        layers = [Conv(in_ch, hidden_ch, k=4, s=2, p=1, mode='ca', act=nn.LeakyReLU(0.2))]
 
         out_ch = hidden_ch
         for n in range(1, n_layers + 1):

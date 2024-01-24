@@ -69,10 +69,9 @@ class IgProcess(Process):
         for name, results in self.val_container['model_results'].items():
             for name2, items in results.items():
                 results[name2] = np.stack(items)
-                num_batch = results[name2].shape[0]
 
         if is_visualize:
-            for i in range(0, num_batch, num_synth_per_image):
+            for i in range(0, self.val_data_num, num_synth_per_image):
                 max_vis_num = max_vis_num or float('inf')
                 n = min(num_synth_per_image, max_vis_num - self.counters['vis_num'])
                 if n > 0:
@@ -196,15 +195,13 @@ class WGAN(GanProcess):
             # consider iter_gap
             check_period = int(np.ceil(check_period / 3000)) * 3000
 
-        super().on_train_step_end(*args, check_period=check_period, **kwargs)
+        return super().on_train_step_end(*args, check_period=check_period, **kwargs)
 
     def get_val_data(self, *args, **kwargs):
         val_obj = self.model.gen_noise(self.val_data_num, self.device)
         return val_obj
 
     def on_val_start(self, val_dataloader=None, batch_size=16, dataloader_kwargs=dict(), **kwargs):
-        super().on_val_start(load_data=False, **kwargs)
-
         val_noise = val_dataloader if val_dataloader is not None else self.get_val_data()
         num_batch = val_noise.shape[0]
 
@@ -212,7 +209,7 @@ class WGAN(GanProcess):
             for i in range(0, num_batch, batch_size):
                 yield val_noise[i: i + batch_size]
 
-        self.val_container['val_dataloader'] = gen()
+        super().on_val_start(val_dataloader=gen(), **kwargs)
 
     def on_val_step(self, rets, **kwargs) -> dict:
         noise_x = rets
@@ -451,7 +448,6 @@ class StyleGan(GanProcess):
         return val_obj
 
     def on_val_start(self, val_dataloader=(None, None, None), batch_size=16, trunc_psi=0.6, **kwargs):
-        super().on_val_start(load_data=False, **kwargs)
         model = self.model
 
         noise_xs, noise_zs, truncate_zs = val_dataloader if val_dataloader is not None else self.get_val_data()
@@ -473,7 +469,7 @@ class StyleGan(GanProcess):
                 w_style = w_styles[i: i + batch_size]
                 yield noise_x, w_style
 
-        self.val_container['val_dataloader'] = gen()
+        super().on_val_start(val_dataloader=gen(), **kwargs)
 
     def on_val_step(self, rets, vis_batch_size=64, **kwargs) -> dict:
         noise_x, w_style = rets
@@ -553,6 +549,72 @@ class StyleGan_IterCelebA(StyleGan, IterCelebA):
     """
 
 
+class VAE(IgProcess):
+    model_version = 'VAE'
+
+    def set_model(self):
+        from models.image_generation.VAE import Model
+        self.model = Model(
+            img_ch=self.in_ch,
+            image_size=self.input_size,
+        )
+
+    def set_optimizer(self):
+        self.optimizer = optim.Adam(self.model.parameters(), lr=1e-4, betas=(0.9, 0.99))
+
+    def on_train_step(self, rets, **kwargs):
+        images = [torch.from_numpy(ret.pop('image')).to(self.device, non_blocking=True, dtype=torch.float) for ret in rets]
+        images = torch.stack(images)
+        output = self.model(images)
+
+        real_x = self.train_container['metric_kwargs']['real_x']
+        if len(real_x) < self.val_data_num:
+            images = images.data.mul(255).clamp_(0, 255).permute(0, 2, 3, 1).to("cpu", torch.uint8).numpy()
+            real_x.extend(list(images)[:self.val_data_num - len(real_x)])
+
+        return output
+
+    def get_val_data(self, *args, **kwargs):
+        """use real_x"""
+
+    def on_val_start(self, val_dataloader=None, batch_size=16, dataloader_kwargs=dict(), **kwargs):
+        def gen():
+            for i in range(0, self.val_data_num, batch_size):
+                yield self.train_container['metric_kwargs']['real_x'][i: i + batch_size]
+
+        super().on_val_start(val_dataloader=gen(), **kwargs)
+
+    def on_val_step(self, rets, **kwargs) -> dict:
+        images = [torch.from_numpy(ret).to(self.device, non_blocking=True, dtype=torch.float) for ret in rets]
+        real_x = torch.stack(images).permute(0, 3, 1, 2)
+
+        models = self.val_container['models']
+        model_results = {}
+        for name, model in models.items():
+            fake_x = model(real_x)
+            fake_x = fake_x.data.mul(255).clamp_(0, 255).permute(0, 2, 3, 1).to("cpu", torch.uint8).numpy()
+            model_results[name] = dict(
+                fake_x=fake_x,
+            )
+
+        return model_results
+
+
+class VAE_CelebA(VAE, CelebA):
+    """
+    Usage:
+        .. code-block:: python
+
+            from examples.image_generation import Ddpm_CelebA as Process
+
+            Process(device=0).run(
+                max_epoch=50, train_batch_size=32,
+                fit_kwargs=dict(check_period=40000, max_save_weight_num=10),
+                metric_kwargs=dict(is_visualize=True, max_vis_num=64 * 8),
+            )
+    """
+
+
 class DiProcess(IgProcess):
     def on_train_step(self, rets, **kwargs) -> dict:
         images = [torch.from_numpy(ret.pop('image')).to(self.device, non_blocking=True, dtype=torch.float) for ret in rets]
@@ -571,15 +633,13 @@ class DiProcess(IgProcess):
         return val_obj
 
     def on_val_start(self, val_dataloader=None, batch_size=16, dataloader_kwargs=dict(), **kwargs):
-        super().on_val_start(load_data=False, **kwargs)
         val_noise = val_dataloader if val_dataloader is not None else self.get_val_data()
-        num_batch = val_noise.shape[0]
 
         def gen():
-            for i in range(0, num_batch, batch_size):
+            for i in range(0, self.val_data_num, batch_size):
                 yield val_noise[i: i + batch_size]
 
-        self.val_container['val_dataloader'] = gen()
+        super().on_val_start(val_dataloader=gen(), **kwargs)
 
     def on_val_step(self, rets, **kwargs) -> dict:
         noise_x = rets
