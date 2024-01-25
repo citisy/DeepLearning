@@ -164,6 +164,16 @@ class CheckpointHooks:
     def load_jit(self, save_path, **kwargs):
         self.model = torch.jit.load(save_path, map_location=self.device, **kwargs)
 
+    def load_safetensors(self, save_path, **kwargs):
+        from safetensors import safe_open
+
+        tensors = {}
+        with safe_open(save_path, framework="pt", device='cpu') as f:
+            for k in f.keys():
+                tensors[k] = f.get_tensor(k)
+
+        return
+
     load_funcs = {
         MODEL: load_model,
         WEIGHT: load_weight,
@@ -172,7 +182,7 @@ class CheckpointHooks:
 
     pretrain_model: str
 
-    def load_pertain(self):
+    def load_pretrain(self):
         if hasattr(self, 'pretrain_model'):
             self.load(self.pretrain_model, save_items=())
 
@@ -180,7 +190,6 @@ class CheckpointHooks:
 class ModelHooks:
     model: nn.Module
     optimizer: Optional
-    scheduler: Optional
     scaler: Optional
     device: Optional[str]
     trace: 'bundled.LogHooks.trace'
@@ -228,7 +237,9 @@ class ModelHooks:
         # return (1 - x / max_epoch) * (1.0 - self.lrf) + self.lrf
         return ((1 - math.cos(x * math.pi / max_epoch)) / 2) * (self.lrf - 1) + 1  # cos_lr
 
+    scheduler: Optional
     use_scheduler = False
+    scheduler_strategy = EPOCH
 
     def set_scheduler(self, max_epoch):
         if self.use_scheduler:
@@ -364,7 +375,8 @@ class ModelHooks:
                 self.on_train_step_start(rets, **kwargs)
                 outputs = self.on_train_step(rets, **kwargs)
                 self.on_backward(outputs, **kwargs)
-                self.on_train_step_end(rets, outputs, **kwargs)
+                if self.on_train_step_end(rets, outputs, **kwargs):
+                    break
 
             if self.on_train_epoch_end(**kwargs):
                 break
@@ -411,7 +423,7 @@ class ModelHooks:
 
         self.optimizer.zero_grad()
 
-    def on_train_step_end(self, rets, outputs, more_log=False, **kwargs):
+    def on_train_step_end(self, rets, outputs, more_log=False, **kwargs) -> bool:
         self.counters['total_nums'] += len(rets)
         self.counters['total_steps'] += 1
         self.counters['per_epoch_nums'] += len(rets)
@@ -438,12 +450,17 @@ class ModelHooks:
             **mem_info
         }, 'pbar')
 
+        if self.use_scheduler and self.scheduler_strategy == STEP:
+            self.scheduler.step()
+
         if self.check_strategy == STEP:
             self._check_on_train_step_end(**kwargs)
 
+        return self.train_container.get('end_flag', False)  # cancel the training when end_flag is True
+
     def on_train_epoch_end(self, **kwargs) -> bool:
         self.counters['epoch'] += 1
-        if self.use_scheduler:
+        if self.use_scheduler and self.scheduler_strategy == EPOCH:
             self.scheduler.step()
         if self.check_strategy == EPOCH:
             self._check_on_train_epoch_end(**kwargs)
@@ -503,7 +520,7 @@ class ModelHooks:
         if hasattr(self, 'aux_model'):
             ckpt['aux_model'] = {k: v.state_dict() for k, v in self.aux_model.items()}
 
-        if not isinstance(max_save_weight_num, int):    # None
+        if not isinstance(max_save_weight_num, int):  # None
             self.save(f'{self.work_dir}/last.pth', save_type=WEIGHT, save_items=ckpt)
         elif max_save_weight_num > 0:
             self.save(f'{self.work_dir}/{check_num}.pth', save_type=WEIGHT, save_items=ckpt)
@@ -581,9 +598,9 @@ class ModelHooks:
         self.on_val_end(**kwargs)
         return self.val_container
 
-    def on_val_start(self, load_data=True, val_dataloader=None, batch_size=16, dataloader_kwargs=dict(), **kwargs):
-        if load_data:
-            self.val_container['val_dataloader'] = val_dataloader if val_dataloader is not None else self.get_val_dataloader(batch_size=batch_size, **dataloader_kwargs)
+    def on_val_start(self, val_dataloader=None, batch_size=None, dataloader_kwargs=dict(), **kwargs):
+        dataloader_kwargs.setdefault('batch_size', batch_size)
+        self.val_container['val_dataloader'] = val_dataloader if val_dataloader is not None else self.get_val_dataloader(**dataloader_kwargs)
 
         self.set_mode(train=False)
         self.counters['vis_num'] = 0

@@ -196,6 +196,12 @@ def bilinear_kernel(in_channels, out_channels, kernel_size):
     return weight
 
 
+def freeze_layers(module):
+    module.eval()
+    module.train = lambda self, mode=True: self  # does not change mode anymore
+    module.requires_grad_(False)
+
+
 class EarlyStopping:
     def __init__(self, thres=0.005, patience=None, min_period=0, ignore_min_score=-1,
                  verbose=True, stdout_method=print):
@@ -248,6 +254,7 @@ def export_formats():
     x = [
         ['PyTorch', '-', '.pt', True],
         ['TorchScript', 'torchscript', '.torchscript', True],
+        ['Safetensors', 'safetensors', '.safetensors', True],
         ['ONNX', 'onnx', '.onnx', True],
         ['OpenVINO', 'openvino', '_openvino_model', False],
         ['TensorRT', 'engine', '.engine', True],
@@ -256,7 +263,8 @@ def export_formats():
         ['TensorFlow GraphDef', 'pb', '.pb', True],
         ['TensorFlow Lite', 'tflite', '.tflite', False],
         ['TensorFlow Edge TPU', 'edgetpu', '_edgetpu.tflite', False],
-        ['TensorFlow.js', 'tfjs', '_web_model', False], ]
+        ['TensorFlow.js', 'tfjs', '_web_model', False],
+    ]
     return pd.DataFrame(x, columns=['Format', 'Argument', 'Suffix', 'GPU'])
 
 
@@ -419,7 +427,7 @@ def convert_state_dict(state_dict: OrderedDict, convert_dict: dict):
             if flag:
                 ra = re.findall(p, k)[0]
                 if isinstance(ra, str):
-                    ra = (ra, )
+                    ra = (ra,)
                 pa = pa % ra
 
                 pb = ''

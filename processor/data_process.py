@@ -278,6 +278,8 @@ class DataHooks:
             return torch.randint(255, (batch_size, self.in_ch, self.input_size, self.input_size), dtype=torch.uint8, device=self.device)
         elif input_type == 'image_norm':
             return torch.rand(batch_size, self.in_ch, self.input_size, self.input_size, device=self.device)
+        elif input_type == 'text':
+            return torch.randint(self.vacab_size, (batch_size, self.seq_len), dtype=torch.int, device=self.device)
 
     vocab_fn = 'vocab.txt'
 
