@@ -155,7 +155,7 @@ def parse_params_example(path, parser) -> dict:
                 args[k] = v
 
         config = expand_dict(args)
-        config = converter.DataConvert.str_value_to_constant(config)
+        config = converter.DataConvert.complex_str_to_constant(config)
 
         return config
 
@@ -174,7 +174,7 @@ def parse_params_example(path, parser) -> dict:
         if _config:
             _config = dict(s.split('=') for s in _config)
             _config = expand_dict(_config)
-            _config = converter.DataConvert.str_value_to_constant(_config)
+            _config = converter.DataConvert.complex_str_to_constant(_config)
         else:
             _config = {}
 

@@ -1,3 +1,4 @@
+import numpy as np
 from tritonclient.http import InferenceServerClient, InferInput, InferRequestedOutput
 from .log_utils import get_logger
 
@@ -14,8 +15,9 @@ datatypes = {
 
 
 class Requests:
-    def __init__(self, url, logger=None):
+    def __init__(self, url, verbose=False, logger=None):
         self.client = InferenceServerClient(url=url, verbose=False)
+        self.verbose = verbose
         self.logger = get_logger(logger)
         self.model_configs = {}
         self.init()
@@ -34,9 +36,10 @@ class Requests:
 
             self.model_configs[name, version] = self.client.get_model_config(name, version)
 
-        self.logger.info(self.model_configs)
+        if self.verbose:
+            self.logger.info(self.model_configs)
 
-    def async_infer(self, inputs, model_name, model_version):
+    def async_infer(self, *inputs: 'np.ndarray', model_name, model_version):
         model_config = self.model_configs[model_name, model_version]
 
         _inputs = []

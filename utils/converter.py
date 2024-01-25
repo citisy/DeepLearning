@@ -1,6 +1,7 @@
 import base64
 import cv2
 import hashlib
+import json
 import numpy as np
 from pathlib import Path
 from .os_lib import FakeIo
@@ -92,18 +93,23 @@ class DataConvert:
             return cls.bytes_to_base64(f.read())
 
     @classmethod
-    def str_value_to_constant(cls, obj: dict):
+    def complex_str_to_constant(cls, obj: dict or list or str):
         """
-        >>> DataConvert.str_value_to_constant({0: '1', 1: '1.0', 2: 'true', 3: 'abc'})
+        >>> DataConvert.complex_str_to_constant({0: '1', 1: '1.0', 2: 'true', 3: 'abc'})
         {0: 1, 1: 1.0, 2: 1, 3: 'abc'}
 
         """
-        for k, v in obj.items():
-            if isinstance(v, dict):
-                cls.str_value_to_constant(v)
+        if isinstance(obj, dict):
+            obj = {k: cls.complex_str_to_constant(v) for k, v in obj.items()}
 
-            elif isinstance(v, str):
-                obj[k] = cls.str_to_constant(v)
+        elif isinstance(obj, list):
+            obj = [cls.complex_str_to_constant(v) for v in obj]
+
+        elif isinstance(obj, str):
+            obj = cls.str_to_constant(obj)
+            if isinstance(obj, (dict, list)):
+                obj = cls.complex_str_to_constant(obj)
+
         return obj
 
     @classmethod
@@ -120,7 +126,7 @@ class DataConvert:
 
         """
         obj = cls.str_to_constant_str(obj)
-        for func in [cls.str_to_int, cls.str_to_float, cls.str_to_bool]:
+        for func in [cls.str_to_int, cls.str_to_float, cls.str_to_bool, cls.str_to_complex_constant]:
             s = func(obj)
             if s is not None:
                 return s
@@ -129,6 +135,7 @@ class DataConvert:
 
     @staticmethod
     def str_to_constant_str(obj: str):
+        """filter '' or "" in str"""
         if obj[0] in ['"', "'"] and obj[-1] in ['"', "'"]:
             obj = obj[1:-1]
         return obj
@@ -153,6 +160,11 @@ class DataConvert:
             return False
         else:
             raise ValueError("invalid truth value %r" % (obj,))
+
+    @staticmethod
+    @ignore_exception.add_ignore(err_type=(json.decoder.JSONDecodeError, TypeError))
+    def str_to_complex_constant(obj) -> list or dict:
+        return json.loads(obj)
 
     @classmethod
     def obj_to_md5(cls, obj):
@@ -186,3 +198,16 @@ class DataConvert:
     def file_to_md5(cls, obj: str or Path):
         with open(obj, 'rb') as f:
             return cls.bytes_to_md5(f.read())
+
+
+class InsConvert:
+    @staticmethod
+    def str_to_instance(obj: str):
+        import importlib
+        module, cls = obj.rsplit('.', 1)
+        return getattr(importlib.import_module(module, package=None), cls)
+
+    @staticmethod
+    def instance_to_str(obj):
+        pass
+

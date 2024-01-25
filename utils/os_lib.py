@@ -409,7 +409,7 @@ class MemoryCacher:
 
     def cache_one(self, obj, stdout_fmt='Save (%s, %s) successful!'):
         time_str = time.time()
-        uid = str(uuid.uuid1())
+        uid = str(uuid.uuid4())
         _id = (uid, time_str)
         self.delete_over_range(stdout_fmt.replace('Save', 'Delete'))
         self.cache[_id] = obj
@@ -470,7 +470,7 @@ class FileCacher:
         elif file_stem:
             file_name = file_stem + auto_suffix(obj)
         else:
-            file_name = str(uuid.uuid1()) + auto_suffix(obj)
+            file_name = str(uuid.uuid4()) + auto_suffix(obj)
 
         return file_name
 
