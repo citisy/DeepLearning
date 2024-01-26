@@ -380,67 +380,76 @@ def convert_state_dict(state_dict: OrderedDict, convert_dict: dict):
     from .nlp_utils import PrefixTree
 
     def parse(s):
-        """''a.{0}.a'' -> ('a', '.', '{0}', '.', 'a')"""
+        """
+        >>> parse('a.{0}.a')
+        (('a', '.', '{0}', '.', 'a'), {'idx1': [0], 'values2': [2]})
+        """
+        match = re.findall('\{\d+?\}', s)
+        end, tmp, spans, idx1 = 0, s, [], []
+        for m in match:
+            start = tmp.index(m) + end
+            end = start + len(m)
+            spans.append((start, end))
+            idx1.append(int(m[1:-1]))
+            tmp = s[end:]
+
         r = []
-        flag = True
-        tmp = ''
-        for ss in s:
-            tmp += ss
-            if ss == '{':
-                flag = False
-            elif ss == '}':
-                flag = True
+        end = 0
+        idx2 = []
+        for i, span in enumerate(spans):
+            start, end1 = span
+            tmp = list(s[end:start])
+            r += tmp + [match[i]]
+            idx2.append(len(r) - 1)
+            end = end1
 
-            if flag:
-                r.append(tmp)
-                tmp = ''
+        r += list(s[end: len(s)])
 
-        return tuple(r)
+        return tuple(r), {'idx1': idx1, 'idx2': idx2}
 
-    c = {}
+    split_convert_dict = {}
+    a_values, b_values = {}, {}
     for a, b in convert_dict.items():
-        a = parse(a)
-        b = parse(b)
-        c[a] = b
+        a_key, a_value = parse(a)
+        b_key, b_value = parse(b)
+        split_convert_dict[a_key] = b_key
+        a_values[a_key] = a_value
+        b_values[b_key] = b_value
 
-    tree = PrefixTree(list(c.keys()), list(c.keys()), unique=True)
+    tree = PrefixTree(list(split_convert_dict.keys()), list(split_convert_dict.keys()), unique_value=True)
     d = OrderedDict()
 
     for k, v in state_dict.items():
         a = tree.get(k, return_last=True)
-        if a in c:
-            b = c[a]
+        if a in split_convert_dict:
+            b = split_convert_dict[a]
+            a_value = a_values[a]
+            b_value = b_values[b]
 
-            # get pattern
-            p = ''
-            pa = ''
-            flag = False
-            for s in a:
-                if re.match(r'\{.+\}', s):
+            p, pa = '', ''
+            for i, s in enumerate(a):
+                if i in a_value['idx2']:
                     p += '(.+?)'
                     pa += '%s'
-                    flag = True
                 else:
-                    p += s
+                    p += '\\' + s if s == '.' else s
                     pa += s
 
-            if flag:
+            if a_value['idx2']:
                 ra = re.findall(p, k)[0]
                 if isinstance(ra, str):
                     ra = (ra,)
                 pa = pa % ra
 
-                pb = ''
-                i = 0
-                for s in b:
-                    if re.match(r'\{.+\}', s):
-                        pb += ra[i]
-                        i += 1
-                    else:
-                        pb += s
-            else:
-                pb = ''.join(b)
+                sort_ra = [None] * len(ra)
+                for i, idx in enumerate(a_value['idx1']):
+                    sort_ra[idx] = ra[i]
 
+                for idx1, idx2 in zip(b_value['idx1'], b_value['idx2']):
+                    b = list(b)
+                    b[idx2] = sort_ra[idx1]
+
+            pb = ''.join(b)
             k = k.replace(pa, pb)
         d[k] = v
 

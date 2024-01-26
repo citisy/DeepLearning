@@ -96,9 +96,23 @@ class Sequencer:
 
 
 class PrefixTree:
-    def __init__(self, words, values=None, unique=False, end_flag=True):
-        self.unique = unique
-        self.end_flag = end_flag
+    """
+    >>> words = [['a', 'b', 'c'], ['a', '{}', 'd']]
+    >>> tree = PrefixTree(words, [0, 1])
+    >>> tree.get('abc')
+    0
+    >>> tree.get('abcd')
+    1
+    >>> tree.get('abcde')
+    None
+    """
+
+    def __init__(self, words, values=None, unique_value=True,
+                 wildcard_pattern=r'\{.*?\}', wildcard_token='[WILD]', match_token='[MATCH]'):
+        self.unique_value = unique_value
+        self.wildcard_pattern = re.compile(wildcard_pattern)
+        self.wildcard_token = wildcard_token
+        self.match_token = match_token
         self.tree = dict()
         self.build(words, values)
 
@@ -112,29 +126,31 @@ class PrefixTree:
             return default
 
         tmp = self.tree
-        tmp2 = None
         last = default
+        last_wilds = []
         for i, w in enumerate(word):
             next_tmp = tmp.get(w)
 
-            # find `{}` token
-            if next_tmp is None:
-                for k, v in tmp.items():
-                    if k is self.end_flag:
-                        continue
+            last_wild = tmp.get(self.wildcard_token)
+            if last_wild:
+                last_wilds.append(last_wild)
 
-                    if re.match(r'\{.+\}', k):
+            if next_tmp is None:  # search fail
+                if len(last_wilds):  # search wildcard
+                    v = last_wilds[-1]
+                    n = v.get(w)
+                    if n:
+                        next_tmp = n
+                        last_wilds.pop(-1)
+                    else:
                         next_tmp = v
-                        tmp2 = v
-                        break
-                else:
-                    next_tmp = tmp2
 
+                else:  # match fail, return
+                    tmp = None
+                    break
+
+            last = next_tmp.get(self.match_token, last)
             tmp = next_tmp
-            if tmp is None:     # search fail, return
-                break
-            else:
-                last = tmp.get(self.end_flag, last)
 
         if return_trace:
             r = word[:i]
@@ -146,19 +162,22 @@ class PrefixTree:
         if tmp is None:
             return r
         else:
-            return tmp.get(self.end_flag, r)
+            return tmp.get(self.match_token, r)
 
     def update(self, word, value=None):
         this_dict = self.tree
 
         for cid, char in enumerate(word):
+            if self.wildcard_pattern.match(char):
+                char = self.wildcard_token
+
             this_dict = this_dict.setdefault(char, dict())
 
             if cid == len(word) - 1:  # last one
-                if value:
-                    if self.unique:
-                        this_dict[self.end_flag] = value
+                if value is not None:
+                    if self.unique_value:
+                        this_dict[self.match_token] = value
                     else:
-                        this_dict.setdefault(self.end_flag, []).append(value)
+                        this_dict.setdefault(self.match_token, []).append(value)
                 else:
-                    this_dict[self.end_flag] = None
+                    this_dict[self.match_token] = True
