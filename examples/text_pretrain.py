@@ -1,6 +1,6 @@
 import torch
 import numpy as np
-from processor import Process, DataHooks, BaseDataset
+from processor import Process, DataHooks, BaseDataset, ModelHooks, CheckpointHooks
 from utils import math_utils, os_lib
 from data_parse.nlp_data_parse.pre_process import spliter, encoder, bundled, sp_token_dict, dict_maker
 import pandas as pd
@@ -340,19 +340,19 @@ class Bert(Process):
         if self.use_scheduler:
             from transformers import get_scheduler
 
-            num_training_steps = max_epoch * len(self.train_container['train_dataloader'])
             self.scheduler = get_scheduler(
                 "linear",
                 optimizer=self.optimizer,
                 num_warmup_steps=0,
-                num_training_steps=num_training_steps,
+                num_training_steps=max_epoch * len(self.train_container['train_dataloader']),
             )
+            self.scheduler_strategy = 1  # step
 
     def get_model_inputs(self, rets, train=True):
         segments = [ret['segment'] for ret in rets]
         attention_mask = [[True] * len(seg) for seg in segments]
         segments = bundled.align(segments, max_seq_len=self.max_seq_len, start_token=sp_token_dict['cls'], end_token=sp_token_dict['sep'], pad_token=sp_token_dict['pad'])
-        attention_mask = bundled.align(attention_mask,  max_seq_len=self.max_seq_len, start_token=True, end_token=True, pad_token=False)
+        attention_mask = bundled.align(attention_mask, max_seq_len=self.max_seq_len, start_token=True, end_token=True, pad_token=False)
         token_tags = encoder.simple(segments, self.word_dict, unk_tag=self.sp_tag_dict['unk'])
 
         segment_tags = [ret['segment_tag'] for ret in rets]
@@ -361,7 +361,6 @@ class Bert(Process):
         token_tags = torch.tensor(token_tags).to(self.device)
         segment_tags = torch.tensor(segment_tags).to(self.device)
         attention_mask = torch.tensor(attention_mask).to(self.device)
-        # attention_mask = segment_tags == self.sp_tag_dict['seg_pad']
 
         r = dict(
             x=token_tags,
@@ -390,11 +389,6 @@ class Bert(Process):
             output = self.model(**rets)
 
         return output
-
-    def _backward(self):
-        super()._backward()
-        if self.use_scheduler:
-            self.scheduler.step()
 
     def metric(self, *args, return_score='full', **kwargs) -> dict:
         """
@@ -522,6 +516,18 @@ class Bert(Process):
                     data.append(d)
                 df = pd.DataFrame(data)
                 os_lib.Saver(stdout_method=self.log).auto_save(df, f'{self.cache_dir}/{self.counters["epoch"]}/{name}.csv', index=False)
+
+
+class LoadPretrainFromHF(CheckpointHooks):
+    """load pretrain model from hugging face"""
+
+    def load_pretrain(self):
+        if hasattr(self, 'pretrain_model'):
+            from transformers import BertForSequenceClassification
+            from models.text_pretrain.bert import convert_hf_weights
+
+            model = BertForSequenceClassification.from_pretrained(self.pretrain_model, num_labels=2)
+            self.model.load_state_dict(convert_hf_weights(model.state_dict()), strict=False)
 
 
 class BertMLM_SimpleText(Bert, SimpleText):

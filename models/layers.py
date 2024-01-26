@@ -276,7 +276,7 @@ class SelfAttention2D(nn.Module):
     def attend(self, q, k, v, attention_mask=None):
         """Scaled Dot-Product Attention"""
         # similarity
-        sim = torch.matmul(q, k.transpose(-2, -1)) / self.scale
+        sim = torch.matmul(q, k.transpose(-2, -1)) * self.scale
 
         if attention_mask is not None:  # mask pad
             attention_mask = ~attention_mask.to(dtype=torch.bool)
@@ -297,7 +297,7 @@ class SelfAttention2D(nn.Module):
 
 
 class SelfAttention3D(nn.Module):
-    def __init__(self, in_dim, n_heads=None, model_dim=None, head_dim=None,
+    def __init__(self, in_dim, n_heads=None, model_dim=None, head_dim=None, separate_conv=True,
                  use_mem_kv=True, n_mem_size=4, drop_prob=0., **conv_kwargs):
         """self attention build by conv function
         attn(q, k, v) = softmax(qk'/sqrt(dk))*v
@@ -315,10 +315,17 @@ class SelfAttention3D(nn.Module):
         self.scale = head_dim ** -0.5
         self.n_heads = n_heads
         self.use_mem_kv = use_mem_kv
+        self.separate_conv = separate_conv
 
-        # different to linear function, each conv filter and feature map is independent
-        # so can use a conv layer to compute, and then, chunk it
-        self.to_qkv = nn.Conv2d(in_dim, model_dim * 3, 1, **conv_kwargs)
+        if separate_conv:
+            self.to_qkv = nn.ModuleList([nn.Sequential(
+                nn.Conv2d(in_dim, model_dim, 1, **conv_kwargs),
+                Rearrange('b (n d) h w -> b n (h w) d', n=n_heads)
+            ) for _ in range(3)])
+        else:
+            # different to linear function, each conv filter and feature map is independent
+            # so can use a conv layer to compute, and then, chunk it
+            self.to_qkv = nn.Conv2d(in_dim, model_dim * 3, 1, **conv_kwargs)
 
         if use_mem_kv:
             self.mem_kv = nn.Parameter(torch.randn(2, n_heads, n_mem_size, head_dim))
@@ -342,8 +349,11 @@ class SelfAttention3D(nn.Module):
 
     def forward(self, x):
         b, c, h, w = x.shape
-        qkv = self.to_qkv(x).chunk(3, dim=1)
-        q, k, v = map(lambda t: rearrange(t, 'b (n d) h w -> b n (h w) d', n=self.n_heads), qkv)
+        if self.separate_conv:
+            q, k, v = [m(x) for m in self.to_qkv]
+        else:
+            qkv = self.to_qkv(x).chunk(3, dim=1)
+            q, k, v = map(lambda t: rearrange(t, 'b (n d) h w -> b n (h w) d', n=self.n_heads), qkv)
 
         if self.use_mem_kv:
             mk, mv = map(lambda t: repeat(t, 'n j d -> b n j d', b=q.shape[0]), self.mem_kv)
@@ -355,7 +365,7 @@ class SelfAttention3D(nn.Module):
 
 
 class LinearSelfAttention3D(nn.Module):
-    def __init__(self, in_dim, n_heads=None, model_dim=None, head_dim=None,
+    def __init__(self, in_dim, n_heads=None, model_dim=None, head_dim=None, separate_conv=True,
                  use_mem_kv=True, n_mem_size=4, norm=None, **conv_kwargs):
         """linear self attention build by conv function, to reduce the computation
         attn(q, k, v) = softmax(k)*v*softmax(q)/sqrt(dk)
@@ -374,8 +384,15 @@ class LinearSelfAttention3D(nn.Module):
         self.scale = head_dim ** -0.5
         self.n_heads = n_heads
         self.use_mem_kv = use_mem_kv
+        self.separate_conv = separate_conv
 
-        self.to_qkv = nn.Conv2d(in_dim, model_dim * 3, 1, **conv_kwargs)
+        if separate_conv:
+            self.to_qkv = nn.ModuleList([nn.Sequential(
+                nn.Conv2d(in_dim, model_dim, 1, **conv_kwargs),
+                Rearrange('b (n d) h w -> b n (h w) d', n=n_heads)
+            ) for _ in range(3)])
+        else:
+            self.to_qkv = nn.Conv2d(in_dim, model_dim * 3, 1, **conv_kwargs)
 
         if use_mem_kv:
             self.mem_kv = nn.Parameter(torch.randn(2, n_heads, head_dim, n_mem_size))
@@ -394,8 +411,11 @@ class LinearSelfAttention3D(nn.Module):
 
     def forward(self, x):
         b, c, h, w = x.shape
-        qkv = self.to_qkv(x).chunk(3, dim=1)
-        q, k, v = map(lambda t: rearrange(t, 'b (n d) h w -> b n d (h w)', n=self.n_heads), qkv)
+        if self.separate_conv:
+            q, k, v = [m(x) for m in self.to_qkv]
+        else:
+            qkv = self.to_qkv(x).chunk(3, dim=1)
+            q, k, v = map(lambda t: rearrange(t, 'b (n d) h w -> b n d (h w)', n=self.n_heads), qkv)
 
         if self.use_mem_kv:
             mk, mv = map(lambda t: repeat(t, 'n d j -> b n d j', b=b), self.mem_kv)

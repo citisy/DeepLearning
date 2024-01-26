@@ -5,7 +5,7 @@ import torch
 from torch import nn, optim
 from pathlib import Path
 from datetime import datetime
-from typing import List, Optional, Callable, Dict, Tuple
+from typing import List, Optional, Callable, Dict, Tuple, Union
 from tqdm import tqdm
 from . import bundled, data_process
 from utils import os_lib, configs, visualize, log_utils, torch_utils
@@ -63,7 +63,7 @@ class CheckpointHooks:
             ckpt.update(save_items)
         torch.save(ckpt, save_path, **kwargs)
 
-    device: str = None
+    device: Union[str, int, torch.device] = None
 
     def save_torchscript(self, save_path, trace_input=None, model_warp=None, **kwargs):
         if trace_input is None:
@@ -329,7 +329,7 @@ class ModelHooks:
     def on_train_start(
             self, batch_size=None, max_epoch=None,
             train_dataloader=None, val_dataloader=None, check_period=None,
-            metric_kwargs=dict(), dataloader_kwargs=dict(), **kwargs):
+            metric_kwargs=dict(), data_get_kwargs=dict(), dataloader_kwargs=dict(), **kwargs):
         metric_kwargs = metric_kwargs.copy()
         metric_kwargs.setdefault('batch_size', batch_size)
         metric_kwargs.setdefault('dataloader_kwargs', {})
@@ -349,10 +349,15 @@ class ModelHooks:
         for c in _counters:
             self.counters.setdefault(c, 0)
 
-        self.train_container['train_dataloader'] = train_dataloader if train_dataloader is not None else self.get_train_dataloader(batch_size=batch_size, **dataloader_kwargs)
+        dataloader_kwargs.setdefault('batch_size', batch_size)
+        if train_dataloader is None:
+            train_dataloader = self.get_train_dataloader(data_get_kwargs=data_get_kwargs, dataloader_kwargs=dataloader_kwargs)
+        self.train_container['train_dataloader'] = train_dataloader
 
         if check_period:
-            metric_kwargs.setdefault('val_dataloader', val_dataloader if val_dataloader is not None else self.get_val_dataloader(batch_size=batch_size, **dataloader_kwargs))
+            if val_dataloader is None:
+                val_dataloader = self.get_val_dataloader(data_get_kwargs=data_get_kwargs, dataloader_kwargs=dataloader_kwargs)
+            metric_kwargs.setdefault('val_dataloader', val_dataloader)
 
         self.train_container['metric_kwargs'] = metric_kwargs
         self.train_container['end_flag'] = False
@@ -598,9 +603,11 @@ class ModelHooks:
         self.on_val_end(**kwargs)
         return self.val_container
 
-    def on_val_start(self, val_dataloader=None, batch_size=None, dataloader_kwargs=dict(), **kwargs):
+    def on_val_start(self, val_dataloader=None, batch_size=None, data_get_kwargs=dict(), dataloader_kwargs=dict(), **kwargs):
         dataloader_kwargs.setdefault('batch_size', batch_size)
-        self.val_container['val_dataloader'] = val_dataloader if val_dataloader is not None else self.get_val_dataloader(**dataloader_kwargs)
+        if val_dataloader is None:
+            val_dataloader = self.get_val_dataloader(data_get_kwargs=data_get_kwargs, dataloader_kwargs=dataloader_kwargs)
+        self.val_container['val_dataloader'] = val_dataloader
 
         self.set_mode(train=False)
         self.counters['vis_num'] = 0

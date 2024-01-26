@@ -210,8 +210,8 @@ class DataHooks:
     dataset_version: str
     data_dir: str
 
-    def get_train_dataloader(self, **dataloader_kwargs):
-        train_data = self.get_train_data()
+    def get_train_dataloader(self, data_get_kwargs=dict(), dataloader_kwargs=dict()):
+        train_data = self.get_train_data(**data_get_kwargs)
         train_data = self.train_data_preprocess(train_data)
 
         train_dataset = self.train_dataset_ins(
@@ -229,8 +229,8 @@ class DataHooks:
             **dataloader_kwargs
         )
 
-    def get_val_dataloader(self, **dataloader_kwargs):
-        val_data = self.get_val_data()
+    def get_val_dataloader(self, data_get_kwargs=dict(), dataloader_kwargs=dict()):
+        val_data = self.get_val_data(**data_get_kwargs)
         val_data = self.val_data_preprocess(val_data)
         val_dataset = self.val_dataset_ins(val_data, augment_func=self.val_data_augment)
 

@@ -1,3 +1,5 @@
+import torch
+
 from .bundled import *
 from .data_process import *
 from .model_process import *
@@ -84,7 +86,13 @@ class Process(
     def init_components(self):
         setup_seed()
         self.counters = dict()
-        self.device = torch.device(f"cuda:{self.device}" if torch.cuda.is_available() else "cpu") if self.device is not None else 'cpu'
+        if torch.cuda.is_available():
+            if isinstance(self.device, str or int) and self.device != 'cpu':
+                self.device = torch.device(f"cuda:{self.device}")
+            else:   # default None, use cuda:0 possible
+                self.device = torch.device('cuda')
+        else:
+            self.device = 'cpu'
 
         if not hasattr(self, 'model') or self.model is None:
             self.set_model()

@@ -1,5 +1,5 @@
 import torch
-from .text_pretrain import TextPairProcess, Bert as Bert_
+from .text_pretrain import TextPairProcess, Bert as BertFull, LoadPretrainFromHF
 
 
 class MNLI(TextPairProcess):
@@ -10,17 +10,14 @@ class MNLI(TextPairProcess):
     max_seq_len = 64
     n_classes = 3
 
-    task = 'matched'
-    # task = 'mismatched'
-
-    def get_data(self, *args, train=True, **kwargs):
+    def get_data(self, *args, train=True, task='matched', **kwargs):
         from data_parse.nlp_data_parse.MNLI import Loader, DataRegister
         loader = Loader(self.data_dir)
 
         if train:
             return loader.load(set_type=DataRegister.TRAIN, max_size=self.train_data_num, generator=False)[0]
         else:
-            return loader.load(set_type=DataRegister.DEV, max_size=self.val_data_num, generator=False, task=self.task)[0]
+            return loader.load(set_type=DataRegister.DEV, max_size=self.val_data_num, generator=False, task=task)[0]
 
 
 class QQP(TextPairProcess):
@@ -92,8 +89,9 @@ class RTE(TextPairProcess):
             return loader.load(set_type=DataRegister.DEV, max_size=self.val_data_num, generator=False)[0]
 
 
-class Bert(Bert_):
+class Bert(BertFull):
     is_mlm = False  # only nsp strategy
+    use_scheduler = True
 
     def set_model(self):
         from models.text_pair_classification.bert import Model
@@ -113,11 +111,34 @@ class Bert_MNLI(Bert, MNLI):
             from examples.text_pair_classification import Bert_MNLI as Process
 
             # about 200M data pretrain
-            Process(pretrain_model='...', task='matched').run(max_epoch=5, train_batch_size=128, fit_kwargs=dict(check_period=1))
+            process = Process(pretrain_model='...')
+            process.fit(max_epoch=5, batch_size=128, dataloader_kwargs=dict(num_workers=8))
+
+            process.metric(batch_size=128, data_get_kwargs=dict(task='matched'))
             {'score': 0.6782}  # match acc
 
-            Process(pretrain_model='...', task='mismatched').run(max_epoch=5, train_batch_size=128, fit_kwargs=dict(check_period=1))
+            process.metric(batch_size=128, data_get_kwargs=dict(task='mismatched'))
             {'score': 0.6891}  # mismatch acc
+    """
+
+
+class BertHF_MNLI(Bert, LoadPretrainFromHF, MNLI):
+    """
+    Usage:
+        .. code-block:: python
+
+            from examples.text_pair_classification import BertHF_MNLI as Process
+
+            process = Process(pretrain_model='bert-base-uncased')
+            process.fit(max_epoch=5, batch_size=128, dataloader_kwargs=dict(num_workers=8))
+
+            process.metric(batch_size=128, data_get_kwargs=dict(task='matched'))
+            {'score': 0.8202}  # match acc
+            # benchmark: 0.8391
+
+            process.metric(batch_size=128, data_get_kwargs=dict(task='mismatched'))
+            {'score': 0.8210}  # mismatch acc
+            # benchmark: 0.8410
     """
 
 
@@ -131,6 +152,19 @@ class Bert_QQP(Bert, QQP):
             # about 200M data pretrain
             Process(pretrain_model='...').run(max_epoch=5, train_batch_size=128, predict_batch_size=128, check_period=1)
             {'score': 0.86450/0.82584}    # acc/f1
+    """
+
+
+class BertHF_QQP(Bert, LoadPretrainFromHF, QQP):
+    """
+    Usage:
+        .. code-block:: python
+
+            from examples.text_pair_classification import BertHF_QQP as Process
+
+            Process(pretrain_model='bert-base-uncased').run(max_epoch=5, train_batch_size=128, fit_kwargs=dict(check_period=1))
+            {'score': 0.9117/0.8803}    # acc/f1
+            # benchmark: 0.9071/0.8749
     """
 
 
@@ -149,19 +183,10 @@ class Bert_QNLI(Bert, QNLI):
             Process(pretrain_model='...').run(max_epoch=5, train_batch_size=128, fit_kwargs=dict(check_period=1))
             {'score': 0.8002}   # acc
 
-            # use weights from huggingface
-            from transformers import BertForSequenceClassification
-            from models.text_pair_classification.bert import convert_hf_weights
-
-            process = Process()
-            model = BertForSequenceClassification.from_pretrained('...', num_labels=2)
-            process.model.load_state_dict(convert_hf_weights(model.state_dict()))
-            process.run(max_epoch=5, train_batch_size=128, fit_kwargs=dict(check_period=1))
-            {'score': 0.89254}   # acc
     """
 
 
-class BertFull_QNLI(Bert_, QNLI):
+class BertFull_QNLI(BertFull, QNLI):
     """
     Usage:
         .. code-block:: python
@@ -171,6 +196,19 @@ class BertFull_QNLI(Bert_, QNLI):
             # no pretrain data, use QNLI data to train with nsp and mlm directly
             Process().run(max_epoch=50, train_batch_size=128, fit_kwargs=dict(check_period=1))
             {'score': 0.80395}   # acc
+    """
+
+
+class BertHF_QNLI(Bert, LoadPretrainFromHF, QNLI):
+    """
+    Usage:
+        .. code-block:: python
+
+            from examples.text_pair_classification import BertHF_QNLI as Process
+
+            Process(pretrain_model='bert-base-uncased').run(max_epoch=5, train_batch_size=128, fit_kwargs=dict(check_period=1))
+            {'score': 0.89254}   # acc
+            # benchmark: 0.9066
     """
 
 
@@ -187,6 +225,19 @@ class Bert_MRPC(Bert, MRPC):
     """
 
 
+class BertHF_MRPC(Bert, LoadPretrainFromHF, MRPC):
+    """
+    Usage:
+        .. code-block:: python
+
+            from examples.text_pair_classification import BertHF_MRPC as Process
+
+            Process(pretrain_model='bert-base-uncased').run(max_epoch=5, train_batch_size=128, fit_kwargs=dict(check_period=1))
+            {'score': 0.8521/0.8913}   # acc/f1
+            # benchmark: 0.8407/0.8885
+    """
+
+
 class Bert_RTE(Bert, RTE):
     """
     Usage:
@@ -197,4 +248,17 @@ class Bert_RTE(Bert, RTE):
             # about 200M data pretrain
             Process(pretrain_model='...').run(max_epoch=5, train_batch_size=128, fit_kwargs=dict(check_period=1))
             {'score': 0.57761}   # acc
+    """
+
+
+class BertHF_RTE(Bert, LoadPretrainFromHF, RTE):
+    """
+    Usage:
+        .. code-block:: python
+
+            from examples.text_pair_classification import BertHF_RTE as Process
+
+            Process(pretrain_model='bert-base-uncased').run(max_epoch=5, train_batch_size=128, fit_kwargs=dict(check_period=1))
+            {'score': 0.6859}   # acc
+            # benchmark: 0.6570
     """

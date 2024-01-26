@@ -2,14 +2,12 @@ import math
 import torch
 import torch.nn.functional as F
 from torch import nn
-from einops.layers.torch import Rearrange
-
 from utils import torch_utils
 from ..layers import Linear, Residual, SelfAttention2D
 
 
 def convert_hf_weights(state_dict):
-    """convert weights from huggingface model to my model
+    """convert weights from huggingface model to my own model
 
     Usage:
         .. code-block:: python
@@ -25,14 +23,14 @@ def convert_hf_weights(state_dict):
         'bert.embeddings.position_ids': 'backbone.embedding.position_ids',
         'bert.embeddings.token_type_embeddings': 'backbone.embedding.segment',
         'bert.embeddings.LayerNorm': 'backbone.embedding.head.0',
-        'bert.encoder.layer.{0}.attention.self.query': 'backbone.encode.{0}.res1.fn.to_qkv.0.0',
-        'bert.encoder.layer.{0}.attention.self.key': 'backbone.encode.{0}.res1.fn.to_qkv.1.0',
-        'bert.encoder.layer.{0}.attention.self.value': 'backbone.encode.{0}.res1.fn.to_qkv.2.0',
-        'bert.encoder.layer.{0}.attention.output.dense': 'backbone.encode.{0}.res1.fn.to_out.1.linear',
-        'bert.encoder.layer.{0}.attention.output.LayerNorm': 'backbone.encode.{0}.res1.act',
-        'bert.encoder.layer.{0}.intermediate.dense': 'backbone.encode.{0}.res2.fn.0.linear',
-        'bert.encoder.layer.{0}.output.dense': 'backbone.encode.{0}.res2.fn.1.linear',
-        'bert.encoder.layer.{0}.output.LayerNorm': 'backbone.encode.{0}.res2.act',
+        'bert.encoder.layer.{0}.attention.self.query': 'backbone.encoder.{0}.res1.fn.to_qkv.0.0',
+        'bert.encoder.layer.{0}.attention.self.key': 'backbone.encoder.{0}.res1.fn.to_qkv.1.0',
+        'bert.encoder.layer.{0}.attention.self.value': 'backbone.encoder.{0}.res1.fn.to_qkv.2.0',
+        'bert.encoder.layer.{0}.attention.output.dense': 'backbone.encoder.{0}.res1.fn.to_out.1.linear',
+        'bert.encoder.layer.{0}.attention.output.LayerNorm': 'backbone.encoder.{0}.res1.act',
+        'bert.encoder.layer.{0}.intermediate.dense': 'backbone.encoder.{0}.res2.fn.0.linear',
+        'bert.encoder.layer.{0}.output.dense': 'backbone.encoder.{0}.res2.fn.1.linear',
+        'bert.encoder.layer.{0}.output.LayerNorm': 'backbone.encoder.{0}.res2.act',
         'bert.pooler.dense': 'neck.linear',
     }
     state_dict = torch_utils.convert_state_dict(state_dict, convert_dict)
@@ -159,14 +157,14 @@ class Bert(nn.Module):
     def __init__(self, vocab_size, sp_tag_dict, max_seq_len=512, n_segment=2, hidden_size=768, num_hidden_layers=12, num_attention_heads=12, drop_prob=0.1):
         super().__init__()
         self.embedding = BERTEmbedding(vocab_size, hidden_size, sp_tag_dict, max_seq_len=max_seq_len, n_segment=n_segment, drop_prob=drop_prob)
-        self.encode = nn.ModuleList([TransformerBlock(hidden_size, num_attention_heads, hidden_size * 4, drop_prob) for _ in range(num_hidden_layers)])
+        self.encoder = nn.ModuleList([TransformerBlock(hidden_size, num_attention_heads, hidden_size * 4, drop_prob) for _ in range(num_hidden_layers)])
 
         self.out_features = hidden_size
         self.sp_tag_dict = sp_tag_dict
 
     def forward(self, x, segment_info, attention_mask=None):
         x = self.embedding(x, segment_info)
-        for m in self.encode:
+        for m in self.encoder:
             x = m(x, attention_mask)
 
         return x

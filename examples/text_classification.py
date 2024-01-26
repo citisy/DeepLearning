@@ -1,6 +1,7 @@
 import torch
 import numpy as np
-from .text_pretrain import TextProcess, Bert as Bert_
+from .text_pretrain import TextProcess, Bert as BertFull, LoadPretrainFromHF
+from processor import ModelHooks
 
 
 class CoLA(TextProcess):
@@ -37,7 +38,7 @@ class SST2(TextProcess):
             return loader.load(set_type=DataRegister.DEV, max_size=self.val_data_num, generator=False)[0]
 
 
-class Bert(Bert_):
+class Bert(BertFull):
     is_mlm = False  # only nsp strategy
 
     def set_model(self):
@@ -49,19 +50,7 @@ class Bert(Bert_):
         self.optimizer = torch.optim.AdamW(self.model.parameters(), lr=5e-5)
 
 
-class Bert_CoLA(Bert, CoLA):
-    """
-    Usage:
-        .. code-block:: python
-
-            from examples.text_pair_classification import Bert_CoLA as Process
-
-            # about 200M data pretrain
-            # it seems that the pretraining model has significantly influenced  the score
-            Process(pretrain_model='...').run(max_epoch=5, train_batch_size=128, fit_kwargs=dict(check_period=1))
-            {'score': 0.10233}  # Matthew's Corr
-    """
-
+class McMetric:
     def metric(self, *args, **kwargs) -> dict:
         """use Matthew's Corr"""
         from metrics import classification
@@ -82,12 +71,39 @@ class Bert_CoLA(Bert, CoLA):
         return metric_results
 
 
+class Bert_CoLA(McMetric, Bert, CoLA):
+    """
+    Usage:
+        .. code-block:: python
+
+            from examples.text_classification import Bert_CoLA as Process
+
+            # about 200M data pretrain
+            # it seems that the pretraining model has significantly influenced the score
+            Process(pretrain_model='...').run(max_epoch=5, train_batch_size=128, fit_kwargs=dict(check_period=1))
+            {'score': 0.10233}  # Matthew's Corr
+    """
+
+
+class BertHF_CoLA(McMetric, Bert, LoadPretrainFromHF, CoLA):
+    """
+    Usage:
+        .. code-block:: python
+
+            from examples.text_classification import BertHF_CoLA as Process
+
+            Process(pretrain_model='bert-base-uncased').run(max_epoch=5, train_batch_size=128, fit_kwargs=dict(check_period=1))
+            {'score': 0.5481}  # Matthew's Corr
+            # benchmark: 0.5653
+    """
+
+
 class Bert_SST2(Bert, SST2):
     """
     Usage:
         .. code-block:: python
 
-            from examples.text_pair_classification import Bert_SST2 as Process
+            from examples.text_classification import Bert_SST2 as Process
 
             # no pretrain data, use SST2 data to train directly
             Process().run(max_epoch=100, train_batch_size=128, fit_kwargs=dict(check_period=1))
@@ -96,28 +112,30 @@ class Bert_SST2(Bert, SST2):
             # about 200M data pretrain
             Process(pretrain_model='...').run(max_epoch=5, train_batch_size=128, fit_kwargs=dict(check_period=1))
             {'score': 0.83142}     # acc
-
-            # use weights from huggingface
-            from transformers import BertForSequenceClassification
-            from models.text_pair_classification.bert import convert_hf_weights
-
-            process = Process()
-            model = BertForSequenceClassification.from_pretrained('...', num_labels=1)
-            state_dict = convert_hf_weights(model.state_dict())
-            process.model.load_state_dict(state_dict)
-            process.run(max_epoch=5, train_batch_size=128, fit_kwargs=dict(check_period=1))
-            {'score': 0.92316}   # acc
     """
 
 
-class BertFull_SST2(Bert_, SST2):
+class BertFull_SST2(BertFull, SST2):
     """
     Usage:
         .. code-block:: python
 
-            from examples.text_pair_classification import BertFull_SST2 as Process
+            from examples.text_classification import BertFull_SST2 as Process
 
             # no pretrain data, use SST2 data to train with nsp and mlm directly
             Process().run(max_epoch=5, train_batch_size=128, fit_kwargs=dict(check_period=1))
             {'score': 0.78096}     # acc
+    """
+
+
+class BertHF_SST2(Bert, LoadPretrainFromHF, SST2):
+    """
+    Usage:
+        .. code-block:: python
+
+            from examples.text_classification import BertHF_SST2 as Process
+
+            Process(pretrain_model='bert-base-uncased').run(max_epoch=5, train_batch_size=128, fit_kwargs=dict(check_period=1))
+            {'score': 0.92316}   # acc
+            # benchmark: 0.9232
     """
