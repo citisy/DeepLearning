@@ -1,15 +1,13 @@
 import torch
 import torch.nn as nn
 from ..layers import Conv
-from ..semantic_segmentation.Unet import UnetBlock, unet256_config
+from ..semantic_segmentation.Unet import CirUnetBlock, Config as Config_
 from utils.torch_utils import initialize_layers
 import functools
 
 
 class Config:
-    net_g_config = dict(
-        conv_config=unet256_config
-    )
+    net_g_config = Config_.unet256
 
     net_d_config = dict(
         hidden_ch=64,
@@ -39,7 +37,7 @@ class Model(nn.ModuleList):
                  **kwargs):
         super().__init__()
 
-        self.net_g = net_g if net_g is not None else NetG(**net_g_config)
+        self.net_g = net_g if net_g is not None else NetG(in_ch, **net_g_config)
         self.net_d = net_d if net_d is not None else NetD(in_ch * 2, **net_d_config)
 
         initialize_layers(self.net_g)
@@ -88,10 +86,9 @@ class Model(nn.ModuleList):
 
 
 class NetG(nn.Sequential):
-    def __init__(self, conv_config=unet256_config):
-        in_ches, hidden_ches, out_ches = conv_config
+    def __init__(self, in_ch, **kwargs):
         super().__init__(
-            UnetBlock(in_ches, hidden_ches, out_ches),
+            CirUnetBlock(in_ch, in_ch, **kwargs),
             nn.Tanh()
         )
 
