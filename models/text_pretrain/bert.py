@@ -3,7 +3,8 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 from utils import torch_utils
-from ..layers import Linear, Residual, SelfAttention2D
+from ..layers import Linear, Residual
+from ..attentions import CrossAttention2D
 
 
 def convert_hf_weights(state_dict):
@@ -23,10 +24,10 @@ def convert_hf_weights(state_dict):
         'bert.embeddings.position_ids': 'backbone.embedding.position_ids',
         'bert.embeddings.token_type_embeddings': 'backbone.embedding.segment',
         'bert.embeddings.LayerNorm': 'backbone.embedding.head.0',
-        'bert.encoder.layer.{0}.attention.self.query': 'backbone.encoder.{0}.res1.fn.to_qkv.0.0',
-        'bert.encoder.layer.{0}.attention.self.key': 'backbone.encoder.{0}.res1.fn.to_qkv.1.0',
-        'bert.encoder.layer.{0}.attention.self.value': 'backbone.encoder.{0}.res1.fn.to_qkv.2.0',
-        'bert.encoder.layer.{0}.attention.output.dense': 'backbone.encoder.{0}.res1.fn.to_out.1.linear',
+        'bert.encoder.layer.{0}.attention.self.query': 'backbone.encoder.{0}.res1.fn.to_qkv.0',
+        'bert.encoder.layer.{0}.attention.self.key': 'backbone.encoder.{0}.res1.fn.to_qkv.1',
+        'bert.encoder.layer.{0}.attention.self.value': 'backbone.encoder.{0}.res1.fn.to_qkv.2',
+        'bert.encoder.layer.{0}.attention.output.dense': 'backbone.encoder.{0}.res1.fn.to_out.linear',
         'bert.encoder.layer.{0}.attention.output.LayerNorm': 'backbone.encoder.{0}.res1.act',
         'bert.encoder.layer.{0}.intermediate.dense': 'backbone.encoder.{0}.res2.fn.0.linear',
         'bert.encoder.layer.{0}.output.dense': 'backbone.encoder.{0}.res2.fn.1.linear',
@@ -233,7 +234,7 @@ class TransformerBlock(nn.Module):
     def __init__(self, hidden_size, num_attention_heads, feed_forward_hidden, drop_prob=0.1):
         super().__init__()
         self.res1 = Residual(
-            SelfAttention2D(n_heads=num_attention_heads, model_dim=hidden_size, drop_prob=drop_prob),
+            CrossAttention2D(n_heads=num_attention_heads, model_dim=hidden_size, drop_prob=drop_prob),
             act=nn.LayerNorm(hidden_size)
         )
 

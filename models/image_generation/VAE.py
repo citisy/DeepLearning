@@ -1,7 +1,8 @@
 from torch import nn, einsum
 import torch
 import torch.nn.functional as F
-from ..layers import Linear, Conv, Residual, LinearSelfAttention3D, SelfAttention3D
+from ..layers import Linear, Conv, Residual
+from ..attentions import CrossAttention3D, LinearAttention3D
 from ..image_translation.pix2pix import NetD as NLayerDiscriminator
 from utils import torch_utils
 
@@ -62,25 +63,33 @@ class Model(nn.Module):
         self.loss = Loss(self.re_parametrize, **loss_config)
 
     def forward(self, x, sample_posterior=True, **loss_kwargs):
+        z, mean, log_var = self.encode(x, sample_posterior)
+        z = self.decode(z)
+
+        if self.training:
+            return self.loss(x, z, mean, log_var, last_layer=self.decoder.head.conv.weight, **loss_kwargs)
+        else:
+            return z
+
+    def encode(self, x, sample_posterior=True):
         h = self.encoder(x)
         h = self.quant_conv(h)
         z, mean, log_var = self.re_parametrize(h, sample_posterior=sample_posterior)
+        return z, mean, log_var
+
+    def decode(self, z):
         z = self.post_quant_conv(z)
         z = self.decoder(z)
-
-        if self.training:
-            return self.loss(x, z, mean, log_var, last_layer=self.decoder.head[0].conv.weight, **loss_kwargs)
-        else:
-            return z
+        return z
 
 
 def make_attn(in_channels, attn_type="vanilla"):
     attn_dict = dict(
         vanilla=lambda in_ch: nn.Sequential(
             Normalize(in_ch),
-            SelfAttention3D(in_ch, n_heads=1, head_dim=in_ch, use_mem_kv=False)
+            CrossAttention3D(n_heads=1, head_dim=in_ch, use_mem_kv=False, separate_conv=True)
         ),
-        linear=lambda in_ch: LinearSelfAttention3D(in_ch, n_heads=1, head_dim=in_ch, use_mem_kv=False),
+        linear=lambda in_ch: LinearAttention3D(n_heads=1, head_dim=in_ch, use_mem_kv=False, separate_conv=True),
         none=nn.Identity
     )
     return attn_dict[attn_type](in_channels)
@@ -140,18 +149,18 @@ class NeckBlock(nn.Module):
     def __init__(self, in_ch, time_emb_ch, attn_type, drop_prob):
         super().__init__()
         self.block_1 = ResBlock(in_ch=in_ch, out_ch=in_ch, time_emb_ch=time_emb_ch, drop_prob=drop_prob)
-        self.attn_1 = make_attn(in_ch, attn_type=attn_type)
+        self.attn = make_attn(in_ch, attn_type=attn_type)
         self.block_2 = ResBlock(in_ch=in_ch, out_ch=in_ch, time_emb_ch=time_emb_ch, drop_prob=drop_prob)
 
     def forward(self, h, time_emb):
         h = self.block_1(h, time_emb=time_emb)
-        h = self.attn_1(h)
+        h = self.attn(h) + h
         h = self.block_2(h, time_emb=time_emb)
         return h
 
 
 class Encoder(nn.Module):
-    def __init__(self, in_ch, hidden_ch=128, z_ch=64,
+    def __init__(self, in_ch, unit_ch=128, z_ch=64,
                  ch_mult=(1, 1, 2, 2, 4, 4), num_res_blocks=2, attn_layers=(-1, -2),
                  drop_prob=0.0, resample_with_conv=True, time_emb_ch=0,
                  double_z=True, attn_type="vanilla",
@@ -161,15 +170,15 @@ class Encoder(nn.Module):
         attn_layers = [i % num_layers for i in attn_layers]
 
         # down_sampling
-        self.conv_in = nn.Conv2d(in_ch, hidden_ch, 3, stride=1, padding=1)
+        self.conv_in = nn.Conv2d(in_ch, unit_ch, 3, stride=1, padding=1)
 
-        in_ch = hidden_ch
+        in_ch = unit_ch
         self.down = nn.ModuleList()
         for i in range(num_layers):
             is_top = i == num_layers - 1
             blocks = nn.ModuleList()
             attns = nn.ModuleList()
-            out_ch = hidden_ch * ch_mult[i]
+            out_ch = unit_ch * ch_mult[i]
             for j in range(num_res_blocks):
                 blocks.append(ResBlock(in_ch=in_ch, out_ch=out_ch, time_emb_ch=time_emb_ch, drop_prob=drop_prob))
                 attns.append(make_attn(out_ch, attn_type=attn_type) if i in attn_layers else nn.Identity())
@@ -204,15 +213,15 @@ class DownSample(nn.Module):
     def __init__(self, in_ch, use_conv=True):
         super().__init__()
         if use_conv:
-            self.down = nn.Sequential(
+            self.fn = nn.Sequential(
                 nn.ConstantPad2d((0, 1, 0, 1), value=0),  # no asymmetric padding in torch conv, must do it ourselves
                 nn.Conv2d(in_ch, in_ch, 3, stride=2, padding=0)
             )
         else:
-            self.down = nn.AvgPool2d(2, 2)
+            self.fn = nn.AvgPool2d(2, 2)
 
     def forward(self, x):
-        x = self.down(x)
+        x = self.fn(x)
         return x
 
 
@@ -252,7 +261,7 @@ class ReParametrize(nn.Module):
 
 
 class Decoder(nn.Module):
-    def __init__(self, in_ch, out_ch, hidden_ch=128,
+    def __init__(self, in_ch, out_ch, unit_ch=128,
                  ch_mult=(1, 1, 2, 2, 4, 4), num_res_blocks=2, attn_layers=(-1, -2),
                  drop_prob=0.0, resample_with_conv=True,
                  give_pre_end=False, tanh_out=False,
@@ -265,19 +274,19 @@ class Decoder(nn.Module):
         attn_layers = [i % num_layers for i in attn_layers]
 
         # z to block_in
-        in_ch = hidden_ch * ch_mult[num_layers - 1]
+        in_ch = unit_ch * ch_mult[num_layers - 1]
         self.conv_in = nn.Conv2d(self.in_channels, in_ch, 3, stride=1, padding=1)
 
         # middle
         self.neck = NeckBlock(in_ch, time_emb_ch, attn_type, drop_prob)
 
         # upsampling
-        self.up = nn.ModuleList()
+        self.up = []
         for i in reversed(range(num_layers)):
             is_bottom = i == 0
             blocks = nn.ModuleList()
             attns = nn.ModuleList()
-            out_ch = hidden_ch * ch_mult[i]
+            out_ch = unit_ch * ch_mult[i]
             for j in range(num_res_blocks + 1):
                 blocks.append(ResBlock(in_ch=in_ch, out_ch=out_ch, time_emb_ch=time_emb_ch, drop_prob=drop_prob))
                 attns.append(make_attn(out_ch, attn_type=attn_type) if i in attn_layers else nn.Identity())
@@ -288,24 +297,30 @@ class Decoder(nn.Module):
             up.upsample = nn.Identity() if is_bottom else Upsample(in_ch, resample_with_conv)
             self.up.append(up)  # prepend to get consistent order
 
+        # note, apply for official ldm code, use reversed layers
+        self.up = nn.ModuleList(self.up[::-1])
+
         # end
-        self.head = nn.Sequential(
-            Conv(in_ch, self.out_channels, 3, mode='nac', norm=Normalize(in_ch), act=Swish()),
-            nn.Tanh() if tanh_out else nn.Identity()
-        ) if not give_pre_end else nn.Identity()
+        if give_pre_end:
+            self.head = nn.Identity()
+            self.out_act = nn.Identity()
+        else:
+            self.head = Conv(in_ch, self.out_channels, 3, mode='nac', norm=Normalize(in_ch), act=Swish())
+            self.out_act = nn.Tanh() if tanh_out else nn.Identity()
 
     def forward(self, z, time_emb=None):
         h = self.conv_in(z)
         h = self.neck(h, time_emb)
 
         # upsampling
-        for m in self.up:
+        for m in reversed(self.up):
             for block, attn in zip(m.blocks, m.attns):
                 h = block(h, time_emb=time_emb)
                 h = attn(h)
             h = m.upsample(h)
 
         h = self.head(h)
+        h = self.out_act(h)
         return h
 
 
@@ -313,13 +328,13 @@ class Upsample(nn.Module):
     def __init__(self, in_ch, use_conv=True):
         super().__init__()
         up = nn.Upsample(scale_factor=2.)
-        self.up = nn.Sequential(
+        self.fn = nn.Sequential(
             up,
             nn.Conv2d(in_ch, in_ch, 3, stride=1, padding=1)
         ) if use_conv else up
 
     def forward(self, x):
-        return self.up(x)
+        return self.fn(x)
 
 
 class Loss(nn.Module):

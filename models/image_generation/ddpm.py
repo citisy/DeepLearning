@@ -4,7 +4,8 @@ from torch import nn, einsum
 from einops import rearrange, repeat, reduce
 import torch
 import torch.nn.functional as F
-from ..layers import Linear, Conv, SelfAttention3D, LinearSelfAttention3D
+from ..layers import Linear, Conv
+from ..attentions import CrossAttention3D, LinearAttention3D
 from functools import partial
 from einops.layers.torch import Rearrange
 
@@ -89,10 +90,11 @@ class Model(nn.ModuleList):
         - https://github.com/lucidrains/denoising-diffusion-pytorch
     """
 
-    def __init__(self, img_ch, image_size,
+    def __init__(self, img_ch, image_size, hidden_ch=64,
                  schedule_func=linear_beta_schedule, timesteps=300,
                  offset_noise_strength=0., objective=PRED_V,
-                 min_snr_loss_weight=False, min_snr_gamma=5, model_kwargs=Config.get()
+                 min_snr_loss_weight=False, min_snr_gamma=5,
+                 in_module_config=Config.in_module_config, backbone_config=Config.backbone_config,
                  ):
         super().__init__()
         self.image_size = image_size
@@ -106,7 +108,11 @@ class Model(nn.ModuleList):
         self.objective = objective
 
         self.register_schedule(schedule_func, timesteps, min_snr_loss_weight, min_snr_gamma)
-        self.model = Diffusion(**model_kwargs)
+
+        self.in_module = InModule(img_ch, hidden_ch, **in_module_config)
+        self.backbone = Backbone(hidden_ch, **backbone_config)
+        self.out_module = nn.Conv2d(hidden_ch, img_ch, 1)
+
         self.self_condition = False
 
     def register_schedule(self, schedule_func, timesteps, min_snr_loss_weight, min_snr_gamma):
@@ -167,10 +173,16 @@ class Model(nn.ModuleList):
         else:
             return self.post_process(x)
 
+    def diffuse(self, x, time, x_self_cond=None):
+        x = self.in_module(x, x_self_cond)
+        x = self.backbone(x, time)
+        x = self.out_module(x)
+        return x
+
     def model_predictions(self, x_t, t, x_self_cond=None, clip_x_start=False,
                           return_pred_noise=False, rederive_pred_noise=False):
         """x_t, t -> pred_z_t, x_0"""
-        model_output = self.model(x_t, t, x_self_cond)
+        model_output = self.diffuse(x_t, t, x_self_cond)
 
         pred_noise = None
         if self.objective == PRED_Z:
@@ -247,7 +259,7 @@ class Model(nn.ModuleList):
                 x_self_cond, _ = self.model_predictions(x_t, t)
                 x_self_cond.detach_()
 
-        pred = self.model(x_t, t, x_self_cond)
+        pred = self.diffuse(x_t, t, x_self_cond)
 
         if self.objective == PRED_Z:
             real = noise
@@ -324,23 +336,6 @@ class Model(nn.ModuleList):
         return posterior_mean, posterior_variance, posterior_log_variance_clipped
 
 
-class Diffusion(nn.Module):
-    def __init__(self, in_ch=3, hidden_ch=64,
-                 in_module_config=dict(), backbone_config=dict(),
-                 ):
-        super().__init__()
-
-        self.in_module = InModule(in_ch, hidden_ch, **in_module_config)
-        self.backbone = Backbone(hidden_ch, **backbone_config)
-        self.out_module = nn.Conv2d(hidden_ch, in_ch, 1)
-
-    def forward(self, x, time, x_self_cond=None):
-        x = self.in_module(x, x_self_cond)
-        x = self.backbone(x, time)
-        x = self.out_module(x)
-        return x
-
-
 class InModule(nn.Module):
     def __init__(self, in_ch, out_ch, self_condition=False):
         super().__init__()
@@ -381,11 +376,11 @@ class Backbone(nn.Module):
             sin_pos_emb = SinusoidalPosEmb(dim, theta=sinusoidal_pos_emb_theta)
             fourier_dim = dim
 
-        time_dim = dim * 4
+        time_emb_dim = dim * 4
         self.time_mlp = nn.Sequential(
             sin_pos_emb,
-            Linear(fourier_dim, time_dim, mode='la', act=nn.GELU()),
-            Linear(time_dim, time_dim, mode='l'),
+            Linear(fourier_dim, time_emb_dim, mode='la', act=nn.GELU()),
+            Linear(time_emb_dim, time_emb_dim, mode='l'),
         )
 
         num_stages = len(dim_factors)
@@ -396,13 +391,13 @@ class Backbone(nn.Module):
         if isinstance(attn_dim_heads, int):
             attn_dim_heads = [attn_dim_heads] * num_stages
 
-        res_block = partial(ResnetBlock, groups=resnet_block_groups, time_emb_dim=time_dim)
+        res_block = partial(ResnetBlock, groups=resnet_block_groups, time_emb_dim=time_emb_dim)
 
         in_ch = dim
         self.downs = nn.ModuleList([])
         for i in range(num_stages):
             is_bottom = i == num_stages - 1
-            attn_layer = SelfAttention3D if is_bottom else partial(LinearSelfAttention3D, norm=RMSNorm(in_ch))
+            attn_layer = CrossAttention3D if is_bottom else partial(LinearAttention3D, norm=RMSNorm(in_ch))
             out_ch = dim * dim_factors[i]
 
             self.downs.append(nn.ModuleList([
@@ -420,14 +415,14 @@ class Backbone(nn.Module):
 
         out_ch = in_ch
         self.mid_block1 = res_block(out_ch, out_ch)
-        self.mid_attn = SelfAttention3D(out_ch, n_heads=attn_heads[-1], head_dim=attn_dim_heads[-1])
+        self.mid_attn = CrossAttention3D(out_ch, n_heads=attn_heads[-1], head_dim=attn_dim_heads[-1])
         self.mid_block2 = res_block(out_ch, out_ch)
 
         self.ups = nn.ModuleList([])
         for i in reversed(range(num_stages)):
             is_top = i == 0
             is_bottom = i == num_stages - 1
-            attn_layer = SelfAttention3D if is_bottom else partial(LinearSelfAttention3D, norm=RMSNorm(out_ch))
+            attn_layer = CrossAttention3D if is_bottom else partial(LinearAttention3D, norm=RMSNorm(out_ch))
             in_ch = dim if i == 0 else dim * dim_factors[i - 1]
 
             self.ups.append(nn.ModuleList([
@@ -511,7 +506,7 @@ class SinusoidalPosEmb(nn.Module):
     def forward(self, x):
         emb = self.emb
         emb = x[:, None] * emb[None, :]
-        emb = torch.cat((emb.sin(), emb.cos()), dim=-1)
+        emb = torch.cat((emb.cos(), emb.sin()), dim=-1)
         return emb
 
 
@@ -520,37 +515,26 @@ class ResnetBlock(nn.Module):
         super().__init__()
         self.mlp = Linear(time_emb_dim, out_ch * 2, mode='al', act=nn.SiLU()) if time_emb_dim else None
 
-        self.block1 = ResBlock(in_ch, out_ch, groups=groups)
-        self.block2 = ResBlock(out_ch, out_ch, groups=groups)
-        self.proj = nn.Conv2d(in_ch, out_ch, 1) if in_ch != out_ch else nn.Identity()
+        self.proj1 = Conv(in_ch, out_ch, 3, p=1, mode='cn', norm=nn.GroupNorm(groups, out_ch))
+        self.act1 = nn.SiLU()
+
+        self.proj2 = Conv(in_ch, out_ch, 3, p=1, mode='cna', norm=nn.GroupNorm(groups, out_ch), act=nn.SiLU())
+        self.proj3 = nn.Conv2d(in_ch, out_ch, 1) if in_ch != out_ch else nn.Identity()
 
     def forward(self, x, time_emb=None):
-        scale_shift = None
+        h = self.proj1(x)
+
         if self.mlp is not None and time_emb is not None:
             time_emb = self.mlp(time_emb)
             time_emb = time_emb[:, :, None, None]
             scale_shift = time_emb.chunk(2, dim=1)
-
-        h = self.block1(x, scale_shift=scale_shift)
-        h = self.block2(h)
-        return h + self.proj(x)
-
-
-class ResBlock(nn.Module):
-    def __init__(self, in_ch, out_ch, groups=8):
-        super().__init__()
-        self.proj = Conv(in_ch, out_ch, 3, p=1, mode='cn', norm=nn.GroupNorm(groups, out_ch))
-        self.act = nn.SiLU()
-
-    def forward(self, x, scale_shift=None):
-        x = self.proj(x)
-
-        if scale_shift is not None:
             scale, shift = scale_shift
-            x = x * (scale + 1) + shift
+            h = h * (scale + 1) + shift
 
-        x = self.act(x)
-        return x
+        h = self.act1(h)
+        h = self.proj2(h)
+
+        return h + self.proj3(x)
 
 
 class RMSNorm(nn.Module):
