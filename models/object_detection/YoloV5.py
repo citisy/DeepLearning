@@ -13,20 +13,23 @@ from ..image_classification.CspDarkNet import Backbone, C3, Conv
 
 
 class Config:
-    # default config, base on yolov5l config
-    in_module_config = dict(
+    # default configs, base on yolov5l config
+    in_module = dict(
         in_ch=3,
         input_size=640,
     )
-    backbone_config = (64, (3, 6, 9, 3), (1, 2))
-    neck_config = dict(n_c3=3)
-    head_config = dict(
+    backbone = (64, (3, 6, 9, 3), (1, 2))
+    neck = dict(n_c3=3)
+    head = dict(
         anchors=[  # length of wh
             [(10, 13), (16, 30), (33, 23)],
             [(30, 61), (62, 45), (59, 119)],
             [(116, 90), (156, 198), (373, 326)],
         ],
         stride=(8, 16, 32)
+    )
+    loss = dict(
+        conf_thres=0.1, nms_thres=0.6, max_det=300
     )
 
     default_model_multiple = {
@@ -40,13 +43,14 @@ class Config:
     @classmethod
     def get(cls, name='yolov5l'):
         return dict(
-            in_module_config=cls.in_module_config,
-            **cls.make_config(cls.backbone_config, cls.neck_config, **cls.default_model_multiple[name]),
-            head_config=cls.head_config
+            in_module_config=cls.in_module,
+            **cls.make_config(cls.backbone, cls.neck, **cls.default_model_multiple[name]),
+            head_config=cls.head,
+            loss_config=cls.loss
         )
 
     @staticmethod
-    def make_config(backbone_config=backbone_config, neck_config=neck_config, depth_multiple=1, width_multiple=1):
+    def make_config(backbone_config=backbone, neck_config=neck, depth_multiple=1, width_multiple=1):
         """
         Args:
             depth_multiple: model depth multiple
@@ -71,7 +75,7 @@ class Config:
         return dict(backbone_config=backbone_config, neck_config=neck_config)
 
     @staticmethod
-    def auto_anchors(iter_data, img_size, head_config=head_config, **kwargs):
+    def auto_anchors(iter_data, img_size, head_config=head, **kwargs):
         """
         Usage:
             .. code-block:: python
@@ -93,9 +97,8 @@ class Model(nn.Module):
     def __init__(
             self, n_classes,
             in_module=None, backbone=None, neck=None, head=None,
-            in_module_config=Config.in_module_config, backbone_config=Config.backbone_config,
-            neck_config=Config.neck_config, head_config=Config.head_config,
-            conf_thres=0.1, nms_thres=0.6, max_det=300
+            in_module_config=Config.in_module, backbone_config=Config.backbone,
+            neck_config=Config.neck, head_config=Config.head, loss_config=Config.loss
     ):
         super().__init__()
         self.input = in_module(**in_module_config) if in_module is not None else ConvInModule(**in_module_config)
@@ -105,15 +108,18 @@ class Model(nn.Module):
             self.backbone = backbone(**backbone_config)
         self.neck = neck(**neck_config) if neck is not None else Neck(self.backbone.out_channels, **neck_config)
         self.head = head(**head_config) if head is not None else Head(n_classes, self.neck.out_channels, **head_config)
+        self.make_loss(**loss_config)
 
-        self.conf_thres = conf_thres
-        self.nms_thres = nms_thres
-        self.max_det = max_det
         self.input_size = self.input.input_size
         self.grid = None
         self.stride = self.head.stride
 
         initialize_layers(self)
+
+    def make_loss(self, conf_thres=0.1, nms_thres=0.6, max_det=300):
+        self.conf_thres = conf_thres
+        self.nms_thres = nms_thres
+        self.max_det = max_det
 
     def forward(self, x, gt_boxes=None, gt_cls=None):
         x = self.input(x)
@@ -140,6 +146,11 @@ class Model(nn.Module):
             preds: (b, n, 4 + 1 + n_class)
 
         """
+        preds = self.gen_preds(preds)
+        result = self.parse_preds(preds)
+        return result
+
+    def gen_preds(self, preds):
         if self.grid is None:
             self.grid = []
             for i, f in enumerate(preds):
@@ -161,7 +172,9 @@ class Model(nn.Module):
             z.append(f)
 
         preds = torch.cat(z, 1)
+        return preds
 
+    def parse_preds(self, preds):
         result = []
         for i, x in enumerate(preds):
             conf = x[:, 4]
@@ -198,6 +211,41 @@ class Model(nn.Module):
             })
 
         return result
+
+
+class Model4Triton(Model):
+    """for triton server"""
+
+    def forward(self, x, gt_boxes=None, gt_cls=None):
+        x = self.pre_process(x)
+        x = self.input(x)
+        features = self.backbone(x)
+        features = self.neck(features)
+
+        if isinstance(features, torch.Tensor):
+            features = [features]
+
+        preds, losses = self.head(features, gt_boxes, gt_cls, self.input_size)
+        preds = self.post_process(preds)
+
+        return preds
+
+    def pre_process(self, x):
+        """for faster infer, use uint8 input and fp16 to process"""
+        x = x / 255
+        x = x.to(dtype=torch.float16)
+        return x
+
+    def post_process(self, preds):
+        """for faster infer, only output 500 bboxes"""
+        preds = self.gen_preds(preds)
+        conf = preds[:, :, 4]
+        _, indices = torch.sort(conf, dim=-1, descending=True)
+        indices = indices[:, :500].unsqueeze(-1).expand(-1, -1, preds.shape[-1])
+        preds = preds.gather(1, indices)
+        preds = preds.to(dtype=torch.float16)
+
+        return preds
 
 
 class Neck(nn.Module):
