@@ -61,6 +61,7 @@ class Process(
     default_model_path: str
     cache_dir: str
     model_name = 'model'
+    models = dict()
 
     def init(self):
         self.init_logs()
@@ -117,8 +118,13 @@ class Process(
             except NotImplementedError:
                 self.log(f'{components} not init', level=logging.DEBUG)
 
+        self.models = {self.model_name: self.model}
+        if hasattr(self, 'aux_model'):
+            self.models.update(self.aux_model)
+
         self.log(f'{torch.__version__ = }')
         self.log(f'{self.device = }')
+        self.log(f'{self.models.keys() = }')
 
     def run(self, max_epoch=100, train_batch_size=16, predict_batch_size=None, fit_kwargs=dict(), metric_kwargs=dict()):
         self.init()

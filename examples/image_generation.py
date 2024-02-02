@@ -3,6 +3,7 @@ import numpy as np
 import torch
 from torch import optim, nn
 from pathlib import Path
+from datetime import datetime
 from collections import namedtuple
 from utils import os_lib
 from data_parse.cv_data_parse.data_augmentation import crop, scale, geometry, channel, RandomApply, Apply, complex, pixel_perturbation
@@ -66,7 +67,7 @@ class IgProcess(Process):
         """visualize will work on on_val_end() instead of here,
         because to combine small images into a large image"""
 
-    def on_val_end(self, num_synth_per_image=64, is_visualize=False, max_vis_num=None, **kwargs):
+    def on_val_end(self, save_samples=False, save_synth=True, num_synth_per_image=64, is_visualize=False, max_vis_num=None, **kwargs):
         # {name1: {name2: items}}
         for name, results in self.val_container['model_results'].items():
             for name2, items in results.items():
@@ -77,22 +78,68 @@ class IgProcess(Process):
                 max_vis_num = max_vis_num or float('inf')
                 n = min(num_synth_per_image, max_vis_num - self.counters['vis_num'])
                 if n > 0:
-                    self.visualize(None, self.val_container['model_results'], n, **kwargs)
+                    self.visualize(None, self.val_container['model_results'], n,
+                                   save_samples=save_samples, save_synth=save_synth,
+                                   sub_dir=self.counters["total_nums"], **kwargs)
                     self.counters['vis_num'] += n
 
-    def visualize(self, rets, model_results, n, **kwargs):
+    def visualize(self, rets, model_results, n, save_samples=False, save_synth=True,
+                  sub_dir='', sub_name='', verbose=False, **kwargs):
         vis_num = self.counters['vis_num']
         for name, results in model_results.items():
-            vis_rets = []
-            for name2, images in results.items():
-                vis_rets.append([{'image': image, '_id': f'{name2}.{vis_num}.jpg'} for image in images[vis_num:vis_num + n]])
+            cache_dir = f'{self.cache_dir}/{sub_dir}/{name}'
 
-            vis_rets = [r for r in zip(*vis_rets)]
-            cache_dir = f'{self.cache_dir}/{self.counters["total_nums"]}/{name}'
-            cache_image = DataVisualizer(cache_dir, verbose=False, pbar=False, stdout_method=self.logger.info)(*vis_rets, return_image=True)
-            self.get_log_trace(bundled.WANDB).setdefault(f'val_image/{name}', []).extend(
-                [self.wandb.Image(cv2.cvtColor(img, cv2.COLOR_BGR2RGB), caption=Path(r['_id']).stem) for img, r in zip(cache_image, vis_rets[0])]
-            )
+            if save_synth:
+                vis_rets = []
+                for name2, images in results.items():
+                    vis_rets.append([{'image': image, '_id': f'{sub_name}{name2}.{vis_num}.jpg'} for image in images[vis_num:vis_num + n]])
+
+                vis_rets = [r for r in zip(*vis_rets)]
+                cache_image = DataVisualizer(cache_dir, verbose=verbose, pbar=False, stdout_method=self.log)(*vis_rets, return_image=True)
+                self.get_log_trace(bundled.WANDB).setdefault(f'val_image/{name}', []).extend(
+                    [self.wandb.Image(cv2.cvtColor(img, cv2.COLOR_BGR2RGB), caption=Path(r['_id']).stem) for img, r in zip(cache_image, vis_rets[0])]
+                )
+
+            if save_samples:
+                cache_dir = f'{cache_dir}/samples'
+                os_lib.mk_dir(cache_dir)
+                saver = os_lib.Saver(verbose=verbose, stdout_method=self.log)
+                for name2, images in results.items():
+                    for i in range(vis_num, vis_num + n):
+                        image = images[i]
+                        saver.save_img(image, f'{cache_dir}/{sub_name}{name2}.{i}.jpg')
+
+                        self.get_log_trace(bundled.WANDB).setdefault(f'val_image/{name}/samples', []).append(
+                            self.wandb.Image(cv2.cvtColor(image, cv2.COLOR_BGR2RGB), caption=f'{sub_name}{name2}.{i}')
+                        )
+
+    def on_predict_step_end(self, model_results, **kwargs):
+        for name, results in model_results.items():
+            r = self.predict_container['model_results'].setdefault(name, dict())
+            for n, items in results.items():
+                r.setdefault(n, []).extend(items)
+
+    def on_predict_end(self, is_visualize=False, save_samples=True, save_synth=True, num_synth_per_image=64, save_to_one_dir=True, **kwargs):
+        results = [image for image in self.predict_container['model_results'][self.model_name]['fake_x']]
+        if is_visualize:
+            max_vis_num = len(results)
+            date = str(datetime.now().isoformat(timespec='seconds', sep=' '))
+            if save_to_one_dir:
+                sub_dir = ''
+                sub_name = date + '.'
+            else:
+                sub_dir = date
+                sub_name = ''
+
+            for i in range(0, self.val_data_num, num_synth_per_image):
+                n = min(num_synth_per_image, max_vis_num - self.counters['vis_num'])
+                if n > 0:
+                    self.visualize(None, self.predict_container['model_results'], n,
+                                   save_samples=save_samples, save_synth=save_synth,
+                                   sub_dir=sub_dir, sub_name=sub_name, verbose=True, **kwargs)
+                    self.counters['vis_num'] += n
+
+        return results
 
 
 class GanProcess(IgProcess):
@@ -136,7 +183,10 @@ class Mnist(DataHooks):
         channel.HWC2CHW()
     ])
 
-    def train_data_augment(self, ret):
+    def data_augment(self, ret, train=True):
+        if not train:
+            return ret
+
         ret.update(dst=self.input_size)
         ret.update(self.aug(**ret))
 
@@ -215,10 +265,8 @@ class WGAN(GanProcess):
 
     def on_val_step(self, rets, **kwargs) -> dict:
         noise_x = rets
-
-        models = self.val_container['models']
         model_results = {}
-        for name, model in models.items():
+        for name, model in self.models.items():
             fake_x = model.net_g(noise_x)
             fake_x = fake_x.data.mul(255).clamp_(0, 255).permute(0, 2, 3, 1).to("cpu", torch.uint8).numpy()
 
@@ -258,7 +306,10 @@ class DataProcess(DataHooks):
         channel.HWC2CHW()
     ])
 
-    def train_data_augment(self, ret) -> dict:
+    def data_augment(self, ret, train=True) -> dict:
+        if not train:
+            return ret
+
         # ret.update(self.rand_aug(**ret))
         ret.update(dst=self.input_size)
         ret.update(self.aug(**ret))
@@ -475,10 +526,8 @@ class StyleGan(GanProcess):
 
     def on_val_step(self, rets, vis_batch_size=64, **kwargs) -> dict:
         noise_x, w_style = rets
-
-        models = self.val_container['models']
         model_results = {}
-        for name, model in models.items():
+        for name, model in self.models.items():
             fake_x = model.net_g(w_style, noise_x)
             fake_x = fake_x.data.mul(255).clamp_(0, 255).permute(0, 2, 3, 1).to("cpu", torch.uint8).numpy()
 
@@ -589,10 +638,8 @@ class VAE(IgProcess):
     def on_val_step(self, rets, **kwargs) -> dict:
         images = [torch.from_numpy(ret).to(self.device, non_blocking=True, dtype=torch.float) for ret in rets]
         real_x = torch.stack(images).permute(0, 3, 1, 2)
-
-        models = self.val_container['models']
         model_results = {}
-        for name, model in models.items():
+        for name, model in self.models.items():
             fake_x = model(real_x)
             fake_x = fake_x.data.mul(255).clamp_(0, 255).permute(0, 2, 3, 1).to("cpu", torch.uint8).numpy()
             model_results[name] = dict(
@@ -645,10 +692,8 @@ class DiProcess(IgProcess):
 
     def on_val_step(self, rets, **kwargs) -> dict:
         noise_x = rets
-
-        models = self.val_container['models']
         model_results = {}
-        for name, model in models.items():
+        for name, model in self.models.items():
             fake_x = model(noise_x)
             fake_x = fake_x.data.mul(255).clamp_(0, 255).permute(0, 2, 3, 1).to("cpu", torch.uint8).numpy()
             model_results[name] = dict(
@@ -735,7 +780,7 @@ class Ddim_CelebAHQ(Dpim, CelebAHQ):
 
 
 class Ldm(DiProcess):
-    model_version = 'Ddpm'
+    model_version = 'ldm'
     in_ch = 4
     input_size = 512
 
@@ -757,33 +802,41 @@ class Ldm(DiProcess):
         self.optimizer = optim.Adam(self.model.parameters(), lr=1e-4, betas=(0.9, 0.99))
 
     def on_val_step(self, rets, **kwargs) -> dict:
-        models = self.val_container['models']
+        text = [ret['text'] for ret in rets]
         model_results = {}
-        for name, model in models.items():
-            fake_x = model(**rets)
+        for name, model in self.models.items():
+            fake_x = model(text=text)
             fake_x = fake_x.data.mul(255).clamp_(0, 255).permute(0, 2, 3, 1).to("cpu", torch.uint8).numpy()
-            fake_x[..., :] = fake_x[..., ::-1]      # note, official model output is Image type, must convert to cv2 type
             model_results[name] = dict(
                 fake_x=fake_x,
             )
 
         return model_results
 
-    model_inputs = namedtuple('model_inputs', ['x', 'text'], defaults=[None, None])
+    model_input_template = namedtuple('model_inputs', ['x', 'text'], defaults=[None, None])
 
-    @torch.no_grad()
-    def single_predict(self, prompt: str, **kwargs):
-        self.set_mode(train=False)
-        self.val_container = {'models': {self.model_name: self.model}}
-        model_results = self.on_val_step(self.model_inputs(text=[prompt])._asdict())
-        return model_results[self.model_name]['fake_x'][0]
+    def gen_predict_inputs(self, *objs, **kwargs):
+        return [self.model_input_template(text=text)._asdict() for text in objs[0]]
 
-    @torch.no_grad()
-    def batch_predict(self, prompts: 'List[str]', *args, batch_size=3, **kwargs):
-        self.set_mode(train=False)
-        self.val_container = {'models': {self.model_name: self.model}}
-        model_results = self.on_val_step(self.model_inputs(text=prompts)._asdict())
-        return model_results[self.model_name]['fake_x']
+    def on_predict_step_end(self, model_results, add_watermark=True, watermark='watermark', **kwargs):
+        for name, results in model_results.items():
+            r = self.predict_container['model_results'].setdefault(name, dict())
+            for n, items in results.items():
+                items[..., :] = items[..., ::-1]  # note, official model output is Image type, must convert to cv2 type
+                if add_watermark:
+                    self.add_watermark(items, watermark)
+                r.setdefault(n, []).extend(items)
+
+    def add_watermark(self, images, watermark='watermark'):
+        """be safe, add watermark for images
+        see https://github.com/ShieldMnt/invisible-watermark"""
+        from imwatermark import WatermarkEncoder
+
+        wm_encoder = WatermarkEncoder()
+        wm_encoder.set_watermark('bytes', watermark.encode('utf-8'))
+
+        images = [wm_encoder.encode(image, 'dwtDct') for image in images]
+        return images
 
 
 class FromHFv1Pretrain(CheckpointHooks):
@@ -798,7 +851,7 @@ class FromHFv1Pretrain(CheckpointHooks):
 
 
 class LdmHFv1(Ldm, FromHFv1Pretrain):
-    """txt2img model, only for prediction
+    """no training, only for prediction
 
     Usage:
         .. code-block:: python
@@ -807,16 +860,14 @@ class LdmHFv1(Ldm, FromHFv1Pretrain):
 
             process = Process(pretrain_model='...')
 
+            # txt2img
             # predict one
             prompt = 'a painting of a virus monster playing guitar'
-            image = process.single_predict(prompt)
-            cv2.imwrite(save_path, image)
+            image = process.single_predict(prompt, is_visualize=True)
 
             # predict batch
             prompts = ['a painting of a virus monster playing guitar', 'a painting of two virus monster playing guitar']
-            images = process.batch_predict(prompts, batch_size=2)
-            for image, save_path in zip(images, save_paths):
-                cv2.imwrite(save_path, image)
+            images = process.batch_predict(prompts, batch_size=2, is_visualize=True)
 
     """
 

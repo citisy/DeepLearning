@@ -99,7 +99,7 @@ class OdProcess(Process):
         inputs = self.get_model_inputs(rets, train=False)
 
         model_results = {}
-        for name, model in self.val_container['models'].items():
+        for name, model in self.models.items():
             outputs = model(**inputs)
             outputs = [{k: v.to('cpu').numpy() for k, v in t.items()} for t in outputs]
 

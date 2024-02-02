@@ -116,9 +116,8 @@ class Pix2pix(GanProcess):
         real_a = inputs['real_a']
         real_b = inputs['real_b']
 
-        models = self.val_container['models']
         model_results = {}
-        for name, model in models.items():
+        for name, model in self.models.items():
             fake_b = model.net_g(real_a)
 
             r = dict(
@@ -242,9 +241,8 @@ class CycleGan(GanProcess):
         real_a = inputs['real_a']
         real_b = inputs['real_b']
 
-        models = self.val_container['models']
         model_results = {}
-        for name, model in models.items():
+        for name, model in self.models.items():
             fake_b = model.net_g_a(real_a)
             fake_a = model.net_g_b(real_b)
 

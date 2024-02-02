@@ -451,9 +451,8 @@ class Bert(Process):
         rets = self.get_model_inputs(rets, train=False)
         token_tags = rets['x']
 
-        models = self.val_container['models']
         model_results = {}
-        for name, model in models.items():
+        for name, model in self.models.items():
             outputs = model(**rets)
 
             ret = dict()

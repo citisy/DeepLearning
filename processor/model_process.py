@@ -309,7 +309,6 @@ class ModelHooks:
                 val_dataloader:
 
         """
-        self.train_container = dict()
         self.on_train_start(**kwargs)
         self.on_train(**kwargs)
         self.on_train_end(**kwargs)
@@ -330,6 +329,8 @@ class ModelHooks:
             self, batch_size=None, max_epoch=None,
             train_dataloader=None, val_dataloader=None, check_period=None,
             metric_kwargs=dict(), data_get_kwargs=dict(), dataloader_kwargs=dict(), **kwargs):
+        self.train_container = dict()
+
         metric_kwargs = metric_kwargs.copy()
         metric_kwargs.setdefault('batch_size', batch_size)
         metric_kwargs.setdefault('dataloader_kwargs', {})
@@ -591,21 +592,19 @@ class ModelHooks:
             suggest to include mainly the following parameters:
 
         """
-        self.val_container = {}
         self.on_val_start(**kwargs)
 
         for rets in tqdm(self.val_container['val_dataloader'], desc=visualize.TextVisualize.highlight_str('Val')):
             self.on_val_step_start(rets, **kwargs)
-
-            with torch.no_grad():
-                model_results = self.on_val_step(rets, **kwargs)
-                self.on_val_reprocess(rets, model_results, **kwargs)
-                self.on_val_step_end(rets, model_results, **kwargs)
+            model_results = self.on_val_step(rets, **kwargs)
+            self.on_val_reprocess(rets, model_results, **kwargs)
+            self.on_val_step_end(rets, model_results, **kwargs)
 
         self.on_val_end(**kwargs)
         return self.val_container
 
     def on_val_start(self, val_dataloader=None, batch_size=None, data_get_kwargs=dict(), dataloader_kwargs=dict(), **kwargs):
+        self.val_container = {}
         dataloader_kwargs.setdefault('batch_size', batch_size)
         if val_dataloader is None:
             val_dataloader = self.get_val_dataloader(data_get_kwargs=data_get_kwargs, dataloader_kwargs=dataloader_kwargs)
@@ -615,12 +614,6 @@ class ModelHooks:
         self.counters['vis_num'] = 0
         self.counters.setdefault('epoch', -1)
         self.val_container['model_results'] = dict()
-
-        models = {self.model_name: self.model}
-        if hasattr(self, 'aux_model'):
-            models.update(self.aux_model)
-
-        self.val_container['models'] = models
 
     def on_val_step_start(self, rets, **kwargs):
         pass
@@ -654,26 +647,51 @@ class ModelHooks:
     def on_val_end(self, **kwargs):
         """save the results usually"""
 
-    @torch.no_grad()
-    def single_predict(self, image: np.ndarray, *args, **kwargs):
-        self.set_mode(train=False)
-        ret = self.val_data_augment({'image': image})
-        model_results = self.on_val_step([ret], **kwargs)
-        return model_results[self.model_name]['preds'][0]
+    model_input_template: 'namedtuple'
+    predict_container: dict
 
     @torch.no_grad()
-    def batch_predict(self, images: List[np.ndarray], *args, batch_size=16, **kwargs):
-        self.set_mode(train=False)
-        results = []
+    def single_predict(self, *obj, **kwargs):
+        return self.batch_predict(*[[o] for o in obj], **kwargs)[0]
 
-        for i in range(0, len(images), batch_size):
-            rets = [self.val_data_augment({'image': image}) for image in images[i:i + batch_size]]
+    @torch.no_grad()
+    def batch_predict(self, *objs, batch_size=16, **kwargs):
+        self.on_predict_start(**kwargs)
+
+        for i in tqdm(range(0, len(objs[0]), batch_size), desc=visualize.TextVisualize.highlight_str('Predict')):
+            batch_objs = objs[i * batch_size:(i + 1) * batch_size]
+            rets = self.gen_predict_inputs(*batch_objs, **kwargs)
+            rets = self.on_predict_step_start(rets, **kwargs)
             model_results = self.on_val_step(rets, **kwargs)
-            results.extend(model_results[self.model_name]['preds'])
+            self.on_predict_step_end(model_results, **kwargs)
 
-        return results
+        return self.on_predict_end(**kwargs)
 
     @torch.no_grad()
     def fragment_predict(self, image: np.ndarray, *args, **kwargs):
         """Tear large picture to pieces for prediction, and then, merge the results and restore them"""
         raise NotImplementedError
+
+    def on_predict_start(self, **kwargs):
+        self.predict_container = dict()
+        self.set_mode(train=False)
+        self.counters['vis_num'] = 0
+        self.counters["total_nums"] = -1
+        self.predict_container['model_results'] = dict()
+
+    def gen_predict_inputs(self, *objs, **kwargs):
+        raise NotImplementedError
+
+    def on_predict_step_start(self, rets, **kwargs):
+        """preprocess the model inputs"""
+        if hasattr(self, 'val_data_augment'):
+            rets = self.val_data_augment(rets)
+        return rets
+
+    def on_predict_step_end(self, model_results, **kwargs):
+        """filter the model outputs which you want to return, and post process them"""
+        self.predict_container['model_results'].setdefault(self.model_name, []).extend(model_results[self.model_name]['preds'])
+
+    def on_predict_end(self, **kwargs):
+        """visualize results and the return the results"""
+        return self.predict_container['model_results'][self.model_name]

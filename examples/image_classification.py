@@ -47,9 +47,8 @@ class ClsProcess(Process):
 
     def on_val_step(self, rets, **kwargs) -> dict:
         inputs = self.get_model_inputs(rets, train=False)
-        models = self.val_container['models']
         model_results = {}
-        for name, model in models.items():
+        for name, model in self.models.items():
             outputs = model(**inputs)
 
             model_results[name] = dict(
