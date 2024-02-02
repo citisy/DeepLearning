@@ -13,6 +13,10 @@ def convert_hf_weights(state_dict):
     Usage:
         .. code-block:: python
 
+            state_dict = torch.load('...')
+            state_dict = convert_hf_weights(state_dict)
+            Model(...).load_state_dict(state_dict)
+
             from transformers import BertForPreTraining
             state_dict = BertForPreTraining.from_pretrained('...')
             state_dict = convert_hf_weights(state_dict)
@@ -33,6 +37,13 @@ def convert_hf_weights(state_dict):
         'bert.encoder.layer.{0}.output.dense': 'backbone.encoder.{0}.res2.fn.1.linear',
         'bert.encoder.layer.{0}.output.LayerNorm': 'backbone.encoder.{0}.res2.act',
         'bert.pooler.dense': 'neck.linear',
+    }
+    state_dict = torch_utils.convert_state_dict(state_dict, convert_dict)
+
+    # convert the original weight
+    convert_dict = {
+        '{0}.gamma': '{0}.weight',
+        '{0}.beta': '{0}.bias'
     }
     state_dict = torch_utils.convert_state_dict(state_dict, convert_dict)
 

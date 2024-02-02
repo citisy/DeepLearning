@@ -1,3 +1,4 @@
+import os
 import torch
 import numpy as np
 from processor import Process, DataHooks, BaseDataset, ModelHooks, CheckpointHooks
@@ -518,16 +519,21 @@ class Bert(Process):
                 os_lib.Saver(stdout_method=self.log).auto_save(df, f'{self.cache_dir}/{self.counters["epoch"]}/{name}.csv', index=False)
 
 
-class LoadPretrainFromHF(CheckpointHooks):
+class FromHFPretrain(CheckpointHooks):
     """load pretrain model from hugging face"""
 
     def load_pretrain(self):
         if hasattr(self, 'pretrain_model'):
-            from transformers import BertForSequenceClassification
             from models.text_pretrain.bert import convert_hf_weights
 
-            model = BertForSequenceClassification.from_pretrained(self.pretrain_model, num_labels=2)
-            self.model.load_state_dict(convert_hf_weights(model.state_dict()), strict=False)
+            if os.path.exists(f'{self.pretrain_model}/pytorch_model.bin'):
+                state_dict = torch.load(f'{self.pretrain_model}/pytorch_model.bin', map_location=self.device)
+            else:   # download weight auto
+                from transformers import BertForSequenceClassification
+                model = BertForSequenceClassification.from_pretrained(self.pretrain_model, num_labels=2)
+                state_dict = model.state_dict()
+
+            self.model.load_state_dict(convert_hf_weights(state_dict), strict=False)
 
 
 class BertMLM_SimpleText(Bert, SimpleText):
