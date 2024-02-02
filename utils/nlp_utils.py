@@ -97,14 +97,18 @@ class Sequencer:
 
 class PrefixTree:
     """
-    >>> words = [['a', 'b', 'c'], ['a', '{}', 'd']]
-    >>> tree = PrefixTree(words, [0, 1])
-    >>> tree.get('abc')
-    0
-    >>> tree.get('abcd')
-    1
-    >>> tree.get('abcde')
-    None
+    Examples
+        >>> words = [['a', 'b', 'c'], ['a', '{}', 'd']]
+        >>> tree = PrefixTree(words, [0, 1])
+        >>> tree.get('abc')
+        0
+        >>> tree.get('abcd')
+        1
+        >>> tree.get('abcde')
+        None
+
+    Notes
+        the last token can not be wildcard!
     """
 
     def __init__(self, words, values=None, unique_value=True,
@@ -126,36 +130,57 @@ class PrefixTree:
             return default
 
         tmp = self.tree
-        last = default
-        last_wilds = []
-        for i, w in enumerate(word):
+        flag = True  # match char flag, not wildcard
+        i, last, last_wilds = 0, default, []
+        best_i, best_last = i, last
+        while i < len(word):
+            w = word[i]
             next_tmp = tmp.get(w)
 
             last_wild = tmp.get(self.wildcard_token)
             if last_wild:
-                last_wilds.append(last_wild)
+                last_wilds.append([i, last_wild])
 
             if next_tmp is None:  # search fail
                 if len(last_wilds):  # search wildcard
-                    v = last_wilds[-1]
+                    i, v = last_wilds[-1]
+                    w = word[i]
                     n = v.get(w)
                     if n:
                         next_tmp = n
-                        last_wilds.pop(-1)
-                    else:
+                        # last_wilds.pop(-1)
+                    else:  # wildcard match
                         next_tmp = v
+                        flag = False
+                        last = None
 
                 else:  # match fail, return
                     tmp = None
                     break
 
+                if last_wilds:
+                    last_wilds[-1][0] = i + 1
+
             last = next_tmp.get(self.match_token, last)
             tmp = next_tmp
+            i += 1
+
+            if flag and i > best_i and last:  # match char possible
+                best_i = i
+                best_last = last
+
+            if i == len(word) and last_wilds:
+                last_wilds.pop()
+                if last_wilds:
+                    last_wilds[-1][0] += 1
+                    i, tmp = last_wilds[-1]
+
+            flag = True
 
         if return_trace:
-            r = word[:i]
+            r = word[:best_i]
         elif return_last:
-            r = last
+            r = best_last
         else:
             r = default
 

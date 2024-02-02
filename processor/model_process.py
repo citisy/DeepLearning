@@ -596,9 +596,11 @@ class ModelHooks:
 
         for rets in tqdm(self.val_container['val_dataloader'], desc=visualize.TextVisualize.highlight_str('Val')):
             self.on_val_step_start(rets, **kwargs)
-            model_results = self.on_val_step(rets, **kwargs)
-            self.on_val_reprocess(rets, model_results, **kwargs)
-            self.on_val_step_end(rets, model_results, **kwargs)
+
+            with torch.no_grad():
+                model_results = self.on_val_step(rets, **kwargs)
+                self.on_val_reprocess(rets, model_results, **kwargs)
+                self.on_val_step_end(rets, model_results, **kwargs)
 
         self.on_val_end(**kwargs)
         return self.val_container
@@ -653,14 +655,14 @@ class ModelHooks:
         """save the results usually"""
 
     @torch.no_grad()
-    def single_predict(self, image: np.ndarray, **kwargs):
+    def single_predict(self, image: np.ndarray, *args, **kwargs):
         self.set_mode(train=False)
         ret = self.val_data_augment({'image': image})
         model_results = self.on_val_step([ret], **kwargs)
         return model_results[self.model_name]['preds'][0]
 
     @torch.no_grad()
-    def batch_predict(self, images: List[np.ndarray], batch_size=16, **kwargs):
+    def batch_predict(self, images: List[np.ndarray], *args, batch_size=16, **kwargs):
         self.set_mode(train=False)
         results = []
 
@@ -672,6 +674,6 @@ class ModelHooks:
         return results
 
     @torch.no_grad()
-    def fragment_predict(self, image: np.ndarray, **kwargs):
+    def fragment_predict(self, image: np.ndarray, *args, **kwargs):
         """Tear large picture to pieces for prediction, and then, merge the results and restore them"""
         raise NotImplementedError

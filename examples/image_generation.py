@@ -2,11 +2,13 @@ import cv2
 import numpy as np
 import torch
 from torch import optim, nn
+from pathlib import Path
+from collections import namedtuple
+from utils import os_lib
 from data_parse.cv_data_parse.data_augmentation import crop, scale, geometry, channel, RandomApply, Apply, complex, pixel_perturbation
 from data_parse import DataRegister
-from pathlib import Path
 from data_parse.cv_data_parse.base import DataVisualizer
-from processor import Process, DataHooks, bundled, model_process, BatchIterImgDataset
+from processor import Process, DataHooks, bundled, model_process, BatchIterImgDataset, CheckpointHooks
 
 
 class GanOptimizer:
@@ -494,7 +496,7 @@ class StyleGan_Mnist(StyleGan, Mnist):
 
             from examples.image_generation import StyleGan_Mnist as Process
 
-            Process(device=0).run(
+            Process().run(
                 max_epoch=200, train_batch_size=32,
                 fit_kwargs=dict(check_period=40000, max_save_weight_num=10),
                 metric_kwargs=dict(is_visualize=True, max_vis_num=64 * 8),
@@ -509,7 +511,7 @@ class StyleGan_Lsun(StyleGan, Lsun):
 
             from examples.image_generation import StyleGan_Lsun as Process
 
-            Process(device=0).run(
+            Process().run(
                 max_epoch=100, train_batch_size=32,
                 fit_kwargs=dict(check_period=40000, max_save_weight_num=10),
                 metric_kwargs=dict(is_visualize=True, max_vis_num=64 * 8),
@@ -524,7 +526,7 @@ class StyleGan_CelebA(StyleGan, CelebA):
 
             from examples.image_generation import StyleGan_CelebA as Process
 
-            Process(device=0).run(
+            Process().run(
                 max_epoch=50, train_batch_size=32,
                 fit_kwargs=dict(check_period=40000, max_save_weight_num=10),
                 metric_kwargs=dict(is_visualize=True, max_vis_num=64 * 8),
@@ -540,7 +542,7 @@ class StyleGan_IterCelebA(StyleGan, IterCelebA):
 
             from examples.image_generation import StyleGan_IterCelebA as Process
 
-            Process(device=0).run(
+            Process().run(
                 max_epoch=10, train_batch_size=32,
                 fit_kwargs=dict(check_period=40000, max_save_weight_num=10, dataloader_kwargs=dict(shuffle=False, drop_last=True, num_workers=16)),
                 metric_kwargs=dict(is_visualize=True, max_vis_num=64 * 8),
@@ -553,7 +555,7 @@ class VAE(IgProcess):
     model_version = 'VAE'
 
     def set_model(self):
-        from models.image_generation.VAE import Model
+        from models.image_generation.VAE import Model, Config
         self.model = Model(
             img_ch=self.in_ch,
             image_size=self.input_size,
@@ -607,7 +609,7 @@ class VAE_CelebA(VAE, CelebA):
 
             from examples.image_generation import Ddpm_CelebA as Process
 
-            Process(device=0).run(
+            Process().run(
                 max_epoch=50, train_batch_size=32,
                 fit_kwargs=dict(check_period=40000, max_save_weight_num=10),
                 metric_kwargs=dict(is_visualize=True, max_vis_num=64 * 8),
@@ -677,7 +679,7 @@ class Ddpm_CelebA(Ddpm, CelebA):
 
             from examples.image_generation import Ddpm_CelebA as Process
 
-            Process(device=0).run(
+            Process().run(
                 max_epoch=50, train_batch_size=32,
                 fit_kwargs=dict(check_period=40000, max_save_weight_num=10),
                 metric_kwargs=dict(is_visualize=True, max_vis_num=64 * 8),
@@ -708,7 +710,7 @@ class Ddim_CelebA(Dpim, CelebA):
 
             from examples.image_generation import Ddpm_CelebA as Process
 
-            Process(device=0).run(
+            Process().run(
                 max_epoch=50, train_batch_size=32,
                 fit_kwargs=dict(check_period=40000, max_save_weight_num=10),
                 metric_kwargs=dict(is_visualize=True, max_vis_num=64 * 8),
@@ -724,9 +726,98 @@ class Ddim_CelebAHQ(Dpim, CelebAHQ):
 
             from examples.image_generation import Ddim_CelebAHQ as Process
 
-            Process(device=0).run(
+            Process().run(
                 max_epoch=50, train_batch_size=32,
                 fit_kwargs=dict(check_period=40000, max_save_weight_num=10),
                 metric_kwargs=dict(is_visualize=True, max_vis_num=64 * 8),
             )
     """
+
+
+class Ldm(DiProcess):
+    model_version = 'Ddpm'
+    in_ch = 4
+    input_size = 512
+
+    cond_pretrain_model = 'openai/clip-vit-large-patch14'
+
+    def set_model(self):
+        from models.image_generation.ldm import Model
+        self.model = Model(
+            image_size=self.input_size,
+            in_module_config=dict(
+                pretrain_model=self.cond_pretrain_model,
+                # if having ldm pretrain_model, do not download the clip weight file, only the config file
+                # 'cause the ldm pretrain_model contains the clip weight
+                load_weight=not hasattr(self, 'pretrain_model')
+            )
+        )
+
+    def set_optimizer(self):
+        self.optimizer = optim.Adam(self.model.parameters(), lr=1e-4, betas=(0.9, 0.99))
+
+    def on_val_step(self, rets, **kwargs) -> dict:
+        models = self.val_container['models']
+        model_results = {}
+        for name, model in models.items():
+            fake_x = model(**rets)
+            fake_x = fake_x.data.mul(255).clamp_(0, 255).permute(0, 2, 3, 1).to("cpu", torch.uint8).numpy()
+            fake_x[..., :] = fake_x[..., ::-1]      # note, official model output is Image type, must convert to cv2 type
+            model_results[name] = dict(
+                fake_x=fake_x,
+            )
+
+        return model_results
+
+    model_inputs = namedtuple('model_inputs', ['x', 'text'], defaults=[None, None])
+
+    @torch.no_grad()
+    def single_predict(self, prompt: str, **kwargs):
+        self.set_mode(train=False)
+        self.val_container = {'models': {self.model_name: self.model}}
+        model_results = self.on_val_step(self.model_inputs(text=[prompt])._asdict())
+        return model_results[self.model_name]['fake_x'][0]
+
+    @torch.no_grad()
+    def batch_predict(self, prompts: 'List[str]', *args, batch_size=3, **kwargs):
+        self.set_mode(train=False)
+        self.val_container = {'models': {self.model_name: self.model}}
+        model_results = self.on_val_step(self.model_inputs(text=prompts)._asdict())
+        return model_results[self.model_name]['fake_x']
+
+
+class FromHFv1Pretrain(CheckpointHooks):
+    def load_pretrain(self):
+        if hasattr(self, 'pretrain_model'):
+            from models.image_generation.ldm import convert_ol_weights
+
+            ckpt = torch.load(self.pretrain_model, map_location=self.device)
+            state_dict = ckpt['state_dict']
+            state_dict = convert_ol_weights(state_dict)
+            self.model.load_state_dict(state_dict, strict=False)
+
+
+class LdmHFv1(Ldm, FromHFv1Pretrain):
+    """txt2img model, only for prediction
+
+    Usage:
+        .. code-block:: python
+
+            from examples.image_generation import Ldm_CelebA as Process
+
+            process = Process(pretrain_model='...')
+
+            # predict one
+            prompt = 'a painting of a virus monster playing guitar'
+            image = process.single_predict(prompt)
+            cv2.imwrite(save_path, image)
+
+            # predict batch
+            prompts = ['a painting of a virus monster playing guitar', 'a painting of two virus monster playing guitar']
+            images = process.batch_predict(prompts, batch_size=2)
+            for image, save_path in zip(images, save_paths):
+                cv2.imwrite(save_path, image)
+
+    """
+
+    dataset_version = 'v1'

@@ -230,6 +230,44 @@ class EqualLinear(nn.Module):
         return F.linear(x, self.weight * self.lr_mul, bias=self.bias * self.lr_mul)
 
 
+class Downsample(nn.Module):
+    def __init__(self, in_ch, out_ch=None, use_conv=True):
+        super().__init__()
+        out_ch = out_ch or in_ch
+        if use_conv:
+            self.op = nn.Conv2d(in_ch, out_ch, 3, stride=2, padding=1)
+        else:
+            assert in_ch == out_ch
+            self.op = nn.AvgPool2d(kernel_size=2, stride=2)
+
+        self.in_channels = in_ch
+        self.out_channels = out_ch
+
+    def forward(self, x):
+        return self.op(x)
+
+
+class Upsample(nn.Module):
+    def __init__(self, in_ch, out_ch=None, use_conv=True):
+        super().__init__()
+        out_ch = out_ch or in_ch
+
+        if use_conv:
+            self.op = nn.Sequential(
+                nn.Upsample(scale_factor=2),
+                nn.Conv2d(in_ch, out_ch, 3, padding=1)
+            )
+        else:
+            assert in_ch == out_ch
+            self.op = nn.Upsample(scale_factor=2)
+
+        self.in_channels = in_ch
+        self.out_channels = out_ch
+
+    def forward(self, x):
+        return self.op(x)
+
+
 class Cache(nn.Module):
     def __init__(self, idx=None, replace=True):
         super().__init__()

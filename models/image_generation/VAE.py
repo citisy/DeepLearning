@@ -35,7 +35,7 @@ class Config:
         attn_layers=[]
     )
 
-    loss_config = dict(
+    loss = dict(
         use_gan=False,
         use_lpips=False
     )
@@ -44,14 +44,14 @@ class Config:
     def get(cls, name='backbone_8x8x64'):
         return dict(
             backbone_config=getattr(cls, name),
-            loss_config=cls.loss_config,
+            loss_config=cls.loss,
         )
 
 
 class Model(nn.Module):
     """vae from ldm"""
 
-    def __init__(self, img_ch, backbone_config=Config.backbone_8x8x64, loss_config=Config.loss_config, **kwargs):
+    def __init__(self, img_ch, backbone_config=Config.backbone_8x8x64, loss_config=Config.loss, **kwargs):
         super().__init__()
         z_ch = backbone_config["z_ch"]
 
@@ -87,7 +87,7 @@ def make_attn(in_channels, attn_type="vanilla"):
     attn_dict = dict(
         vanilla=lambda in_ch: nn.Sequential(
             Normalize(in_ch),
-            CrossAttention3D(n_heads=1, head_dim=in_ch, use_mem_kv=False, separate_conv=True)
+            CrossAttention3D(n_heads=1, head_dim=in_ch)
         ),
         linear=lambda in_ch: LinearAttention3D(n_heads=1, head_dim=in_ch, use_mem_kv=False, separate_conv=True),
         none=nn.Identity
@@ -195,6 +195,7 @@ class Encoder(nn.Module):
         out_ch = 2 * z_ch if double_z else z_ch
         self.head = Conv(in_ch, out_ch, 3, mode='nac', norm=Normalize(in_ch), act=Swish())
         self.out_channels = out_ch
+        self.down_scale = 2 ** (num_layers - 1)
 
     def forward(self, x, time_emb=None):
         h = self.conv_in(x)

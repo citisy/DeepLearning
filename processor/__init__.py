@@ -14,9 +14,9 @@ def setup_seed(seed=42):
 
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
-    torch.cuda.manual_seed(seed)
     np.random.seed(seed)
-    random.seed(0)
+    random.seed(seed)
+    os.environ["PL_GLOBAL_SEED"] = str(seed)
     cudnn.benchmark = False
     cudnn.deterministic = True
 
@@ -87,7 +87,7 @@ class Process(
         setup_seed()
         self.counters = dict()
         if torch.cuda.is_available():
-            if isinstance(self.device, str or int) and self.device != 'cpu':
+            if isinstance(self.device, (str, int)) and self.device != 'cpu':
                 self.device = torch.device(f"cuda:{self.device}")
             else:   # default None, use cuda:0 possible
                 self.device = torch.device('cuda')

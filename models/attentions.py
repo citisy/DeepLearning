@@ -28,7 +28,7 @@ class CrossAttention2D(nn.Module):
     """cross attention"""
 
     def __init__(self, n_heads=None, model_dim=None, head_dim=None, query_dim=None, context_dim=None,
-                 use_conv=False, separate_conv=True, use_mem_kv=True, n_mem_size=4,
+                 use_conv=False, separate_conv=True, use_mem_kv=False, n_mem_size=4,
                  drop_prob=0.1, **fn_kwargs):
         super().__init__()
         n_heads, model_dim, head_dim = get_attention_input(n_heads, model_dim, head_dim)
@@ -101,7 +101,7 @@ class CrossAttention3D(nn.Module):
     """cross attention build by conv function"""
 
     def __init__(self, n_heads=None, model_dim=None, head_dim=None, query_dim=None, context_dim=None,
-                 separate_conv=True, use_mem_kv=True, n_mem_size=4,
+                 separate_conv=True, use_mem_kv=False, n_mem_size=4,
                  drop_prob=0., **conv_kwargs):
         super().__init__()
         n_heads, model_dim, head_dim = get_attention_input(n_heads, model_dim, head_dim)
@@ -125,19 +125,14 @@ class CrossAttention3D(nn.Module):
             # so can use a conv layer to compute, and then, chunk it
             self.to_qkv = nn.Conv2d(query_dim, model_dim * 3, 1, **conv_kwargs)
 
-        self.view_in = Rearrange('b c h w -> b (h w) c')
-
         if use_mem_kv:
+            self.view_in = Rearrange('b (n d) h w -> b n (h w) d', n=n_heads)
             self.mem_kv = nn.Parameter(torch.randn(2, n_heads, n_mem_size, head_dim))
+        else:
+            self.view_in = Rearrange('b c h w -> b (h w) c')
 
         self.attend = ScaleAttend(drop_prob)
         self.to_out = nn.Conv2d(model_dim, query_dim, 1)
-
-    # def view_in(self, q, k, v):
-    #     q = rearrange(q, 'b c h w -> b (h w) c')
-    #     k = rearrange(k, 'b c h w -> b c (h w)')
-    #     v = rearrange(v, 'b c h w -> b c (h w)')
-    #     return q, k, v
 
     def forward(self, q, k=None, v=None):
         b, c, h, w = q.shape
@@ -151,7 +146,6 @@ class CrossAttention3D(nn.Module):
         else:  # only for self attention
             q, k, v = self.to_qkv(q).chunk(3, dim=1)
 
-        # q, k, v = self.view_in(q, k, v)
         q, k, v = [self.view_in(x) for x in (q, k, v)]
 
         if self.use_mem_kv:
@@ -159,7 +153,10 @@ class CrossAttention3D(nn.Module):
             k, v = map(partial(torch.cat, dim=-2), ((mk, k), (mv, v)))
 
         x = self.attend(q, k, v)
-        x = rearrange(x, 'b (h w) c -> b c h w', h=h, w=w)  # view_out
+        if self.use_mem_kv:
+            x = rearrange(x, 'b n (h w) d -> b (n d) h w', h=h, w=w)
+        else:
+            x = rearrange(x, 'b (h w) c -> b c h w', h=h, w=w)  # view_out
         return self.to_out(x)
 
 

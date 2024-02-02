@@ -270,10 +270,6 @@ def export_formats():
 
 class Export:
     @staticmethod
-    def to_pickle(model):
-        pass
-
-    @staticmethod
     def to_torchscript(model, *trace_input, **export_kwargs):
         """note that, dynamic python script change to static c++ script, according to trace the code
         so, such as `if...else...`, 'for...in...`, etc., if trace in a dynamic variable,
@@ -289,6 +285,27 @@ class Export:
     @staticmethod
     def to_onnx(model, f, *trace_input, **export_kwargs):
         torch.onnx.export(model=model, f=f, args=trace_input, **export_kwargs)
+
+
+class Load:
+    @staticmethod
+    def from_state_dict(save_path, **kwargs):
+        return torch.load(save_path, **kwargs)
+
+    @staticmethod
+    def from_save_tensor(save_path, **kwargs):
+        from safetensors import safe_open
+
+        tensors = OrderedDict()
+        with safe_open(save_path, framework="pt", **kwargs) as f:
+            for k in f.keys():
+                tensors[k] = f.get_tensor(k)
+
+        return tensors
+
+    @staticmethod
+    def from_jit(save_path, **kwargs):
+        return torch.jit.load(save_path, **kwargs)
 
 
 def is_parallel(model):
@@ -358,6 +375,55 @@ class EMA:
             self.update_attr(model, ema_model)
         self.cur_step += 1
         return self.cur_step
+
+
+def checkpoint(func, inputs, params, flag):
+    """
+    Evaluate a function without caching intermediate activations, allowing for
+    reduced memory at the expense of extra compute in the backward pass.
+    :param func: the function to evaluate.
+    :param inputs: the argument sequence to pass to `func`.
+    :param params: a sequence of parameters `func` depends on but does not
+                   explicitly take as arguments.
+    :param flag: if False, disable gradient checkpointing.
+    """
+    if flag:
+        args = tuple(inputs) + tuple(params)
+        return CheckpointFunction.apply(func, len(inputs), *args)
+    else:
+        return func(*inputs)
+
+
+class CheckpointFunction(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, run_function, length, *args, **kwargs):
+        ctx.run_function = run_function
+        ctx.input_tensors = list(args[:length])
+        ctx.input_params = list(args[length:])
+
+        with torch.no_grad():
+            output_tensors = ctx.run_function(*ctx.input_tensors)
+        return output_tensors
+
+    @staticmethod
+    def backward(ctx, *output_grads):
+        ctx.input_tensors = [x.detach().requires_grad_(True) for x in ctx.input_tensors]
+        with torch.enable_grad():
+            # Fixes a bug where the first op in run_function modifies the
+            # Tensor storage in place, which is not allowed for detach()'d
+            # Tensors.
+            shallow_copies = [x.view_as(x) for x in ctx.input_tensors]
+            output_tensors = ctx.run_function(*shallow_copies)
+        input_grads = torch.autograd.grad(
+            output_tensors,
+            ctx.input_tensors + ctx.input_params,
+            output_grads,
+            allow_unused=True,
+        )
+        del ctx.input_tensors
+        del ctx.input_params
+        del output_tensors
+        return (None, None) + input_grads
 
 
 def convert_state_dict(state_dict: OrderedDict, convert_dict: dict):
@@ -441,7 +507,7 @@ def convert_state_dict(state_dict: OrderedDict, convert_dict: dict):
                     ra = (ra,)
                 pa = pa % ra
 
-                sort_ra = [None] * len(ra)
+                sort_ra = [None] * (max(a_value['idx1']) + 1)
                 for i, idx in enumerate(a_value['idx1']):
                     sort_ra[idx] = ra[i]
 

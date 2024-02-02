@@ -1,20 +1,20 @@
 import math
-from random import random
-from torch import nn, einsum
-from einops import rearrange, repeat, reduce
 import torch
 import torch.nn.functional as F
-from ..layers import Linear, Conv
-from ..attentions import CrossAttention3D, LinearAttention3D
+from torch import nn, einsum
+from einops import rearrange, repeat, reduce
+from random import random
 from functools import partial
-from einops.layers.torch import Rearrange
-
-PRED_X0 = 1
-PRED_Z = 2
-PRED_V = 3
+from utils.torch_utils import checkpoint
+from ..layers import Linear, Conv, Upsample, Downsample
+from ..attentions import CrossAttention3D, LinearAttention3D
 
 
 class Config:
+    PRED_X0 = 1
+    PRED_Z = 2
+    PRED_V = 3
+
     in_module_config = dict(self_condition=False)
     backbone_config = dict(
         learned_sinusoidal_cond=False,
@@ -90,12 +90,15 @@ class Model(nn.ModuleList):
         - https://github.com/lucidrains/denoising-diffusion-pytorch
     """
 
-    def __init__(self, img_ch, image_size, hidden_ch=64,
-                 schedule_func=linear_beta_schedule, timesteps=300,
-                 offset_noise_strength=0., objective=PRED_V,
-                 min_snr_loss_weight=False, min_snr_gamma=5,
-                 in_module_config=Config.in_module_config, backbone_config=Config.backbone_config,
-                 ):
+    def __init__(
+            self, img_ch, image_size, hidden_ch=64,
+            schedule_func=linear_beta_schedule, timesteps=300,
+            offset_noise_strength=0., objective=Config.PRED_V,
+            min_snr_loss_weight=False, min_snr_gamma=5,
+            in_module=None, backbone=None, head=None,
+            in_module_config=Config.in_module_config, backbone_config=Config.backbone_config,
+            **model_config
+    ):
         super().__init__()
         self.image_size = image_size
         self.img_ch = img_ch
@@ -109,9 +112,9 @@ class Model(nn.ModuleList):
 
         self.register_schedule(schedule_func, timesteps, min_snr_loss_weight, min_snr_gamma)
 
-        self.in_module = InModule(img_ch, hidden_ch, **in_module_config)
-        self.backbone = Backbone(hidden_ch, **backbone_config)
-        self.out_module = nn.Conv2d(hidden_ch, img_ch, 1)
+        self.in_module = in_module or InModule(img_ch, hidden_ch, **in_module_config)
+        self.backbone = backbone or UNetModel(hidden_ch, **backbone_config)
+        self.head = head or nn.Conv2d(hidden_ch, img_ch, 1)
 
         self.self_condition = False
 
@@ -158,34 +161,40 @@ class Model(nn.ModuleList):
         if min_snr_loss_weight:
             maybe_clipped_snr.clamp_(max=min_snr_gamma)
 
-        if self.objective == PRED_Z:
+        if self.objective == Config.PRED_Z:
             register_buffer('loss_weight', maybe_clipped_snr / snr)
-        elif self.objective == PRED_X0:
+        elif self.objective == Config.PRED_X0:
             register_buffer('loss_weight', maybe_clipped_snr)
-        elif self.objective == PRED_V:
+        elif self.objective == Config.PRED_V:
             register_buffer('loss_weight', maybe_clipped_snr / (snr + 1))
 
-    def forward(self, x):
+    def forward(self, x=None, **kwargs):
         if self.training:
+            # if training, x is x0, the real image
             b, c, h, w = x.shape
             t = torch.randint(0, self.timesteps, (b,), device=x.device).long()
+            x = x * 2 - 1  # normalize, [0, 1] -> [-1, 1]
             return {'loss': self.loss(x, t)}
         else:
-            return self.post_process(x)
+            # if predicting, x is xt, the noise
+            images = self.post_process(x, **kwargs)
+            images = (images + 1) * 0.5  # unnormalize, [-1, 1] -> [0, 1]
+            return images
 
-    def diffuse(self, x, time, x_self_cond=None):
+    def diffuse(self, x, time, x_self_cond=None, **kwargs):
         x = self.in_module(x, x_self_cond)
         x = self.backbone(x, time)
-        x = self.out_module(x)
+        x = self.head(x)
         return x
 
-    def model_predictions(self, x_t, t, x_self_cond=None, clip_x_start=False,
-                          return_pred_noise=False, rederive_pred_noise=False):
+    def model_predictions(
+            self, x_t, t, x_self_cond=None,
+            clip_x_start=False, return_pred_noise=False, rederive_pred_noise=False, **kwargs):
         """x_t, t -> pred_z_t, x_0"""
-        model_output = self.diffuse(x_t, t, x_self_cond)
+        model_output = self.diffuse(x_t, t, x_self_cond=x_self_cond, **kwargs)
 
         pred_noise = None
-        if self.objective == PRED_Z:
+        if self.objective == Config.PRED_Z:
             pred_noise = model_output
             x_0 = self.predict_start_from_noise(x_t, t, pred_noise)
             if clip_x_start:
@@ -194,14 +203,14 @@ class Model(nn.ModuleList):
             if return_pred_noise and clip_x_start and rederive_pred_noise:
                 pred_noise = self.predict_noise_from_start(x_t, t, x_0)
 
-        elif self.objective == PRED_X0:
+        elif self.objective == Config.PRED_X0:
             x_0 = model_output
             if clip_x_start:
                 x_0 = torch.clamp(x_0, min=-1., max=1.)
             if return_pred_noise:
                 pred_noise = self.predict_noise_from_start(x_t, t, x_0)
 
-        elif self.objective == PRED_V:
+        elif self.objective == Config.PRED_V:
             v = model_output
             x_0 = self.predict_start_from_v(x_t, t, v)
             if clip_x_start:
@@ -235,7 +244,6 @@ class Model(nn.ModuleList):
         return extract(self.sqrt_alphas_cumprod, t, x_0.shape) * noise - extract(self.sqrt_one_minus_alphas_cumprod, t, x_0.shape) * x_0
 
     def loss(self, x_0, t, noise=None, offset_noise_strength=None):
-        x_0 = x_0 * 2 - 1  # normalize, [0, 1] -> [-1, 1]
         if noise is None:
             noise = torch.randn_like(x_0)
 
@@ -261,11 +269,11 @@ class Model(nn.ModuleList):
 
         pred = self.diffuse(x_t, t, x_self_cond)
 
-        if self.objective == PRED_Z:
+        if self.objective == Config.PRED_Z:
             real = noise
-        elif self.objective == PRED_X0:
+        elif self.objective == Config.PRED_X0:
             real = x_0
-        elif self.objective == PRED_V:
+        elif self.objective == Config.PRED_V:
             real = self.predict_v(x_0, t, noise)
         else:
             raise ValueError(f'unknown objective {self.objective}')
@@ -287,24 +295,23 @@ class Model(nn.ModuleList):
         return sqrt_alphas_cumprod_t * x0 + sqrt_one_minus_alphas_cumprod_t * noise
 
     def gen_x_t(self, batch_size, device):
-        return torch.randn((batch_size, 3, self.image_size, self.image_size), device=device)
+        return torch.randn((batch_size, self.img_ch, self.image_size, self.image_size), device=device)
 
-    def post_process(self, x_t, return_all_timesteps=False):
+    def post_process(self, x_t, return_all_timesteps=False, **kwargs):
         images = [x_t]
         x_0 = None
 
         # t: T-1 -> 0
         for t in reversed(range(0, self.timesteps)):
             self_cond = x_0 if self.self_condition else None
-            x_t, x_0 = self.p_sample(x_t, t, self_cond)
+            x_t, x_0 = self.p_sample(x_t, t, self_cond, **kwargs)
             images.append(x_t)
 
         images = x_t if not return_all_timesteps else torch.stack(images, dim=1)
-        images = (images + 1) * 0.5  # unnormalize, [-1, 1] -> [0, 1]
         return images
 
     @torch.inference_mode()
-    def p_sample(self, x_t, t: int, x_self_cond=None):
+    def p_sample(self, x_t, t: int, x_self_cond=None, **kwargs):
         batched_times = torch.full((x_t.shape[0],), t, device=x_t.device, dtype=torch.long)
         model_mean, _, model_log_variance, x_0 = self.p_mean_variance(x_t, t=batched_times, x_self_cond=x_self_cond, clip_denoised=True)
         noise = torch.randn_like(x_t) if t > 0 else 0.  # no noise if t == 0
@@ -354,10 +361,10 @@ class InModule(nn.Module):
         return x
 
 
-class Backbone(nn.Module):
+class UNetModel(nn.Module):
     """base on Unet, add attention, res, etc."""
 
-    def __init__(self, dim,
+    def __init__(self, unit_dim,
                  learned_sinusoidal_cond=False,
                  random_fourier_features=False,
                  learned_sinusoidal_dim=16,
@@ -373,11 +380,11 @@ class Backbone(nn.Module):
             sin_pos_emb = RandomOrLearnedSinusoidalPosEmb(learned_sinusoidal_dim, random_fourier_features)
             fourier_dim = learned_sinusoidal_dim + 1
         else:
-            sin_pos_emb = SinusoidalPosEmb(dim, theta=sinusoidal_pos_emb_theta)
-            fourier_dim = dim
+            sin_pos_emb = SinusoidalPosEmb(unit_dim, theta=sinusoidal_pos_emb_theta)
+            fourier_dim = unit_dim
 
-        time_emb_dim = dim * 4
-        self.time_mlp = nn.Sequential(
+        time_emb_dim = unit_dim * 4
+        self.time_embed = nn.Sequential(
             sin_pos_emb,
             Linear(fourier_dim, time_emb_dim, mode='la', act=nn.GELU()),
             Linear(time_emb_dim, time_emb_dim, mode='l'),
@@ -391,58 +398,52 @@ class Backbone(nn.Module):
         if isinstance(attn_dim_heads, int):
             attn_dim_heads = [attn_dim_heads] * num_stages
 
-        res_block = partial(ResnetBlock, groups=resnet_block_groups, time_emb_dim=time_emb_dim)
+        make_res = partial(ResnetBlock, groups=resnet_block_groups, time_emb_dim=time_emb_dim)
 
-        in_ch = dim
+        out_ch = unit_dim
+        in_ch = out_ch
         self.downs = nn.ModuleList([])
         for i in range(num_stages):
             is_bottom = i == num_stages - 1
             attn_layer = CrossAttention3D if is_bottom else partial(LinearAttention3D, norm=RMSNorm(in_ch))
-            out_ch = dim * dim_factors[i]
+            out_ch = unit_dim * dim_factors[i]
 
             self.downs.append(nn.ModuleList([
-                res_block(in_ch, in_ch),
-                res_block(in_ch, in_ch),
+                make_res(in_ch, in_ch),
+                make_res(in_ch, in_ch),
                 RMSNorm(in_ch),
                 attn_layer(in_ch, head_dim=attn_dim_heads[i], n_heads=attn_heads[i]),
-                nn.Conv2d(in_ch, out_ch, 3, padding=1) if is_bottom else nn.Sequential(
-                    Rearrange('b c (h p1) (w p2) -> b (c p1 p2) h w', p1=2, p2=2),
-                    nn.Conv2d(in_ch * 4, out_ch, 1)
-                ),
+                nn.Conv2d(in_ch, out_ch, 3, padding=1) if is_bottom else Downsample(in_ch, out_ch),
             ]))
 
             in_ch = out_ch
 
-        out_ch = in_ch
-        self.mid_block1 = res_block(out_ch, out_ch)
+        self.mid_block1 = make_res(out_ch, out_ch)
         self.mid_attn = CrossAttention3D(out_ch, n_heads=attn_heads[-1], head_dim=attn_dim_heads[-1])
-        self.mid_block2 = res_block(out_ch, out_ch)
+        self.mid_block2 = make_res(out_ch, out_ch)
 
         self.ups = nn.ModuleList([])
         for i in reversed(range(num_stages)):
             is_top = i == 0
             is_bottom = i == num_stages - 1
             attn_layer = CrossAttention3D if is_bottom else partial(LinearAttention3D, norm=RMSNorm(out_ch))
-            in_ch = dim if i == 0 else dim * dim_factors[i - 1]
+            in_ch = unit_dim if i == 0 else unit_dim * dim_factors[i - 1]
 
             self.ups.append(nn.ModuleList([
-                res_block(out_ch + in_ch, out_ch),
-                res_block(out_ch + in_ch, out_ch),
+                make_res(out_ch + in_ch, out_ch),
+                make_res(out_ch + in_ch, out_ch),
                 RMSNorm(out_ch),
                 attn_layer(out_ch, head_dim=attn_dim_heads[i], n_heads=attn_heads[i]),
-                nn.Conv2d(out_ch, in_ch, 3, padding=1) if is_top else nn.Sequential(
-                    nn.Upsample(scale_factor=2, mode='nearest'),
-                    nn.Conv2d(out_ch, in_ch, 3, padding=1)
-                ),
+                nn.Conv2d(out_ch, in_ch, 3, padding=1) if is_top else Upsample(out_ch, in_ch),
             ]))
 
             out_ch = in_ch
 
-        self.final_res_block = res_block(in_ch * 2, in_ch)
+        self.final_res_block = make_res(in_ch * 2, in_ch)
 
     def forward(self, x, time):
         r = x.clone()
-        t = self.time_mlp(time)
+        t = self.time_embed(time)
         h = []
 
         for block1, block2, norm, attn, downsample in self.downs:
@@ -499,7 +500,8 @@ class SinusoidalPosEmb(nn.Module):
         super().__init__()
         half_dim = dim // 2
         log_theta = math.log(theta)
-        emb = log_theta / (half_dim - 1)
+        # emb = log_theta / (half_dim - 1)
+        emb = log_theta / half_dim
         emb = torch.exp(torch.arange(half_dim) * -emb)
         self.register_buffer('emb', emb)
 
@@ -510,31 +512,50 @@ class SinusoidalPosEmb(nn.Module):
         return emb
 
 
+class GroupNorm32(nn.GroupNorm):
+    """forced to use fp32"""
+    def forward(self, x):
+        return super().forward(x.float()).type(x.dtype)
+
+
+make_norm = partial(GroupNorm32, eps=1e-5, affine=True)
+
+
 class ResnetBlock(nn.Module):
-    def __init__(self, in_ch, out_ch, time_emb_dim=None, groups=8):
+    def __init__(self, in_ch, out_ch, time_emb_dim=None, groups=8, drop_prob=0.,
+                 use_scale_shift_norm=False, use_checkpoint=False):
         super().__init__()
-        self.mlp = Linear(time_emb_dim, out_ch * 2, mode='al', act=nn.SiLU()) if time_emb_dim else None
 
-        self.proj1 = Conv(in_ch, out_ch, 3, p=1, mode='cn', norm=nn.GroupNorm(groups, out_ch))
-        self.act1 = nn.SiLU()
+        self.use_scale_shift_norm = use_scale_shift_norm
+        self.use_checkpoint = use_checkpoint
 
-        self.proj2 = Conv(in_ch, out_ch, 3, p=1, mode='cna', norm=nn.GroupNorm(groups, out_ch), act=nn.SiLU())
-        self.proj3 = nn.Conv2d(in_ch, out_ch, 1) if in_ch != out_ch else nn.Identity()
+        self.in_layers = Conv(in_ch, out_ch, 3, p=1, mode='nac', norm=make_norm(groups, in_ch), act=nn.SiLU())
+        self.norm = make_norm(groups, out_ch)
+        self.emb_layers = Linear(time_emb_dim, out_ch * 2 if use_scale_shift_norm else out_ch, mode='al', act=nn.SiLU()) if time_emb_dim else None
+
+        self.out_layers = Conv(out_ch, out_ch, 3, p=1, mode='adc', act=nn.SiLU(), drop_prob=drop_prob)
+        self.proj = nn.Conv2d(in_ch, out_ch, 1) if in_ch != out_ch else nn.Identity()
 
     def forward(self, x, time_emb=None):
-        h = self.proj1(x)
+        return checkpoint(self._forward, (x, time_emb), self.parameters(), self.use_checkpoint)
 
-        if self.mlp is not None and time_emb is not None:
-            time_emb = self.mlp(time_emb)
+    def _forward(self, x, time_emb=None):
+        h = self.in_layers(x)
+
+        if self.emb_layers is not None and time_emb is not None:
+            time_emb = self.emb_layers(time_emb)
             time_emb = time_emb[:, :, None, None]
-            scale_shift = time_emb.chunk(2, dim=1)
-            scale, shift = scale_shift
-            h = h * (scale + 1) + shift
+            if self.use_scale_shift_norm:
+                scale_shift = time_emb.chunk(2, dim=1)
+                scale, shift = scale_shift
+                h = self.norm(h)
+                h = h * (scale + 1) + shift
+            else:
+                h = h + time_emb
+                h = self.norm(h)
 
-        h = self.act1(h)
-        h = self.proj2(h)
-
-        return h + self.proj3(x)
+        h = self.out_layers(h)
+        return h + self.proj(x)
 
 
 class RMSNorm(nn.Module):
