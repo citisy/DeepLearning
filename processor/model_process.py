@@ -685,7 +685,7 @@ class ModelHooks:
     def on_predict_step_start(self, rets, **kwargs):
         """preprocess the model inputs"""
         if hasattr(self, 'val_data_augment'):
-            rets = self.val_data_augment(rets)
+            rets = [self.val_data_augment(ret) for ret in rets]
         return rets
 
     def on_predict_step_end(self, model_results, **kwargs):

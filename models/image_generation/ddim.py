@@ -16,13 +16,13 @@ class Model(Model_):
         self.ddim_timesteps = ddim_timesteps
         self.ddim_eta = ddim_eta
 
-    def post_process(self, x_t, return_all_timesteps=False, **kwargs):
-        ddim_timestep_seq = self.make_ddim_timesteps()
+    def post_process(self, x_t, t0=0, return_all_timesteps=False, **kwargs):
+        ddim_timestep_seq = self.make_ddim_timesteps(t0)
         # previous sequence
         ddim_timestep_prev_seq = np.append(np.array([0]), ddim_timestep_seq[:-1])
         x_0 = None
         images = [x_t]
-        for i in reversed(range(0, self.ddim_timesteps)):
+        for i in reversed(range(len(ddim_timestep_seq))):
             self_cond = x_0 if self.self_condition else None
             x_t, x_0 = self.p_sample(x_t, ddim_timestep_seq[i], ddim_timestep_prev_seq[i], self_cond, **kwargs)
             images.append(x_t)
@@ -30,7 +30,7 @@ class Model(Model_):
         images = x_t if not return_all_timesteps else torch.stack(images, dim=1)
         return images
 
-    def make_ddim_timesteps(self):
+    def make_ddim_timesteps(self, t0=None):
         if self.ddim_discr_method == 'uniform':
             c = self.timesteps // self.ddim_timesteps
             ddim_timestep_seq = np.asarray(list(range(0, self.timesteps, c)))
@@ -38,6 +38,9 @@ class Model(Model_):
             ddim_timestep_seq = ((np.linspace(0, np.sqrt(self.timesteps * .8), self.ddim_timesteps)) ** 2).astype(int)
         else:
             raise NotImplementedError(f'There is no ddim discretization method called "{self.ddim_discr_method}"')
+
+        if t0:
+            ddim_timestep_seq = ddim_timestep_seq[:t0]
 
         # note, add one to get the final alpha values right (the ones from first scale to data during sampling)
         return ddim_timestep_seq + 1

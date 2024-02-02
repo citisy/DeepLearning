@@ -243,6 +243,9 @@ class Model(nn.ModuleList):
         # v_t = z_t \sqrt ca_t - x_0 * \sqrt{1-ca_t}
         return extract(self.sqrt_alphas_cumprod, t, x_0.shape) * noise - extract(self.sqrt_one_minus_alphas_cumprod, t, x_0.shape) * x_0
 
+    def predict_x_t(self, x_0, t, noise):
+        return extract(self.sqrt_alphas_cumprod, t, x_0.shape) * x_0 + extract(self.sqrt_one_minus_alphas_cumprod, t, x_0.shape) * noise
+
     def loss(self, x_0, t, noise=None, offset_noise_strength=None):
         if noise is None:
             noise = torch.randn_like(x_0)

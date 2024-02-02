@@ -21,6 +21,7 @@ class Config:
         ddim_eta=0.,
         scale=7.5,
         scale_factor=0.18215,
+        strength=0.75,  # for img2img
         objective=DmConfig.PRED_Z
     )
 
@@ -150,41 +151,66 @@ class Model(DmModel):
             **model_config
         )
 
-    def register_model_config(self, scale=1., scale_factor=1.0, **kwargs):
+    def register_model_config(self, scale=1., scale_factor=1.0, strength=0.75, **kwargs):
         self.scale = scale
         self.scale_factor = scale_factor
+        self.strength = strength
 
-    def post_process(self, x, text=None, **kwargs):
+    def post_process(self, x=None, text=None, image=None, **kwargs):
         b = len(text)
 
         c = self.in_module.encode(text)
         uc = None
-        if self.scale > 1:
+        if self.scale != 1.0:
             uc = self.in_module.encode([''] * b)
 
-        if x is None:
+        # make x_t
+        if x is None:  # txt2img
             x = self.gen_x_t(b, c.device)
+            t0 = None
 
-        z = super().post_process(x, cond=c, un_cond=uc)
+        else:  # img2img
+            x, t0 = self.make_image_cond(x)
+
+        z = super().post_process(x, t0=t0, cond=c, un_cond=uc)
         z = 1. / self.scale_factor * z
         images = self.head.decode(z)
 
         return images
 
-    def diffuse(self, x, time, cond=None, un_cond=None, **kwargs):
-        x_in = torch.cat([x] * 2)
-        t_in = torch.cat([time] * 2)
-        c_in = torch.cat([un_cond, cond])
+    def make_image_cond(self, image):
+        image = 2. * image - 1.
+        z, _, _ = self.head.encode(image)
+        x0 = self.scale_factor * z
 
-        z = self.backbone(x_in, timesteps=t_in, context=c_in)
-        e_t_uncond, e_t = z.chunk(2)
-        e_t = e_t_uncond + self.scale * (e_t - e_t_uncond)
+        ddim_timestep_seq = self.make_ddim_timesteps()
+        t0 = int(self.strength * self.ddim_timesteps)
+        t = ddim_timestep_seq[t0]
+        t = torch.full((x0.shape[0],), t, device=x0.device, dtype=torch.long)
+        noise = torch.randn_like(x0)
+
+        x = self.predict_x_t(x0, t, noise)
+        return x, t0
+
+    def diffuse(self, x, time, cond=None, un_cond=None, **kwargs):
+        if un_cond is not None:
+            x = torch.cat([x] * 2)
+            time = torch.cat([time] * 2)
+            cond = torch.cat([un_cond, cond])
+
+        z = self.backbone(x, timesteps=time, context=cond)
+        if un_cond is None:
+            e_t = z
+        else:
+            e_t_uncond, e_t = z.chunk(2)
+            e_t = e_t_uncond + self.scale * (e_t - e_t_uncond)
 
         return e_t
 
 
 class CLIPEmbedder(nn.Module):
-    """Uses the CLIP transformer encoder for text (from Hugging Face)"""
+    """Uses the CLIP transformer encoder for text (from Hugging Face)
+    see https://huggingface.co/laion/CLIP-ViT-H-14-laion2B-s32B-b79K"""
 
     def __init__(self, pretrain_model=None, max_length=77, load_weight=False):
         super().__init__()

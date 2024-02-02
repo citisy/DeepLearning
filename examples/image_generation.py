@@ -801,11 +801,36 @@ class Ldm(DiProcess):
     def set_optimizer(self):
         self.optimizer = optim.Adam(self.model.parameters(), lr=1e-4, betas=(0.9, 0.99))
 
+    aug = Apply([
+        scale.Rectangle(),
+        channel.BGR2RGB(),
+        channel.HWC2CHW(),
+    ])
+
+    def val_data_augment(self, ret) -> dict:
+        if 'image' in ret and ret['image'] is not None:
+            ret.update(dst=self.input_size)
+            ret.update(self.aug(**ret))
+        return ret
+
     def on_val_step(self, rets, **kwargs) -> dict:
-        text = [ret['text'] for ret in rets]
+        texts = []
+        images = []
+        for ret in rets:
+            if 'text' in ret:
+                texts.append(ret['text'])
+            if 'image' in ret and ret['image'] is not None:
+                images.append(torch.from_numpy(ret.pop('image')).to(self.device, non_blocking=True, dtype=torch.float))
+
+        if images:
+            images = torch.stack(images)
+            images /= 255.
+        else:
+            images = None
+
         model_results = {}
         for name, model in self.models.items():
-            fake_x = model(text=text)
+            fake_x = model(x=images, text=texts)
             fake_x = fake_x.data.mul(255).clamp_(0, 255).permute(0, 2, 3, 1).to("cpu", torch.uint8).numpy()
             model_results[name] = dict(
                 fake_x=fake_x,
@@ -813,10 +838,26 @@ class Ldm(DiProcess):
 
         return model_results
 
-    model_input_template = namedtuple('model_inputs', ['x', 'text'], defaults=[None, None])
+    model_input_template = namedtuple('model_inputs', ['image', 'text'], defaults=[None, None])
 
     def gen_predict_inputs(self, *objs, **kwargs):
-        return [self.model_input_template(text=text)._asdict() for text in objs[0]]
+        if len(objs) == 1:
+            return [self.model_input_template(text=text)._asdict() for text in objs[0]]
+
+        elif len(objs) == 2:
+            rets = []
+            texts, images = objs
+            if isinstance(images, str):
+                images = [images for _ in range(len(texts))]
+            else:
+                assert len(texts) == len(images)
+
+            for text, image in zip(texts, images):
+                if isinstance(image, str):
+                    image = os_lib.Loader(verbose=False).load_img(image)
+                rets.append(self.model_input_template(image=image, text=text)._asdict())
+
+            return rets
 
     def on_predict_step_end(self, model_results, add_watermark=True, watermark='watermark', **kwargs):
         for name, results in model_results.items():
@@ -861,14 +902,25 @@ class LdmHFv1(Ldm, FromHFv1Pretrain):
             process = Process(pretrain_model='...')
 
             # txt2img
-            # predict one
             prompt = 'a painting of a virus monster playing guitar'
+            prompts = ['a painting of a virus monster playing guitar', 'a painting of two virus monster playing guitar']
+
+            # predict one
             image = process.single_predict(prompt, is_visualize=True)
 
             # predict batch
-            prompts = ['a painting of a virus monster playing guitar', 'a painting of two virus monster playing guitar']
             images = process.batch_predict(prompts, batch_size=2, is_visualize=True)
 
+            # img2img
+            image = 'test.jpg'
+            images = ['test1.jpg', 'test2.jpg']
+
+            # predict one
+            image = process.single_predict(prompt, image, is_visualize=True)
+
+            # predict batch
+            images = process.batch_predict(prompts, image, batch_size=2, is_visualize=True)     # base on same image
+            images = process.batch_predict(prompts, images, batch_size=2, is_visualize=True)    # base on different image
     """
 
     dataset_version = 'v1'
