@@ -1,6 +1,7 @@
 from torch import nn, einsum
 import torch
 import torch.nn.functional as F
+from functools import partial
 from ..layers import Linear, Conv, Residual
 from ..attentions import CrossAttention3D, LinearAttention3D
 from ..image_translation.pix2pix import NetD as NLayerDiscriminator
@@ -8,8 +9,12 @@ from utils import torch_utils
 
 
 class Config:
+    VANILLA = 0
+    LINEAR = 1
+    VANILLA_XFORMERS = 2
+
     # config from ldm
-    # 8x8x64 gives the size of sampler feature map where img size is 256
+    # 8x8x64 gives the size of sampler feature map where image size is 256
     backbone_8x8x64 = dict(
         z_ch=64,
         ch_mult=(1, 1, 2, 2, 4, 4),  # 256 / 2^(6-1) = 8
@@ -83,20 +88,29 @@ class Model(nn.Module):
         return z
 
 
-def make_attn(in_channels, attn_type="vanilla"):
-    attn_dict = dict(
-        vanilla=lambda in_ch: nn.Sequential(
-            Normalize(in_ch),
+def make_attn(in_channels, attn_type=Config.VANILLA, groups=32):
+    attn_dict = {
+        Config.VANILLA: lambda in_ch: nn.Sequential(
+            make_norm(groups, in_ch),
             CrossAttention3D(n_heads=1, head_dim=in_ch)
         ),
-        linear=lambda in_ch: LinearAttention3D(n_heads=1, head_dim=in_ch, use_mem_kv=False, separate_conv=True),
-        none=nn.Identity
-    )
-    return attn_dict[attn_type](in_channels)
+        Config.VANILLA_XFORMERS: lambda in_ch: nn.Sequential(
+            make_norm(groups, in_ch),
+            CrossAttention3D(n_heads=1, head_dim=in_ch, use_xformers=True)
+        ),   # use xformers, equal to VANILLA
+        Config.LINEAR: lambda in_ch: LinearAttention3D(n_heads=1, head_dim=in_ch, use_mem_kv=False, separate_conv=True),
+    }
+    return attn_dict.get(attn_type, nn.Identity)(in_channels)
 
 
-def Normalize(in_channels, num_groups=32):
-    return nn.GroupNorm(num_groups=num_groups, num_channels=in_channels, eps=1e-6, affine=True)
+class GroupNorm32(nn.GroupNorm):
+    """forced to use fp32"""
+
+    def forward(self, x):
+        return super().forward(x.float()).type(x.dtype)
+
+
+make_norm = partial(GroupNorm32, eps=1e-6, affine=True)
 
 
 class Swish(nn.Module):
@@ -126,13 +140,17 @@ class ResBlock(Residual):
 
 
 class ResFn(nn.Module):
-    def __init__(self, in_ch, out_ch, time_emb_ch=512, drop_prob=0.):
+    def __init__(self, in_ch, out_ch, time_emb_ch=512, drop_prob=0., groups=32):
         super().__init__()
-        self.conv1 = Conv(in_ch, out_ch, 3, mode='nac', norm=Normalize(in_ch), act=Swish())
+        self.conv1 = Conv(in_ch, out_ch, 3, mode='nac',
+                          norm=make_norm(groups, in_ch),
+                          act=Swish())
         if time_emb_ch > 0:
             self.time_emb_proj = Linear(time_emb_ch, out_ch, mode='la', act=Swish())
 
-        self.conv2 = Conv(out_ch, out_ch, 3, mode='nadc', norm=Normalize(out_ch), act=Swish(), drop_prob=drop_prob)
+        self.conv2 = Conv(out_ch, out_ch, 3, mode='nadc',
+                          norm=make_norm(groups, out_ch),
+                          act=Swish(), drop_prob=drop_prob)
 
     def forward(self, x, time_emb=None):
         h = x
@@ -162,8 +180,8 @@ class NeckBlock(nn.Module):
 class Encoder(nn.Module):
     def __init__(self, in_ch, unit_ch=128, z_ch=64,
                  ch_mult=(1, 1, 2, 2, 4, 4), num_res_blocks=2, attn_layers=(-1, -2),
-                 drop_prob=0.0, resample_with_conv=True, time_emb_ch=0,
-                 double_z=True, attn_type="vanilla",
+                 drop_prob=0.0, resample_with_conv=True, time_emb_ch=0, groups=32,
+                 double_z=True, attn_type=Config.VANILLA,
                  **ignore_kwargs):
         super().__init__()
         num_layers = len(ch_mult)
@@ -193,7 +211,7 @@ class Encoder(nn.Module):
         self.neck = NeckBlock(in_ch, time_emb_ch, attn_type, drop_prob)
 
         out_ch = 2 * z_ch if double_z else z_ch
-        self.head = Conv(in_ch, out_ch, 3, mode='nac', norm=Normalize(in_ch), act=Swish())
+        self.head = Conv(in_ch, out_ch, 3, mode='nac', norm=make_norm(groups, in_ch), act=Swish())
         self.out_channels = out_ch
         self.down_scale = 2 ** (num_layers - 1)
 
@@ -265,8 +283,8 @@ class Decoder(nn.Module):
     def __init__(self, in_ch, out_ch, unit_ch=128,
                  ch_mult=(1, 1, 2, 2, 4, 4), num_res_blocks=2, attn_layers=(-1, -2),
                  drop_prob=0.0, resample_with_conv=True,
-                 give_pre_end=False, tanh_out=False,
-                 attn_type="vanilla", **ignorekwargs):
+                 give_pre_end=False, tanh_out=False, groups=32,
+                 attn_type=Config.VANILLA, **ignorekwargs):
         super().__init__()
         time_emb_ch = 0
         self.in_channels = in_ch
@@ -306,7 +324,7 @@ class Decoder(nn.Module):
             self.head = nn.Identity()
             self.out_act = nn.Identity()
         else:
-            self.head = Conv(in_ch, self.out_channels, 3, mode='nac', norm=Normalize(in_ch), act=Swish())
+            self.head = Conv(in_ch, self.out_channels, 3, mode='nac', norm=make_norm(groups, in_ch), act=Swish())
             self.out_act = nn.Tanh() if tanh_out else nn.Identity()
 
     def forward(self, z, time_emb=None):

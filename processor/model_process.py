@@ -201,24 +201,17 @@ class ModelHooks:
 
     use_ema = False
     ema: Optional
-    aux_model: Dict[str, nn.Module]
+    aux_model: Dict[str, nn.Module] = {}
 
     def set_aux_model(self):
         if self.use_ema:
             self.ema = torch_utils.EMA()
-            self.aux_model = {'ema': self.ema.copy(self.model)}
+            self.aux_model['ema'] = self.ema.copy(self.model)
 
     def set_mode(self, train=True):
-        if train:
-            self.model.train()
-            if hasattr(self, 'aux_model'):
-                for v in self.aux_model.values():
-                    v.train()
-        else:
-            self.model.eval()
-            if hasattr(self, 'aux_model'):
-                for v in self.aux_model.values():
-                    v.eval()
+        self.model.train(train)
+        for v in self.aux_model.values():
+            v.train(train)
 
     def set_optimizer(self):
         self.optimizer = optim.Adam(self.model.parameters())
@@ -523,7 +516,7 @@ class ModelHooks:
         if hasattr(self, 'stopper'):
             ckpt['stopper'] = self.stopper.state_dict()
 
-        if hasattr(self, 'aux_model'):
+        if self.aux_model:
             ckpt['aux_model'] = {k: v.state_dict() for k, v in self.aux_model.items()}
 
         if not isinstance(max_save_weight_num, int):  # None

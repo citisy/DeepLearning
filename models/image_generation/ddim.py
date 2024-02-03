@@ -10,7 +10,7 @@ class Model(Model_):
     code:
         - https://github.com/lucidrains/denoising-diffusion-pytorch
     """
-    def __init__(self, *args, ddim_discr_method='uniform', ddim_timesteps=30, ddim_eta=0., **kwargs):
+    def __init__(self, *args, ddim_discr_method='uniform', ddim_timesteps=50, ddim_eta=0., **kwargs):
         super().__init__(*args, **kwargs)
         self.ddim_discr_method = ddim_discr_method
         self.ddim_timesteps = ddim_timesteps

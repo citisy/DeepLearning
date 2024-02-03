@@ -1,53 +1,51 @@
 import functools
+import copy
 import torch
 import torch.nn.functional as F
 from torch import nn, einsum
 from einops import rearrange, repeat, reduce
 from utils import torch_utils
-from .ddim import Model as DmModel, Config as DmConfig
 from .ddpm import RandomOrLearnedSinusoidalPosEmb, SinusoidalPosEmb, ResnetBlock, make_norm
-from .VAE import Model as VaeModel, Config as VaeConfig
+from . import VAE, ddim
 from ..layers import Linear, Conv, Upsample, Downsample
-from ..attentions import CrossAttention2D
+from ..attentions import CrossAttention2D, get_attention_input
 
 
 class Config:
-    in_module = dict(
-        pretrain_model='openai/clip-vit-large-patch14'
-    )
+    CROSSATTN = 0
+    CROSSATTN_ADM = 1
+    HYBRID = 2
+    HYBRID_ADM = 3
+
+    in_module = dict()
+
     model = dict(
-        ddim_timesteps=50,
-        timesteps=1000,
-        ddim_eta=0.,
-        scale=7.5,
-        scale_factor=0.18215,
-        strength=0.75,  # for img2img
-        objective=DmConfig.PRED_Z
+        objective=ddim.Config.PRED_Z
     )
 
     backbone = dict(
-        ch_mult=[1, 2, 4, 4],
         context_dim=768,
-        use_checkpoint=True,
+        num_heads=8,
     )
     head = dict(
         img_ch=3,
-        **VaeConfig.get('backbone_32x32x4')
+        backbone_config=VAE.Config.backbone_32x32x4,
     )
 
     @classmethod
     def get(cls, name=None):
         return dict(
-            in_module_config=cls.in_module,
             model_config=cls.model,
+            in_module_config=cls.in_module,
             backbone_config=cls.backbone,
             head_config=cls.head
         )
 
 
-def convert_ol_weights(state_dict):
+def convert_weights(state_dict):
     """convert weights from official model to my own model
-    https://github.com/CompVis/latent-diffusion?tab=readme-ov-file#model-zoo
+    see https://github.com/CompVis/latent-diffusion?tab=readme-ov-file#model-zoo
+    to get more detail
 
     Usage:
         .. code-block:: python
@@ -105,14 +103,13 @@ def convert_ol_weights(state_dict):
         'model.diffusion_model.out.2': 'backbone.out.conv',
 
         'cond_stage_model': 'in_module'
-
     }
     state_dict = torch_utils.convert_state_dict(state_dict, convert_dict)
 
     return state_dict
 
 
-class Model(DmModel):
+class Model(ddim.Model):
     """refer to:
     paper:
         - High-Resolution Image Synthesis with Latent Diffusion Models
@@ -125,11 +122,10 @@ class Model(DmModel):
                  in_module_trainable=False, in_module=None,
                  in_module_config=Config.in_module, model_config=Config.model,
                  backbone_config=Config.backbone, head_config=Config.head):
-        if in_module is None:
-            in_module = CLIPEmbedder(**in_module_config)
-
         backbone = UNetModel(**backbone_config)
-        head = VaeModel(**head_config)
+        head = VAE.Model(**head_config)
+        if in_module is None:
+            in_module = copy.deepcopy(head)
 
         if not hasattr(in_module, 'encode'):
             in_module.encode = in_module.__call__
@@ -151,7 +147,7 @@ class Model(DmModel):
             **model_config
         )
 
-    def register_model_config(self, scale=1., scale_factor=1.0, strength=0.75, **kwargs):
+    def register_model_config(self, scale=7.5, scale_factor=0.18215, strength=0.75, **kwargs):
         self.scale = scale
         self.scale_factor = scale_factor
         self.strength = strength
@@ -173,24 +169,20 @@ class Model(DmModel):
             x, t0 = self.make_image_cond(x)
 
         z = super().post_process(x, t0=t0, cond=c, un_cond=uc)
-        z = 1. / self.scale_factor * z
+        z = z / self.scale_factor
         images = self.head.decode(z)
 
         return images
 
     def make_image_cond(self, image):
-        image = 2. * image - 1.
         z, _, _ = self.head.encode(image)
         x0 = self.scale_factor * z
 
         ddim_timestep_seq = self.make_ddim_timesteps()
         t0 = int(self.strength * self.ddim_timesteps)
-        t = ddim_timestep_seq[t0]
-        t = torch.full((x0.shape[0],), t, device=x0.device, dtype=torch.long)
-        noise = torch.randn_like(x0)
-
-        x = self.predict_x_t(x0, t, noise)
-        return x, t0
+        t = torch.full((x0.shape[0],), ddim_timestep_seq[t0], device=x0.device, dtype=torch.long)
+        xt = self.q_sample(x0, t)
+        return xt, t0
 
     def diffuse(self, x, time, cond=None, un_cond=None, **kwargs):
         if un_cond is not None:
@@ -208,35 +200,6 @@ class Model(DmModel):
         return e_t
 
 
-class CLIPEmbedder(nn.Module):
-    """Uses the CLIP transformer encoder for text (from Hugging Face)
-    see https://huggingface.co/laion/CLIP-ViT-H-14-laion2B-s32B-b79K"""
-
-    def __init__(self, pretrain_model=None, max_length=77, load_weight=False):
-        super().__init__()
-        from transformers import CLIPTokenizer, CLIPTextModel, CLIPTextConfig
-
-        pretrain_model = pretrain_model or 'openai/clip-vit-large-patch14'
-        self.tokenizer = CLIPTokenizer.from_pretrained(pretrain_model)
-
-        if load_weight:
-            self.transformer = CLIPTextModel.from_pretrained(pretrain_model)
-
-        else:
-            configuration = CLIPTextConfig.from_pretrained(pretrain_model)
-            self.transformer = CLIPTextModel(configuration)
-        self.max_length = max_length
-
-    def forward(self, text):
-        batch_encoding = self.tokenizer(text, truncation=True, max_length=self.max_length, return_length=True,
-                                        return_overflowing_tokens=False, padding="max_length", return_tensors="pt")
-        tokens = batch_encoding["input_ids"].to(self.transformer.device)
-        outputs = self.transformer(input_ids=tokens)
-
-        z = outputs.last_hidden_state
-        return z
-
-
 class UNetModel(nn.Module):
     """base on Unet, add attention, res, etc."""
 
@@ -248,12 +211,13 @@ class UNetModel(nn.Module):
             num_res_blocks=2,
             attend_layers=(0, 1, 2),
             groups=32,
-            ch_mult=(1, 2, 4, 8),
+            ch_mult=(1, 2, 4, 4),
             conv_resample=True,
             num_classes=None,
             use_fp16=False,
-            use_checkpoint=False,
-            num_heads=8,
+            use_checkpoint=True,
+            num_heads=None,
+            head_dim=None,
             context_dim=768,  # custom transformer support
             n_embed=None,  # custom support for prediction of discrete ids into codebook of first stage vq model
             sinusoidal_pos_emb_theta=10000,
@@ -303,7 +267,7 @@ class UNetModel(nn.Module):
                 out_ch = mult * unit_dim
                 blocks = [make_res(in_ch, out_ch)]
                 if i in attend_layers:
-                    head_dim = out_ch // num_heads
+                    n_heads, _, head_dim = get_attention_input(num_heads, out_ch, head_dim)
                     blocks.append(make_trans(out_ch, num_heads, head_dim))
 
                 layers.append(TimestepEmbedSequential(*blocks))
@@ -317,7 +281,7 @@ class UNetModel(nn.Module):
 
         self.input_blocks = nn.ModuleList(layers)
 
-        head_dim = out_ch // num_heads
+        n_heads, _, head_dim = get_attention_input(num_heads, out_ch, head_dim)
         self.middle_block = TimestepEmbedSequential(
             make_res(out_ch, out_ch),
             make_trans(out_ch, num_heads, head_dim),
@@ -334,7 +298,7 @@ class UNetModel(nn.Module):
                 out_ch = unit_dim * mult
                 blocks = [make_res(in_ch + ich, out_ch)]
                 if i in attend_layers:
-                    head_dim = out_ch // num_heads
+                    n_heads, _, head_dim = get_attention_input(num_heads, out_ch, head_dim)
                     blocks.append(make_trans(out_ch, num_heads, head_dim))
 
                 if not is_top and is_block_bottom:

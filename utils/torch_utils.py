@@ -1,9 +1,9 @@
+import re
 import copy
 import math
 import torch
 from torch import nn
 from collections import OrderedDict
-import re
 
 
 class ModuleInfo:
@@ -375,6 +375,11 @@ class EMA:
             self.update_attr(model, ema_model)
         self.cur_step += 1
         return self.cur_step
+
+    @staticmethod
+    def restore(model, ema_model):
+        for c_param, param in zip(ema_model.parameters(), model.parameters()):
+            param.data.copy_(c_param.data)
 
 
 def checkpoint(func, inputs, params, flag):

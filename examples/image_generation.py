@@ -668,6 +668,7 @@ class DiProcess(IgProcess):
     def on_train_step(self, rets, **kwargs) -> dict:
         images = [torch.from_numpy(ret.pop('image')).to(self.device, non_blocking=True, dtype=torch.float) for ret in rets]
         images = torch.stack(images)
+        images = images * 2 - 1  # normalize, [0, 1] -> [-1, 1]
         output = self.model(images)
 
         real_x = self.train_container['metric_kwargs']['real_x']
@@ -695,6 +696,7 @@ class DiProcess(IgProcess):
         model_results = {}
         for name, model in self.models.items():
             fake_x = model(noise_x)
+            fake_x = (fake_x + 1) * 0.5  # unnormalize, [-1, 1] -> [0, 1]
             fake_x = fake_x.data.mul(255).clamp_(0, 255).permute(0, 2, 3, 1).to("cpu", torch.uint8).numpy()
             model_results[name] = dict(
                 fake_x=fake_x,
@@ -825,12 +827,14 @@ class Ldm(DiProcess):
         if images:
             images = torch.stack(images)
             images /= 255.
+            images = images * 2 - 1  # normalize, [0, 1] -> [-1, 1]
         else:
             images = None
 
         model_results = {}
         for name, model in self.models.items():
             fake_x = model(x=images, text=texts)
+            fake_x = (fake_x + 1) * 0.5  # unnormalize, [-1, 1] -> [0, 1]
             fake_x = fake_x.data.mul(255).clamp_(0, 255).permute(0, 2, 3, 1).to("cpu", torch.uint8).numpy()
             model_results[name] = dict(
                 fake_x=fake_x,
@@ -883,11 +887,11 @@ class Ldm(DiProcess):
 class FromHFv1Pretrain(CheckpointHooks):
     def load_pretrain(self):
         if hasattr(self, 'pretrain_model'):
-            from models.image_generation.ldm import convert_ol_weights
+            from models.image_generation.ldm import convert_weights
 
             ckpt = torch.load(self.pretrain_model, map_location=self.device)
             state_dict = ckpt['state_dict']
-            state_dict = convert_ol_weights(state_dict)
+            state_dict = convert_weights(state_dict)
             self.model.load_state_dict(state_dict, strict=False)
 
 

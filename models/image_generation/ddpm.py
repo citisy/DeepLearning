@@ -92,7 +92,7 @@ class Model(nn.ModuleList):
 
     def __init__(
             self, img_ch, image_size, hidden_ch=64,
-            schedule_func=linear_beta_schedule, timesteps=300,
+            schedule_func=linear_beta_schedule, timesteps=1000,
             offset_noise_strength=0., objective=Config.PRED_V,
             min_snr_loss_weight=False, min_snr_gamma=5,
             in_module=None, backbone=None, head=None,
@@ -173,12 +173,10 @@ class Model(nn.ModuleList):
             # if training, x is x0, the real image
             b, c, h, w = x.shape
             t = torch.randint(0, self.timesteps, (b,), device=x.device).long()
-            x = x * 2 - 1  # normalize, [0, 1] -> [-1, 1]
             return {'loss': self.loss(x, t)}
         else:
             # if predicting, x is xt, the noise
             images = self.post_process(x, **kwargs)
-            images = (images + 1) * 0.5  # unnormalize, [-1, 1] -> [0, 1]
             return images
 
     def diffuse(self, x, time, x_self_cond=None, **kwargs):
@@ -244,6 +242,7 @@ class Model(nn.ModuleList):
         return extract(self.sqrt_alphas_cumprod, t, x_0.shape) * noise - extract(self.sqrt_one_minus_alphas_cumprod, t, x_0.shape) * x_0
 
     def predict_x_t(self, x_0, t, noise):
+        # x_t = x_0 * \sqrt ca_t + z_t * \sqrt (1 - ca_t)
         return extract(self.sqrt_alphas_cumprod, t, x_0.shape) * x_0 + extract(self.sqrt_one_minus_alphas_cumprod, t, x_0.shape) * noise
 
     def loss(self, x_0, t, noise=None, offset_noise_strength=None):
@@ -288,14 +287,10 @@ class Model(nn.ModuleList):
         return loss.mean()
 
     def q_sample(self, x0, t, noise=None):
-        # x_t = x_0 * \sqrt ca_t + z_t * \sqrt (1 - ca_t)
         if noise is None:
             noise = torch.randn_like(x0)
 
-        sqrt_alphas_cumprod_t = extract(self.sqrt_alphas_cumprod, t, x0.shape)
-        sqrt_one_minus_alphas_cumprod_t = extract(self.sqrt_one_minus_alphas_cumprod, t, x0.shape)
-
-        return sqrt_alphas_cumprod_t * x0 + sqrt_one_minus_alphas_cumprod_t * noise
+        return self.predict_x_t(x0, t, noise)
 
     def gen_x_t(self, batch_size, device):
         return torch.randn((batch_size, self.img_ch, self.image_size, self.image_size), device=device)

@@ -101,7 +101,7 @@ class CrossAttention3D(nn.Module):
     """cross attention build by conv function"""
 
     def __init__(self, n_heads=None, model_dim=None, head_dim=None, query_dim=None, context_dim=None,
-                 separate_conv=True, use_mem_kv=False, n_mem_size=4,
+                 use_xformers=None, separate_conv=True, use_mem_kv=False, n_mem_size=4,
                  drop_prob=0., **conv_kwargs):
         super().__init__()
         n_heads, model_dim, head_dim = get_attention_input(n_heads, model_dim, head_dim)
@@ -131,7 +131,11 @@ class CrossAttention3D(nn.Module):
         else:
             self.view_in = Rearrange('b c h w -> b (h w) c')
 
-        self.attend = ScaleAttend(drop_prob)
+        if use_xformers:    # faster and less memory
+            import xformers
+            self.attend = xformers.ops.memory_efficient_attention
+        else:
+            self.attend = ScaleAttend(drop_prob)
         self.to_out = nn.Conv2d(model_dim, query_dim, 1)
 
     def forward(self, q, k=None, v=None):
