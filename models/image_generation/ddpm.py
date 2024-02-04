@@ -15,6 +15,10 @@ class Config:
     PRED_Z = 2
     PRED_V = 3
 
+    LINEAR = 1
+    COSINE = 2
+    SIGMOID = 3
+
     in_module_config = dict(self_condition=False)
     backbone_config = dict(
         learned_sinusoidal_cond=False,
@@ -81,6 +85,15 @@ def sigmoid_beta_schedule(timesteps, start=-3, end=3, tau=1):
     return torch.clip(betas, 0, 0.999)
 
 
+def make_beta_schedule(name=Config.LINEAR):
+    d = {
+        Config.LINEAR: linear_beta_schedule,
+        Config.COSINE: cosine_beta_schedule,
+        Config.SIGMOID: sigmoid_beta_schedule
+    }
+    return d.get(name)
+
+
 class Model(nn.ModuleList):
     """refer to:
     paper:
@@ -90,40 +103,36 @@ class Model(nn.ModuleList):
         - https://github.com/lucidrains/denoising-diffusion-pytorch
     """
 
-    def __init__(
-            self, img_ch, image_size, hidden_ch=64,
-            schedule_func=linear_beta_schedule, timesteps=1000,
-            offset_noise_strength=0., objective=Config.PRED_V,
-            min_snr_loss_weight=False, min_snr_gamma=5,
-            in_module=None, backbone=None, head=None,
-            in_module_config=Config.in_module_config, backbone_config=Config.backbone_config,
-            **model_config
-    ):
+    def __init__(self, img_ch, image_size, **configs):
         super().__init__()
         self.image_size = image_size
         self.img_ch = img_ch
-        self.timesteps = timesteps
-        self.offset_noise_strength = offset_noise_strength
+        self.diffuse_in_ch = img_ch  # channels of x_t
+        self.diffuse_in_size = image_size  # size of x_t
+        self.__dict__.update(configs.get('model_config', {}))
 
-        # pred_z -> model(x_t, t) = z_t
-        # pred_x0 -> model(x_t, t) = x_0
-        # pred_v -> model(x_t, t) = v_t = z_t \sqrt ca_t - x_0 * \sqrt{1-ca_t}
-        self.objective = objective
-
-        self.register_schedule(schedule_func, timesteps, min_snr_loss_weight, min_snr_gamma)
-
-        self.in_module = in_module or InModule(img_ch, hidden_ch, **in_module_config)
-        self.backbone = backbone or UNetModel(hidden_ch, **backbone_config)
-        self.head = head or nn.Conv2d(hidden_ch, img_ch, 1)
+        self.register_schedule()
+        self.make_diffuse(**configs)
 
         self.self_condition = False
 
-    def register_schedule(self, schedule_func, timesteps, min_snr_loss_weight, min_snr_gamma):
+    # pred_z -> model(x_t, t) = z_t
+    # pred_x0 -> model(x_t, t) = x_0
+    # pred_v -> model(x_t, t) = v_t = z_t \sqrt ca_t - x_0 * \sqrt{1-ca_t}
+    objective = Config.PRED_V
+    timesteps = 1000
+    hidden_ch = 64
+    offset_noise_strength = 0.
+    schedule_type = Config.LINEAR
+    min_snr_loss_weight = False
+    min_snr_gamma = 5
+
+    def register_schedule(self):
         # helper function to register buffer from float64 to float32
         register_buffer = lambda name, val: self.register_buffer(name, val.to(torch.float32))
 
         # define beta schedule
-        betas = schedule_func(timesteps=timesteps)  # (timesteps, )
+        betas = make_beta_schedule(self.schedule_type)(timesteps=self.timesteps)  # (timesteps, )
 
         # define alphas
         alphas = 1. - betas
@@ -158,8 +167,8 @@ class Model(nn.ModuleList):
 
         # https://arxiv.org/abs/2303.09556
         maybe_clipped_snr = snr.clone()
-        if min_snr_loss_weight:
-            maybe_clipped_snr.clamp_(max=min_snr_gamma)
+        if self.min_snr_loss_weight:
+            maybe_clipped_snr.clamp_(max=self.min_snr_gamma)
 
         if self.objective == Config.PRED_Z:
             register_buffer('loss_weight', maybe_clipped_snr / snr)
@@ -167,6 +176,17 @@ class Model(nn.ModuleList):
             register_buffer('loss_weight', maybe_clipped_snr)
         elif self.objective == Config.PRED_V:
             register_buffer('loss_weight', maybe_clipped_snr / (snr + 1))
+
+    def make_diffuse(self, in_module_config=Config.in_module_config, backbone_config=Config.backbone_config, **kwargs):
+        self.in_module = InModule(self.img_ch, self.hidden_ch, **in_module_config)
+        self.backbone = UNetModel(self.hidden_ch, **backbone_config)
+        self.head = nn.Conv2d(self.hidden_ch, self.img_ch, 1)
+
+    def diffuse(self, x, time, x_self_cond=None, **kwargs):
+        x = self.in_module(x, x_self_cond)
+        x = self.backbone(x, time)
+        x = self.head(x)
+        return x
 
     def forward(self, x=None, **kwargs):
         if self.training:
@@ -178,12 +198,6 @@ class Model(nn.ModuleList):
             # if predicting, x is xt, the noise
             images = self.post_process(x, **kwargs)
             return images
-
-    def diffuse(self, x, time, x_self_cond=None, **kwargs):
-        x = self.in_module(x, x_self_cond)
-        x = self.backbone(x, time)
-        x = self.head(x)
-        return x
 
     def model_predictions(
             self, x_t, t, x_self_cond=None,
@@ -293,7 +307,7 @@ class Model(nn.ModuleList):
         return self.predict_x_t(x0, t, noise)
 
     def gen_x_t(self, batch_size, device):
-        return torch.randn((batch_size, self.img_ch, self.image_size, self.image_size), device=device)
+        return torch.randn((batch_size, self.diffuse_in_ch, self.diffuse_in_size, self.diffuse_in_size), device=device)
 
     def post_process(self, x_t, return_all_timesteps=False, **kwargs):
         images = [x_t]
@@ -512,6 +526,7 @@ class SinusoidalPosEmb(nn.Module):
 
 class GroupNorm32(nn.GroupNorm):
     """forced to use fp32"""
+
     def forward(self, x):
         return super().forward(x.float()).type(x.dtype)
 

@@ -3,6 +3,7 @@ import copy
 import math
 import torch
 from torch import nn
+from pathlib import Path
 from collections import OrderedDict
 
 
@@ -252,7 +253,7 @@ def export_formats():
     import pandas as pd
 
     x = [
-        ['PyTorch', '-', '.pt', True],
+        ['PyTorch', '-', '.pt/.pth/.ckpt', True],
         ['TorchScript', 'torchscript', '.torchscript', True],
         ['Safetensors', 'safetensors', '.safetensors', True],
         ['ONNX', 'onnx', '.onnx', True],
@@ -288,6 +289,26 @@ class Export:
 
 
 class Load:
+    @classmethod
+    def from_file(cls, save_path, **kwargs):
+        load_dict = {
+            'PyTorch': cls.from_model,
+            'TorchScript': cls.from_jit,
+            'Safetensors': cls.from_save_tensor
+        }
+        formats = export_formats()
+        suffix = Path(save_path).suffix
+        k = None
+        for i, row in formats.iterrows():
+            if suffix in row['Suffix']:
+                k = row['Format']
+                break
+        return load_dict.get(k)(save_path, **kwargs)
+
+    @staticmethod
+    def from_model(save_path, **kwargs):
+        return torch.load(save_path, **kwargs)
+
     @staticmethod
     def from_state_dict(save_path, **kwargs):
         return torch.load(save_path, **kwargs)

@@ -5,23 +5,16 @@ from .ldm import convert_weights
 
 
 class Config(ldm.Config):
-    in_module = dict(
-        pretrain_model='openai/clip-vit-large-patch14'
-    )
+    """only for inference"""
+    # support version v1, v1.x
 
 
 class Model(ldm.Model):
     """
     https://github.com/CompVis/stable-diffusion
     """
-    def __init__(self, *args, in_module_config=Config.in_module, **kwargs):
-        in_module = CLIPEmbedder(**in_module_config)
-
-        super().__init__(
-            *args,
-            in_module=in_module,
-            **kwargs
-        )
+    def make_cond(self, cond_config=dict(), **kwargs):
+        return CLIPEmbedder(**cond_config)
 
 
 class CLIPEmbedder(nn.Module):
@@ -39,9 +32,12 @@ class CLIPEmbedder(nn.Module):
             self.transformer = CLIPTextModel.from_pretrained(pretrain_model)
 
         else:
+            # if having ldm pretrain_model, do not download the clip weight file, only the config file
+            # 'cause the ldm pretrain_model contains the clip weight
             configuration = CLIPTextConfig.from_pretrained(pretrain_model)
             self.transformer = CLIPTextModel(configuration)
         self.max_length = max_length
+        self.output_size = 768
 
     def forward(self, text):
         batch_encoding = self.tokenizer(text, truncation=True, max_length=self.max_length, return_length=True,

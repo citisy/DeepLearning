@@ -47,7 +47,7 @@ class Conv(nn.Sequential):
                  is_act=True, act=None,
                  is_norm=True, norm=None,
                  is_drop=True, drop_prob=0.5,
-                 mode='cna', **conv_kwargs):
+                 mode='cna', detail_name=True, **conv_kwargs):
         """
 
         Args:
@@ -94,7 +94,10 @@ class Conv(nn.Sequential):
             elif m == 'd' and is_drop:
                 layers['drop'] = nn.Dropout(drop_prob)
 
-        super().__init__(layers)
+        if detail_name:
+            super().__init__(layers)
+        else:
+            super().__init__(*[v for v in layers.values()])
 
     @staticmethod
     def auto_p(k, s):
@@ -112,6 +115,7 @@ class ConvT(nn.Sequential):
                  is_norm=True, norm=None,
                  is_drop=True, drop_prob=0.5,
                  mode='cna', only_upsample=False,
+                 detail_name=True,
                  **conv_kwargs):
         """
 
@@ -164,7 +168,10 @@ class ConvT(nn.Sequential):
                 elif m == 'd' and is_drop:
                     layers['drop'] = nn.Dropout(drop_prob)
 
-        super().__init__(layers)
+        if detail_name:
+            super().__init__(layers)
+        else:
+            super().__init__(*[v for v in layers.values()])
 
     @staticmethod
     def auto_p(k, s):
@@ -182,7 +189,7 @@ class Linear(nn.Sequential):
                  is_act=True, act=None,
                  is_norm=True, norm=None,
                  is_drop=True, drop_prob=0.5,
-                 mode='lna',
+                 mode='lna', detail_name=True,
                  **linear_kwargs
                  ):
         self.is_act = is_act
@@ -212,7 +219,10 @@ class Linear(nn.Sequential):
 
         self.in_features = in_features
         self.out_features = out_features
-        super().__init__(layers)
+        if detail_name:
+            super().__init__(layers)
+        else:
+            super().__init__(*[v for v in layers.values()])
 
 
 class EqualLinear(nn.Module):

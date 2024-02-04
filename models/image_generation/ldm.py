@@ -17,28 +17,21 @@ class Config:
     HYBRID = 2
     HYBRID_ADM = 3
 
-    in_module = dict()
-
     model = dict(
         objective=ddim.Config.PRED_Z
     )
 
     backbone = dict(
-        context_dim=768,
         num_heads=8,
     )
-    head = dict(
-        img_ch=3,
-        backbone_config=VAE.Config.backbone_32x32x4,
-    )
+    vae = VAE.Config.backbone_32x32x4
 
     @classmethod
     def get(cls, name=None):
         return dict(
             model_config=cls.model,
-            in_module_config=cls.in_module,
             backbone_config=cls.backbone,
-            head_config=cls.head
+            vae_config=cls.vae
         )
 
 
@@ -56,20 +49,20 @@ def convert_weights(state_dict):
     """
 
     convert_dict = {
-        'first_stage_model': 'head',
-        'first_stage_model.{0}.block.{1}.norm{2}.': 'head.{0}.blocks.{1}.fn.conv{2}.norm.',
-        'first_stage_model.{0}.block.{1}.conv{2}.': 'head.{0}.blocks.{1}.fn.conv{2}.conv.',
-        'first_stage_model.{0}.block.{1}.nin_shortcut': 'head.{0}.blocks.{1}.project_fn',
-        'first_stage_model.{0}sample.conv': 'head.{0}sample.fn.1',
-        'first_stage_model.{0}.mid.block_{1}.norm{2}.': 'head.{0}.neck.block_{1}.fn.conv{2}.norm.',
-        'first_stage_model.{0}.mid.block_{1}.conv{2}.': 'head.{0}.neck.block_{1}.fn.conv{2}.conv.',
-        'first_stage_model.{0}.mid.attn_1.norm': 'head.{0}.neck.attn.0',
-        'first_stage_model.{0}.mid.attn_1.q': 'head.{0}.neck.attn.1.to_qkv.0',
-        'first_stage_model.{0}.mid.attn_1.k': 'head.{0}.neck.attn.1.to_qkv.1',
-        'first_stage_model.{0}.mid.attn_1.v': 'head.{0}.neck.attn.1.to_qkv.2',
-        'first_stage_model.{0}.mid.attn_1.proj_out': 'head.{0}.neck.attn.1.to_out',
-        'first_stage_model.{0}.norm_out': 'head.{0}.head.norm',
-        'first_stage_model.{0}.conv_out': 'head.{0}.head.conv',
+        'first_stage_model': 'vae',
+        'first_stage_model.{0}.block.{1}.norm{2}.': 'vae.{0}.blocks.{1}.fn.conv{2}.norm.',
+        'first_stage_model.{0}.block.{1}.conv{2}.': 'vae.{0}.blocks.{1}.fn.conv{2}.conv.',
+        'first_stage_model.{0}.block.{1}.nin_shortcut': 'vae.{0}.blocks.{1}.project_fn',
+        'first_stage_model.{0}sample.conv': 'vae.{0}sample.fn.1',
+        'first_stage_model.{0}.mid.block_{1}.norm{2}.': 'vae.{0}.neck.block_{1}.fn.conv{2}.norm.',
+        'first_stage_model.{0}.mid.block_{1}.conv{2}.': 'vae.{0}.neck.block_{1}.fn.conv{2}.conv.',
+        'first_stage_model.{0}.mid.attn_1.norm': 'vae.{0}.neck.attn.0',
+        'first_stage_model.{0}.mid.attn_1.q': 'vae.{0}.neck.attn.1.to_qkv.0',
+        'first_stage_model.{0}.mid.attn_1.k': 'vae.{0}.neck.attn.1.to_qkv.1',
+        'first_stage_model.{0}.mid.attn_1.v': 'vae.{0}.neck.attn.1.to_qkv.2',
+        'first_stage_model.{0}.mid.attn_1.proj_out': 'vae.{0}.neck.attn.1.to_out',
+        'first_stage_model.{0}.norm_out': 'vae.{0}.head.norm',
+        'first_stage_model.{0}.conv_out': 'vae.{0}.head.conv',
 
         'model.diffusion_model': 'backbone',
         'model.diffusion_model.time_embed.0': 'backbone.time_embed.1.linear',
@@ -80,8 +73,8 @@ def convert_weights(state_dict):
         'model.diffusion_model.{0}.0.emb_layers.1': 'backbone.{0}.layers.0.emb_layers.linear',
         'model.diffusion_model.{0}.0.out_layers.0': 'backbone.{0}.layers.0.norm',
         'model.diffusion_model.{0}.0.out_layers.3': 'backbone.{0}.layers.0.out_layers.conv',
-        'model.diffusion_model.{0}.1.norm': 'backbone.{0}.layers.1.proj_in.norm',
-        'model.diffusion_model.{0}.1.proj_in': 'backbone.{0}.layers.1.proj_in.conv',
+        'model.diffusion_model.{0}.1.norm': 'backbone.{0}.layers.1.norm',
+        'model.diffusion_model.{0}.1.proj_in': 'backbone.{0}.layers.1.proj_in',
         'model.diffusion_model.{0}.1.transformer_blocks.0.attn{1}.to_q': 'backbone.{0}.layers.1.transformer_blocks.0.attn{1}.to_qkv.0',
         'model.diffusion_model.{0}.1.transformer_blocks.0.attn{1}.to_k': 'backbone.{0}.layers.1.transformer_blocks.0.attn{1}.to_qkv.1',
         'model.diffusion_model.{0}.1.transformer_blocks.0.attn{1}.to_v': 'backbone.{0}.layers.1.transformer_blocks.0.attn{1}.to_qkv.2',
@@ -102,7 +95,7 @@ def convert_weights(state_dict):
         'model.diffusion_model.out.0': 'backbone.out.norm',
         'model.diffusion_model.out.2': 'backbone.out.conv',
 
-        'cond_stage_model': 'in_module'
+        'cond_stage_model': 'cond'
     }
     state_dict = torch_utils.convert_state_dict(state_dict, convert_dict)
 
@@ -118,47 +111,44 @@ class Model(ddim.Model):
         - https://github.com/CompVis/stable-diffusion
     """
 
-    def __init__(self, image_size,
-                 in_module_trainable=False, in_module=None,
-                 in_module_config=Config.in_module, model_config=Config.model,
-                 backbone_config=Config.backbone, head_config=Config.head):
-        backbone = UNetModel(**backbone_config)
-        head = VAE.Model(**head_config)
-        if in_module is None:
-            in_module = copy.deepcopy(head)
+    # change set in model_config
+    scale = 7.5
+    scale_factor = 0.18215
+    strength = 0.75
+    cond_trainable = False
+    vae_trainable = False
 
-        if not hasattr(in_module, 'encode'):
-            in_module.encode = in_module.__call__
-        if not hasattr(head, 'decode'):
-            head.decode = head.__call__
+    def make_cond(self, **kwargs):
+        raise NotImplementedError
 
-        if not in_module_trainable:
-            torch_utils.freeze_layers(in_module)
-        torch_utils.freeze_layers(head)
+    def make_diffuse(self, vae_config=Config.vae, backbone_config=Config.backbone, **kwargs):
+        cond = self.make_cond(**kwargs)
+        vae = VAE.Model(self.img_ch, backbone_config=vae_config)   # decode is in module, encode is head module
+        backbone = UNetModel(vae.z_ch, cond.output_size, **backbone_config)
 
-        self.register_model_config(**model_config)
+        if not hasattr(cond, 'encode'):
+            cond.encode = cond.__call__
+        assert hasattr(vae, 'decode')
+        assert hasattr(vae, 'encode')
 
-        super().__init__(
-            4,  # inner ch for backbone
-            image_size // head.encoder.down_scale,  # inner size for backbone
-            in_module=in_module,
-            backbone=backbone,
-            head=head,
-            **model_config
-        )
+        if not self.cond_trainable:
+            torch_utils.freeze_layers(cond)
+        if not self.vae_trainable:
+            torch_utils.freeze_layers(vae)
 
-    def register_model_config(self, scale=7.5, scale_factor=0.18215, strength=0.75, **kwargs):
-        self.scale = scale
-        self.scale_factor = scale_factor
-        self.strength = strength
+        self.cond = cond
+        self.backbone = backbone
+        self.vae = vae
+        self.diffuse_in_ch = self.vae.z_ch
+        self.diffuse_in_size = self.image_size // self.vae.encoder.down_scale
 
     def post_process(self, x=None, text=None, image=None, **kwargs):
         b = len(text)
 
-        c = self.in_module.encode(text)
+        c = self.cond.encode(text)
         uc = None
         if self.scale != 1.0:
-            uc = self.in_module.encode([''] * b)
+            uc = self.cond.encode([''] * b)
 
         # make x_t
         if x is None:  # txt2img
@@ -170,12 +160,12 @@ class Model(ddim.Model):
 
         z = super().post_process(x, t0=t0, cond=c, un_cond=uc)
         z = z / self.scale_factor
-        images = self.head.decode(z)
+        images = self.vae.decode(z)
 
         return images
 
     def make_image_cond(self, image):
-        z, _, _ = self.head.encode(image)
+        z, _, _ = self.vae.encode(image)
         x0 = self.scale_factor * z
 
         ddim_timestep_seq = self.make_ddim_timesteps()
@@ -205,7 +195,8 @@ class UNetModel(nn.Module):
 
     def __init__(
             self,
-            in_ch=4,
+            in_ch,
+            context_dim,  # custom transformer support
             unit_dim=320,
             out_ch=4,
             num_res_blocks=2,
@@ -218,8 +209,8 @@ class UNetModel(nn.Module):
             use_checkpoint=True,
             num_heads=None,
             head_dim=None,
-            context_dim=768,  # custom transformer support
             n_embed=None,  # custom support for prediction of discrete ids into codebook of first stage vq model
+            use_linear_in_transformer=False,
             sinusoidal_pos_emb_theta=10000,
             learned_sinusoidal_cond=False,
             random_fourier_features=False,
@@ -236,7 +227,7 @@ class UNetModel(nn.Module):
 
         # helper
         make_res = functools.partial(ResnetBlock, groups=groups, use_checkpoint=use_checkpoint, time_emb_dim=time_emb_dim)
-        make_trans = functools.partial(TransformerBlock, context_dim=context_dim, use_checkpoint=use_checkpoint)
+        make_trans = functools.partial(TransformerBlock, context_dim=context_dim, use_checkpoint=use_checkpoint, use_linear=use_linear_in_transformer)
 
         if learned_sinusoidal_cond:
             sin_pos_emb = RandomOrLearnedSinusoidalPosEmb(learned_sinusoidal_dim, random_fourier_features)
@@ -267,8 +258,8 @@ class UNetModel(nn.Module):
                 out_ch = mult * unit_dim
                 blocks = [make_res(in_ch, out_ch)]
                 if i in attend_layers:
-                    n_heads, _, head_dim = get_attention_input(num_heads, out_ch, head_dim)
-                    blocks.append(make_trans(out_ch, num_heads, head_dim))
+                    _n_heads, _, _head_dim = get_attention_input(num_heads, out_ch, head_dim)
+                    blocks.append(make_trans(out_ch, _n_heads, _head_dim))
 
                 layers.append(TimestepEmbedSequential(*blocks))
                 input_block_chans.append(out_ch)
@@ -281,10 +272,10 @@ class UNetModel(nn.Module):
 
         self.input_blocks = nn.ModuleList(layers)
 
-        n_heads, _, head_dim = get_attention_input(num_heads, out_ch, head_dim)
+        _n_heads, _, _head_dim = get_attention_input(num_heads, out_ch, head_dim)
         self.middle_block = TimestepEmbedSequential(
             make_res(out_ch, out_ch),
-            make_trans(out_ch, num_heads, head_dim),
+            make_trans(out_ch, _n_heads, _head_dim),
             make_res(out_ch, out_ch),
         )
 
@@ -298,8 +289,8 @@ class UNetModel(nn.Module):
                 out_ch = unit_dim * mult
                 blocks = [make_res(in_ch + ich, out_ch)]
                 if i in attend_layers:
-                    n_heads, _, head_dim = get_attention_input(num_heads, out_ch, head_dim)
-                    blocks.append(make_trans(out_ch, num_heads, head_dim))
+                    _n_heads, _, _head_dim = get_attention_input(num_heads, out_ch, head_dim)
+                    blocks.append(make_trans(out_ch, _n_heads, _head_dim))
 
                 if not is_top and is_block_bottom:
                     blocks.append(Upsample(out_ch, out_ch, use_conv=conv_resample))
@@ -366,27 +357,49 @@ class TimestepEmbedSequential(nn.Module):
 
 class TransformerBlock(nn.Module):
     def __init__(self, in_ch, n_heads, head_dim, groups=32,
-                 depth=1, dropout=0., context_dim=None, use_checkpoint=False):
+                 depth=1, dropout=0., context_dim=None, use_linear=False, use_checkpoint=False):
         super().__init__()
         self.in_channels = in_ch
+        self.use_linear = use_linear
         model_dim = n_heads * head_dim
-        self.proj_in = Conv(in_ch, model_dim, 1, mode='nc', norm=make_norm(groups, in_ch, eps=1e-6))  # note, original code use `eps=1e-6`
+
+        self.norm = make_norm(groups, in_ch, eps=1e-6)  # note, original code use `eps=1e-6`
+
+        if use_linear:
+            self.proj_in = nn.Linear(in_ch, model_dim)
+        else:
+            self.proj_in = nn.Conv2d(in_ch, model_dim, 1)
 
         self.transformer_blocks = nn.ModuleList([BasicTransformerBlock(
             model_dim, n_heads, head_dim, drop_prob=dropout, context_dim=context_dim, use_checkpoint=use_checkpoint
         ) for _ in range(depth)])
 
-        self.proj_out = nn.Conv2d(model_dim, in_ch, 1, stride=1, padding=0)
+        if use_linear:
+            self.proj_out = nn.Linear(model_dim, in_ch)
+        else:
+            self.proj_out = nn.Conv2d(model_dim, in_ch, 1, stride=1, padding=0)
 
     def forward(self, x, context=None):
         # note: if no context is given, cross-attention defaults to self-attention
         b, c, h, w = x.shape
-        y = self.proj_in(x)
-        y = rearrange(y, 'b c h w -> b (h w) c')
+
+        y = self.norm(x)
+        if self.use_linear:
+            y = rearrange(y, 'b c h w -> b (h w) c')
+            y = self.proj_in(y)
+        else:
+            y = self.proj_in(y)
+            y = rearrange(y, 'b c h w -> b (h w) c')
+
         for block in self.transformer_blocks:
             y = block(y, context=context)
-        y = rearrange(y, 'b (h w) c -> b c h w', h=h, w=w)
-        y = self.proj_out(y)
+
+        if self.use_linear:
+            y = self.proj_out(y)
+            y = rearrange(y, 'b (h w) c -> b c h w', h=h, w=w)
+        else:
+            y = rearrange(y, 'b (h w) c -> b c h w', h=h, w=w)
+            y = self.proj_out(y)
         return y + x
 
 

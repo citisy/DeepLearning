@@ -66,6 +66,7 @@ class Model(nn.Module):
         self.post_quant_conv = nn.Conv2d(z_ch, z_ch, 1)
         self.decoder = Decoder(self.post_quant_conv.out_channels, img_ch, **backbone_config)
         self.loss = Loss(self.re_parametrize, **loss_config)
+        self.z_ch = z_ch
 
     def forward(self, x, sample_posterior=True, **loss_kwargs):
         z, mean, log_var = self.encode(x, sample_posterior)
@@ -97,7 +98,7 @@ def make_attn(in_channels, attn_type=Config.VANILLA, groups=32):
         Config.VANILLA_XFORMERS: lambda in_ch: nn.Sequential(
             make_norm(groups, in_ch),
             CrossAttention3D(n_heads=1, head_dim=in_ch, use_xformers=True)
-        ),   # use xformers, equal to VANILLA
+        ),  # use xformers, equal to VANILLA
         Config.LINEAR: lambda in_ch: LinearAttention3D(n_heads=1, head_dim=in_ch, use_mem_kv=False, separate_conv=True),
     }
     return attn_dict.get(attn_type, nn.Identity)(in_channels)

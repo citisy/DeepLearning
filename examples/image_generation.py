@@ -5,7 +5,7 @@ from torch import optim, nn
 from pathlib import Path
 from datetime import datetime
 from collections import namedtuple
-from utils import os_lib
+from utils import os_lib, torch_utils
 from data_parse.cv_data_parse.data_augmentation import crop, scale, geometry, channel, RandomApply, Apply, complex, pixel_perturbation
 from data_parse import DataRegister
 from data_parse.cv_data_parse.base import DataVisualizer
@@ -783,22 +783,8 @@ class Ddim_CelebAHQ(Dpim, CelebAHQ):
 
 class Ldm(DiProcess):
     model_version = 'ldm'
-    in_ch = 4
+    in_ch = 3
     input_size = 512
-
-    cond_pretrain_model = 'openai/clip-vit-large-patch14'
-
-    def set_model(self):
-        from models.image_generation.ldm import Model
-        self.model = Model(
-            image_size=self.input_size,
-            in_module_config=dict(
-                pretrain_model=self.cond_pretrain_model,
-                # if having ldm pretrain_model, do not download the clip weight file, only the config file
-                # 'cause the ldm pretrain_model contains the clip weight
-                load_weight=not hasattr(self, 'pretrain_model')
-            )
-        )
 
     def set_optimizer(self):
         self.optimizer = optim.Adam(self.model.parameters(), lr=1e-4, betas=(0.9, 0.99))
@@ -884,26 +870,49 @@ class Ldm(DiProcess):
         return images
 
 
-class FromHFv1Pretrain(CheckpointHooks):
+class SDv1(Ldm):
+    model_version = 'sdv1'
+    model_sub_version = 'vanilla'   # for config choose
+    dataset_version = model_sub_version
+    cond_pretrain_model = 'openai/clip-vit-large-patch14'
+
+    def set_model(self):
+        from models.image_generation.sdv1 import Model, Config
+        self.model = Model(
+            img_ch=self.in_ch,
+            image_size=self.input_size,
+            cond_config=dict(
+                pretrain_model=self.cond_pretrain_model,
+                # if having ldm pretrain_model, do not download the clip weight file, only the config file
+                # 'cause the ldm pretrain_model contains the clip weight
+                load_weight=not hasattr(self, 'pretrain_model')
+            ),
+            **Config.get()
+        )
+
+
+class LoadSDv1Pretrain(CheckpointHooks):
+
     def load_pretrain(self):
         if hasattr(self, 'pretrain_model'):
-            from models.image_generation.ldm import convert_weights
+            from models.image_generation.sdv1 import convert_weights
 
-            ckpt = torch.load(self.pretrain_model, map_location=self.device)
-            state_dict = ckpt['state_dict']
+            state_dict = torch_utils.Load.from_file(self.pretrain_model)
+            if not self.pretrain_model.endswith('.safetensors'):
+                state_dict = state_dict['state_dict']
             state_dict = convert_weights(state_dict)
             self.model.load_state_dict(state_dict, strict=False)
 
 
-class LdmHFv1(Ldm, FromHFv1Pretrain):
+class SDv1Pretrained(SDv1, LoadSDv1Pretrain):
     """no training, only for prediction
 
     Usage:
         .. code-block:: python
 
-            from examples.image_generation import Ldm_CelebA as Process
+            from examples.image_generation import SDv1Pretrained as Process
 
-            process = Process(pretrain_model='...')
+            process = Process(pretrain_model='...', cond_pretrain_model='...', model_sub_version='...')
 
             # txt2img
             prompt = 'a painting of a virus monster playing guitar'
@@ -927,4 +936,72 @@ class LdmHFv1(Ldm, FromHFv1Pretrain):
             images = process.batch_predict(prompts, images, batch_size=2, is_visualize=True)    # base on different image
     """
 
-    dataset_version = 'v1'
+
+class SDv2(Ldm):
+    model_version = 'sdv2'
+    model_sub_version = 'vanilla'   # for config choose
+    dataset_version = model_sub_version
+    cond_pretrain_model = None
+    input_size = 768
+
+    def set_model(self):
+        from models.image_generation.sdv2 import Model, Config
+
+        config = Config.get(self.model_sub_version)
+        self.model = Model(
+            img_ch=self.in_ch,
+            image_size=self.input_size,
+            cond_config=dict(
+                # if having ldm pretrain_model, set `self.cond_pretrain_model=None`,
+                # do not download the clip weight file, only the config file
+                # 'cause the ldm pretrain_model contains the clip weight
+                pretrain_model=self.cond_pretrain_model,
+            ),
+            **config
+        )
+
+
+class LoadSDv2Pretrain(CheckpointHooks):
+
+    def load_pretrain(self):
+        if hasattr(self, 'pretrain_model'):
+            from models.image_generation.sdv2 import convert_weights
+
+            state_dict = torch_utils.Load.from_file(self.pretrain_model)
+            if not self.pretrain_model.endswith('.safetensors'):
+                state_dict = state_dict['state_dict']
+            state_dict = convert_weights(state_dict)
+            self.model.load_state_dict(state_dict, strict=False)
+
+
+class SDv2Pretrained(SDv2, LoadSDv2Pretrain):
+    """no training, only for prediction
+
+    Usage:
+        .. code-block:: python
+
+            from examples.image_generation import SDv2Pretrained as Process
+
+            process = Process(pretrain_model='...', cond_pretrain_model='...', model_sub_version='...')
+
+            # txt2img
+            prompt = 'a painting of a virus monster playing guitar'
+            prompts = ['a painting of a virus monster playing guitar', 'a painting of two virus monster playing guitar']
+
+            # predict one
+            image = process.single_predict(prompt, is_visualize=True)
+
+            # predict batch
+            images = process.batch_predict(prompts, batch_size=2, is_visualize=True)
+
+            # img2img
+            image = 'test.jpg'
+            images = ['test1.jpg', 'test2.jpg']
+
+            # predict one
+            image = process.single_predict(prompt, image, is_visualize=True)
+
+            # predict batch
+            images = process.batch_predict(prompts, image, batch_size=2, is_visualize=True)     # base on same image
+            images = process.batch_predict(prompts, images, batch_size=2, is_visualize=True)    # base on different image
+    """
