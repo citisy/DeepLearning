@@ -1,4 +1,3 @@
-import open_clip
 import torch
 import torch.nn.functional as F
 from torch.utils.checkpoint import checkpoint
@@ -8,39 +7,41 @@ from . import ldm, ddpm, VAE, sdv1
 from .ldm import convert_weights
 
 
-class Config(ldm.Config):
+class Config(sdv1.Config):
     """only for inference"""
-    POOLED = 0
-    LAST = 1
-    PENULTIMATE = 2
 
-    model = dict(
+    # for OpenCLIPEmbedder layer output
+    LAST = 'last'
+    # PENULTIMATE = 'penultimate'     # not use, equal to LAST
+    POOLED = 'pooled'
+
+    v2_model = dict(
         scale=9.,
         objective=ddpm.Config.PRED_Z,
     )
 
-    backbone = dict(
+    v2_backbone = dict(
         head_dim=64,
         use_linear_in_transformer=True
     )
 
-    v_model = dict(
+    v2_v_model = dict(
         scale=9.,
         objective=ddpm.Config.PRED_V,
     )
 
-    inpaint_model = dict(
+    v2_inpaint_model = dict(
         objective=ddpm.Config.PRED_V,
         conditioning_key=ldm.Config.HYBRID
     )
 
-    inpaint_vae = dict(
+    v2_inpaint_vae = dict(
         z_ch=9,
         ch_mult=(1, 2, 4, 4),
         attn_layers=[]
     )
 
-    midas_vae = dict(
+    v2_midas_vae = dict(
         z_ch=5,
         ch_mult=(1, 2, 4, 4),
         attn_layers=[]
@@ -66,54 +67,58 @@ class Config(ldm.Config):
         attn_layers=[]
     )
 
-    unclip_model = dict(
+    v2_unclip_model = dict(
         scale=9.,
         objective=ddpm.Config.PRED_V,
         conditioning_key=ldm.Config.CROSSATTN_ADM
     )
 
-    unclip_vae = dict(
+    v2_unclip_vae = dict(
         attn_type=VAE.Config.VANILLA_XFORMERS,
         **VAE.Config.backbone_32x32x4
     )
 
-    unclip_l_backbone = dict(
-        num_classes="sequential",
+    v2_unclip_l_backbone = dict(
+        num_classes=ldm.Config.SEQUENTIAL,
         adm_in_channels=1536,
-        **backbone
+        **v2_backbone
     )
 
-    unclip_h_backbone = dict(
-        num_classes="sequential",
+    v2_unclip_h_backbone = dict(
+        num_classes=ldm.Config.SEQUENTIAL,
         adm_in_channels=2048,
-        **backbone
+        **v2_backbone
     )
+
+    default_model = 'v2'
 
     @classmethod
-    def get(cls, name=None):
+    def make_full_config(cls):
         config_dict = dict(
-            vanilla=dict(  # support version v2
-                model_config=cls.model,
-                backbone_config=cls.backbone,
+            # support version v2
+            v2=dict(
+                model_config=cls.v2_model,
+                backbone_config=cls.v2_backbone,
                 vae_config=cls.vae
             ),
 
-            v=dict(  # support version v2-v, v2-768, v2.1, v2.1-768
-                model_config=cls.v_model,
-                backbone_config=cls.backbone,
+            # support version v2-v, v2-768, v2.1, v2.1-768
+            v2_v=dict(
+                model_config=cls.v2_v_model,
+                backbone_config=cls.v2_backbone,
                 vae_config=cls.vae
             ),
 
-            inpaint=dict(
-                model_config=cls.inpaint_model,
-                backbone_config=cls.backbone,
-                vae_config=cls.inpaint_vae
+            v2_inpaint=dict(
+                model_config=cls.v2_inpaint_model,
+                backbone_config=cls.v2_backbone,
+                vae_config=cls.v2_inpaint_vae
             ),
 
-            midas=dict(
-                model_config=cls.inpaint_model,  # same to inpaint
-                backbone_config=cls.backbone,
-                vae_config=cls.midas_vae
+            v2_midas=dict(
+                model_config=cls.v2_inpaint_model,  # same to inpaint
+                backbone_config=cls.v2_backbone,
+                vae_config=cls.v2_midas_vae
             ),
 
             x4=dict(
@@ -122,72 +127,93 @@ class Config(ldm.Config):
                 vae_config=cls.x4_vae
             ),
 
-            unclip_l=dict(
-                model_config=cls.unclip_model,
-                backbone_config=cls.unclip_l_backbone,
-                vae_config=cls.unclip_vae
+            v2_unclip_l=dict(
+                model_config=cls.v2_unclip_model,
+                backbone_config=cls.v2_unclip_l_backbone,
+                vae_config=cls.v2_unclip_vae
             ),
 
-            unclip_h=dict(
-                model_config=cls.unclip_model,
-                backbone_config=cls.unclip_h_backbone,
-                vae_config=cls.unclip_vae
+            v2_unclip_h=dict(
+                model_config=cls.v2_unclip_model,
+                backbone_config=cls.v2_unclip_h_backbone,
+                vae_config=cls.v2_unclip_vae
             )
 
         )
-        return config_dict.get(name, 'vanilla')
+        return config_dict
 
 
 class Model(ldm.Model):
     def make_cond(self, cond_config=dict(), **kwargs):
-        return FrozenOpenCLIPEmbedder(**cond_config)
+        return OpenCLIPEmbedder(**cond_config)
 
 
-class FrozenOpenCLIPEmbedder(nn.Module):
+class OpenCLIPEmbedder(nn.Module):
     """Uses the OpenCLIP transformer encoder for text
     see https://huggingface.co/laion/CLIP-ViT-H-14-laion2B-s32B-b79K
     """
 
-    def __init__(self, pretrain_model=None, arch="ViT-H-14",
-                 max_length=77, layer=Config.PENULTIMATE):
+    def __init__(self, arch="ViT-H-14", pretrain_model=None, layer=Config.LAST,
+                 return_pooled=True, legacy=True):
         super().__init__()
+        import open_clip  # pip install open-clip-torch>=2.20.0
 
-        # pretrain_model = 'laion2b_s32b_b79k'
+        # if arch="ViT-H-14", use pretrain_model = 'laion2b_s32b_b79k'
+        # if arch="ViT-bigG-14", use pretrain_model = 'laion2b_s39b_b160k'
         model, _, _ = open_clip.create_model_and_transforms(arch, pretrained=pretrain_model)
         del model.visual
         self.model = model
+        self.tokenizer = open_clip.tokenize
 
-        self.max_length = max_length
-        self.output_size = 1024
+        self.max_length = model.context_length  # 77
+        self.output_size = model.transformer.width  # 1024
+        self.return_pooled = return_pooled
+        self.legacy = legacy
         self.layer = layer
-        if self.layer == Config.LAST:
-            self.layer_idx = 0
-        elif self.layer == Config.PENULTIMATE:
-            self.layer_idx = 1
-        else:
-            raise NotImplementedError()
 
     def forward(self, text):
         device = self.model.attn_mask.device
-        tokens = open_clip.tokenize(text).to(device)
-        z = self.encode_with_transformer(tokens)
-        return z
+        tokens = self.tokenizer(text).to(device)
+        return self.encode_with_transformer(tokens)
 
     def encode_with_transformer(self, text):
         x = self.model.token_embedding(text)  # [batch_size, n_ctx, d_model]
         x = x + self.model.positional_embedding
         x = x.permute(1, 0, 2)  # NLD -> LND
         x = self.text_transformer_forward(x, attn_mask=self.model.attn_mask)
-        x = x.permute(1, 0, 2)  # LND -> NLD
-        x = self.model.ln_final(x)
+        if self.legacy:
+            x = x[self.layer]
+            x = self.model.ln_final(x)
+            return x
+        else:
+            o = x["last"]
+            o = self.model.ln_final(o)
+
+            if self.layer == Config.POOLED:
+                pooled = self.pool(o, text)
+                x["pooled"] = pooled
+                if self.return_pooled:
+                    return x[self.layer], x['pooled']
+
+            return x[self.layer]
+
+    def pool(self, x, text):
+        # take features from the eot embedding (eot_token is the highest number in each sequence)
+        idx = torch.arange(x.shape[0]), text.argmax(dim=-1)
+        x = x[idx] @ self.model.text_projection
         return x
 
     def text_transformer_forward(self, x: torch.Tensor, attn_mask=None):
+        outputs = {}
         for i, r in enumerate(self.model.transformer.resblocks):
-            if i == len(self.model.transformer.resblocks) - self.layer_idx:
+            if i == len(self.model.transformer.resblocks) - 1:  # the last block, for penultimate
+                # outputs["penultimate"] = x.permute(1, 0, 2)  # LND -> NLD
                 break
+
             if self.model.transformer.grad_checkpointing and not torch.jit.is_scripting():
                 x = checkpoint(r, x, attn_mask)
             else:
                 x = r(x, attn_mask=attn_mask)
-        return x
+
+        outputs["last"] = x.permute(1, 0, 2)  # LND -> NLD
+        return outputs

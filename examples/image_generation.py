@@ -871,8 +871,8 @@ class Ldm(DiProcess):
 
 
 class SDv1(Ldm):
-    model_version = 'sdv1'
-    model_sub_version = 'vanilla'   # for config choose
+    model_version = 'sd'
+    model_sub_version = 'vanilla'  # for config choose
     dataset_version = model_sub_version
     cond_pretrain_model = 'openai/clip-vit-large-patch14'
 
@@ -887,7 +887,7 @@ class SDv1(Ldm):
                 # 'cause the ldm pretrain_model contains the clip weight
                 load_weight=not hasattr(self, 'pretrain_model')
             ),
-            **Config.get()
+            **Config.get(self.model_sub_version)
         )
 
 
@@ -938,8 +938,8 @@ class SDv1Pretrained(SDv1, LoadSDv1Pretrain):
 
 
 class SDv2(Ldm):
-    model_version = 'sdv2'
-    model_sub_version = 'vanilla'   # for config choose
+    model_version = 'sd'
+    model_sub_version = 'v2'  # for config choose
     dataset_version = model_sub_version
     cond_pretrain_model = None
     input_size = 768
@@ -947,7 +947,6 @@ class SDv2(Ldm):
     def set_model(self):
         from models.image_generation.sdv2 import Model, Config
 
-        config = Config.get(self.model_sub_version)
         self.model = Model(
             img_ch=self.in_ch,
             image_size=self.input_size,
@@ -957,7 +956,7 @@ class SDv2(Ldm):
                 # 'cause the ldm pretrain_model contains the clip weight
                 pretrain_model=self.cond_pretrain_model,
             ),
-            **config
+            **Config.get(self.model_sub_version)
         )
 
 
@@ -1004,4 +1003,93 @@ class SDv2Pretrained(SDv2, LoadSDv2Pretrain):
             # predict batch
             images = process.batch_predict(prompts, image, batch_size=2, is_visualize=True)     # base on same image
             images = process.batch_predict(prompts, images, batch_size=2, is_visualize=True)    # base on different image
+    """
+
+
+class SDXL(Ldm):
+    model_version = 'sd'
+    model_sub_version = 'xl_base'  # for config choose
+    dataset_version = model_sub_version
+    cond_pretrain_model = None
+    input_size = 768
+
+    def set_model(self):
+        from models.image_generation.sdxl import Model, Config
+
+        self.model = Model(
+            img_ch=self.in_ch,
+            image_size=self.input_size,
+            **Config.get(self.model_sub_version)
+        )
+
+    def gen_predict_inputs(self, *objs, **kwargs):
+        pos_texts, neg_texts = objs[:2]
+        assert len(pos_texts) == len(neg_texts)
+
+        if len(objs) == 2:
+            pass
+        elif len(objs) == 3:
+            images = objs[2]
+
+            texts, images = objs
+            if isinstance(images, str):
+                images = [images for _ in range(len(texts))]
+            else:
+                assert len(pos_texts) == len(images)
+
+            rets = []
+            for pos_text, neg_text, image in zip(pos_texts, neg_texts, images):
+                if isinstance(image, str):
+                    image = os_lib.Loader(verbose=False).load_img(image)
+                rets.append(self.model_input_template(image=image, text=text)._asdict())
+
+
+class LoadSDXLPretrain(CheckpointHooks):
+
+    def load_pretrain(self):
+        if hasattr(self, 'pretrain_model'):
+            from models.image_generation.sdxl import convert_weights
+
+            state_dict = torch_utils.Load.from_file(self.pretrain_model)
+            if not self.pretrain_model.endswith('.safetensors'):
+                state_dict = state_dict['state_dict']
+            state_dict = convert_weights(state_dict)
+            self.model.load_state_dict(state_dict, strict=False)
+
+
+class SDXLPretrained(SDXL, LoadSDXLPretrain):
+    """no training, only for prediction
+
+    Usage:
+        .. code-block:: python
+
+            from examples.image_generation import SDXLPretrained as Process
+
+            process = Process(pretrain_model='...', cond_pretrain_model='...', model_sub_version='...')
+
+            # txt2img
+            pos_prompt = 'Astronaut in a jungle, cold color palette, muted colors, detailed, 8k'
+            neg_prompt = 'hot'
+            pos_prompts = [
+                'Astronaut in a jungle, cold color palette, muted colors, detailed, 8k',
+                'Astronaut in a jungle, hot color palette, muted colors, detailed, 8k'
+            ]
+            neg_prompts = ['hot', 'cold']
+
+            # predict one
+            image = process.single_predict(pos_prompt, neg_prompt, is_visualize=True)
+
+            # predict batch
+            images = process.batch_predict(pos_prompts, neg_prompts, batch_size=2, is_visualize=True)
+
+            # img2img
+            image = 'test.jpg'
+            images = ['test1.jpg', 'test2.jpg']
+
+            # predict one
+            image = process.single_predict(prompt, image, is_visualize=True)
+
+            # predict batch
+            images = process.batch_predict(pos_prompt, neg_prompt, image, batch_size=2, is_visualize=True)     # base on same image
+            images = process.batch_predict(pos_prompts, neg_prompts, images, batch_size=2, is_visualize=True)    # base on different image
     """

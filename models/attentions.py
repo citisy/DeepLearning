@@ -285,6 +285,9 @@ class FlashAttend(nn.Module):
 
     def __init__(self, drop_prob=0.):
         super().__init__()
+        from packaging import version
+        assert version.parse(torch.__version__) >= version.parse("2.0.0")
+
         self.drop_prob = drop_prob
 
         # determine efficient attention configs for cuda and cpu

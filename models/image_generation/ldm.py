@@ -17,6 +17,12 @@ class Config:
     HYBRID = 2
     HYBRID_ADM = 3
 
+    # for UNetModel label_emb num_classes
+    # can not set to int value
+    CONTINUOUS = 'continuous'
+    TIMESTEP = 'timestep'
+    SEQUENTIAL = 'sequential'
+
     model = dict(
         objective=ddim.Config.PRED_Z
     )
@@ -26,13 +32,23 @@ class Config:
     )
     vae = VAE.Config.backbone_32x32x4
 
+    default_model = 'vanilla'
+
+    @classmethod
+    def make_full_config(cls):
+        config_dict = dict(
+            vanilla=dict(
+                model_config=cls.model,
+                backbone_config=cls.backbone,
+                vae_config=cls.vae
+            )
+        )
+        return config_dict
+
     @classmethod
     def get(cls, name=None):
-        return dict(
-            model_config=cls.model,
-            backbone_config=cls.backbone,
-            vae_config=cls.vae
-        )
+        config_dict = cls.make_full_config()
+        return config_dict.get(name, cls.default_model)
 
 
 def convert_weights(state_dict):
@@ -111,8 +127,8 @@ class Model(ddim.Model):
         - https://github.com/CompVis/stable-diffusion
     """
 
-    # change set in model_config
-    scale = 7.5
+    # can change in model_config
+    scale = 7.5  # can change dynamically
     scale_factor = 0.18215
     strength = 0.75
     cond_trainable = False
@@ -123,7 +139,7 @@ class Model(ddim.Model):
 
     def make_diffuse(self, vae_config=Config.vae, backbone_config=Config.backbone, **kwargs):
         cond = self.make_cond(**kwargs)
-        vae = VAE.Model(self.img_ch, backbone_config=vae_config)   # decode is in module, encode is head module
+        vae = VAE.Model(self.img_ch, backbone_config=vae_config)  # decode is in module, encode is head module
         backbone = UNetModel(vae.z_ch, cond.output_size, **backbone_config)
 
         if not hasattr(cond, 'encode'):
@@ -195,35 +211,25 @@ class UNetModel(nn.Module):
 
     def __init__(
             self,
-            in_ch,
-            context_dim,  # custom transformer support
-            unit_dim=320,
-            out_ch=4,
-            num_res_blocks=2,
-            attend_layers=(0, 1, 2),
-            groups=32,
-            ch_mult=(1, 2, 4, 4),
-            conv_resample=True,
-            num_classes=None,
-            use_fp16=False,
-            use_checkpoint=True,
-            num_heads=None,
-            head_dim=None,
-            n_embed=None,  # custom support for prediction of discrete ids into codebook of first stage vq model
-            use_linear_in_transformer=False,
-            sinusoidal_pos_emb_theta=10000,
-            learned_sinusoidal_cond=False,
-            random_fourier_features=False,
-            learned_sinusoidal_dim=16,
+            in_ch, context_dim,
+            out_ch=4, unit_dim=320, ch_mult=(1, 2, 4, 4),  # for model
+            use_fp16=False, use_checkpoint=True,  # for resnet and transformers
+            sinusoidal_pos_emb_theta=10000, learned_sinusoidal_cond=False, random_fourier_features=False, learned_sinusoidal_dim=16,  # for time embed
+            num_classes=None, adm_in_channels=None,  # for label_emb
+            groups=32, num_res_blocks=2,  # for resnet
+            num_heads=None, head_dim=None, transformer_depth=1, use_linear_in_transformer=False, attend_layers=(0, 1, 2),  # for transformers
+            conv_resample=True,  # for up/down sample
     ):
         super().__init__()
         self.in_channels = in_ch
         self.out_channels = out_ch
         self.num_classes = num_classes
         self.dtype = torch.float16 if use_fp16 else torch.float32
-        self.predict_codebook_ids = n_embed is not None
 
         time_emb_dim = unit_dim * 4
+
+        if isinstance(transformer_depth, int):
+            transformer_depth = len(ch_mult) * [transformer_depth]
 
         # helper
         make_res = functools.partial(ResnetBlock, groups=groups, use_checkpoint=use_checkpoint, time_emb_dim=time_emb_dim)
@@ -243,7 +249,7 @@ class UNetModel(nn.Module):
         )
 
         if num_classes is not None:
-            self.label_emb = nn.Embedding(num_classes, time_emb_dim)
+            self.label_emb = self.make_label_emb(num_classes, time_emb_dim, unit_dim, adm_in_channels)
 
         out_ch = unit_dim
         layers = [TimestepEmbedSequential(nn.Conv2d(in_ch, out_ch, 3, padding=1))]
@@ -259,7 +265,7 @@ class UNetModel(nn.Module):
                 blocks = [make_res(in_ch, out_ch)]
                 if i in attend_layers:
                     _n_heads, _, _head_dim = get_attention_input(num_heads, out_ch, head_dim)
-                    blocks.append(make_trans(out_ch, _n_heads, _head_dim))
+                    blocks.append(make_trans(out_ch, _n_heads, _head_dim, depth=transformer_depth[i]))
 
                 layers.append(TimestepEmbedSequential(*blocks))
                 input_block_chans.append(out_ch)
@@ -275,7 +281,7 @@ class UNetModel(nn.Module):
         _n_heads, _, _head_dim = get_attention_input(num_heads, out_ch, head_dim)
         self.middle_block = TimestepEmbedSequential(
             make_res(out_ch, out_ch),
-            make_trans(out_ch, _n_heads, _head_dim),
+            make_trans(out_ch, _n_heads, _head_dim, depth=transformer_depth[-1]),
             make_res(out_ch, out_ch),
         )
 
@@ -290,7 +296,7 @@ class UNetModel(nn.Module):
                 blocks = [make_res(in_ch + ich, out_ch)]
                 if i in attend_layers:
                     _n_heads, _, _head_dim = get_attention_input(num_heads, out_ch, head_dim)
-                    blocks.append(make_trans(out_ch, _n_heads, _head_dim))
+                    blocks.append(make_trans(out_ch, _n_heads, _head_dim, depth=transformer_depth[i]))
 
                 if not is_top and is_block_bottom:
                     blocks.append(Upsample(out_ch, out_ch, use_conv=conv_resample))
@@ -299,15 +305,36 @@ class UNetModel(nn.Module):
                 in_ch = out_ch
 
         self.output_blocks = nn.ModuleList(layers)
+        self.out = Conv(in_ch, self.out_channels, 3, mode='nac', act=nn.SiLU(), norm=make_norm(groups, unit_dim))
 
-        if self.predict_codebook_ids:
-            self.id_predictor = nn.Sequential(
-                make_norm(groups, in_ch),
-                nn.Conv2d(in_ch, n_embed, 1),
-            )
+    def make_label_emb(self, num_classes, time_emb_dim, unit_dim, adm_in_channels):
+        if self.num_classes is not None:
+            if isinstance(self.num_classes, int):
+                label_emb = nn.Embedding(num_classes, time_emb_dim)
+            elif self.num_classes == Config.CONTINUOUS:
+                label_emb = nn.Linear(1, time_emb_dim)
+            elif self.num_classes == Config.TIMESTEP:
+                label_emb = nn.Sequential(
+                    SinusoidalPosEmb(unit_dim),
+                    nn.Sequential(
+                        nn.Linear(unit_dim, time_emb_dim),
+                        nn.SiLU(),
+                        nn.Linear(time_emb_dim, time_emb_dim),
+                    ),
+                )
+            elif self.num_classes == Config.SEQUENTIAL:
+                assert adm_in_channels is not None
+                label_emb = nn.Sequential(
+                    nn.Sequential(
+                        Linear(adm_in_channels, time_emb_dim),
+                        nn.SiLU(),
+                        Linear(time_emb_dim, time_emb_dim),
+                    )
+                )
+            else:
+                raise ValueError
 
-        else:
-            self.out = Conv(in_ch, self.out_channels, 3, mode='nac', act=nn.SiLU(), norm=make_norm(groups, unit_dim))
+            return label_emb
 
     def forward(self, x, timesteps=None, context=None, y=None, **kwargs):
         emb = self.time_embed(timesteps)
@@ -328,10 +355,7 @@ class UNetModel(nn.Module):
             h = module(h, emb, context)
 
         h = h.type(x.dtype)
-        if self.predict_codebook_ids:
-            return self.id_predictor(h)
-        else:
-            return self.out(h)
+        return self.out(h)
 
 
 class TimestepEmbedSequential(nn.Module):
@@ -363,6 +387,11 @@ class TransformerBlock(nn.Module):
         self.use_linear = use_linear
         model_dim = n_heads * head_dim
 
+        if not isinstance(context_dim, list):
+            context_dim = [context_dim] * depth
+
+        assert len(context_dim) == depth
+
         self.norm = make_norm(groups, in_ch, eps=1e-6)  # note, original code use `eps=1e-6`
 
         if use_linear:
@@ -371,8 +400,8 @@ class TransformerBlock(nn.Module):
             self.proj_in = nn.Conv2d(in_ch, model_dim, 1)
 
         self.transformer_blocks = nn.ModuleList([BasicTransformerBlock(
-            model_dim, n_heads, head_dim, drop_prob=dropout, context_dim=context_dim, use_checkpoint=use_checkpoint
-        ) for _ in range(depth)])
+            model_dim, n_heads, head_dim, drop_prob=dropout, context_dim=d, use_checkpoint=use_checkpoint
+        ) for d in context_dim])
 
         if use_linear:
             self.proj_out = nn.Linear(model_dim, in_ch)
