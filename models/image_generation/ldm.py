@@ -2,6 +2,7 @@ import functools
 import copy
 import torch
 import torch.nn.functional as F
+from torch.utils.checkpoint import checkpoint
 from torch import nn, einsum
 from einops import rearrange, repeat, reduce
 from utils import torch_utils
@@ -447,7 +448,7 @@ class BasicTransformerBlock(nn.Module):
         self.use_checkpoint = use_checkpoint
 
     def forward(self, x, context=None):
-        return torch_utils.checkpoint(self._forward, (x, context), self.parameters(), self.use_checkpoint)
+        return checkpoint(self._forward, x, context, use_reentrant=self.use_checkpoint)
 
     def _forward(self, x, context=None):
         x = self.attn1(self.norm1(x)) + x

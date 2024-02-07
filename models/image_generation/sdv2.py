@@ -189,7 +189,7 @@ class OpenCLIPEmbedder(nn.Module):
             o = x["last"]
             o = self.model.ln_final(o)
 
-            if self.layer == Config.POOLED:
+            if self.layer == Config.POOLED or self.return_pooled:
                 pooled = self.pool(o, text)
                 x["pooled"] = pooled
                 if self.return_pooled:

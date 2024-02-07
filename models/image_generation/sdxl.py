@@ -1,4 +1,4 @@
-import open_clip
+import math
 import torch
 import torch.nn.functional as F
 from torch.utils.checkpoint import checkpoint
@@ -17,6 +17,13 @@ class Config(sdv2.Config):
     CROP_COORDS_TOP_LEFT = 2
     TARGET_SIZE_AS_TUPLE = 3
     AESTHETIC_SCORE = 4
+    FPS = 5
+    FPS_ID = 6
+    MOTION_BUCKET_ID = 7
+    POOL_IMAGE = 8
+    COND_AUG = 9
+    COND_FRAMES = 10
+    COND_FRAMES_WITHOUT_NOISE = 11
 
     xl_model = dict(
         scale=9.,
@@ -143,8 +150,14 @@ class Model(ldm.Model):
     def make_cond(self, cond_config=[], **kwargs):
         return EmbedderWarp(cond_config)
 
+    def post_process(self, x=None, text=None, neg_text=None, image=None, **kwargs):
+        pass
+
 
 class EmbedderWarp(nn.Module):
+    OUTPUT_DIM2KEYS = {2: "vector", 3: "crossattn", 4: "concat", 5: "concat"}
+    KEY2CATDIM = {"vector": 1, "crossattn": 2, "concat": 1}
+
     def __init__(self, cond_configs: list):
         super().__init__()
         from utils import converter
@@ -165,9 +178,117 @@ class EmbedderWarp(nn.Module):
         self.input_keys = input_keys
         self.output_size = output_size  # 2048
 
-    def forward(self, batch):
+    def forward(self, **value_dict):
+        batch, batch_uc = self.get_batch(**value_dict)
+        c = self.get_cond(batch)
+        uc = self.get_cond(batch_uc)
+        return c, uc
+
+    def get_cond(self, batch):
+        output = {}
         for input_key, embedder in zip(self.input_keys, self.embedders):
             emb_out = embedder(batch[input_key])
+            if not isinstance(emb_out, (list, tuple)):
+                emb_out = [emb_out]
+
+            for emb in emb_out:
+                out_key = self.OUTPUT_DIM2KEYS[emb.dim()]
+
+                if out_key in output:
+                    output[out_key] = torch.cat(
+                        (output[out_key], emb), self.KEY2CATDIM[out_key]
+                    )
+                else:
+                    output[out_key] = emb
+
+        return output
+
+    def get_batch(self, N, device, **value_dict):
+        """
+        value_dict = {
+        'target_width': 1024,
+        'target_height': 1024,
+        'crop_coords_top': 0,
+        'crop_coords_left': 0,
+        'orig_width': 1024,
+        'orig_height': 1024,
+        'prompt': 'Astronaut in a jungle, cold color palette, muted colors, detailed, 8k',
+        'negative_prompt': ''
+        }
+        """
+        batch = {}
+        batch_uc = {}
+        for key in self.input_keys:
+            if key == Config.TXT:
+                batch["txt"] = [value_dict["prompt"]] * math.prod(batch)
+                batch_uc["txt"] = [value_dict["negative_prompt"]] * math.prod(N)
+
+            elif key == Config.ORIGINAL_SIZE_AS_TUPLE:
+                batch[key] = (
+                    torch.tensor([value_dict["orig_height"], value_dict["orig_width"]])
+                    .to(device)
+                    .repeat(math.prod(N), 1)
+                )
+            elif key == Config.CROP_COORDS_TOP_LEFT:
+                batch[key] = (
+                    torch.tensor(
+                        [value_dict["crop_coords_top"], value_dict["crop_coords_left"]]
+                    )
+                    .to(device)
+                    .repeat(math.prod(N), 1)
+                )
+            elif key == Config.AESTHETIC_SCORE:
+                batch[key] = (
+                    torch.tensor([value_dict["aesthetic_score"]])
+                    .to(device)
+                    .repeat(math.prod(N), 1)
+                )
+                batch_uc[key] = (
+                    torch.tensor([value_dict["negative_aesthetic_score"]])
+                    .to(device)
+                    .repeat(math.prod(N), 1)
+                )
+
+            elif key == Config.TARGET_SIZE_AS_TUPLE:
+                batch[key] = (
+                    torch.tensor([value_dict["target_height"], value_dict["target_width"]])
+                    .to(device)
+                    .repeat(math.prod(N), 1)
+                )
+            elif key == Config.FPS:
+                batch[key] = (
+                    torch.tensor([value_dict["fps"]]).to(device).repeat(math.prod(N))
+                )
+            elif key == Config.FPS_ID:
+                batch[key] = (
+                    torch.tensor([value_dict["fps_id"]]).to(device).repeat(math.prod(N))
+                )
+            elif key == Config.MOTION_BUCKET_ID:
+                batch[key] = (
+                    torch.tensor([value_dict["motion_bucket_id"]])
+                    .to(device)
+                    .repeat(math.prod(N))
+                )
+            elif key == Config.POOL_IMAGE:
+                batch[key] = repeat(value_dict[key], "1 ... -> b ...", b=math.prod(N)).to(
+                    device, dtype=torch.half
+                )
+            elif key == Config.COND_AUG:
+                batch[key] = repeat(
+                    torch.tensor([value_dict["cond_aug"]]).to("cuda"),
+                    "1 -> b",
+                    b=math.prod(N),
+                )
+            elif key == Config.COND_FRAMES:
+                batch[key] = repeat(value_dict["cond_frames"], "1 ... -> b ...", b=N[0])
+            elif key == Config.COND_FRAMES_WITHOUT_NOISE:
+                batch[key] = repeat(
+                    value_dict["cond_frames_without_noise"], "1 ... -> b ...", b=N[0]
+                )
+            else:
+                batch[key] = value_dict[key]
+
+        return batch, batch_uc
 
 
 class ConcatTimestepEmbedderND(nn.Module):

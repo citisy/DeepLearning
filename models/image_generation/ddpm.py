@@ -1,11 +1,11 @@
 import math
 import torch
 import torch.nn.functional as F
+from torch.utils.checkpoint import checkpoint
 from torch import nn, einsum
 from einops import rearrange, repeat, reduce
 from random import random
 from functools import partial
-from utils.torch_utils import checkpoint
 from ..layers import Linear, Conv, Upsample, Downsample
 from ..attentions import CrossAttention3D, LinearAttention3D
 
@@ -550,7 +550,7 @@ class ResnetBlock(nn.Module):
         self.proj = nn.Conv2d(in_ch, out_ch, 1) if in_ch != out_ch else nn.Identity()
 
     def forward(self, x, time_emb=None):
-        return checkpoint(self._forward, (x, time_emb), self.parameters(), self.use_checkpoint)
+        return checkpoint(self._forward, x, time_emb, use_reentrant=self.use_checkpoint)
 
     def _forward(self, x, time_emb=None):
         h = self.in_layers(x)
