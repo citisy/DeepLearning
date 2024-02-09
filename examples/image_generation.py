@@ -1003,7 +1003,7 @@ class SDXL(Ldm):
     model_sub_version = 'xl_base'  # for config choose
     dataset_version = model_sub_version
     cond_pretrain_model = None
-    input_size = 768
+    input_size = 1024
 
     def set_model(self):
         from models.image_generation.sdxl import Model, Config

@@ -84,6 +84,8 @@ def convert_weights(state_dict):
         'model.diffusion_model': 'backbone',
         'model.diffusion_model.time_embed.0': 'backbone.time_embed.1.linear',
         'model.diffusion_model.time_embed.2': 'backbone.time_embed.2.linear',
+        'model.diffusion_model.label_emb.0.0': 'backbone.label_emb.0',
+        'model.diffusion_model.label_emb.0.2': 'backbone.label_emb.2',
         'model.diffusion_model.{2}.0.0': 'backbone.{2}.0.layers.0',
         'model.diffusion_model.{0}.0.in_layers.0': 'backbone.{0}.layers.0.in_layers.norm',
         'model.diffusion_model.{0}.0.in_layers.2': 'backbone.{0}.layers.0.in_layers.conv',
@@ -92,13 +94,13 @@ def convert_weights(state_dict):
         'model.diffusion_model.{0}.0.out_layers.3': 'backbone.{0}.layers.0.out_layers.conv',
         'model.diffusion_model.{0}.1.norm': 'backbone.{0}.layers.1.norm',
         'model.diffusion_model.{0}.1.proj_in': 'backbone.{0}.layers.1.proj_in',
-        'model.diffusion_model.{0}.1.transformer_blocks.0.attn{1}.to_q': 'backbone.{0}.layers.1.transformer_blocks.0.attn{1}.to_qkv.0',
-        'model.diffusion_model.{0}.1.transformer_blocks.0.attn{1}.to_k': 'backbone.{0}.layers.1.transformer_blocks.0.attn{1}.to_qkv.1',
-        'model.diffusion_model.{0}.1.transformer_blocks.0.attn{1}.to_v': 'backbone.{0}.layers.1.transformer_blocks.0.attn{1}.to_qkv.2',
-        'model.diffusion_model.{0}.1.transformer_blocks.0.attn{1}.to_out.0': 'backbone.{0}.layers.1.transformer_blocks.0.attn{1}.to_out.linear',
-        'model.diffusion_model.{0}.1.transformer_blocks.0.ff.net.0.proj': 'backbone.{0}.layers.1.transformer_blocks.0.ff.0.proj',
-        'model.diffusion_model.{0}.1.transformer_blocks.0.ff.net.2': 'backbone.{0}.layers.1.transformer_blocks.0.ff.2',
-        'model.diffusion_model.{0}.1.transformer_blocks.0.norm{1}.': 'backbone.{0}.layers.1.transformer_blocks.0.norm{1}.',
+        'model.diffusion_model.{0}.1.transformer_blocks.{2}.attn{1}.to_q': 'backbone.{0}.layers.1.transformer_blocks.{2}.attn{1}.to_qkv.0',
+        'model.diffusion_model.{0}.1.transformer_blocks.{2}.attn{1}.to_k': 'backbone.{0}.layers.1.transformer_blocks.{2}.attn{1}.to_qkv.1',
+        'model.diffusion_model.{0}.1.transformer_blocks.{2}.attn{1}.to_v': 'backbone.{0}.layers.1.transformer_blocks.{2}.attn{1}.to_qkv.2',
+        'model.diffusion_model.{0}.1.transformer_blocks.{2}.attn{1}.to_out.0': 'backbone.{0}.layers.1.transformer_blocks.{2}.attn{1}.to_out.linear',
+        'model.diffusion_model.{0}.1.transformer_blocks.{2}.ff.net.0.proj': 'backbone.{0}.layers.1.transformer_blocks.{2}.ff.0.proj',
+        'model.diffusion_model.{0}.1.transformer_blocks.{2}.ff.net.2': 'backbone.{0}.layers.1.transformer_blocks.{2}.ff.2',
+        'model.diffusion_model.{0}.1.transformer_blocks.{2}.norm{1}.': 'backbone.{0}.layers.1.transformer_blocks.{2}.norm{1}.',
         'model.diffusion_model.{0}.1.proj_out': 'backbone.{0}.layers.1.proj_out',
         'model.diffusion_model.{0}.1.conv': 'backbone.{0}.layers.1.op.1',
         'model.diffusion_model.{0}.2.conv': 'backbone.{0}.layers.2.op.1',
@@ -157,17 +159,15 @@ class Model(ddim.Model):
         self.backbone = backbone
         self.vae = vae
         self.diffuse_in_ch = self.vae.z_ch
-        self.diffuse_in_size = self.image_size // self.vae.encoder.down_scale
+        self.diffuse_in_size = (
+            self.image_size[0] // self.vae.encoder.down_scale,
+            self.image_size[1] // self.vae.encoder.down_scale,
+        )
 
     def post_process(self, x=None, text=None, neg_text=None, image=None, **kwargs):
         b = len(text)
 
-        c = self.cond.encode(text)
-        uc = None
-        if self.scale != 1.0:
-            if not neg_text:
-                neg_text = [''] * b
-            uc = self.cond.encode(neg_text)
+        txt_cond = self.make_txt_cond(text, neg_text)
 
         # make x_t
         if x is None:  # txt2img
@@ -177,11 +177,26 @@ class Model(ddim.Model):
         else:  # img2img
             x, t0 = self.make_image_cond(x)
 
-        z = super().post_process(x, t0=t0, cond=c, un_cond=uc)
+        z = super().post_process(x, t0=t0, **txt_cond)
         z = z / self.scale_factor
         images = self.vae.decode(z)
 
         return images
+
+    def make_txt_cond(self, text, neg_text=None) -> dict:
+        b = len(text)
+
+        c = self.cond.encode(text)
+        uc = None
+        if self.scale != 1.0:
+            if not neg_text:
+                neg_text = [''] * b
+            uc = self.cond.encode(neg_text)
+
+        return dict(
+            cond=c,
+            un_cond=uc
+        )
 
     def make_image_cond(self, image):
         z, _, _ = self.vae.encode(image)
@@ -328,11 +343,9 @@ class UNetModel(nn.Module):
             elif self.num_classes == Config.SEQUENTIAL:
                 assert adm_in_channels is not None
                 label_emb = nn.Sequential(
-                    nn.Sequential(
-                        Linear(adm_in_channels, time_emb_dim),
-                        nn.SiLU(),
-                        Linear(time_emb_dim, time_emb_dim),
-                    )
+                    nn.Linear(adm_in_channels, time_emb_dim),
+                    nn.SiLU(),
+                    nn.Linear(time_emb_dim, time_emb_dim),
                 )
             else:
                 raise ValueError
@@ -343,7 +356,7 @@ class UNetModel(nn.Module):
         emb = self.time_embed(timesteps)
 
         if self.num_classes is not None:
-            assert y.shape == (x.shape[0],)
+            assert y.shape[0] == x.shape[0], f'Expect {y.shape[0]}, but got {x.shape[0]}'
             emb = emb + self.label_emb(y)
 
         h = x.type(self.dtype)

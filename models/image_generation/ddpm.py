@@ -105,6 +105,8 @@ class Model(nn.ModuleList):
 
     def __init__(self, img_ch, image_size, **configs):
         super().__init__()
+        if isinstance(image_size, int):
+            image_size = (image_size, image_size)
         self.image_size = image_size
         self.img_ch = img_ch
         self.diffuse_in_ch = img_ch  # channels of x_t
@@ -115,6 +117,9 @@ class Model(nn.ModuleList):
         self.make_diffuse(**configs)
 
         self.self_condition = False
+
+        # todo: it seem that it is not elegant, but apply for `nn.DataParallel` mode, find a better solution
+        self.dummy_param = nn.Parameter(torch.empty(0))
 
     # pred_z -> model(x_t, t) = z_t
     # pred_x0 -> model(x_t, t) = x_0
@@ -306,8 +311,8 @@ class Model(nn.ModuleList):
 
         return self.predict_x_t(x0, t, noise)
 
-    def gen_x_t(self, batch_size, device):
-        return torch.randn((batch_size, self.diffuse_in_ch, self.diffuse_in_size, self.diffuse_in_size), device=device)
+    def gen_x_t(self, batch_size):
+        return torch.randn((batch_size, self.diffuse_in_ch, *self.diffuse_in_size), device=self.dummy_param.device)
 
     def post_process(self, x_t, return_all_timesteps=False, **kwargs):
         images = [x_t]

@@ -12,7 +12,7 @@ class Config(sdv1.Config):
 
     # for OpenCLIPEmbedder layer output
     LAST = 'last'
-    # PENULTIMATE = 'penultimate'     # not use, equal to LAST
+    PENULTIMATE = 'penultimate'
     POOLED = 'pooled'
 
     v2_model = dict(
@@ -153,7 +153,7 @@ class OpenCLIPEmbedder(nn.Module):
     see https://huggingface.co/laion/CLIP-ViT-H-14-laion2B-s32B-b79K
     """
 
-    def __init__(self, arch="ViT-H-14", pretrain_model=None, layer=Config.LAST,
+    def __init__(self, arch="ViT-H-14", pretrain_model=None, layer=Config.PENULTIMATE,
                  return_pooled=True, legacy=True):
         super().__init__()
         import open_clip  # pip install open-clip-torch>=2.20.0
@@ -207,8 +207,8 @@ class OpenCLIPEmbedder(nn.Module):
         outputs = {}
         for i, r in enumerate(self.model.transformer.resblocks):
             if i == len(self.model.transformer.resblocks) - 1:  # the last block, for penultimate
-                # outputs["penultimate"] = x.permute(1, 0, 2)  # LND -> NLD
-                break
+                outputs["penultimate"] = x.permute(1, 0, 2)  # LND -> NLD
+                # break
 
             if self.model.transformer.grad_checkpointing and not torch.jit.is_scripting():
                 x = checkpoint(r, x, attn_mask)
