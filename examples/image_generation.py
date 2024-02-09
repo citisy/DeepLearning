@@ -679,7 +679,7 @@ class DiProcess(IgProcess):
         return output
 
     def get_val_data(self, *args, **kwargs):
-        val_obj = self.model.gen_x_t(self.val_data_num, device=self.device)
+        val_obj = self.model.gen_x_t(self.val_data_num)
         return val_obj
 
     def on_val_start(self, val_dataloader=None, batch_size=16, dataloader_kwargs=dict(), **kwargs):
@@ -803,12 +803,17 @@ class Ldm(DiProcess):
 
     def on_val_step(self, rets, **kwargs) -> dict:
         texts = []
+        neg_texts = []
         images = []
         for ret in rets:
             if 'text' in ret:
                 texts.append(ret['text'])
             if 'image' in ret and ret['image'] is not None:
                 images.append(torch.from_numpy(ret.pop('image')).to(self.device, non_blocking=True, dtype=torch.float))
+            if 'neg_text' in ret and ret['neg_text']:
+                neg_texts.append(ret['neg_text'])
+
+        neg_texts = neg_texts if neg_texts else None
 
         if images:
             images = torch.stack(images)
@@ -819,7 +824,7 @@ class Ldm(DiProcess):
 
         model_results = {}
         for name, model in self.models.items():
-            fake_x = model(x=images, text=texts)
+            fake_x = model(x=images, text=texts, neg_text=neg_texts)
             fake_x = (fake_x + 1) * 0.5  # unnormalize, [-1, 1] -> [0, 1]
             fake_x = fake_x.data.mul(255).clamp_(0, 255).permute(0, 2, 3, 1).to("cpu", torch.uint8).numpy()
             model_results[name] = dict(
@@ -828,26 +833,31 @@ class Ldm(DiProcess):
 
         return model_results
 
-    model_input_template = namedtuple('model_inputs', ['image', 'text'], defaults=[None, None])
+    model_input_template = namedtuple('model_inputs', ['text', 'neg_text', 'image'], defaults=[None, None])
 
-    def gen_predict_inputs(self, *objs, **kwargs):
-        if len(objs) == 1:
-            return [self.model_input_template(text=text)._asdict() for text in objs[0]]
+    def gen_predict_inputs(self, *objs, images=None, **kwargs):
+        assert len(objs) <= 2
 
-        elif len(objs) == 2:
-            rets = []
-            texts, images = objs
-            if isinstance(images, str):
-                images = [images for _ in range(len(texts))]
-            else:
-                assert len(texts) == len(images)
+        if len(objs) == 2:
+            pos_texts, neg_texts = objs
+            assert len(pos_texts) == len(neg_texts)
+        else:
+            pos_texts = objs[0]
+            neg_texts = [None] * len(pos_texts)
 
-            for text, image in zip(texts, images):
-                if isinstance(image, str):
-                    image = os_lib.Loader(verbose=False).load_img(image)
-                rets.append(self.model_input_template(image=image, text=text)._asdict())
+        if images:
+            if not isinstance(images, (list, tuple)):
+                images = [images for _ in pos_texts]
+        else:
+            images = [None] * len(pos_texts)
 
-            return rets
+        rets = []
+        for text, neg_text, image in zip(pos_texts, neg_texts, images):
+            if isinstance(image, str):
+                image = os_lib.Loader(verbose=False).load_img(image)
+            rets.append(self.model_input_template(image=image, text=text, neg_text=neg_text)._asdict())
+
+        return rets
 
     def on_predict_step_end(self, model_results, add_watermark=True, watermark='watermark', **kwargs):
         for name, results in model_results.items():
@@ -916,13 +926,15 @@ class SDv1Pretrained(SDv1, LoadSDv1Pretrain):
 
             # txt2img
             prompt = 'a painting of a virus monster playing guitar'
+            neg_prompt = ''
             prompts = ['a painting of a virus monster playing guitar', 'a painting of two virus monster playing guitar']
+            neg_prompts = ['', '']
 
             # predict one
-            image = process.single_predict(prompt, is_visualize=True)
+            image = process.single_predict(prompt, neg_prompt, is_visualize=True)
 
             # predict batch
-            images = process.batch_predict(prompts, batch_size=2, is_visualize=True)
+            images = process.batch_predict(prompts, neg_prompts, batch_size=2, is_visualize=True)
 
             # img2img
             image = 'test.jpg'
@@ -932,8 +944,8 @@ class SDv1Pretrained(SDv1, LoadSDv1Pretrain):
             image = process.single_predict(prompt, image, is_visualize=True)
 
             # predict batch
-            images = process.batch_predict(prompts, image, batch_size=2, is_visualize=True)     # base on same image
-            images = process.batch_predict(prompts, images, batch_size=2, is_visualize=True)    # base on different image
+            images = process.batch_predict(prompts, neg_prompt, images=image, batch_size=2, is_visualize=True)     # base on same image
+            images = process.batch_predict(prompts, neg_prompts, images=images, batch_size=2, is_visualize=True)    # base on different image
     """
 
 
@@ -981,28 +993,8 @@ class SDv2Pretrained(SDv2, LoadSDv2Pretrain):
 
             from examples.image_generation import SDv2Pretrained as Process
 
-            process = Process(pretrain_model='...', cond_pretrain_model='...', model_sub_version='...')
-
-            # txt2img
-            prompt = 'a painting of a virus monster playing guitar'
-            prompts = ['a painting of a virus monster playing guitar', 'a painting of two virus monster playing guitar']
-
-            # predict one
-            image = process.single_predict(prompt, is_visualize=True)
-
-            # predict batch
-            images = process.batch_predict(prompts, batch_size=2, is_visualize=True)
-
-            # img2img
-            image = 'test.jpg'
-            images = ['test1.jpg', 'test2.jpg']
-
-            # predict one
-            image = process.single_predict(prompt, image, is_visualize=True)
-
-            # predict batch
-            images = process.batch_predict(prompts, image, batch_size=2, is_visualize=True)     # base on same image
-            images = process.batch_predict(prompts, images, batch_size=2, is_visualize=True)    # base on different image
+            # same to `SDv1Pretrained`
+            ...
     """
 
 
@@ -1021,27 +1013,6 @@ class SDXL(Ldm):
             image_size=self.input_size,
             **Config.get(self.model_sub_version)
         )
-
-    def gen_predict_inputs(self, *objs, **kwargs):
-        pos_texts, neg_texts = objs[:2]
-        assert len(pos_texts) == len(neg_texts)
-
-        if len(objs) == 2:
-            pass
-        elif len(objs) == 3:
-            images = objs[2]
-
-            texts, images = objs
-            if isinstance(images, str):
-                images = [images for _ in range(len(texts))]
-            else:
-                assert len(pos_texts) == len(images)
-
-            rets = []
-            for pos_text, neg_text, image in zip(pos_texts, neg_texts, images):
-                if isinstance(image, str):
-                    image = os_lib.Loader(verbose=False).load_img(image)
-                rets.append(self.model_input_template(image=image, text=text)._asdict())
 
 
 class LoadSDXLPretrain(CheckpointHooks):
@@ -1065,31 +1036,6 @@ class SDXLPretrained(SDXL, LoadSDXLPretrain):
 
             from examples.image_generation import SDXLPretrained as Process
 
-            process = Process(pretrain_model='...', cond_pretrain_model='...', model_sub_version='...')
-
-            # txt2img
-            pos_prompt = 'Astronaut in a jungle, cold color palette, muted colors, detailed, 8k'
-            neg_prompt = 'hot'
-            pos_prompts = [
-                'Astronaut in a jungle, cold color palette, muted colors, detailed, 8k',
-                'Astronaut in a jungle, hot color palette, muted colors, detailed, 8k'
-            ]
-            neg_prompts = ['hot', 'cold']
-
-            # predict one
-            image = process.single_predict(pos_prompt, neg_prompt, is_visualize=True)
-
-            # predict batch
-            images = process.batch_predict(pos_prompts, neg_prompts, batch_size=2, is_visualize=True)
-
-            # img2img
-            image = 'test.jpg'
-            images = ['test1.jpg', 'test2.jpg']
-
-            # predict one
-            image = process.single_predict(prompt, image, is_visualize=True)
-
-            # predict batch
-            images = process.batch_predict(pos_prompt, neg_prompt, image, batch_size=2, is_visualize=True)     # base on same image
-            images = process.batch_predict(pos_prompts, neg_prompts, images, batch_size=2, is_visualize=True)    # base on different image
+            # same to `SDv1Pretrained`
+            ...
     """

@@ -159,17 +159,19 @@ class Model(ddim.Model):
         self.diffuse_in_ch = self.vae.z_ch
         self.diffuse_in_size = self.image_size // self.vae.encoder.down_scale
 
-    def post_process(self, x=None, text=None, image=None, **kwargs):
+    def post_process(self, x=None, text=None, neg_text=None, image=None, **kwargs):
         b = len(text)
 
         c = self.cond.encode(text)
         uc = None
         if self.scale != 1.0:
-            uc = self.cond.encode([''] * b)
+            if not neg_text:
+                neg_text = [''] * b
+            uc = self.cond.encode(neg_text)
 
         # make x_t
         if x is None:  # txt2img
-            x = self.gen_x_t(b, c.device)
+            x = self.gen_x_t(b)
             t0 = None
 
         else:  # img2img
