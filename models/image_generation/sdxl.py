@@ -84,7 +84,6 @@ class Config(sdv2.Config):
     ]
 
     xl_refiner_cond = [
-        embedder1,
         embedder2,
         embedder3,
         embedder4,
@@ -93,7 +92,7 @@ class Config(sdv2.Config):
 
     xl_base_backbone = dict(
         num_classes=ldm.Config.SEQUENTIAL,
-        adm_in_channels=2816,
+        adm_in_channels=2816,   # 1028 * 2 + 256 * 3
         ch_mult=(1, 2, 4),
         # note, for reduce computation, the first layer do not use attention,
         # but use more attention in the middle block
@@ -105,7 +104,7 @@ class Config(sdv2.Config):
 
     xl_refiner_backbone = dict(
         num_classes=ldm.Config.SEQUENTIAL,
-        adm_in_channels=2560,
+        adm_in_channels=2560,   # 1028 * 2 + 256 * 2
         unit_dim=384,
         ch_mult=(1, 2, 4, 4),
         attend_layers=(1, 2),
@@ -169,6 +168,9 @@ class Model(ldm.Model):
         ]
 
         c_values, uc_values = self.cond(value_dicts)
+
+        if self.scale == 1.0:
+            uc_values = None
 
         return dict(
             c_values=c_values,
@@ -253,11 +255,7 @@ class EmbedderWarp(nn.Module):
         for value_dict in value_dicts:
             for key in self.input_keys:
                 if key == Config.TXT:
-                    continue
-
-                if key == Config.AESTHETIC_SCORE:
-                    batch.setdefault(key, []).append(torch.tensor([value_dict["aesthetic_score"]]))
-                    batch_uc.setdefault(key, []).append(torch.tensor([value_dict["aesthetic_score"]]))
+                    pass
 
                 elif key == Config.POOL_IMAGE:
                     batch.setdefault(key, []).append(value_dict[key].to(dtype=torch.half))

@@ -164,10 +164,11 @@ class Model(ddim.Model):
             self.image_size[1] // self.vae.encoder.down_scale,
         )
 
-    def post_process(self, x=None, text=None, neg_text=None, image=None, **kwargs):
+    def post_process(self, x=None, text=None, neg_text=None, **kwargs):
         b = len(text)
 
         txt_cond = self.make_txt_cond(text, neg_text)
+        kwargs.update(txt_cond)
 
         # make x_t
         if x is None:  # txt2img
@@ -177,7 +178,7 @@ class Model(ddim.Model):
         else:  # img2img
             x, t0 = self.make_image_cond(x)
 
-        z = super().post_process(x, t0=t0, **txt_cond)
+        z = self.p_sample_loop(x, t0=t0, **kwargs)
         z = z / self.scale_factor
         images = self.vae.decode(z)
 

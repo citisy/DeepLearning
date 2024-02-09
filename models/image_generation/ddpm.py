@@ -314,12 +314,16 @@ class Model(nn.ModuleList):
     def gen_x_t(self, batch_size):
         return torch.randn((batch_size, self.diffuse_in_ch, *self.diffuse_in_size), device=self.dummy_param.device)
 
-    def post_process(self, x_t, return_all_timesteps=False, **kwargs):
+    def post_process(self, x_t, **kwargs):
+        return self.p_sample_loop(x_t, **kwargs)
+
+    def p_sample_loop(self, x_t, t0=None, return_all_timesteps=False, **kwargs):
+        timestep_seq = self.make_timesteps(t0)
         images = [x_t]
         x_0 = None
 
         # t: T-1 -> 0
-        for t in reversed(range(0, self.timesteps)):
+        for t in reversed(timestep_seq):
             self_cond = x_0 if self.self_condition else None
             x_t, x_0 = self.p_sample(x_t, t, self_cond, **kwargs)
             images.append(x_t)
@@ -327,37 +331,34 @@ class Model(nn.ModuleList):
         images = x_t if not return_all_timesteps else torch.stack(images, dim=1)
         return images
 
-    @torch.inference_mode()
-    def p_sample(self, x_t, t: int, x_self_cond=None, **kwargs):
-        batched_times = torch.full((x_t.shape[0],), t, device=x_t.device, dtype=torch.long)
-        model_mean, _, model_log_variance, x_0 = self.p_mean_variance(x_t, t=batched_times, x_self_cond=x_self_cond, clip_denoised=True)
+    def make_timesteps(self, t0=None):
+        timestep_seq = range(0, self.timesteps)
+        if t0:
+            timestep_seq = timestep_seq[:t0]
+        return timestep_seq
+
+    def p_sample(self, x_t, t: int, x_self_cond=None, clip_denoised=True, **kwargs):
         noise = torch.randn_like(x_t) if t > 0 else 0.  # no noise if t == 0
 
-        # x_{t-1} = u(x_t, x_0) + exp(0.5 * 2 * \log s(x_t, t)) * z_t
-        # where, exp((0.5 * 2 * \log s(x_t, t))) = s(x_t, t), z~N(0, 1)
-        x_t_1 = model_mean + (0.5 * model_log_variance).exp() * noise
-        return x_t_1, x_0
-
-    def p_mean_variance(self, x_t, t, x_self_cond=None, clip_denoised=True):
+        t = torch.full((x_t.shape[0],), t, device=x_t.device, dtype=torch.long)
         x_0, _ = self.model_predictions(x_t, t, x_self_cond)
 
         if clip_denoised:
             x_0.clamp_(-1., 1.)
 
-        model_mean, posterior_variance, posterior_log_variance = self.q_posterior(x_0, x_t, t=t)
-        return model_mean, posterior_variance, posterior_log_variance, x_0
-
-    def q_posterior(self, x_0, x_t, t):
         # u(x_t, x_0) = (b * \sqrt ca_{t-1} / (1-ca_t)) * x0 + ((1-ca_{t-1}) * \sqrt a_t / (1 - ca_t)) * x_t
-        posterior_mean = extract(self.posterior_mean_coef1, t, x_t.shape) * x_0 + extract(self.posterior_mean_coef2, t, x_t.shape) * x_t
+        model_mean = extract(self.posterior_mean_coef1, t, x_t.shape) * x_0 + extract(self.posterior_mean_coef2, t, x_t.shape) * x_t
 
-        # s(x_t, t)^2 = b * (1-ca_{t-1}) / (1-ca_t)
-        posterior_variance = extract(self.posterior_variance, t, x_t.shape)
+        # # s(x_t, t)^2 = b * (1-ca_{t-1}) / (1-ca_t)
+        # posterior_variance = extract(self.posterior_variance, t, x_t.shape)
 
         # \log s(x_t, t)^2 = 2 \log s(x_t, t)
-        posterior_log_variance_clipped = extract(self.posterior_log_variance_clipped, t, x_t.shape)
+        model_log_variance = extract(self.posterior_log_variance_clipped, t, x_t.shape)
 
-        return posterior_mean, posterior_variance, posterior_log_variance_clipped
+        # x_{t-1} = u(x_t, x_0) + exp(0.5 * 2 * \log s(x_t, t)) * z_t
+        # where, exp((0.5 * 2 * \log s(x_t, t))) = s(x_t, t), z~N(0, 1)
+        x_t_1 = model_mean + (0.5 * model_log_variance).exp() * noise
+        return x_t_1, x_0
 
 
 class InModule(nn.Module):
