@@ -23,15 +23,20 @@ class Config(sdv2.Config):
     COND_FRAMES = 'cond_frames'
     COND_FRAMES_WITHOUT_NOISE = 'cond_frames_without_noise'
 
+    # for sigmas schedule
+    LEGACY_DDPM = 1
+    EDM = 2
+
     # for sampler scaling
-    EPS = 2  # same to PRED_Z in ddim
+    Z = 2  # same to PRED_Z in ddim
     V = 3  # same to PRED_V in ddim
-    EDM = 4
+    EDM_Z = 4
+    EDM_V = 5
 
     xl_model = dict(
         scale=5,
         scale_factor=0.13025,
-        objective=ddpm.Config.PRED_Z,
+        objective=Z,
     )
 
     embedder1 = dict(
@@ -138,51 +143,54 @@ class Config(sdv2.Config):
 class Model(ldm.Model):
     """https://github.com/Stability-AI/generative-models"""
 
+    num_steps = 40
+    schedule_type = Config.LEGACY_DDPM
+
+    # for edm schedule
     sigma_min = 0.002
     sigma_max = 80.0
     rho = 7.0
-    num_steps = 40
+
+    # for p_sample
     s_tmin = 0.0
     s_tmax = 999.0
     s_churn = 0.0
-    ddim_timesteps = 40
+
+    # for EDM_Z
+    sigma_data = 0.5
+
+    # for video
+    num_frames = 14
 
     def make_schedule(self):
-        if self.objective == Config.EDM:  # edm
+        if self.schedule_type == Config.EDM:  # edm
             ramp = torch.linspace(0, 1, self.timesteps)
             min_inv_rho = self.sigma_min ** (1 / self.rho)
             max_inv_rho = self.sigma_max ** (1 / self.rho)
             sigmas = (max_inv_rho + ramp * (min_inv_rho - max_inv_rho)) ** self.rho
 
-        else:  # legacy ddpm
-            from .ddpm import make_beta_schedule
-            betas = make_beta_schedule(Config.LINEAR)(self.timesteps, start=0.00085 ** 0.5, end=0.0120 ** 0.5) ** 2
+        elif self.schedule_type == Config.LEGACY_DDPM:  # legacy ddpm
+            from .ddpm import linear_beta_schedule
+            betas = linear_beta_schedule(self.timesteps, start=0.00085 ** 0.5, end=0.0120 ** 0.5) ** 2
             betas = betas.to(torch.float32)
             alphas = 1.0 - betas
             alphas_cumprod = torch.cumprod(alphas, dim=0)
             sigmas = ((1 - alphas_cumprod) / alphas_cumprod) ** 0.5
             sigmas = torch.cat([sigmas.new_zeros([1]), sigmas])
 
+        else:
+            raise ValueError(f'unknown objective {self.schedule_type}')
+
+        st = torch.ones(self.timesteps + 1, dtype=torch.long)
         self.register_buffer('sigmas', sigmas)
+        self.register_buffer('st', st)
 
     def make_cond(self, cond_config=[], **kwargs):
         return EmbedderWarp(cond_config)
 
-    def p_sample_loop(self, x_t, t0=None, return_all_timesteps=False, **kwargs):
-        timestep_seq = self.make_timesteps(t0)
-        timestep_prev_seq = np.append(np.array([0]), timestep_seq[:-1])
-        s_in = x_t.new_ones([x_t.shape[0]])
-        x_t *= torch.sqrt(1.0 + self.sigmas[timestep_seq[-1]] ** 2.0)
-
-        x_0 = None
-        images = [x_t]
-        for i in reversed(range(len(timestep_seq))):
-            self_cond = x_0 if self.self_condition else None
-            x_t, x_0 = self.p_sample(x_t, timestep_seq[i], timestep_prev_seq[i], self_cond, s_in=s_in, **kwargs)
-            images.append(x_t)
-
-        images = x_t if not return_all_timesteps else torch.stack(images, dim=1)
-        return images
+    def p_sample_loop(self, x_t, **kwargs):
+        x_t *= torch.sqrt(1.0 + self.sigmas[-1] ** 2.0)
+        return super().p_sample_loop(x_t, **kwargs)
 
     def make_timesteps(self, t0=None):
         # note, must start with self.timesteps
@@ -191,7 +199,9 @@ class Model(ldm.Model):
             timestep_seq = timestep_seq[:t0]
         return timestep_seq
 
-    def p_sample(self, x_t, t, prev_t=None, x_self_cond=None, s_in=None, **kwargs):
+    def p_sample(self, x_t, t, prev_t=None, x_self_cond=None, **kwargs):
+        # todo: add more sample methods
+        s_in = self.st[t]
         t = torch.full((x_t.shape[0],), t, device=x_t.device, dtype=torch.long)
         prev_t = torch.full((x_t.shape[0],), prev_t, device=x_t.device, dtype=torch.long)
 
@@ -210,7 +220,8 @@ class Model(ldm.Model):
             eps = torch.randn_like(x_t) * self.s_noise
             x_t = x_t + eps * (sigma_hat ** 2 - sigma ** 2) ** 0.5
 
-        c_skip, c_out, c_in, c_noise = self.make_scaling(sigma_hat)
+        possible_sigma = self.sigma[self.sigma_to_idx(sigma_hat)]
+        c_skip, c_out, c_in, c_noise = self.make_scaling(possible_sigma)
         possible_t = self.sigma_to_idx(c_noise)
         possible_t = possible_t - 1
 
@@ -228,7 +239,7 @@ class Model(ldm.Model):
         return dists.abs().argmin(dim=0).view(sigma.shape)
 
     def make_scaling(self, sigma):
-        if self.objective == Config.EPS:
+        if self.objective == Config.Z:
             c_skip = torch.ones_like(sigma, device=sigma.device)
             c_out = -sigma
             c_in = 1 / (sigma ** 2 + 1.0) ** 0.5
@@ -240,10 +251,16 @@ class Model(ldm.Model):
             c_in = 1.0 / (sigma ** 2 + 1.0) ** 0.5
             c_noise = sigma.clone()
 
-        elif self.objective == Config.EDM:
+        elif self.objective == Config.EDM_Z:
             c_skip = self.sigma_data ** 2 / (sigma ** 2 + self.sigma_data ** 2)
             c_out = sigma * self.sigma_data / (sigma ** 2 + self.sigma_data ** 2) ** 0.5
             c_in = 1 / (sigma ** 2 + self.sigma_data ** 2) ** 0.5
+            c_noise = 0.25 * sigma.log()
+
+        elif self.objective == Config.EDM_V:
+            c_skip = 1.0 / (sigma ** 2 + 1.0)
+            c_out = -sigma / (sigma ** 2 + 1.0) ** 0.5
+            c_in = 1.0 / (sigma ** 2 + 1.0) ** 0.5
             c_noise = 0.25 * sigma.log()
 
         else:
@@ -290,7 +307,16 @@ class Model(ldm.Model):
             e_t = z
         else:
             e_t_uncond, e_t = z.chunk(2)
-            e_t = e_t_uncond + self.scale * (e_t - e_t_uncond)
+
+            if isinstance(self.scale, list):
+                scale = torch.tensor(self.scale).to(e_t_uncond.device)
+                scale = repeat(scale, "1 t -> b t", b=e_t_uncond.shape[0])
+                scale = scale.view((*scale.shape, *e_t.shape[2:]))
+                e_t_uncond = rearrange(e_t_uncond, "(b t) ... -> b t ...", t=self.num_frames)
+                e_t = rearrange(e_t, "(b t) ... -> b t ...", t=self.num_frames)
+                e_t = rearrange(e_t_uncond + scale * (e_t - e_t_uncond), "b t ... -> (b t) ...")
+            else:
+                e_t = e_t_uncond + self.scale * (e_t - e_t_uncond)
 
         return e_t
 
