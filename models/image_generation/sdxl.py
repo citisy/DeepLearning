@@ -1,14 +1,9 @@
-import math
 import numpy as np
 import torch
-import torch.nn.functional as F
-from torch.utils.checkpoint import checkpoint
 from torch import nn, einsum
 from einops import rearrange, repeat, reduce
-from utils import torch_utils
 from . import ldm, ddpm, ddim, sdv1, sdv2
-# from .ldm import convert_weights
-from typing import Union, Dict, Tuple
+from .ddpm import extract
 
 
 class Config(sdv2.Config):
@@ -28,8 +23,13 @@ class Config(sdv2.Config):
     COND_FRAMES = 'cond_frames'
     COND_FRAMES_WITHOUT_NOISE = 'cond_frames_without_noise'
 
+    # for sampler scaling
+    EPS = 2  # same to PRED_Z in ddim
+    V = 3  # same to PRED_V in ddim
+    EDM = 4
+
     xl_model = dict(
-        scale=9.,
+        scale=5,
         scale_factor=0.13025,
         objective=ddpm.Config.PRED_Z,
     )
@@ -92,7 +92,7 @@ class Config(sdv2.Config):
 
     xl_base_backbone = dict(
         num_classes=ldm.Config.SEQUENTIAL,
-        adm_in_channels=2816,   # 1028 * 2 + 256 * 3
+        adm_in_channels=2816,  # 1028 * 2 + 256 * 3
         ch_mult=(1, 2, 4),
         # note, for reduce computation, the first layer do not use attention,
         # but use more attention in the middle block
@@ -104,7 +104,7 @@ class Config(sdv2.Config):
 
     xl_refiner_backbone = dict(
         num_classes=ldm.Config.SEQUENTIAL,
-        adm_in_channels=2560,   # 1028 * 2 + 256 * 2
+        adm_in_channels=2560,  # 1028 * 2 + 256 * 2
         unit_dim=384,
         ch_mult=(1, 2, 4, 4),
         attend_layers=(1, 2),
@@ -135,23 +135,121 @@ class Config(sdv2.Config):
         return config_dict
 
 
-def convert_weights(state_dict):
-    state_dict = ldm.convert_weights(state_dict)
-
-    convert_dict = {
-        'conditioner': 'cond'
-    }
-
-    state_dict = torch_utils.convert_state_dict(state_dict, convert_dict)
-
-    return state_dict
-
-
 class Model(ldm.Model):
     """https://github.com/Stability-AI/generative-models"""
 
+    sigma_min = 0.002
+    sigma_max = 80.0
+    rho = 7.0
+    num_steps = 40
+    s_tmin = 0.0
+    s_tmax = 999.0
+    s_churn = 0.0
+    ddim_timesteps = 40
+
+    def make_schedule(self):
+        if self.objective == Config.EDM:  # edm
+            ramp = torch.linspace(0, 1, self.timesteps)
+            min_inv_rho = self.sigma_min ** (1 / self.rho)
+            max_inv_rho = self.sigma_max ** (1 / self.rho)
+            sigmas = (max_inv_rho + ramp * (min_inv_rho - max_inv_rho)) ** self.rho
+
+        else:  # legacy ddpm
+            from .ddpm import make_beta_schedule
+            betas = make_beta_schedule(Config.LINEAR)(self.timesteps, start=0.00085 ** 0.5, end=0.0120 ** 0.5) ** 2
+            betas = betas.to(torch.float32)
+            alphas = 1.0 - betas
+            alphas_cumprod = torch.cumprod(alphas, dim=0)
+            sigmas = ((1 - alphas_cumprod) / alphas_cumprod) ** 0.5
+            sigmas = torch.cat([sigmas.new_zeros([1]), sigmas])
+
+        self.register_buffer('sigmas', sigmas)
+
     def make_cond(self, cond_config=[], **kwargs):
         return EmbedderWarp(cond_config)
+
+    def p_sample_loop(self, x_t, t0=None, return_all_timesteps=False, **kwargs):
+        timestep_seq = self.make_timesteps(t0)
+        timestep_prev_seq = np.append(np.array([0]), timestep_seq[:-1])
+        s_in = x_t.new_ones([x_t.shape[0]])
+        x_t *= torch.sqrt(1.0 + self.sigmas[timestep_seq[-1]] ** 2.0)
+
+        x_0 = None
+        images = [x_t]
+        for i in reversed(range(len(timestep_seq))):
+            self_cond = x_0 if self.self_condition else None
+            x_t, x_0 = self.p_sample(x_t, timestep_seq[i], timestep_prev_seq[i], self_cond, s_in=s_in, **kwargs)
+            images.append(x_t)
+
+        images = x_t if not return_all_timesteps else torch.stack(images, dim=1)
+        return images
+
+    def make_timesteps(self, t0=None):
+        # note, must start with self.timesteps
+        timestep_seq = np.linspace(self.timesteps, 0, self.num_steps, endpoint=False).astype(int)[::-1]
+        if t0:
+            timestep_seq = timestep_seq[:t0]
+        return timestep_seq
+
+    def p_sample(self, x_t, t, prev_t=None, x_self_cond=None, s_in=None, **kwargs):
+        t = torch.full((x_t.shape[0],), t, device=x_t.device, dtype=torch.long)
+        prev_t = torch.full((x_t.shape[0],), prev_t, device=x_t.device, dtype=torch.long)
+
+        sigma = extract(self.sigmas, t, x_t.shape) * s_in
+        next_sigma = extract(self.sigmas, prev_t, x_t.shape) * s_in
+
+        gamma = (
+            min(self.s_churn / (self.num_steps - 1), 2 ** 0.5 - 1)
+            if self.s_tmin <= sigma <= self.s_tmax
+            else 0.0
+        )
+
+        sigma_hat = sigma * (gamma + 1.0)
+
+        if gamma > 0:
+            eps = torch.randn_like(x_t) * self.s_noise
+            x_t = x_t + eps * (sigma_hat ** 2 - sigma ** 2) ** 0.5
+
+        c_skip, c_out, c_in, c_noise = self.make_scaling(sigma_hat)
+        possible_t = self.sigma_to_idx(c_noise)
+        possible_t = possible_t - 1
+
+        d = self.diffuse(c_in * x_t, possible_t, **kwargs) * c_out + x_t * c_skip
+
+        d = (x_t - d) / sigma_hat
+        dt = next_sigma - sigma_hat
+
+        x_t = x_t + d * dt
+        return x_t, None
+
+    def sigma_to_idx(self, sigma: torch.Tensor) -> torch.Tensor:
+        sigma = sigma.reshape(sigma.shape[0])
+        dists = sigma - self.sigmas[:, None]
+        return dists.abs().argmin(dim=0).view(sigma.shape)
+
+    def make_scaling(self, sigma):
+        if self.objective == Config.EPS:
+            c_skip = torch.ones_like(sigma, device=sigma.device)
+            c_out = -sigma
+            c_in = 1 / (sigma ** 2 + 1.0) ** 0.5
+            c_noise = sigma.clone()
+
+        elif self.objective == Config.V:
+            c_skip = 1.0 / (sigma ** 2 + 1.0)
+            c_out = -sigma / (sigma ** 2 + 1.0) ** 0.5
+            c_in = 1.0 / (sigma ** 2 + 1.0) ** 0.5
+            c_noise = sigma.clone()
+
+        elif self.objective == Config.EDM:
+            c_skip = self.sigma_data ** 2 / (sigma ** 2 + self.sigma_data ** 2)
+            c_out = sigma * self.sigma_data / (sigma ** 2 + self.sigma_data ** 2) ** 0.5
+            c_in = 1 / (sigma ** 2 + self.sigma_data ** 2) ** 0.5
+            c_noise = 0.25 * sigma.log()
+
+        else:
+            raise ValueError(f'unknown objective {self.objective}')
+
+        return c_skip, c_out, c_in, c_noise
 
     def make_txt_cond(self, text, neg_text=None) -> dict:
         if not neg_text:

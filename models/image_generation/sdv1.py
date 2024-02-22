@@ -1,7 +1,6 @@
 from torch import nn, einsum
 from utils import torch_utils
 from . import ldm
-from .ldm import convert_weights
 
 
 class Config(ldm.Config):

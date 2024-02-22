@@ -12,7 +12,7 @@ from ..layers import Linear, Conv, Upsample, Downsample
 from ..attentions import CrossAttention2D, get_attention_input
 
 
-class Config:
+class Config(ddim.Config):
     CROSSATTN = 0
     CROSSATTN_ADM = 1
     HYBRID = 2
@@ -32,6 +32,12 @@ class Config:
         num_heads=8,
     )
     vae = VAE.Config.backbone_32x32x4
+
+    # required pytorch>2.0
+    xformers_vae = dict(
+        attn_type=VAE.Config.VANILLA_XFORMERS,
+        **vae
+    )
 
     default_model = 'vanilla'
 
@@ -114,7 +120,8 @@ def convert_weights(state_dict):
         'model.diffusion_model.out.0': 'backbone.out.norm',
         'model.diffusion_model.out.2': 'backbone.out.conv',
 
-        'cond_stage_model': 'cond'
+        'cond_stage_model': 'cond',
+        'conditioner': 'cond'
     }
     state_dict = torch_utils.convert_state_dict(state_dict, convert_dict)
 

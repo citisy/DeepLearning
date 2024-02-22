@@ -824,6 +824,8 @@ class Ldm(DiProcess):
 
         model_results = {}
         for name, model in self.models.items():
+            # note, something wrong with autocast, got inf result
+            # with torch.cuda.amp.autocast(True):
             fake_x = model(x=images, text=texts, neg_text=neg_texts)
             fake_x = (fake_x + 1) * 0.5  # unnormalize, [-1, 1] -> [0, 1]
             fake_x = fake_x.data.mul(255).clamp_(0, 255).permute(0, 2, 3, 1).to("cpu", torch.uint8).numpy()
@@ -880,6 +882,18 @@ class Ldm(DiProcess):
         return images
 
 
+class LoadSDPretrain(CheckpointHooks):
+    def load_pretrain(self):
+        if hasattr(self, 'pretrain_model'):
+            from models.image_generation.ldm import convert_weights
+
+            state_dict = torch_utils.Load.from_file(self.pretrain_model)
+            if torch_utils.WeightsFormats.get_format_from_suffix(self.pretrain_model) == 'PyTorch':
+                state_dict = state_dict['state_dict']
+            state_dict = convert_weights(state_dict)
+            self.model.load_state_dict(state_dict, strict=False)
+
+
 class SDv1(Ldm):
     model_version = 'sd'
     model_sub_version = 'vanilla'  # for config choose
@@ -901,20 +915,7 @@ class SDv1(Ldm):
         )
 
 
-class LoadSDv1Pretrain(CheckpointHooks):
-
-    def load_pretrain(self):
-        if hasattr(self, 'pretrain_model'):
-            from models.image_generation.sdv1 import convert_weights
-
-            state_dict = torch_utils.Load.from_file(self.pretrain_model)
-            if not self.pretrain_model.endswith('.safetensors'):
-                state_dict = state_dict['state_dict']
-            state_dict = convert_weights(state_dict)
-            self.model.load_state_dict(state_dict, strict=False)
-
-
-class SDv1Pretrained(SDv1, LoadSDv1Pretrain):
+class SDv1Pretrained(SDv1, LoadSDPretrain):
     """no training, only for prediction
 
     Usage:
@@ -972,20 +973,7 @@ class SDv2(Ldm):
         )
 
 
-class LoadSDv2Pretrain(CheckpointHooks):
-
-    def load_pretrain(self):
-        if hasattr(self, 'pretrain_model'):
-            from models.image_generation.sdv2 import convert_weights
-
-            state_dict = torch_utils.Load.from_file(self.pretrain_model)
-            if not self.pretrain_model.endswith('.safetensors'):
-                state_dict = state_dict['state_dict']
-            state_dict = convert_weights(state_dict)
-            self.model.load_state_dict(state_dict, strict=False)
-
-
-class SDv2Pretrained(SDv2, LoadSDv2Pretrain):
+class SDv2Pretrained(SDv2, LoadSDPretrain):
     """no training, only for prediction
 
     Usage:
@@ -1015,20 +1003,7 @@ class SDXL(Ldm):
         )
 
 
-class LoadSDXLPretrain(CheckpointHooks):
-
-    def load_pretrain(self):
-        if hasattr(self, 'pretrain_model'):
-            from models.image_generation.sdxl import convert_weights
-
-            state_dict = torch_utils.Load.from_file(self.pretrain_model)
-            if not self.pretrain_model.endswith('.safetensors'):
-                state_dict = state_dict['state_dict']
-            state_dict = convert_weights(state_dict)
-            self.model.load_state_dict(state_dict, strict=False)
-
-
-class SDXLPretrained(SDXL, LoadSDXLPretrain):
+class SDXLPretrained(SDXL, LoadSDPretrain):
     """no training, only for prediction
 
     Usage:

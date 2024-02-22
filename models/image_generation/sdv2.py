@@ -4,7 +4,6 @@ from torch.utils.checkpoint import checkpoint
 from torch import nn, einsum
 from utils import torch_utils
 from . import ldm, ddpm, VAE, sdv1
-from .ldm import convert_weights
 
 
 class Config(sdv1.Config):
@@ -73,11 +72,6 @@ class Config(sdv1.Config):
         conditioning_key=ldm.Config.CROSSATTN_ADM
     )
 
-    v2_unclip_vae = dict(
-        attn_type=VAE.Config.VANILLA_XFORMERS,
-        **VAE.Config.backbone_32x32x4
-    )
-
     v2_unclip_l_backbone = dict(
         num_classes=ldm.Config.SEQUENTIAL,
         adm_in_channels=1536,
@@ -130,13 +124,13 @@ class Config(sdv1.Config):
             v2_unclip_l=dict(
                 model_config=cls.v2_unclip_model,
                 backbone_config=cls.v2_unclip_l_backbone,
-                vae_config=cls.v2_unclip_vae
+                vae_config=cls.vae
             ),
 
             v2_unclip_h=dict(
                 model_config=cls.v2_unclip_model,
                 backbone_config=cls.v2_unclip_h_backbone,
-                vae_config=cls.v2_unclip_vae
+                vae_config=cls.vae
             )
 
         )

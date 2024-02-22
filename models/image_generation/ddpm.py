@@ -46,14 +46,14 @@ def extract(a, t, x_shape):
     return out.reshape(b, *((1,) * (len(x_shape) - 1)))
 
 
-def linear_beta_schedule(timesteps):
+def linear_beta_schedule(timesteps, start=None, end=None):
     """
     linear schedule, proposed in original ddpm paper
     """
     scale = 1000 / timesteps
-    beta_start = scale * 0.0001
-    beta_end = scale * 0.02
-    return torch.linspace(beta_start, beta_end, timesteps, dtype=torch.float64)
+    start = start or scale * 0.0001
+    end = end or scale * 0.02
+    return torch.linspace(start, end, timesteps, dtype=torch.float64)
 
 
 def cosine_beta_schedule(timesteps, s=0.008):
@@ -113,7 +113,7 @@ class Model(nn.ModuleList):
         self.diffuse_in_size = image_size  # size of x_t
         self.__dict__.update(configs.get('model_config', {}))
 
-        self.register_schedule()
+        self.make_schedule()
         self.make_diffuse(**configs)
 
         self.self_condition = False
@@ -132,7 +132,7 @@ class Model(nn.ModuleList):
     min_snr_loss_weight = False
     min_snr_gamma = 5
 
-    def register_schedule(self):
+    def make_schedule(self):
         # helper function to register buffer from float64 to float32
         register_buffer = lambda name, val: self.register_buffer(name, val.to(torch.float32))
 
@@ -565,8 +565,7 @@ class ResnetBlock(nn.Module):
             time_emb = self.emb_layers(time_emb)
             time_emb = time_emb[:, :, None, None]
             if self.use_scale_shift_norm:
-                scale_shift = time_emb.chunk(2, dim=1)
-                scale, shift = scale_shift
+                scale, shift = time_emb.chunk(2, dim=1)
                 h = self.norm(h)
                 h = h * (scale + 1) + shift
             else:
