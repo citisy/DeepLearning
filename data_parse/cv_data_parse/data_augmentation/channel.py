@@ -49,10 +49,14 @@ class BGR2RGB:
     def apply_image(self, image, *args):
         image = image.copy()
         if self.axis == 0:
-            image[(0, 1, 2)] = image[(2, 1, 0)]
+            image = image[::-1]
         elif self.axis == -1:
-            image[:, :, (0, 1, 2)] = image[:, :, (2, 1, 0)]
+            image[..., :] = image[..., ::-1]
         return image
+
+
+class RGB2BGR(BGR2RGB):
+    """same op to BGR2RGB"""
 
 
 class Gray2BGR:
@@ -79,6 +83,7 @@ class BGR2Gray:
 
 class Keep3Dims:
     """input an array which have any(2, 3 or 4) dims, output an array which have 3-dims"""
+
     def __call__(self, image, **kwargs):
         return dict(
             image=self.apply_image(image)
