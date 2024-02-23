@@ -446,7 +446,7 @@ class DataVisualizer:
         self.save_dir = save_dir
         saver_kwargs.setdefault('verbose', not pbar)
         self.saver = os_lib.Saver(**saver_kwargs)
-        self.pbar = pbar
+        self.pbar = pbar and not saver_kwargs['verbose']     # do not use pbar directly, 'cause they clash
         os_lib.mk_dir(save_dir)
 
     def __call__(self, *iter_data, max_vis_num=None, return_image=False, **visual_kwargs):

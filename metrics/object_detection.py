@@ -751,7 +751,7 @@ class AP:
 
 
 class EasyMetric:
-    def __init__(self, iou_thres=0.5, cls_alias=None, verbose=True, stdout_method=print, **ap_kwargs):
+    def __init__(self, iou_thres=0.5, cls_alias=None, verbose=False, stdout_method=print, **ap_kwargs):
         self.iou_thres = iou_thres
         self.verbose = verbose
         self.stdout_method = stdout_method if verbose else os_lib.FakeIo()
@@ -895,7 +895,7 @@ class EasyMetric:
             target_obj_idx = det_obj_idx[~tp]
 
             idx = np.unique(target_obj_idx)
-            for i in idx:
+            for i in tqdm(idx, desc=f'checkout {cls_alias[cls]}'):
                 target_idx = det_obj_idx == i
                 _tp = tp[target_idx]
 
@@ -906,7 +906,7 @@ class EasyMetric:
                 det_box = det_boxes[i]
                 _id = _ids[i]
 
-                image = os_lib.loader.load_img(f'{rets[_id]["image_dir"]}/{_id}')
+                image = os_lib.Loader(verbose=self.verbose).load_img(f'{rets[_id]["image_dir"]}/{_id}')
 
                 false_obj_idx = np.where(det_class == cls)[0]
                 false_obj_idx = false_obj_idx[~_tp]
@@ -922,7 +922,7 @@ class EasyMetric:
                 tmp_ori = [dict(_id=_id, image=image)]
                 tmp_gt = [dict(image=image, bboxes=gt_box, classes=gt_class)]
                 tmp_det = [dict(image=image, bboxes=det_box, classes=det_class, confs=conf)]
-                visualizer = DataVisualizer(save_dir, verbose=self.verbose, stdout_method=self.stdout_method)
+                visualizer = DataVisualizer(save_dir, pbar=False, verbose=self.verbose, stdout_method=self.stdout_method)
                 visualizer(tmp_ori, tmp_gt, tmp_det, cls_alias=cls_alias)
 
         return ret
