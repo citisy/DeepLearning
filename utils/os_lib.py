@@ -12,6 +12,7 @@ import numpy as np
 import pandas as pd
 from pathlib import Path
 from typing import List, Any
+from contextlib import nullcontext
 
 
 def mk_dir(dir_path):
@@ -58,7 +59,7 @@ def auto_suffix(obj):
 
 
 class Saver:
-    def __init__(self, verbose=True, stdout_method=print, stdout_fmt='Succeed to save to %s !', stderr_method=print, stderr_fmt='Fail to save to %s !'):
+    def __init__(self, verbose=False, stdout_method=print, stdout_fmt='Succeed to save to %s !', stderr_method=print, stderr_fmt='Fail to save to %s !'):
         self.verbose = verbose
         self.stdout_method = stdout_method if verbose else FakeIo()
         self.stdout_fmt = stdout_fmt
@@ -218,7 +219,7 @@ class Saver:
 
 
 class Loader:
-    def __init__(self, verbose=True, stdout_method=print, stdout_fmt='Read %s successful!'):
+    def __init__(self, verbose=False, stdout_method=print, stdout_fmt='Read %s successful!'):
         self.verbose = verbose
         self.stdout_method = stdout_method if verbose else FakeIo()
         self.stdout_fmt = stdout_fmt
@@ -632,6 +633,25 @@ class FakeIo:
 
     def __call__(self, *args, **kwargs):
         pass
+
+
+class FakeApp:
+    def __init__(self, *args, **kwargs):
+        self.config = dict()
+        self.conf = dict()
+        self.__dict__.update(kwargs)
+
+    def register_blueprint(self, *args, **kwargs):
+        pass
+
+    def route(self, *args, **kwargs):
+        return nullcontext
+
+    def post(self, *args, **kwargs):
+        return nullcontext
+
+    def get(self, *args, **kwargs):
+        return nullcontext
 
 
 saver = Saver()

@@ -65,7 +65,8 @@ class Requests:
 
         return async_req
 
-    def async_get(self, async_req):
+    @staticmethod
+    def async_get(async_req):
         result = async_req.get_result()
         response = result.get_response()
 

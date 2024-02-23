@@ -118,6 +118,10 @@ class PrefixTree:
         self.wildcard_token = wildcard_token
         self.match_token = match_token
         self.tree = dict()
+
+        if isinstance(words, dict):
+            words, values = words.keys(), words.values()
+
         self.build(words, values)
 
     def build(self, words, values=None):
