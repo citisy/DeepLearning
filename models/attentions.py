@@ -75,8 +75,8 @@ class CrossAttention2D(nn.Module):
         if use_xformers:
             # faster and less memory
             # requires pytorch > 2.0
-            import xformers
-            self.attend = xformers.ops.memory_efficient_attention
+            from xformers.ops import memory_efficient_attention
+            self.attend = memory_efficient_attention
         else:
             self.attend = ScaleAttend(drop_prob)
 
@@ -91,7 +91,7 @@ class CrossAttention2D(nn.Module):
 
             q, k, v = [m(x) for m, x in zip(self.to_qkv, (q, k, v))]
 
-        q, k, v = [self.view_in(x) for x in (q, k, v)]
+        q, k, v = [self.view_in(x).contiguous() for x in (q, k, v)]
 
         if self.use_conv and self.use_mem_kv:
             mk, mv = map(lambda t: repeat(t, 'n j d -> b n j d', b=q.shape[0]), self.mem_kv)
@@ -135,13 +135,13 @@ class CrossAttention3D(nn.Module):
             self.view_in = Rearrange('b (n d) h w -> b n (h w) d', n=n_heads)
             self.mem_kv = nn.Parameter(torch.randn(2, n_heads, n_mem_size, head_dim))
         else:
-            self.view_in = Rearrange('b c h w -> b (h w) c')
+            self.view_in = Rearrange('b c h w -> b 1 (h w) c')
 
         if use_xformers:
             # faster and less memory
             # requires pytorch > 2.0
-            import xformers
-            self.attend = xformers.ops.memory_efficient_attention
+            from xformers.ops import memory_efficient_attention
+            self.attend = memory_efficient_attention
         else:
             self.attend = ScaleAttend(drop_prob)
         self.to_out = nn.Conv2d(model_dim, query_dim, 1)
@@ -158,7 +158,7 @@ class CrossAttention3D(nn.Module):
         else:  # only for self attention
             q, k, v = self.to_qkv(q).chunk(3, dim=1)
 
-        q, k, v = [self.view_in(x) for x in (q, k, v)]
+        q, k, v = [self.view_in(x).contiguous() for x in (q, k, v)]
 
         if self.use_mem_kv:
             mk, mv = map(lambda t: repeat(t, 'n j d -> b n j d', b=b), self.mem_kv)
@@ -168,7 +168,7 @@ class CrossAttention3D(nn.Module):
         if self.use_mem_kv:
             x = rearrange(x, 'b n (h w) d -> b (n d) h w', h=h, w=w)
         else:
-            x = rearrange(x, 'b (h w) c -> b c h w', h=h, w=w)  # view_out
+            x = rearrange(x, 'b 1 (h w) c -> b c h w', h=h, w=w)  # view_out
         return self.to_out(x)
 
 
