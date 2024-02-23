@@ -171,10 +171,10 @@ class Model(ddim.Model):
             self.image_size[1] // self.vae.encoder.down_scale,
         )
 
-    def post_process(self, x=None, text=None, neg_text=None, **kwargs):
+    def post_process(self, x=None, text=None, **kwargs):
         b = len(text)
 
-        txt_cond = self.make_txt_cond(text, neg_text)
+        txt_cond = self.make_txt_cond(text, **kwargs)
         kwargs.update(txt_cond)
 
         # make x_t
@@ -191,12 +191,12 @@ class Model(ddim.Model):
 
         return images
 
-    def make_txt_cond(self, text, neg_text=None) -> dict:
+    def make_txt_cond(self, text, neg_text=None, **kwargs) -> dict:
         b = len(text)
 
         c = self.cond.encode(text)
         uc = None
-        if self.scale != 1.0:
+        if self.scale > 1.0:
             if not neg_text:
                 neg_text = [''] * b
             uc = self.cond.encode(neg_text)

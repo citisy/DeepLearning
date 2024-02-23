@@ -39,6 +39,12 @@ class Config(sdv2.Config):
         objective=Z,
     )
 
+    legacy_v2_embedder = dict(
+        target='models.image_generation.sdv2.OpenCLIPEmbedder',
+        input_key=TXT,
+        params=dict()
+    )
+
     embedder1 = dict(
         target='models.image_generation.sdv1.CLIPEmbedder',
         input_key=TXT,
@@ -121,6 +127,8 @@ class Config(sdv2.Config):
     @classmethod
     def make_full_config(cls):
         config_dict = dict(
+            # todo: legacy_v2 supported
+
             # support sdxl-base-*
             xl_base=dict(
                 model_config=cls.xl_model,
@@ -220,7 +228,7 @@ class Model(ldm.Model):
             eps = torch.randn_like(x_t) * self.s_noise
             x_t = x_t + eps * (sigma_hat ** 2 - sigma ** 2) ** 0.5
 
-        possible_sigma = self.sigma[self.sigma_to_idx(sigma_hat)]
+        possible_sigma = self.sigmas[self.sigma_to_idx(sigma_hat)]
         c_skip, c_out, c_in, c_noise = self.make_scaling(possible_sigma)
         possible_t = self.sigma_to_idx(c_noise)
         possible_t = possible_t - 1
@@ -268,24 +276,31 @@ class Model(ldm.Model):
 
         return c_skip, c_out, c_in, c_noise
 
-    def make_txt_cond(self, text, neg_text=None) -> dict:
+    def make_txt_cond(self, text, neg_text=None, **kwargs) -> dict:
         if not neg_text:
             neg_text = [''] * len(text)
 
-        value_dicts = [
-            {
-                'prompt': prompt,
-                'negative_prompt': negative_prompt,
-                Config.ORIGINAL_SIZE_AS_TUPLE: self.image_size,
-                Config.CROP_COORDS_TOP_LEFT: (0, 0),
-                Config.TARGET_SIZE_AS_TUPLE: self.image_size,
-            } for prompt, negative_prompt in zip(text, neg_text)
-        ]
+        default_value = {
+            Config.ORIGINAL_SIZE_AS_TUPLE: self.image_size,
+            Config.CROP_COORDS_TOP_LEFT: (0, 0),
+            Config.TARGET_SIZE_AS_TUPLE: self.image_size,
+        }
 
-        c_values, uc_values = self.cond(value_dicts)
+        value_dicts = []
+        for prompt, negative_prompt in zip(text, neg_text):
+            value_dict = {}
+            for k in self.cond.input_keys:
+                if k == Config.TXT:
+                    value_dict.update(
+                        prompt=prompt,
+                        negative_prompt=negative_prompt
+                    )
+                else:
+                    value_dict[k] = kwargs.get(k, default_value[k])
 
-        if self.scale == 1.0:
-            uc_values = None
+            value_dicts.append(value_dict)
+
+        c_values, uc_values = self.cond(value_dicts, self.scale > 1)
 
         return dict(
             c_values=c_values,
@@ -346,10 +361,11 @@ class EmbedderWarp(nn.Module):
         self.output_size = output_size  # 2048
         self.dummy_params = nn.Parameter(torch.empty(0))
 
-    def forward(self, value_dicts):
+    def forward(self, value_dicts, return_uc=True):
         batch, batch_uc = self.get_batch(value_dicts)
         c_values = self.get_cond(batch)
-        uc_values = self.get_cond(batch_uc, [Config.TXT])
+        # todo: why filter txt?
+        uc_values = self.get_cond(batch_uc, [Config.TXT]) if return_uc else None
         return c_values, uc_values
 
     def get_cond(self, batch, force_zero_embeddings=()):
