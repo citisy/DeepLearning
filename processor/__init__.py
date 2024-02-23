@@ -1,5 +1,4 @@
 import torch
-
 from .bundled import *
 from .data_process import *
 from .model_process import *
@@ -90,16 +89,18 @@ class Process(
         if torch.cuda.is_available():
             if isinstance(self.device, (str, int)) and self.device != 'cpu':
                 self.device = torch.device(f"cuda:{self.device}")
-            else:   # default None, use cuda:0 possible
+            elif self.device is None:  # default None, use cuda:0 possible
                 self.device = torch.device('cuda')
         else:
-            self.device = 'cpu'
+            self.device = torch.device('cpu')
 
         if not hasattr(self, 'model') or self.model is None:
             self.set_model()
 
-        # note that, it must be set device before load_state_dict()
-        self.model.to(self.device)
+        if not isinstance(self.device, list):
+            # note that, it must be set device before load_state_dict()
+            self.model.to(self.device)
+
         self.load_pretrain()
 
         if not hasattr(self, 'optimizer') or self.optimizer is None:
@@ -111,16 +112,23 @@ class Process(
         if not hasattr(self, 'scaler') or self.scaler is None:
             self.set_scaler()
 
+        if isinstance(self.device, list):
+            assert torch.cuda.device_count() >= len(self.device)
+            device_ids = self.device
+            self.device = torch.device(f"cuda:{self.device[0]}")
+            self.model.to(self.device)
+            self.model = nn.DataParallel(self.model, device_ids=device_ids)
+            self.optimizer = nn.DataParallel(self.optimizer, device_ids=device_ids)
+
+        self.models = {self.model_name: self.model}
+        self.aux_modules = {}
+
         try_init_components = [self.set_aux_model]
         for components in try_init_components:
             try:
                 components()
             except NotImplementedError:
                 self.log(f'{components} not init', level=logging.DEBUG)
-
-        self.models = {self.model_name: self.model}
-        if hasattr(self, 'aux_model'):
-            self.models.update(self.aux_model)
 
         self.log(f'{torch.__version__ = }')
         self.log(f'{self.device = }')
@@ -287,4 +295,5 @@ class ParamsSearch:
             process = self.process(**kwargs)
             process.logger.info(info_msg)
             process.run(**self.run_kwargs)
+            process.model.cpu()
             torch.cuda.empty_cache()

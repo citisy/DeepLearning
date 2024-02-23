@@ -90,7 +90,7 @@ class Model(nn.Module):
         if is_mlm:
             self.mlm = MLM(self.backbone.out_features, vocab_size, sp_tag_dict['non_mask'])
 
-        torch_utils.initialize_layers(self)
+        torch_utils.ModuleManager.initialize_layers(self)
 
     def forward(self, x, segment_label, attention_mask=None, next_true=None, mask_true=None):
         x = self.backbone(x, segment_label, attention_mask)

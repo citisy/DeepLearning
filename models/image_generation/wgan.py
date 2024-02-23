@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import numpy as np
 from ..layers import Conv, ConvT
-from utils.torch_utils import initialize_layers
+from utils.torch_utils import ModuleManager
 
 
 class Model(nn.ModuleList):
@@ -21,7 +21,7 @@ class Model(nn.ModuleList):
         self.net_d = net_d if net_d is not None else DcganD(input_size, in_ch, n_conv)
         self.net_g = net_g if net_g is not None else DcganG(input_size, hidden_ch, in_ch, n_conv)
 
-        initialize_layers(self)
+        ModuleManager.initialize_layers(self)
 
         self.hidden_ch = hidden_ch
 

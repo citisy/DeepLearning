@@ -5,7 +5,7 @@ from . import BaseSemSegModel
 from ..layers import Conv, Linear, ConvInModule, OutModule, ConvT
 # from ..image_classifier.VGG import Backbone, VGG16_config
 from ..image_classification.ResNet import Backbone, Res50_config, Res101_config
-from utils.torch_utils import initialize_layers
+from utils.torch_utils import ModuleManager
 
 
 class Model(BaseSemSegModel):
@@ -39,7 +39,7 @@ class Model(BaseSemSegModel):
         self.out_features = out_features + 1
         self.neck = Neck(self.backbone.out_channels, self.out_features)
         self.head = Head(self.out_features, upsample_ratio=stride * 2)
-        initialize_layers(self)
+        ModuleManager.initialize_layers(self)
 
     def forward(self, x, pix_images=None):
         x = self.backbone(x)

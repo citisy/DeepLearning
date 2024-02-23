@@ -1,6 +1,7 @@
 import re
 import copy
 import math
+import pandas as pd
 import torch
 from torch import nn
 from pathlib import Path
@@ -133,126 +134,111 @@ class ModuleInfo:
         return flops
 
 
-def initialize_layers(module, init_gain=0.02, init_type='normal'):
-    """trace each module, initialize the variables
-    if module has `initialize_layers`, use `module.initialize_layers()` to initialize"""
+class ModuleManager:
+    @staticmethod
+    def is_parallel(module):
+        """Returns True if model is of type DP or DDP"""
+        return type(module) in (nn.parallel.DataParallel, nn.parallel.DistributedDataParallel)
 
-    def cur(current_m):
-        for name, m in current_m._modules.items():
-            if m is None:
-                continue
+    @classmethod
+    def de_parallel(cls, module):
+        """De-parallelize a model: returns single-GPU model if model is of type DP or DDP"""
+        return module.module if cls.is_parallel(module) else module
 
-            if hasattr(m, 'initialize_layers'):
-                m.initialize_layers()
-                continue
+    @staticmethod
+    def freeze_module(module: nn.Module, allow_train=False):
+        module.eval()
+        module.requires_grad_(False)
+        if not allow_train:
+            # module only be allowed to eval, does not change to train mode anymore
+            module.train = lambda self, mode=True: self
 
-            t = type(m)
+    @staticmethod
+    def low_memory_run(module: nn.Module, device, *args, **kwargs):
+        """only send the module to gpu when the module need to be run,
+        and the gpu will be released after running"""
+        module.to(device)
+        obj = module(*args, **kwargs)
+        module.cpu()
+        torch.cuda.empty_cache()
+        return obj
 
-            if t is nn.BatchNorm2d:
-                m.eps = 1e-3
-                m.momentum = 0.03
-                m.weight.data.normal_(1.0, init_gain)
-                m.bias.data.fill_(0.)
+    @staticmethod
+    def assign_device_run(module: nn.Module, device, *args, **kwargs):
+        """let module run in the assigned device"""
+        module.to(device)
+        args = [obj.to(device) if isinstance(obj, torch.Tensor) else obj for obj in args]
+        kwargs = {k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in kwargs.items()}
 
-            elif t is nn.LayerNorm:
-                nn.init.constant_(m.bias, 0)
-                nn.init.constant_(m.weight, 1.0)
+        return module(*args, **kwargs)
 
-            elif t in [nn.Hardswish, nn.LeakyReLU, nn.ReLU, nn.ReLU6, nn.SiLU]:
-                m.inplace = True
+    @classmethod
+    def initialize_layers(cls, module, init_gain=0.02, init_type='normal'):
+        """trace each module, initialize the variables
+        if module has `initialize_layers`, use `module.initialize_layers()` to initialize"""
 
-            elif t in [nn.Conv2d, nn.Linear, nn.Embedding]:
-                if init_type == 'normal':
-                    nn.init.normal_(m.weight, 0.0, init_gain)
-                elif init_type == 'xavier':
-                    nn.init.xavier_normal_(m.weight, gain=init_gain)
-                elif init_type == 'kaiming':
-                    nn.init.kaiming_normal_(m.weight, a=0)
-                elif init_type == 'orthogonal':
-                    nn.init.orthogonal_(m.weight, gain=init_gain)
+        def cur(current_m):
+            for name, m in current_m._modules.items():
+                if m is None:
+                    continue
 
-                if hasattr(m, 'bias') and m.bias is not None:
-                    nn.init.constant_(m.bias, 0.0)
+                if hasattr(m, 'initialize_layers'):
+                    m.initialize_layers()
+                    continue
 
-            elif t in [nn.ConvTranspose2d]:
-                m.weight.data.copy_(bilinear_kernel(m.in_channels, m.out_channels, m.kernel_size[0]))
+                t = type(m)
 
-            if len(m._modules) != 0:
-                cur(m)
+                if t is nn.BatchNorm2d:
+                    m.eps = 1e-3
+                    m.momentum = 0.03
+                    m.weight.data.normal_(1.0, init_gain)
+                    m.bias.data.fill_(0.)
 
-    cur(module)
+                elif t is nn.LayerNorm:
+                    nn.init.constant_(m.bias, 0)
+                    nn.init.constant_(m.weight, 1.0)
 
+                elif t in [nn.Hardswish, nn.LeakyReLU, nn.ReLU, nn.ReLU6, nn.SiLU]:
+                    m.inplace = True
 
-def bilinear_kernel(in_channels, out_channels, kernel_size):
-    factor = (kernel_size + 1) // 2
-    if kernel_size % 2 == 1:
-        center = factor - 1
-    else:
-        center = factor - 0.5
-    og = (torch.arange(kernel_size).reshape(-1, 1), torch.arange(kernel_size).reshape(1, -1))
-    f = (1 - torch.abs(og[0] - center) / factor) * (1 - torch.abs(og[1] - center) / factor)
-    weight = torch.zeros((in_channels, out_channels, kernel_size, kernel_size))
-    ch = min(in_channels, out_channels)
-    weight[range(ch), range(ch), :, :] = f
-    return weight
+                elif t in [nn.Conv2d, nn.Linear, nn.Embedding]:
+                    if init_type == 'normal':
+                        nn.init.normal_(m.weight, 0.0, init_gain)
+                    elif init_type == 'xavier':
+                        nn.init.xavier_normal_(m.weight, gain=init_gain)
+                    elif init_type == 'kaiming':
+                        nn.init.kaiming_normal_(m.weight, a=0)
+                    elif init_type == 'orthogonal':
+                        nn.init.orthogonal_(m.weight, gain=init_gain)
 
+                    if hasattr(m, 'bias') and m.bias is not None:
+                        nn.init.constant_(m.bias, 0.0)
 
-def freeze_layers(module):
-    module.eval()
-    module.train = lambda self, mode=True: self  # does not change mode anymore
-    module.requires_grad_(False)
+                elif t in [nn.ConvTranspose2d]:
+                    m.weight.data.copy_(cls.bilinear_kernel(m.in_channels, m.out_channels, m.kernel_size[0]))
 
+                if len(m._modules) != 0:
+                    cur(m)
 
-class EarlyStopping:
-    def __init__(self, thres=0.005, patience=None, min_period=0, ignore_min_score=-1,
-                 verbose=True, stdout_method=print):
-        self.thres = thres
-        self.best_score = -1
-        self.best_period = 0
-        self.acc_period = 0
-        self.last_period = 0
-        self.min_period = min_period
-        self.ignore_min_score = ignore_min_score
-        self.patience = patience or float('inf')
-        self.verbose = verbose
-        self.stdout_method = stdout_method
+        cur(module)
 
-    def __call__(self, period, score):
-        if period < self.min_period or score < self.ignore_min_score:
-            self.last_period = period
-            return False
-
-        if score - self.best_score > self.thres:
-            self.acc_period = 0
-        elif abs(self.best_score - score) <= self.thres:
-            self.acc_period += period - self.last_period
-
-        if score > self.best_score:
-            self.best_period = period
-            self.best_score = score
-
-        self.last_period = period
-        stop = self.acc_period >= self.patience
-        if stop and self.verbose:
-            self.stdout_method(f'Early Stopping training. Best results observed at period {self.best_period}, and best score is {self.best_score}')
-        return stop
-
-    def state_dict(self):
-        return dict(
-            last_epoch=self.last_period,
-            acc_epoch=self.acc_period,
-            best_epoch=self.best_period,
-            best_score=self.best_score
-        )
-
-    def load_state_dict(self, items: dict):
-        self.__dict__.update(items)
+    @staticmethod
+    def bilinear_kernel(in_channels, out_channels, kernel_size):
+        factor = (kernel_size + 1) // 2
+        if kernel_size % 2 == 1:
+            center = factor - 1
+        else:
+            center = factor - 0.5
+        og = (torch.arange(kernel_size).reshape(-1, 1), torch.arange(kernel_size).reshape(1, -1))
+        f = (1 - torch.abs(og[0] - center) / factor) * (1 - torch.abs(og[1] - center) / factor)
+        weight = torch.zeros((in_channels, out_channels, kernel_size, kernel_size))
+        ch = min(in_channels, out_channels)
+        weight[range(ch), range(ch), :, :] = f
+        return weight
 
 
-def export_formats():
-    import pandas as pd
-
-    x = [
+class WeightsFormats:
+    formats = pd.DataFrame([
         ['PyTorch', '-', '.pt/.pth/.ckpt', True],
         ['TorchScript', 'torchscript', '.torchscript', True],
         ['Safetensors', 'safetensors', '.safetensors', True],
@@ -265,8 +251,18 @@ def export_formats():
         ['TensorFlow Lite', 'tflite', '.tflite', False],
         ['TensorFlow Edge TPU', 'edgetpu', '_edgetpu.tflite', False],
         ['TensorFlow.js', 'tfjs', '_web_model', False],
-    ]
-    return pd.DataFrame(x, columns=['Format', 'Argument', 'Suffix', 'GPU'])
+    ], columns=['format', 'argument', 'suffix', 'GPU'])
+
+    @classmethod
+    def get_format_from_suffix(cls, save_path):
+        suffix = Path(save_path).suffix
+        k = None
+        for i, row in cls.formats.iterrows():
+            if suffix in row['suffix']:
+                k = row['format']
+                break
+
+        return k
 
 
 class Export:
@@ -296,13 +292,7 @@ class Load:
             'TorchScript': cls.from_jit,
             'Safetensors': cls.from_save_tensor
         }
-        formats = export_formats()
-        suffix = Path(save_path).suffix
-        k = None
-        for i, row in formats.iterrows():
-            if suffix in row['Suffix']:
-                k = row['Format']
-                break
+        k = WeightsFormats.get_format_from_suffix(save_path)
         return load_dict.get(k)(save_path, **kwargs)
 
     @staticmethod
@@ -329,14 +319,53 @@ class Load:
         return torch.jit.load(save_path, **kwargs)
 
 
-def is_parallel(model):
-    # Returns True if model is of type DP or DDP
-    return type(model) in (nn.parallel.DataParallel, nn.parallel.DistributedDataParallel)
+class EarlyStopping:
+    def __init__(self, thres=0.005, patience=None, min_period=0, ignore_min_score=-1,
+                 verbose=True, stdout_method=print):
+        self.thres = thres
+        self.best_score = -1
+        self.best_period = 0
+        self.acc_period = 0
+        self.last_period = 0
+        self.min_period = min_period
+        self.ignore_min_score = ignore_min_score
+        self.patience = patience or float('inf')
+        self.verbose = verbose
+        self.stdout_method = stdout_method
 
+    def step(self, period, score):
+        if period < self.min_period or score < self.ignore_min_score:
+            self.last_period = period
+            return False
 
-def de_parallel(model):
-    # De-parallelize a model: returns single-GPU model if model is of type DP or DDP
-    return model.module if is_parallel(model) else model
+        if score - self.best_score > self.thres:
+            self.acc_period = 0
+        elif abs(self.best_score - score) <= self.thres:
+            self.acc_period += period - self.last_period
+
+        if score > self.best_score:
+            self.best_period = period
+            self.best_score = score
+
+        self.last_period = period
+        stop = self.acc_period >= self.patience
+        if stop and self.verbose:
+            self.stdout_method(f'Early Stopping training. Best results observed at period {self.best_period}, and best score is {self.best_score}')
+        return stop
+
+    def __call__(self, period, score):
+        return self.step(period, score)
+
+    def state_dict(self):
+        return dict(
+            last_epoch=self.last_period,
+            acc_epoch=self.acc_period,
+            best_epoch=self.best_period,
+            best_score=self.best_score
+        )
+
+    def load_state_dict(self, items: dict):
+        self.__dict__.update(items)
 
 
 class EMA:
@@ -345,23 +374,27 @@ class EMA:
     For EMA details see https://www.tensorflow.org/api_docs/python/tf/train/ExponentialMovingAverage
     """
 
-    def __init__(self, cur_step=0, decay=0.9999, step_start_ema=0, tau=2000):
+    def __init__(self, model, cur_step=0, step_start_ema=0, decay=0.9999, tau=2000):
         """
-
-        Args:
-            cur_step:
-            decay:
-            step_start_ema:
-            tau: growth factor
-                when x is larger, y is larger
-                x is closed to 0, y is closed to 0
-                x is closed 3 * tau, y is closed to exp(-3)*decay=0.95*decay
-                tau is closed to 0, y is closed to decay
+        as functions:
+            - beta = decay * (1 - math.exp(-step / tau))
+            - w = beta * w_o + (1- beta) * w_n
+        there are some rows following:
+            - step -> 0, beta -> 0, w -> w_n
+            - step -> +inf, beta -> 1, w -> w_o
+            - step -> 3*tau, beta -> exp(-3)*decay = 0.95*decay
+              it gives that, w is w_o almost after 3*tau steps
+            - tau -> +inf, beta -> 0
+            - tau -> 0, beta -> decay
+              it gives that, the ema model is update unavailable forever when tau=0 or tau=inf
+              if tau=0, the ema model is the initializing model
+              if tau=inf, the ema model is the training model
         """
-        super().__init__()
+        self.model = model
+        self.ema_model = self.copy(model)
         self.cur_step = cur_step
         self.step_start_ema = step_start_ema
-        self.decay = lambda x: decay * (1 - math.exp(-x / tau))
+        self.decay_fn = lambda x: decay * (1 - math.exp(-x / tau))
 
     @staticmethod
     def copy(model):
@@ -369,38 +402,81 @@ class EMA:
         ema_model.requires_grad_(False)
         return ema_model
 
-    @torch.no_grad()
-    def update_attr(self, model, ema_model):
-        # larger the beta, more closed the weights to the old model
-        beta = self.decay(self.cur_step)
+    def restore(self):
+        for c_param, param in zip(self.ema_model.parameters(), self.model.parameters()):
+            param.data.copy_(c_param.data)
 
-        msd = de_parallel(model).state_dict()  # model state_dict
-        for k, v in ema_model.state_dict().items():
+    @torch.no_grad()
+    def update_attr(self):
+        # larger the beta, more closed the weights to the old model
+        beta = self.decay_fn(self.cur_step)
+
+        msd = ModuleManager.de_parallel(self.model).state_dict()  # model state_dict
+        for k, v in self.ema_model.state_dict().items():
             if v.dtype.is_floating_point:
                 v *= beta
                 v += (1 - beta) * msd[k].detach()
 
     @torch.no_grad()
-    def copy_attr(self, model, ema_model, include=(), exclude=()):
-        for k, v in model.__dict__.items():
+    def copy_attr(self, include=(), exclude=()):
+        for k, v in self.model.__dict__.items():
             if (len(include) and k not in include) or k.startswith('_') or k in exclude:
                 continue
             else:
-                setattr(ema_model, k, v)
-        ema_model.load_state_dict(ema_model.state_dict())
+                setattr(self.ema_model, k, v)
+        self.ema_model.load_state_dict(self.model.state_dict())
 
-    def step(self, model, ema_model):
+    def step(self):
         if self.cur_step < self.step_start_ema:
-            self.copy_attr(model, ema_model)
+            self.copy_attr()
         else:
-            self.update_attr(model, ema_model)
+            self.update_attr()
         self.cur_step += 1
         return self.cur_step
 
-    @staticmethod
-    def restore(model, ema_model):
-        for c_param, param in zip(ema_model.parameters(), model.parameters()):
-            param.data.copy_(c_param.data)
+    def __call__(self, *args, **kwargs):
+        return self.ema_model(*args, **kwargs)
+
+    def state_dict(self, *args, **kwargs):
+        return self.ema_model.state_dict(*args, **kwargs)
+
+    def load_state_dict(self, *args, **kwargs):
+        return self.ema_model.load_state_dict(*args, **kwargs)
+
+
+class Lora:
+    def __init__(self, model, include=(), exclude=()):
+        self.model = model
+
+    def make_lora_module(self):
+        class LoraModule(nn.Module):
+            def __init__(self, in_dims, out_dims, r=8):
+                super().__init__()
+                self.in_dims = in_dims
+                self.out_dims = out_dims
+                self.A = nn.Parameter(torch.randn(in_dims, r))
+                self.B = nn.Parameter(torch.zeros(r, out_dims))
+
+            def forward(self, x, module):
+                with torch.no_grad():
+                    y = module(x)
+
+                x = x.view(-1, self.in_dims)
+                return y + torch.mm(torch.mm(x, self.A), self.B)
+
+        return LoraModule
+
+    def step(self):
+        pass
+
+    def __call__(self, *args, **kwargs):
+        pass
+
+    def state_dict(self):
+        pass
+
+    def load_state_dict(self):
+        pass
 
 
 def convert_state_dict(state_dict: OrderedDict, convert_dict: dict):

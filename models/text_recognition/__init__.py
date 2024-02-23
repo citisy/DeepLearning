@@ -1,7 +1,7 @@
 import torch
 from torch import nn
 import torch.nn.functional as F
-from utils.torch_utils import initialize_layers
+from utils.torch_utils import ModuleManager
 
 
 class BaseTextRecModel(nn.Module):
@@ -27,7 +27,7 @@ class BaseTextRecModel(nn.Module):
         self.backbone = backbone
         self.neck = neck
         self.head = head if head is not None else nn.Linear(neck_out_features, self.out_features)
-        initialize_layers(self)
+        ModuleManager.initialize_layers(self)
 
     def forward(self, x, true_label=None):
         x = self.input(x)

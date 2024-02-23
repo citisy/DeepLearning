@@ -9,7 +9,7 @@ import torch.nn.functional as F
 from torch.autograd import grad
 from ..layers import Linear, Conv, EqualLinear, Residual
 from ..losses import HingeGanLoss
-from utils.torch_utils import initialize_layers
+from utils.torch_utils import ModuleManager
 
 
 class Config:
@@ -66,7 +66,7 @@ class Model(nn.ModuleList):
         self.pl_mean = None
 
         # init weights
-        initialize_layers(self, init_type='kaiming')
+        ModuleManager.initialize_layers(self, init_type='kaiming')
 
     def loss_d(self, real_x, use_gp=False):
         batch_size = real_x.shape[0]
@@ -245,7 +245,7 @@ class SynthesisBlock(nn.Module):
         self.head = Head(in_features, hidden_ch, not is_last, out_ch)
 
     def initialize_layers(self):
-        initialize_layers(self, init_type='kaiming')
+        ModuleManager.initialize_layers(self, init_type='kaiming')
         nn.init.zeros_(self.to_noise1.weight)
         nn.init.zeros_(self.to_noise2.weight)
         nn.init.zeros_(self.to_noise1.bias)

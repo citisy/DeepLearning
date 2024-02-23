@@ -158,9 +158,9 @@ class Model(ddim.Model):
         assert hasattr(vae, 'encode')
 
         if not self.cond_trainable:
-            torch_utils.freeze_layers(cond)
+            torch_utils.ModuleManager.freeze_module(cond)
         if not self.vae_trainable:
-            torch_utils.freeze_layers(vae)
+            torch_utils.ModuleManager.freeze_module(vae)
 
         self.cond = cond
         self.backbone = backbone

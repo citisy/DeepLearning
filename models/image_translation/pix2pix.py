@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 from ..layers import Conv
 from ..semantic_segmentation.Unet import CirUnetBlock, Config as Config_
-from utils.torch_utils import initialize_layers
+from utils.torch_utils import ModuleManager
 import functools
 
 
@@ -40,8 +40,8 @@ class Model(nn.ModuleList):
         self.net_g = net_g if net_g is not None else NetG(in_ch, **net_g_config)
         self.net_d = net_d if net_d is not None else NetD(in_ch * 2, **net_d_config)
 
-        initialize_layers(self.net_g)
-        initialize_layers(self.net_d)
+        ModuleManager.initialize_layers(self.net_g)
+        ModuleManager.initialize_layers(self.net_d)
 
         self.gan_loss_fn = nn.MSELoss()
         self.l1_loss_fn = torch.nn.L1Loss()

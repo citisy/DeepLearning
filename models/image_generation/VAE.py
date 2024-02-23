@@ -388,7 +388,7 @@ class Loss(nn.Module):
 
         # output log variance
         self.logvar = nn.Parameter(torch.ones(size=()) * logvar_init)
-        torch_utils.initialize_layers(self)
+        torch_utils.ModuleManager.initialize_layers(self)
 
     @staticmethod
     def vanilla_d_loss(logits_real, logits_fake):

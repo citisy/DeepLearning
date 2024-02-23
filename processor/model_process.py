@@ -76,6 +76,7 @@ class CheckpointHooks:
 
         # note, check model in eval mode first
         model = torch_utils.Export.to_torchscript(model, *trace_input, **kwargs)
+        os_lib.mk_parent_dir(save_path)
         model.save(save_path)
 
     def save_onnx(self, save_path, trace_input=None, model_warp=None, **kwargs):
@@ -107,7 +108,6 @@ class CheckpointHooks:
             self.logger.info(f'Successfully load {save_path} !')
 
     model: nn.Module
-    aux_model: Dict[str, nn.Module]
 
     def load_model(self, save_path, save_items: dict = None, **kwargs):
         """
@@ -137,11 +137,6 @@ class CheckpointHooks:
         """
         ckpt = torch.load(save_path, map_location=self.device, **kwargs)
         self.model.load_state_dict(ckpt.pop('model'), strict=False)
-
-        if 'aux_model' in ckpt:
-            aux_model = ckpt.pop('aux_model')
-            for name, w in aux_model.items():
-                self.aux_model[name].load_state_dict(w, strict=False)
 
         def _load(name, item):
             if name in self.__dict__ and hasattr(self.__dict__[name], 'load_state_dict'):
@@ -201,16 +196,17 @@ class ModelHooks:
 
     use_ema = False
     ema: Optional
-    aux_model: Dict[str, nn.Module] = {}
+    aux_modules: Optional     # all modules in aux_modules must have `step()` function
+    models: Dict[str, nn.Module]    # all module in models would be val
 
     def set_aux_model(self):
         if self.use_ema:
-            self.ema = torch_utils.EMA()
-            self.aux_model['ema'] = self.ema.copy(self.model)
+            self.ema = torch_utils.EMA(self.model)
+            self.aux_modules['ema'] = self.ema
+            self.models['ema'] = self.ema.ema_model
 
     def set_mode(self, train=True):
-        self.model.train(train)
-        for v in self.aux_model.values():
+        for v in self.models.values():
             v.train(train)
 
     def set_optimizer(self):
@@ -409,7 +405,7 @@ class ModelHooks:
             self._backward()
 
         if hasattr(self, 'ema'):
-            self.ema.step(self.model, self.aux_model['ema'])
+            self.ema.step()
 
     def _backward(self):
         if self.use_scaler:
@@ -513,11 +509,9 @@ class ModelHooks:
             'date': datetime.now().isoformat()
         }
 
-        if hasattr(self, 'stopper'):
-            ckpt['stopper'] = self.stopper.state_dict()
-
-        if self.aux_model:
-            ckpt['aux_model'] = {k: v.state_dict() for k, v in self.aux_model.items()}
+        for name in ('stopper', 'ema'):
+            if hasattr(self, name):
+                ckpt[name] = getattr(self, name).state_dict()
 
         if not isinstance(max_save_weight_num, int):  # None
             self.save(f'{self.work_dir}/last.pth', save_type=WEIGHT, save_items=ckpt)

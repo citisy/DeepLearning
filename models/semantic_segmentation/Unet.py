@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 from . import BaseSemSegModel
 from ..layers import Conv, ConvInModule, ConvT
-from utils.torch_utils import initialize_layers
+from utils.torch_utils import ModuleManager
 
 
 class Config:
@@ -29,7 +29,7 @@ class Model(BaseSemSegModel):
         # top(outer) -> bottom(inner)
         # self.backbone = CurUnetBlock(in_ch, self.out_features, **backbone_config)
         self.backbone = CirUnetBlock(in_ch, self.out_features, **backbone_config)
-        initialize_layers(self)
+        ModuleManager.initialize_layers(self)
 
     def forward(self, x, pix_images=None):
         x = self.backbone(x)

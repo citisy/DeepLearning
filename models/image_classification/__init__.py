@@ -1,7 +1,12 @@
 from torch import nn
 import torch.nn.functional as F
-from utils.torch_utils import initialize_layers
+from utils.torch_utils import ModuleManager
 from ..layers import ConvInModule, Linear, OutModule
+
+
+class Config:
+    def get(self, name=None):
+        raise NotImplemented
 
 
 class BaseImgClsModel(nn.Module):
@@ -32,7 +37,7 @@ class BaseImgClsModel(nn.Module):
             out_module or OutModule(out_features, in_features=head_hidden_features)
         )
 
-        initialize_layers(self)
+        ModuleManager.initialize_layers(self)
 
     def forward(self, x, true_label=None):
         x = self.input(x)

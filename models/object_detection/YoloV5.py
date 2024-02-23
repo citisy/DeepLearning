@@ -6,7 +6,7 @@ from tqdm import tqdm
 import cv2
 from utils import os_lib, visualize
 from ..losses import FocalLoss, IouLoss
-from utils.torch_utils import initialize_layers
+from utils.torch_utils import ModuleManager
 from ..layers import ConvInModule, Cache, Concat
 from . import cls_nms, Iou
 from ..image_classification.CspDarkNet import Backbone, C3, Conv
@@ -28,7 +28,7 @@ class Config:
         ],
         stride=(8, 16, 32)
     )
-    loss = dict(
+    model = dict(
         conf_thres=0.1, nms_thres=0.6, max_det=300
     )
 
@@ -46,7 +46,7 @@ class Config:
             in_module_config=cls.in_module,
             **cls.make_config(cls.backbone, cls.neck, **cls.default_model_multiple[name]),
             head_config=cls.head,
-            loss_config=cls.loss
+            loss_config=cls.model
         )
 
     @staticmethod
@@ -98,9 +98,11 @@ class Model(nn.Module):
             self, n_classes,
             in_module=None, backbone=None, neck=None, head=None,
             in_module_config=Config.in_module, backbone_config=Config.backbone,
-            neck_config=Config.neck, head_config=Config.head, loss_config=Config.loss
+            neck_config=Config.neck, head_config=Config.head, model_config=Config.model
     ):
         super().__init__()
+        self.__dict__.update(model_config)
+
         self.input = in_module(**in_module_config) if in_module is not None else ConvInModule(**in_module_config)
         if backbone is None:
             self.backbone = Backbone(in_ch=self.input.out_channels, backbone_config=backbone_config)
@@ -108,18 +110,16 @@ class Model(nn.Module):
             self.backbone = backbone(**backbone_config)
         self.neck = neck(**neck_config) if neck is not None else Neck(self.backbone.out_channels, **neck_config)
         self.head = head(**head_config) if head is not None else Head(n_classes, self.neck.out_channels, **head_config)
-        self.make_loss(**loss_config)
 
         self.input_size = self.input.input_size
         self.grid = None
         self.stride = self.head.stride
 
-        initialize_layers(self)
+        ModuleManager.initialize_layers(self)
 
-    def make_loss(self, conf_thres=0.1, nms_thres=0.6, max_det=300):
-        self.conf_thres = conf_thres
-        self.nms_thres = nms_thres
-        self.max_det = max_det
+    conf_thres = 0.1
+    nms_thres = 0.6
+    max_det = 300
 
     def forward(self, x, gt_boxes=None, gt_cls=None):
         x = self.input(x)

@@ -992,6 +992,7 @@ class SDXL(Ldm):
     dataset_version = model_sub_version
     cond_pretrain_model = None
     input_size = 1024
+    low_memory_run = False
 
     def set_model(self):
         from models.image_generation.sdxl import Model, Config
@@ -1001,6 +1002,12 @@ class SDXL(Ldm):
             image_size=self.input_size,
             **Config.get(self.model_sub_version)
         )
+
+        if self.low_memory_run:
+            from functools import partial
+
+            for module in [self.model.cond, self.model.backbone, self.model.vae]:
+                module.__call__ = partial(torch_utils.ModuleManager.low_memory_run, module, self.device)
 
 
 class SDXLPretrained(SDXL, LoadSDPretrain):

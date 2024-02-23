@@ -4,7 +4,7 @@ import torch.nn as nn
 from ..layers import Conv, ConvT
 from .pix2pix import NetD, Config as Config_
 from ..image_classification.ResNet import ResBlock
-from utils.torch_utils import initialize_layers
+from utils.torch_utils import ModuleManager
 
 
 class Config(Config_):
@@ -32,7 +32,7 @@ class Model(nn.ModuleList):
         self.net_d_a = net_d if net_d is not None else NetD(in_ch, **net_d_config)
         self.net_d_b = net_d if net_d is not None else NetD(in_ch, **net_d_config)
 
-        initialize_layers(self)
+        ModuleManager.initialize_layers(self)
 
         self.gan_loss_fn = nn.MSELoss()
         self.cycle_l1_loss_fn = torch.nn.L1Loss()

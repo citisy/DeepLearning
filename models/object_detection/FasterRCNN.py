@@ -6,7 +6,7 @@ import torch.nn.functional as F
 from ..layers import Conv, Linear, ConvInModule
 from . import cls_nms
 from ..image_classification import GetBackbone
-from utils.torch_utils import initialize_layers
+from utils.torch_utils import ModuleManager
 
 in_module_config = dict(
     in_ch=3,
@@ -71,7 +71,7 @@ class Model(nn.Module):
         self.neck = neck(**neck_config) if neck is not None else RPN(self.backbone.out_channels, **neck_config)
         self.head = head(**head_config) if head is not None else RoIHead(self.backbone.out_channels, n_classes, **roi_config)
 
-        initialize_layers(self)
+        ModuleManager.initialize_layers(self)
 
     def forward(self, x, gt_boxes=None, gt_cls=None):
         """
