@@ -197,7 +197,7 @@ class Model(ddim.Model):
         c = self.cond.encode(text)
         uc = None
         if self.scale > 1.0:
-            if not neg_text:
+            if neg_text is None:
                 neg_text = [''] * b
             uc = self.cond.encode(neg_text)
 
@@ -210,9 +210,9 @@ class Model(ddim.Model):
         z, _, _ = self.vae.encode(image)
         x0 = self.scale_factor * z
 
-        ddim_timestep_seq = self.make_ddim_timesteps()
-        t0 = int(self.strength * self.ddim_timesteps)
-        t = torch.full((x0.shape[0],), ddim_timestep_seq[t0], device=x0.device, dtype=torch.long)
+        timestep_seq = self.make_timesteps()
+        t0 = int(self.strength * self.num_steps)
+        t = torch.full((x0.shape[0],), timestep_seq[t0], device=x0.device, dtype=torch.long)
         xt = self.q_sample(x0, t)
         return xt, t0
 
@@ -232,6 +232,51 @@ class Model(ddim.Model):
         return e_t
 
 
+class Txt2ImgModel4Triton(nn.Module):
+    def __init__(self, model):
+        super().__init__()
+        self.model = model
+
+    def forward(self, tokens, neg_token):
+        """
+
+        Args:
+            tokens: torch.int64, (b, seq_len)
+            neg_token: torch.int64, (b, seq_len)
+
+        Returns:
+            torch.uint8, (b, h, w, c)
+        """
+        fake_x = self.model(x=None, text=tokens, ng_text=neg_token)
+        fake_x = (fake_x + 1) * 0.5  # unnormalize, [-1, 1] -> [0, 1]
+        fake_x = fake_x.mul(255).clamp_(0, 255).permute(0, 2, 3, 1).contiguous().to(torch.uint8)
+        return fake_x
+
+
+class Img2ImgModel4Triton(nn.Module):
+    def __init__(self, model):
+        super().__init__()
+        self.model = model
+
+    def forward(self, tokens, neg_token, images):
+        """
+
+        Args:
+            tokens: torch.int64, (b, seq_len)
+            neg_token: torch.int64, (b, seq_len)
+            images: torch.uint8, (b, h, w, c)
+
+        Returns:
+            torch.uint8, (b, h, w, c)
+        """
+        images = images / 255.
+        images = images * 2 - 1  # normalize, [0, 1] -> [-1, 1]
+        fake_x = self.model(x=images, text=tokens, neg_token=neg_token)
+        fake_x = (fake_x + 1) * 0.5  # unnormalize, [-1, 1] -> [0, 1]
+        fake_x = fake_x.mul(255).clamp_(0, 255).permute(0, 2, 3, 1).contiguous().to(torch.uint8)
+        return fake_x
+
+
 class UNetModel(nn.Module):
     """base on Unet, add attention, res, etc."""
 
@@ -239,7 +284,7 @@ class UNetModel(nn.Module):
             self,
             in_ch, context_dim,
             out_ch=4, unit_dim=320, ch_mult=(1, 2, 4, 4),  # for model
-            use_fp16=False, use_checkpoint=True,  # for resnet and transformers
+            use_fp16=False, use_checkpoint=False,  # for resnet and transformers
             sinusoidal_pos_emb_theta=10000, learned_sinusoidal_cond=False, random_fourier_features=False, learned_sinusoidal_dim=16,  # for time embed
             num_classes=None, adm_in_channels=None,  # for label_emb
             groups=32, num_res_blocks=2,  # for resnet
@@ -471,7 +516,10 @@ class BasicTransformerBlock(nn.Module):
         self.use_checkpoint = use_checkpoint
 
     def forward(self, x, context=None):
-        return checkpoint(self._forward, x, context, use_reentrant=self.use_checkpoint)
+        if self.use_checkpoint:
+            return checkpoint(self._forward, x, context)
+        else:
+            return self._forward(x, context)
 
     def _forward(self, x, context=None):
         x = self.attn1(self.norm1(x)) + x

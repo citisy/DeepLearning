@@ -216,10 +216,10 @@ class Model(ldm.Model):
         sigma = extract(self.sigmas, t, x_t.shape) * s_in
         next_sigma = extract(self.sigmas, prev_t, x_t.shape) * s_in
 
-        gamma = (
-            min(self.s_churn / (self.num_steps - 1), 2 ** 0.5 - 1)
-            if self.s_tmin <= sigma <= self.s_tmax
-            else 0.0
+        gamma = torch.where(
+            self.s_tmin <= sigma <= self.s_tmax,
+            min(self.s_churn / (self.num_steps - 1), 2 ** 0.5 - 1),
+            0.
         )
 
         sigma_hat = sigma * (gamma + 1.0)
@@ -277,7 +277,7 @@ class Model(ldm.Model):
         return c_skip, c_out, c_in, c_noise
 
     def make_txt_cond(self, text, neg_text=None, **kwargs) -> dict:
-        if not neg_text:
+        if neg_text is None:
             neg_text = [''] * len(text)
 
         default_value = {
@@ -311,11 +311,11 @@ class Model(ldm.Model):
         if uc_values is not None:
             x = torch.cat([x] * 2)
             time = torch.cat([time] * 2)
-            cond = torch.cat([uc_values['crossattn'], c_values['crossattn']])
-            y = torch.cat([uc_values['vector'], c_values['vector']])
+            cond = torch.cat([uc_values[self.cond.COND], c_values[self.cond.COND]])
+            y = torch.cat([uc_values[self.cond.VECTOR], c_values[self.cond.VECTOR]])
         else:
-            cond = c_values['crossattn']
-            y = c_values['vector']
+            cond = c_values[self.cond.COND]
+            y = c_values[self.cond.VECTOR]
 
         z = self.backbone(x, timesteps=time, context=cond, y=y)
         if uc_values is None:
@@ -337,8 +337,12 @@ class Model(ldm.Model):
 
 
 class EmbedderWarp(nn.Module):
-    OUTPUT_DIM2KEYS = {2: "vector", 3: "crossattn", 4: "concat", 5: "concat"}
-    KEY2CATDIM = {"vector": 1, "crossattn": 2, "concat": 1}
+    VECTOR = 'vector'
+    COND = 'cond'
+    CONCAT = 'concat'
+
+    OUTPUT_DIM2KEYS = {2: VECTOR, 3: COND, 4: CONCAT, 5: CONCAT}
+    KEY2CATDIM = {VECTOR: 1, COND: 2, CONCAT: 1}
 
     def __init__(self, cond_configs: list):
         super().__init__()
@@ -364,8 +368,7 @@ class EmbedderWarp(nn.Module):
     def forward(self, value_dicts, return_uc=True):
         batch, batch_uc = self.get_batch(value_dicts)
         c_values = self.get_cond(batch)
-        # todo: why filter txt?
-        uc_values = self.get_cond(batch_uc, [Config.TXT]) if return_uc else None
+        uc_values = self.get_cond(batch_uc) if return_uc else None
         return c_values, uc_values
 
     def get_cond(self, batch, force_zero_embeddings=()):

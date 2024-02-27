@@ -11,29 +11,29 @@ class Model(Model_):
         - https://github.com/lucidrains/denoising-diffusion-pytorch
     """
     ddim_discr_method = 'uniform'
-    ddim_timesteps = 50
+    num_steps = 50
     ddim_eta = 0.
 
-    def p_sample_loop(self, x_t, t0=None, return_all_timesteps=False, **kwargs):
+    def p_sample_loop(self, x_t, t0=None, visual_fn=None, **kwargs):
         timestep_seq = self.make_timesteps(t0)
         # previous sequence
         timestep_prev_seq = np.append(np.array([0]), timestep_seq[:-1])
         x_0 = None
-        images = [x_t]
+        if visual_fn:
+            visual_fn(x_t)
         for i in reversed(range(len(timestep_seq))):
             self_cond = x_0 if self.self_condition else None
             x_t, x_0 = self.p_sample(x_t, timestep_seq[i], timestep_prev_seq[i], self_cond, **kwargs)
-            images.append(x_t)
-
-        images = x_t if not return_all_timesteps else torch.stack(images, dim=1)
-        return images
+            if visual_fn:
+                visual_fn(x_t)
+        return x_t
 
     def make_timesteps(self, t0=None):
         if self.ddim_discr_method == 'uniform':
-            c = self.timesteps // self.ddim_timesteps
+            c = self.timesteps // self.num_steps
             timestep_seq = np.asarray(list(range(0, self.timesteps, c)))
         elif self.ddim_discr_method == 'quad':
-            timestep_seq = ((np.linspace(0, np.sqrt(self.timesteps * .8), self.ddim_timesteps)) ** 2).astype(int)
+            timestep_seq = ((np.linspace(0, np.sqrt(self.timesteps * .8), self.num_steps)) ** 2).astype(int)
         else:
             raise NotImplementedError(f'There is no ddim discretization method called "{self.ddim_discr_method}"')
 

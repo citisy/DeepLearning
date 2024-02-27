@@ -1,3 +1,4 @@
+import torch
 from torch import nn, einsum
 from utils import torch_utils
 from . import ldm
@@ -48,9 +49,10 @@ class CLIPEmbedder(nn.Module):
         self.return_pooled = return_pooled
 
     def forward(self, text):
-        batch_encoding = self.tokenizer(text, truncation=True, max_length=self.max_length, return_length=True,
-                                        return_overflowing_tokens=False, padding="max_length", return_tensors="pt")
-        tokens = batch_encoding["input_ids"].to(self.transformer.device)
+        if isinstance(text, torch.Tensor):
+            tokens = text
+        else:
+            tokens = self.tokenize(text).to(self.transformer.device)
         outputs = self.transformer(input_ids=tokens, output_hidden_states=self.layer == Config.HIDDEN)
 
         if self.layer == Config.LAST:
@@ -63,3 +65,8 @@ class CLIPEmbedder(nn.Module):
         if self.return_pooled:
             return z, outputs.pooler_output
         return z
+
+    def tokenize(self, text):
+        batch_encoding = self.tokenizer(text, truncation=True, max_length=self.max_length, return_length=True,
+                                        return_overflowing_tokens=False, padding="max_length", return_tensors="pt")
+        return batch_encoding["input_ids"]

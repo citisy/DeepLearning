@@ -116,8 +116,6 @@ class Model(nn.ModuleList):
         self.make_schedule()
         self.make_diffuse(**configs)
 
-        self.self_condition = False
-
         # todo: it seem that it is not elegant, but apply for `nn.DataParallel` mode, find a better solution
         self.dummy_param = nn.Parameter(torch.empty(0))
 
@@ -131,6 +129,7 @@ class Model(nn.ModuleList):
     schedule_type = Config.LINEAR
     min_snr_loss_weight = False
     min_snr_gamma = 5
+    self_condition = False
 
     def make_schedule(self):
         # helper function to register buffer from float64 to float32
@@ -317,19 +316,20 @@ class Model(nn.ModuleList):
     def post_process(self, x_t, **kwargs):
         return self.p_sample_loop(x_t, **kwargs)
 
-    def p_sample_loop(self, x_t, t0=None, return_all_timesteps=False, **kwargs):
+    def p_sample_loop(self, x_t, t0=None, visual_fn=None, **kwargs):
         timestep_seq = self.make_timesteps(t0)
-        images = [x_t]
         x_0 = None
+        if visual_fn:
+            visual_fn(x_t)
 
         # t: T-1 -> 0
         for t in reversed(timestep_seq):
             self_cond = x_0 if self.self_condition else None
             x_t, x_0 = self.p_sample(x_t, t, self_cond, **kwargs)
-            images.append(x_t)
+            if visual_fn:
+                visual_fn(x_t)
 
-        images = x_t if not return_all_timesteps else torch.stack(images, dim=1)
-        return images
+        return x_t
 
     def make_timesteps(self, t0=None):
         timestep_seq = range(0, self.timesteps)
@@ -556,7 +556,10 @@ class ResnetBlock(nn.Module):
         self.proj = nn.Conv2d(in_ch, out_ch, 1) if in_ch != out_ch else nn.Identity()
 
     def forward(self, x, time_emb=None):
-        return checkpoint(self._forward, x, time_emb, use_reentrant=self.use_checkpoint)
+        if self.use_checkpoint:
+            return checkpoint(self._forward, x, time_emb)
+        else:
+            return self._forward(x, time_emb)
 
     def _forward(self, x, time_emb=None):
         h = self.in_layers(x)

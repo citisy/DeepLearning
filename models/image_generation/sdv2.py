@@ -157,7 +157,7 @@ class OpenCLIPEmbedder(nn.Module):
         model, _, _ = open_clip.create_model_and_transforms(arch, pretrained=pretrain_model)
         del model.visual
         self.model = model
-        self.tokenizer = open_clip.tokenize
+        self.tokenize = open_clip.tokenize
 
         self.max_length = model.context_length  # 77
         self.output_size = model.transformer.width  # 1024
@@ -166,8 +166,10 @@ class OpenCLIPEmbedder(nn.Module):
         self.layer = layer
 
     def forward(self, text):
-        device = self.model.attn_mask.device
-        tokens = self.tokenizer(text).to(device)
+        if isinstance(text, torch.Tensor):
+            tokens = text
+        else:
+            tokens = self.tokenize(text).to(self.model.attn_mask.device)
         return self.encode_with_transformer(tokens)
 
     def encode_with_transformer(self, text):
