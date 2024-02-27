@@ -127,7 +127,7 @@ class TextProcess(DataProcess):
         paragraphs = bundled.lower(paragraphs)
         segments = spliter.segments_from_paragraphs(paragraphs, is_word_piece=True, vocab=self.vocab, verbose=True)
         if not self.is_nsp and self.is_chunk and train:
-            segments = spliter.seg_chunks_from_segments(segments, max_length=self.max_seq_len - 2, min_length=self.max_seq_len / 8, verbose=True)
+            segments = spliter.chunked_segments_from_segments(segments, max_length=self.max_seq_len - 2, min_length=self.max_seq_len / 8, verbose=True)
 
             iter_data = []
             for segment in segments:

@@ -1,10 +1,20 @@
 """context split to different fine-grained type
 
-article (str): all lines fatten to a string
-paragraphs (List[str]): all original lines, each itme in list is a str line
-chunks (List[str]): each line has the same length as paragraphs as possibly, each itme in list is a str line
-segments (List[List[str]]): all lines after cut, each itme in list is a cut word list
-seg_chunks (List[List[str]]): each line has the same length as segments as possibly, each itme in list is a cut word list
+article (str):
+    all lines fatten to a string
+    e.g.: 'hello world! hello python!'
+paragraphs (List[str]):
+    all original lines, each itme in list is a str line
+    e.g.: ['hello world!', 'hello python!']
+chunked_paragraphs (List[str]):
+    each line has the same length as paragraphs as possibly, each itme in list is a str line
+    e.g.: ['hello world! hello python!']
+segments (List[List[str]]):
+    all lines after cut, each itme in list is a cut word list
+    e.g.: [['hello', 'world!'], ['hello', 'python!']]
+chunked_segments (List[List[str]]):
+    each line has the same length as segments as possibly, each itme in list is a cut word list
+    e.g.: [['hello', 'world!', 'hello', 'python!']]
 """
 import re
 import unicodedata
@@ -211,43 +221,43 @@ def segments_from_paragraphs_by_jieba(paragraphs: List[str], **filter_kwargs) ->
 
 
 def paragraphs_from_segments(segments: List[List[str]], sep='') -> List[str]:
-    return [sep.join(p) for p in segments]
+    return [sep.join(s) for s in segments]
 
 
-def chunks_from_paragraphs(paragraphs: List[str], max_length=512, min_length=None):
+def chunked_paragraphs_from_paragraphs(paragraphs: List[str], max_length=512, min_length=None):
     """
     Usage:
-        >>> chunks_from_paragraphs(['abcdefghijklmn'], max_length=5)
+        >>> chunked_paragraphs_from_paragraphs(['abcdefghijklmn'], max_length=5)
         ['abcde', 'fghij', 'klmn']
 
-        >>> chunks_from_paragraphs(['abc', 'def', 'ghi', 'jk', 'lmn'], max_length=5)
+        >>> chunked_paragraphs_from_paragraphs(['abc', 'def', 'ghi', 'jk', 'lmn'], max_length=5)
         ['abcde', 'fghij', 'klmn']
 
-        >>> chunks_from_paragraphs(['abc', 'def', 'ghi', 'jk', 'lmn'], max_length=5, min_length=3)
+        >>> chunked_paragraphs_from_paragraphs(['abc', 'def', 'ghi', 'jk', 'lmn'], max_length=5, min_length=3)
         ['abc', 'def', 'ghi', 'jklmn']
 
-        >>> chunks_from_paragraphs(['abc,def.ghijk,lmn.'], max_length=5)
+        >>> chunked_paragraphs_from_paragraphs(['abc,def.ghijk,lmn.'], max_length=5)
         ['abc,', 'def.', 'ghijk', ',lmn.']
     """
-    chunks = []
+    chunked_paragraphs = []
     chunk = ''
 
     for p in paragraphs:
         chunk += p
 
         if len(chunk) > max_length:
-            _chunks = chunks_from_line(chunk, max_length=max_length)
-            chunks.extend(_chunks[:-1])
-            chunk = _chunks[-1]
+            chunks = chunked_paragraphs_from_line(chunk, max_length=max_length)
+            chunked_paragraphs.extend(chunks[:-1])
+            chunk = chunks[-1]
         elif min_length and len(chunk) >= min_length:
-            chunks.append(chunk)
+            chunked_paragraphs.append(chunk)
             chunk = ''
             continue
 
     if chunk:
-        chunks.append(chunk)
+        chunked_paragraphs.append(chunk)
 
-    return chunks
+    return chunked_paragraphs
 
 
 full_stop_rx = re.compile(r'.*[。\.!?！？]', re.DOTALL)
@@ -255,14 +265,14 @@ half_stop_rx = re.compile(r'.*[\];；,，、》）}]', re.DOTALL)
 newline_stop_rx = re.compile(r'.+\n', re.DOTALL)
 
 
-def chunks_from_line(line: str, max_length=512) -> List[str]:
-    chunks = []
+def chunked_paragraphs_from_line(line: str, max_length=512) -> List[str]:
+    chunked_paragraphs = []
     rest = line
 
     while True:
         if len(rest) <= max_length:
             if rest:
-                chunks.append(rest)
+                chunked_paragraphs.append(rest)
             break
 
         tail = rest[max_length:]
@@ -286,9 +296,9 @@ def chunks_from_line(line: str, max_length=512) -> List[str]:
             else:
                 sect, rest = rest[:max_length], rest[max_length:]
 
-        chunks.append(sect)
+        chunked_paragraphs.append(sect)
 
-    return chunks
+    return chunked_paragraphs
 
 
 def truncate_by_stop_symbol(line, pattern: re.Pattern) -> tuple:
@@ -310,40 +320,40 @@ half_stop_tokens = set('];；,，、》）}')
 newline_stop_tokens = set('\n')
 
 
-def seg_chunks_from_segments(segments: List[List[str]], max_length=512, min_length=None, verbose=False):
-    """see also `chunks_from_paragraphs()`"""
-    seg_chunks = []
-    seg_chunk = []
+def chunked_segments_from_segments(segments: List[List[str]], max_length=512, min_length=None, verbose=False):
+    """see also `chunked_paragraphs_from_paragraphs()`"""
+    chunked_segments = []
+    chunked_segment = []
 
     if verbose:
         segments = tqdm(segments, desc=TextVisualize.highlight_str('Chunk segments'))
 
     for p in segments:
-        seg_chunk += p
+        chunked_segment += p
 
-        if len(seg_chunk) > max_length:
-            _chunks = seg_chunks_from_segment(seg_chunk, max_length=max_length)
-            seg_chunks.extend(_chunks[:-1])
-            seg_chunk = _chunks[-1]
-        elif min_length and len(seg_chunk) >= min_length:
-            seg_chunks.append(seg_chunk)
-            seg_chunk = []
+        if len(chunked_segment) > max_length:
+            chunks = chunked_segments_from_segment(chunked_segment, max_length=max_length)
+            chunked_segments.extend(chunks[:-1])
+            chunked_segment = chunks[-1]
+        elif min_length and len(chunked_segment) >= min_length:
+            chunked_segments.append(chunked_segment)
+            chunked_segment = []
             continue
 
-    if seg_chunk:
-        seg_chunks.append(seg_chunk)
+    if chunked_segment:
+        chunked_segments.append(chunked_segment)
 
-    return seg_chunks
+    return chunked_segments
 
 
-def seg_chunks_from_segment(segment, max_length=512):
-    seg_chunks = []
+def chunked_segments_from_segment(segment, max_length=512):
+    chunked_segments = []
     rest = segment
 
     while True:
         if len(rest) <= max_length:
             if rest:
-                seg_chunks.append(rest)
+                chunked_segments.append(rest)
             break
 
         keep = rest[:max_length]
@@ -368,9 +378,9 @@ def seg_chunks_from_segment(segment, max_length=512):
             else:
                 sect, rest = keep, tail
 
-        seg_chunks.append(sect)
+        chunked_segments.append(sect)
 
-    return seg_chunks
+    return chunked_segments
 
 
 def truncate_by_stop_token(segment, token: set) -> tuple:
