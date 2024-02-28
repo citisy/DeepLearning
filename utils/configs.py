@@ -137,6 +137,13 @@ def permute_obj(obj: dict or list):
     return ret
 
 
+def default(*args):
+    """check the items by order and return the first item which is not None"""
+    for obj in args:
+        if obj is not None:
+            return obj
+
+
 def parse_params_example(path, parser) -> dict:
     """an example for parse parameters"""
 

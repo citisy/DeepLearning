@@ -68,6 +68,8 @@ class Saver:
 
         self.funcs = {
             suffixes_dict['json']: self.save_json,
+            suffixes_dict['yml']: self.save_yml,
+            suffixes_dict['ini']: self.save_ini,
             suffixes_dict['txt']: self.save_txt,
             suffixes_dict['pkl']: self.save_pkl,
             suffixes_dict['joblib']: self.save_joblib,
@@ -95,6 +97,21 @@ class Saver:
     def save_json(self, obj: dict, path, **kwargs):
         with open(path, 'w', encoding='utf8', errors='ignore') as f:
             json.dump(obj, f, ensure_ascii=False, indent=4, **kwargs)
+
+        self.stdout(path)
+
+    def save_yml(self, obj: dict, path, **kwargs):
+        with open(path, 'w') as f:
+            yaml.dump(obj, f)
+        self.stdout(path)
+
+    def save_ini(self, obj: dict, path, **kwargs):
+        parser = configparser.ConfigParser()
+        parser.read_dict(obj)
+
+        # 将ConfigParser对象写入文件
+        with open(path, 'w', encoding='utf8') as f:
+            parser.write(f)
 
         self.stdout(path)
 
@@ -141,9 +158,9 @@ class Saver:
         obj.to_csv(path, **kwargs)
         self.stdout(path)
 
-    def save_pdf_to_img(self, path, page=None, image_dir=None, scale_ratio=1.33):
+    def save_image_from_pdf(self, path, page=None, image_dir=None, scale_ratio=1.33):
         """select pages from pdf, and save with image type"""
-        images = loader.load_pdf_to_images2(
+        images = loader.load_images_from_pdf2(
             path,
             scale_ratio=scale_ratio
         )
@@ -160,7 +177,7 @@ class Saver:
         for i, img in enumerate(images):
             self.save_img(img, f'{image_dir}/{i}.png')
 
-    def save_pdf_to_pdf(self, path, page=None, save_path=None):
+    def save_pdf_from_pdf(self, path, page=None, save_path=None):
         """select pages from pdf, and save with pdf type"""
         from PyPDF2 import PdfFileReader, PdfFileWriter, errors
 
@@ -311,7 +328,16 @@ class Loader:
         self.stdout(path)
         return img
 
-    def load_pdf_to_images(
+    def load_image_from_zipfile(self, path, zip_file):
+        from .converter import DataConvert
+
+        image = zip_file.open(path).read()
+        image = DataConvert.bytes_to_image(image)
+
+        self.stdout(path)
+        return image
+
+    def load_images_from_pdf(
             self,
             obj: str or bytes, scale_ratio: float = 1.33,
             rotate: int = 0, alpha=False, bgr=False
@@ -341,7 +367,7 @@ class Loader:
 
         return images
 
-    def load_pdf_to_images2(
+    def load_images_from_pdf2(
             self,
             obj: str or bytes, scale_ratio: float = 1.33,
     ) -> List[np.ndarray]:

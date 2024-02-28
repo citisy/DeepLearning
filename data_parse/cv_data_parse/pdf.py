@@ -60,7 +60,7 @@ class Loader(DataLoader):
 
     def get_ret(self, fp, **kwargs):
         fp = Path(fp)
-        images = self.loader.load_pdf_to_images2(str(fp))
+        images = self.loader.load_images_from_pdf2(str(fp))
         doc = fitz.open(str(fp))
 
         for i, (image, page) in enumerate(zip(images, doc)):
