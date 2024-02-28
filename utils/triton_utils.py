@@ -1,5 +1,5 @@
 import numpy as np
-from tritonclient.http import InferenceServerClient, InferInput, InferRequestedOutput
+from tritonclient.http import InferenceServerClient, InferInput, InferRequestedOutput, InferAsyncRequest
 from .log_utils import get_logger
 
 # https://docs.nvidia.com/deeplearning/triton-inference-server/user-guide/docs/user_guide/model_configuration.html#datatypes
@@ -15,8 +15,8 @@ datatypes = {
 
 
 class Requests:
-    def __init__(self, url, verbose=False, logger=None):
-        self.client = InferenceServerClient(url=url, verbose=False)
+    def __init__(self, url, verbose=False, logger=None, **kwargs):
+        self.client = InferenceServerClient(url=url, verbose=False, **kwargs)
         self.verbose = verbose
         self.logger = get_logger(logger)
         self.model_configs = {}
@@ -40,6 +40,9 @@ class Requests:
             self.logger.info(self.model_configs)
 
     def async_infer(self, *inputs: 'np.ndarray', model_name, model_version):
+        assert (model_name, model_version) in self.model_configs, \
+            f'Got {model_name = } and {model_version = }, where the keys is {self.model_configs.keys()}, pls check'
+
         model_config = self.model_configs[model_name, model_version]
 
         _inputs = []
@@ -66,7 +69,7 @@ class Requests:
         return async_req
 
     @staticmethod
-    def async_get(async_req):
+    def async_get(async_req: InferAsyncRequest):
         result = async_req.get_result()
         response = result.get_response()
 
@@ -76,3 +79,55 @@ class Requests:
             outputs[name] = result.as_numpy(name)
 
         return outputs
+
+
+class TritonPythonModel:
+    """Your Python model must use the same class name. Every Python model
+    that is created must have "TritonPythonModel" as the class name.
+    this is an example
+    refer to: https://github.com/triton-inference-server/python_backend
+    """
+
+    def initialize(self, args):
+        import triton_python_backend_utils as pb_utils
+        import json
+
+        # get configs
+        # configs can be found in `config.pbtxt`
+        self.model_config = model_config = json.loads(args['model_config'])
+
+        self.input0_config = pb_utils.get_output_config_by_name(model_config, "INPUT0")
+        self.input0_dtype = pb_utils.triton_string_to_numpy(self.input0_config['data_type'])
+        self.output0_config = pb_utils.get_output_config_by_name(model_config, "OUTPUT0")
+        self.output0_dtype = pb_utils.triton_string_to_numpy(self.output0_config['data_type'])
+        ...
+
+        # init model
+        self.model = ...
+
+    def execute(self, requests):
+        import triton_python_backend_utils as pb_utils
+
+        responses = []
+        for request in requests:
+            # get inputs
+            in_0 = pb_utils.get_input_tensor_by_name(request, 'INPUT0')
+            ...
+
+            # get outputs from model inference
+            out_0, *outs = self.model(in_0, ...)
+
+            out_tensor_0 = pb_utils.Tensor('OUTPUT0', out_0.astype(self.output0_dtype))
+            ...
+
+            inference_response = pb_utils.InferenceResponse(output_tensors=[out_tensor_0, ...])
+
+            responses.append(inference_response)
+        return responses
+
+    def finalize(self):
+        """`finalize` is called only once when the model is being unloaded.
+        Implementing `finalize` function is optional. This function allows
+        the model to perform any necessary clean ups before exit.
+        """
+        pass
