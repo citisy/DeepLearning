@@ -150,20 +150,20 @@ class BatchIterImgDataset(BatchIterDataset):
 
 
 class IterBatchDataset(BaseDataset):
-    """input iter_data is a type of Iterator[List]
-    it will get repeat data in multiprocess DataLoader mode,
-    or set `worker_init_fn()` specially to support multiprocess"""
+    """for multiprocessing communication,
+    input iter_data must be a type of `multiprocessing.Queue`,
+    which can get a data with type of Iterator[Iterator]"""
     length: int  # one epoch num steps
 
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
         self.caches = []
 
     def __getitem__(self, idx):
         if not self.caches:
-            self.caches = next(self.iter_data)
+            self.caches = self.iter_data.get()
 
-        ret = self.caches.pop()
+        ret = self.caches.pop(0)
 
         if self.augment_func:
             ret = self.augment_func(ret)
@@ -172,6 +172,44 @@ class IterBatchDataset(BaseDataset):
 
     def __len__(self):
         return self.length
+
+
+class IterIterDataset(IterableDataset):
+    """for multiprocessing communication,
+    input iter_data must be a type of `multiprocessing.Queue`,
+    which can get a data with type of Iterator[Iterator]
+    todo: Queue do not support generator"""
+
+    length: int  # one epoch num steps
+
+    def __init__(self, iter_data, augment_func=None, **kwargs):
+        self.iter_data = iter_data
+        self.augment_func = augment_func
+        self.caches = []
+        self.__dict__.update(**kwargs)
+
+    def __iter__(self):
+        worker_info = get_worker_info()
+        n = 1 if worker_info is None else worker_info.num_workers
+
+        i = 0
+        while i < self.length:
+            iter_data = self.iter_data.get()
+            for ret in iter_data:
+                yield self.process_one(ret)
+
+                i += n
+
+    def process_one(self, ret):
+        ret = copy.deepcopy(ret)
+        if self.augment_func:
+            ret = self.augment_func(ret)
+
+        return ret
+
+    @staticmethod
+    def collate_fn(batch):
+        return list(batch)
 
 
 class MixDataset(BaseDataset):

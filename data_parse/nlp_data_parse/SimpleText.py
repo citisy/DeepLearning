@@ -13,10 +13,12 @@ class Loader(DataLoader):
     default_set_type = [DataRegister.MIX]
 
     def _call(self, set_type=DataRegister.TRAIN, **gen_kwargs):
-        with open(f'{self.data_dir}/{set_type.value}.txt', 'r', encoding='utf8') as f:
-            gen_func = f.read().strip().split('\n')
-        gen_func = enumerate(gen_func)
-        return self.gen_data(gen_func, **gen_kwargs)
+        def gen_func():
+            # support load large file
+            with open(f'{self.data_dir}/{set_type.value}.txt', 'r', encoding='utf8') as f:
+                for i, line in enumerate(f):
+                    yield i, line.strip()
+        return self.gen_data(gen_func(), **gen_kwargs)
 
     def get_ret(self, obj, set_type=DataRegister.TRAIN, return_label=True, **kwargs) -> dict:
         i, line = obj

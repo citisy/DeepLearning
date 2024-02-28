@@ -1,7 +1,7 @@
 import os
 import torch
 import numpy as np
-from processor import Process, DataHooks, BaseDataset, ModelHooks, CheckpointHooks
+from processor import Process, DataHooks, BaseDataset, ModelHooks, CheckpointHooks, IterBatchDataset
 from utils import math_utils, os_lib
 from data_parse.nlp_data_parse.pre_process import spliter, encoder, bundled, sp_token_dict, dict_maker
 import pandas as pd
@@ -284,6 +284,61 @@ class SimpleTextPair(TextPairProcess):
             return loader.load(set_type=DataRegister.TEST, max_size=self.val_data_num, generator=False)[0]
 
 
+class IterBatchSimpleText(TextProcess):
+    """for loading large file"""
+    dataset_version = 'simple_text'
+    data_dir: str
+    max_seq_len = 512
+    iter_batch_num = 1000
+    one_step_data_num = int(1e6)
+
+    train_dataset_ins = IterBatchDataset
+    val_dataset_ins = IterBatchDataset
+
+    def get_data(self, *args, train=True, **kwargs):
+        from data_parse.nlp_data_parse.SimpleText import Loader, DataRegister
+        import multiprocessing
+
+        self.train_dataset_ins.length = self.one_step_data_num
+        self.val_dataset_ins.length = self.one_step_data_num
+
+        def gen_func():
+            loader = Loader(self.data_dir)
+
+            if train:
+                iter_data = loader.load(set_type=DataRegister.TRAIN, max_size=self.train_data_num, return_label=self.is_nsp, generator=True)[0]
+
+            else:
+                iter_data = loader.load(set_type=DataRegister.TEST, max_size=self.val_data_num, return_label=self.is_nsp, generator=True)[0]
+
+            rets = []
+            for i, ret in enumerate(iter_data):
+                rets.append(ret)
+                if i % self.iter_batch_num == self.iter_batch_num - 1:
+                    yield rets
+                    rets = []
+
+                if rets:
+                    yield rets
+
+        def producer(q):
+            iter_data = gen_func()
+            while True:
+                if not q.full():
+                    try:
+                        q.put(next(iter_data))
+                    except StopIteration:
+                        iter_data = gen_func()
+                        q.put(next(iter_data))
+
+        q = multiprocessing.Queue(8)
+        p = multiprocessing.Process(target=producer, args=(q,))
+        p.daemon = True
+        p.start()
+
+        return q
+
+
 class SOP(DataProcess):
     train_dataset_ins = RandomReverseTextPairsDataset
     val_dataset_ins = RandomReverseTextPairsDataset
@@ -527,7 +582,7 @@ class FromHFPretrain(CheckpointHooks):
 
             if os.path.exists(f'{self.pretrain_model}/pytorch_model.bin'):
                 state_dict = torch.load(f'{self.pretrain_model}/pytorch_model.bin', map_location=self.device)
-            else:   # download weight auto
+            else:  # download weight auto
                 from transformers import BertForSequenceClassification
                 model = BertForSequenceClassification.from_pretrained(self.pretrain_model, num_labels=2)
                 state_dict = model.state_dict()

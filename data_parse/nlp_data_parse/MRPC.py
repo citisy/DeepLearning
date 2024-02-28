@@ -11,6 +11,7 @@ class Loader(DataLoader):
         ├── msr_paraphrase_test.txt     # similar text pair, 1725 items
         └── msr_paraphrase_train.txt    # similar text pair, 4076 items
     """
+    default_set_type = [DataRegister.TRAIN, DataRegister.TEST]
 
     def _call(self, set_type=DataRegister.TRAIN, **gen_kwargs):
         with open(f'{self.data_dir}/msr_paraphrase_{set_type.value}.txt', 'r', encoding='utf8') as f:

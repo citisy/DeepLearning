@@ -158,7 +158,7 @@ class MLM(nn.Module):
 
     def forward(self, x):
         x = self.fcn(x)
-        x = x.transpose(1, 2)  # seq first -> batch first
+        x = x.transpose(1, 2)  # seq first -> class first
         return x
 
     def loss(self, mask_pred, mask_true):
