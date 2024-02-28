@@ -2,6 +2,7 @@ import numpy as np
 import torch
 from torch import nn, einsum
 from einops import rearrange, repeat, reduce
+from utils import torch_utils
 from . import ldm, ddpm, ddim, sdv1, sdv2
 from .ddpm import extract
 
@@ -363,7 +364,10 @@ class EmbedderWarp(nn.Module):
         self.embedders = nn.ModuleList(embedders)
         self.input_keys = input_keys
         self.output_size = output_size  # 2048
-        self.dummy_params = nn.Parameter(torch.empty(0))
+
+    @property
+    def device(self):
+        return torch_utils.ModuleInfo.possible_device(self)
 
     def forward(self, value_dicts, return_uc=True):
         batch, batch_uc = self.get_batch(value_dicts)
@@ -391,7 +395,7 @@ class EmbedderWarp(nn.Module):
         return output
 
     def get_batch(self, value_dicts):
-        device = self.dummy_params.device
+        device = self.device
         batch = {}
         batch_uc = {}
 

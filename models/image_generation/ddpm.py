@@ -6,6 +6,7 @@ from torch import nn, einsum
 from einops import rearrange, repeat, reduce
 from random import random
 from functools import partial
+from utils import torch_utils
 from ..layers import Linear, Conv, Upsample, Downsample
 from ..attentions import CrossAttention3D, LinearAttention3D
 
@@ -116,8 +117,9 @@ class Model(nn.ModuleList):
         self.make_schedule()
         self.make_diffuse(**configs)
 
-        # todo: it seem that it is not elegant, but apply for `nn.DataParallel` mode, find a better solution
-        self.dummy_param = nn.Parameter(torch.empty(0))
+    @property
+    def device(self):
+        return torch_utils.ModuleInfo.possible_device(self)
 
     # pred_z -> model(x_t, t) = z_t
     # pred_x0 -> model(x_t, t) = x_0
@@ -311,7 +313,7 @@ class Model(nn.ModuleList):
         return self.predict_x_t(x0, t, noise)
 
     def gen_x_t(self, batch_size):
-        return torch.randn((batch_size, self.diffuse_in_ch, *self.diffuse_in_size), device=self.dummy_param.device)
+        return torch.randn((batch_size, self.diffuse_in_ch, *self.diffuse_in_size), device=self.device)
 
     def post_process(self, x_t, **kwargs):
         return self.p_sample_loop(x_t, **kwargs)

@@ -133,6 +133,51 @@ class ModuleInfo:
 
         return flops
 
+    @staticmethod
+    def possible_device(module):
+        """Returns the first found device in parameters, otherwise returns the first found device in tensors."""
+        try:
+            return next(module.parameters()).device
+        except StopIteration:
+            # For nn.DataParallel compatibility in PyTorch 1.5
+
+            def find_tensor_attributes(module: nn.Module):
+                tuples = [(k, v) for k, v in module.__dict__.items() if torch.is_tensor(v)]
+                return tuples
+
+            gen = module._named_members(get_members_fn=find_tensor_attributes)
+            first_tuple = next(gen)
+            return first_tuple[1].device
+
+    @staticmethod
+    def possible_dtype(module):
+        """Returns the first found floating dtype in parameters if there is one, otherwise returns the last dtype it found."""
+        last_dtype = None
+        for t in module.parameters():
+            last_dtype = t.dtype
+            if t.is_floating_point():
+                return t.dtype
+
+        if last_dtype is not None:
+            # if no floating dtype was found return whatever the first dtype is
+            return last_dtype
+
+        else:
+            # For nn.DataParallel compatibility in PyTorch > 1.5
+            def find_tensor_attributes(module: nn.Module):
+                tuples = [(k, v) for k, v in module.__dict__.items() if torch.is_tensor(v)]
+                return tuples
+
+            gen = module._named_members(get_members_fn=find_tensor_attributes)
+            last_tuple = None
+            for tuple in gen:
+                last_tuple = tuple
+                if tuple[1].is_floating_point():
+                    return tuple[1].dtype
+
+            # fallback to the last dtype
+            return last_tuple[1].dtype
+
 
 class ModuleManager:
     @staticmethod
@@ -271,8 +316,8 @@ class Export:
         """note that, dynamic python script change to static c++ script, according to trace the code
         so, such as `if...else...`, 'for...in...`, etc., if trace in a dynamic variable,
         will cause some unexpectedly bugs"""
+        model.eval()
         with torch.no_grad():
-            model.eval()
             # warmup, make sure that the model is initialized right
             model(*trace_input)
             jit_model = torch.jit.trace(model, trace_input, **export_kwargs)
