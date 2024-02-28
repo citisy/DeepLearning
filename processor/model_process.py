@@ -10,21 +10,21 @@ from tqdm import tqdm
 from . import bundled, data_process
 from utils import os_lib, configs, visualize, log_utils, torch_utils
 
-MODEL = 1
-WEIGHT = 2
-ONNX = 3
-JIT = 4
-TRITON = 5
+MODEL = 'model'
+WEIGHT = 'weight'
+ONNX = 'onnx'
+JIT = 'jit'
+TRITON = 'triton'
 
-STEP = 1
-EPOCH = 2
+STEP = 'step'
+EPOCH = 'epoch'
 
 
 class CheckpointHooks:
     logger: Optional
 
     def save(self, save_path, save_type=WEIGHT, verbose=True, **kwargs):
-        os_lib.mk_dir(Path(save_path).parent)
+        os_lib.mk_parent_dir(save_path)
         func = self.save_funcs.get(save_type)
         assert func, ValueError(f'dont support {save_type = }')
 
@@ -66,22 +66,17 @@ class CheckpointHooks:
     device: Union[str, int, torch.device] = None
 
     def save_torchscript(self, save_path, trace_input=None, model_warp=None, **kwargs):
-        if trace_input is None:
-            trace_input = (self.gen_example_data(),)
+        assert trace_input is not None
 
         model = self.model
         if model_warp is not None:
             model = model_warp(model)
         model.to(self.device)
-
-        # note, check model in eval mode first
         model = torch_utils.Export.to_torchscript(model, *trace_input, **kwargs)
-        os_lib.mk_parent_dir(save_path)
         model.save(save_path)
 
     def save_onnx(self, save_path, trace_input=None, model_warp=None, **kwargs):
-        if trace_input is None:
-            trace_input = (self.gen_example_data(),)
+        assert trace_input is not None
 
         model = self.model
         if model_warp is not None:
@@ -218,7 +213,11 @@ class ModelHooks:
     def set_stopper(self):
         if self.use_early_stop:
             from utils.torch_utils import EarlyStopping
-            self.stopper = EarlyStopping(patience=10, min_period=10, ignore_min_score=0.1, stdout_method=self.log)
+
+            if self.check_strategy == EPOCH:
+                self.stopper = EarlyStopping(patience=10, min_period=10, ignore_min_score=0.1, stdout_method=self.log)
+            elif self.check_strategy == STEP:
+                self.stopper = EarlyStopping(patience=10 * 5000, min_period=10 * 5000, ignore_min_score=0.1, stdout_method=self.log)
 
     lrf = 0.01
 
@@ -232,8 +231,19 @@ class ModelHooks:
 
     def set_scheduler(self, max_epoch):
         if self.use_scheduler:
-            self.scheduler = optim.lr_scheduler.LambdaLR(self.optimizer, lr_lambda=lambda x: self.lf(x, max_epoch))
-            self.scheduler.last_epoch = -1
+            if self.scheduler_strategy == EPOCH:
+                self.scheduler = optim.lr_scheduler.LambdaLR(self.optimizer, lr_lambda=lambda x: self.lf(x, max_epoch))
+                self.scheduler.last_epoch = -1
+
+            elif self.scheduler_strategy == STEP:
+                from transformers import get_scheduler
+
+                self.scheduler = get_scheduler(
+                    "linear",
+                    optimizer=self.optimizer,
+                    num_warmup_steps=0,
+                    num_training_steps=max_epoch * len(self.train_container['train_dataloader']),
+                )
 
     use_scaler = False
 
@@ -318,8 +328,10 @@ class ModelHooks:
             self, batch_size=None, max_epoch=None,
             train_dataloader=None, val_dataloader=None, check_period=None,
             metric_kwargs=dict(), data_get_kwargs=dict(), dataloader_kwargs=dict(), **kwargs):
-        self.train_container = dict()
+        assert batch_size
+        self.log(f'{batch_size = }')
 
+        self.train_container = dict()
         metric_kwargs = metric_kwargs.copy()
         metric_kwargs.setdefault('batch_size', batch_size)
         metric_kwargs.setdefault('dataloader_kwargs', {})
@@ -348,6 +360,8 @@ class ModelHooks:
             if val_dataloader is None:
                 val_dataloader = self.get_val_dataloader(data_get_kwargs=data_get_kwargs, dataloader_kwargs=dataloader_kwargs)
             metric_kwargs.setdefault('val_dataloader', val_dataloader)
+            s = 'epochs' if self.check_strategy == EPOCH else 'nums'
+            self.log(f'check_strategy is {self.check_strategy}, it will be check the training result in every {check_period} {s}')
 
         self.train_container['metric_kwargs'] = metric_kwargs
         self.train_container['end_flag'] = False
@@ -358,7 +372,7 @@ class ModelHooks:
 
     register_logger: 'bundled.LogHooks.register_logger'
     log_methods: dict
-    check_strategy: int = EPOCH
+    check_strategy: str = EPOCH
 
     def on_train(self, max_epoch=100, **kwargs):
         for i in range(self.counters['epoch'], max_epoch):
@@ -591,6 +605,7 @@ class ModelHooks:
         return self.val_container
 
     def on_val_start(self, val_dataloader=None, batch_size=None, data_get_kwargs=dict(), dataloader_kwargs=dict(), **kwargs):
+        assert batch_size
         self.val_container = {}
         dataloader_kwargs.setdefault('batch_size', batch_size)
         if val_dataloader is None:

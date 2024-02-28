@@ -1,3 +1,4 @@
+import os
 import copy
 import torch
 from torch.utils.data import DataLoader, Dataset, IterableDataset, get_worker_info
@@ -194,8 +195,8 @@ class IterIterDataset(IterableDataset):
 
         i = 0
         while i < self.length:
-            iter_data = self.iter_data.get()
-            for ret in iter_data:
+            rets = self.iter_data.get()
+            for ret in rets:
                 yield self.process_one(ret)
 
                 i += n
@@ -207,6 +208,9 @@ class IterIterDataset(IterableDataset):
 
         return ret
 
+    def __len__(self):
+        return self.length
+
     @staticmethod
     def collate_fn(batch):
         return list(batch)
@@ -215,31 +219,20 @@ class IterIterDataset(IterableDataset):
 class MixDataset(BaseDataset):
     """input more than one iter_data"""
 
-    def __init__(self, obj, **kwargs):
-        """
-
-        Args:
-            obj (list):
-                iter_data, iter_data for dataset_instance
-                dataset_instance, an instance like `BaseDataset()`
-            **kwargs:
-                kwargs for dataset_instance
-        """
+    def __init__(self, datasets, **kwargs):
         super().__init__(None)
-        self.datasets = []
-        for iter_data, dataset_instance in obj:
-            self.datasets.append(dataset_instance(iter_data, **kwargs))
-
-        self.nums = [len(_) for _ in self.datasets]
+        self.datasets = datasets
+        self.length = [len(_) for _ in self.datasets]
+        self.__dict__.update(**kwargs)
 
     def __getitem__(self, idx):
-        for n, dataset in zip(self.nums, self.datasets):
+        for n, dataset in zip(self.length, self.datasets):
             idx -= n
             if idx < 0:
                 return dataset[idx]
 
     def __len__(self):
-        return sum(self.nums)
+        return sum(self.length)
 
 
 class DataHooks:
@@ -252,11 +245,14 @@ class DataHooks:
         train_data = self.get_train_data(**data_get_kwargs)
         train_data = self.train_data_preprocess(train_data)
 
-        train_dataset = self.train_dataset_ins(
-            train_data,
-            augment_func=self.train_data_augment,
-            complex_augment_func=self.__dict__.get('complex_data_augment')
-        )
+        if not isinstance(train_data, Dataset):
+            train_dataset = self.train_dataset_ins(
+                train_data,
+                augment_func=self.train_data_augment,
+                complex_augment_func=self.__dict__.get('complex_data_augment')
+            )
+        else:
+            train_dataset = train_data
 
         dataloader_kwargs.setdefault('shuffle', True)
         dataloader_kwargs.setdefault('pin_memory', True)
@@ -270,7 +266,10 @@ class DataHooks:
     def get_val_dataloader(self, data_get_kwargs=dict(), dataloader_kwargs=dict()):
         val_data = self.get_val_data(**data_get_kwargs)
         val_data = self.val_data_preprocess(val_data)
-        val_dataset = self.val_dataset_ins(val_data, augment_func=self.val_data_augment)
+        if not isinstance(val_data, Dataset):
+            val_dataset = self.val_dataset_ins(val_data, augment_func=self.val_data_augment)
+        else:
+            val_dataset = val_data
 
         return DataLoader(
             val_dataset,
@@ -323,7 +322,11 @@ class DataHooks:
 
     def load_vocab(self):
         loader = os_lib.Loader(stdout_method=self.log)
-        return loader.auto_load(f'{self.work_dir}/{self.vocab_fn}')
+        if os.path.exists(self.vocab_fn):
+            fp = self.vocab_fn
+        else:
+            fp = f'{self.work_dir}/{self.vocab_fn}'
+        return loader.auto_load(fp)
 
     def save_vocab(self, vocab):
         saver = os_lib.Saver(stdout_method=self.log)
@@ -336,6 +339,7 @@ class DataHooks:
         try:
             vocab = self.load_vocab()
         except OSError:
+            self.log(f'Not found vocab file: {self.vocab_fn}, prepare to make vocab')
             vocab = self.make_vocab()
 
         return vocab

@@ -1,11 +1,12 @@
 import os
+import re
 import torch
 import numpy as np
-from processor import Process, DataHooks, BaseDataset, ModelHooks, CheckpointHooks, IterBatchDataset
-from utils import math_utils, os_lib
-from data_parse.nlp_data_parse.pre_process import spliter, encoder, bundled, sp_token_dict, dict_maker
 import pandas as pd
-import re
+from typing import List
+from utils import math_utils, os_lib
+from processor import Process, DataHooks, BaseDataset, ModelHooks, CheckpointHooks, IterIterDataset
+from data_parse.nlp_data_parse.pre_process import spliter, encoder, bundled, sp_token_dict, dict_maker
 
 
 class RandomChoiceTextPairsDataset(BaseDataset):
@@ -284,37 +285,52 @@ class SimpleTextPair(TextPairProcess):
             return loader.load(set_type=DataRegister.TEST, max_size=self.val_data_num, generator=False)[0]
 
 
-class IterBatchSimpleText(TextProcess):
+class IterIterProcessBatchDataset(IterIterDataset):
+    def __iter__(self):
+        from torch.utils.data import get_worker_info
+
+        worker_info = get_worker_info()
+        n = 1 if worker_info is None else worker_info.num_workers
+
+        i = 0
+        while i < self.length:
+            rets = self.iter_data.get()
+            for ret in self.process_batch(rets):
+                yield ret
+
+                i += n
+
+    def process_batch(self, rets):
+        if self.augment_func:
+            rets = self.augment_func(rets)
+
+        return rets
+
+
+class IterBatchSimpleText(DataProcess):
     """for loading large file"""
     dataset_version = 'simple_text'
     data_dir: str
     max_seq_len = 512
-    iter_batch_num = 1000
     one_step_data_num = int(1e6)
+    is_chunk = False
 
-    train_dataset_ins = IterBatchDataset
-    val_dataset_ins = IterBatchDataset
-
-    def get_data(self, *args, train=True, **kwargs):
+    def get_data(self, *args, train=True, batch_size=None, **kwargs):
         from data_parse.nlp_data_parse.SimpleText import Loader, DataRegister
         import multiprocessing
-
-        self.train_dataset_ins.length = self.one_step_data_num
-        self.val_dataset_ins.length = self.one_step_data_num
 
         def gen_func():
             loader = Loader(self.data_dir)
 
             if train:
                 iter_data = loader.load(set_type=DataRegister.TRAIN, max_size=self.train_data_num, return_label=self.is_nsp, generator=True)[0]
-
             else:
                 iter_data = loader.load(set_type=DataRegister.TEST, max_size=self.val_data_num, return_label=self.is_nsp, generator=True)[0]
 
             rets = []
             for i, ret in enumerate(iter_data):
                 rets.append(ret)
-                if i % self.iter_batch_num == self.iter_batch_num - 1:
+                if i % batch_size == batch_size - 1:
                     yield rets
                     rets = []
 
@@ -336,7 +352,16 @@ class IterBatchSimpleText(TextProcess):
         p.daemon = True
         p.start()
 
-        return q
+        if train:
+            return IterIterProcessBatchDataset(q, length=self.one_step_data_num, augment_func=self.train_data_augment)
+        else:
+            return IterIterProcessBatchDataset(q, length=self.one_step_data_num, augment_func=self.val_data_augment)
+
+    def data_augment(self, rets, train=True) -> List[dict]:
+        """preprocess + data_augment"""
+        rets = TextProcess.data_preprocess(self, rets, train)
+        rets = [TextProcess.data_augment(self, ret, train) for ret in rets]
+        return rets
 
 
 class SOP(DataProcess):
@@ -376,6 +401,7 @@ class Bert(Process):
     is_mlm = True
     is_nsp = True
     use_scaler = True
+    scheduler_strategy = 'step'  # step
 
     def set_model(self):
         from models.text_pretrain.bert import Model
@@ -391,18 +417,6 @@ class Bert(Process):
         # todo, use the optimizer config from paper(lr=1e-4, betas=(0.9, 0.999), weight_decay=0.1), the training is failed
         # in RoBERTa, beta_2=0.98
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=1e-4, betas=(0.5, 0.999))
-
-    def set_scheduler(self, max_epoch):
-        if self.use_scheduler:
-            from transformers import get_scheduler
-
-            self.scheduler = get_scheduler(
-                "linear",
-                optimizer=self.optimizer,
-                num_warmup_steps=0,
-                num_training_steps=max_epoch * len(self.train_container['train_dataloader']),
-            )
-            self.scheduler_strategy = 1  # step
 
     def get_model_inputs(self, rets, train=True):
         segments = [ret['segment'] for ret in rets]
@@ -480,8 +494,9 @@ class Bert(Process):
 
                 mask_trues = np.array(mask_trues)
                 mask_preds = np.array(mask_preds)
-                # todo: quit pad token, the score will be more accurate
-                mask_score = np.sum(mask_trues == mask_preds) / mask_trues.size
+                n_quit = np.sum((mask_trues == self.sp_tag_dict['non_mask']) & (mask_preds == self.sp_tag_dict['non_mask']))
+                n_true = np.sum(mask_trues == mask_preds)
+                mask_score = (n_true - n_quit) / (mask_trues.size - n_quit)
                 result.update({'score.mask': mask_score})
 
             if return_score == 'next':

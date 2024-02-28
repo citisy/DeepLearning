@@ -220,9 +220,11 @@ class MixMJSynthSynthText(DataProcess):
                 image_type=DataRegister.GRAY_ARRAY, generator=True,
                 max_size=num,
             )[0]
-            IterImgDataset.length = num
 
-            return (iter_data1, BaseImgDataset), (iter_data2, IterImgDataset)
+            return (
+                BaseImgDataset(iter_data1, augment_func=self.train_data_augment),
+                IterImgDataset(iter_data2, augment_func=self.train_data_augment, length=num)
+            )
 
         else:
             return loader1.load(
