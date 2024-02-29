@@ -12,6 +12,7 @@ from utils import os_lib, configs, visualize, log_utils, torch_utils
 
 MODEL = 'model'
 WEIGHT = 'weight'
+SAFETENSORS = 'safetensors'
 ONNX = 'onnx'
 JIT = 'jit'
 TRITON = 'triton'
@@ -32,35 +33,33 @@ class CheckpointHooks:
         if verbose:
             self.logger.info(f'Successfully saved to {save_path} !')
 
-    def save_model(self, save_path, save_items: dict = None, **kwargs):
+    def save_model(self, save_path, additional_items: dict = {}, **kwargs):
         """
 
         Args:
             save_path:
-            save_items: {path: item}
+            additional_items: {path: item}
                 path, where the item saved
                 item, which obj wanted to save
 
         """
         torch.save(self.model, save_path, **kwargs)
-        if save_items:
-            for path, item in save_items.items():
-                torch.save(item, path, **kwargs)
+        for path, item in additional_items.items():
+            torch.save(item, path, **kwargs)
 
-    def save_weight(self, save_path, save_items: dict = None, **kwargs):
+    def save_weight(self, save_path, additional_items: dict = {}, **kwargs):
         """
 
         Args:
             save_path:
-            save_items: {name: item}
+            additional_items: {name: item}
                 name, which key of the item;
                 item, which obj wanted to save
         """
-        ckpt = dict(
-            model=self.model.state_dict(),
-        )
-        if save_items:
-            ckpt.update(save_items)
+        ckpt = {
+            self.model_name: self.model.state_dict(),
+            **additional_items
+        }
         torch.save(ckpt, save_path, **kwargs)
 
     device: Union[str, int, torch.device] = None
@@ -103,70 +102,60 @@ class CheckpointHooks:
             self.logger.info(f'Successfully load {save_path} !')
 
     model: nn.Module
+    model_name: str
 
-    def load_model(self, save_path, save_items: dict = None, **kwargs):
+    def load_model(self, save_path, additional_items: dict = {}, **kwargs):
         """
 
         Args:
             save_path:
-            save_items: {path: name}
+            additional_items: {path: name}
                 path, where the item saved
                 name, which key of the item
 
         """
         self.model = torch.load(save_path, map_location=self.device, **kwargs)
-        if save_items:
-            for path, name in save_items.items():
-                self.__dict__.update({name: torch.load(path, map_location=self.device)})
+        for path, name in additional_items.items():
+            self.__dict__.update({name: torch.load(path, map_location=self.device)})
 
-    def load_weight(self, save_path, save_items: list = None, **kwargs):
+    def load_weight(self, save_path, include=None, exclude=None, **kwargs):
         """
 
         Args:
             save_path:
-            save_items: [name]
+            include: None or [name]
                 name, which key of the item
                 if None, load all the items
+            exclude: None or [name]
         Returns:
 
         """
-        ckpt = torch.load(save_path, map_location=self.device, **kwargs)
-        self.model.load_state_dict(ckpt.pop('model'), strict=False)
+        state_dict = torch_utils.Load.from_ckpt(save_path, map_location=self.device, **kwargs)
+        self.load_state_dict(state_dict, include, exclude)
 
-        def _load(name, item):
-            if name in self.__dict__ and hasattr(self.__dict__[name], 'load_state_dict'):
-                self.__dict__[name].load_state_dict(item)
-            else:
-                self.__dict__[name] = item
+    def load_safetensors(self, save_path, include=None, exclude=None, **kwargs):
+        state_dict = torch_utils.Load.from_save_tensor(save_path, **kwargs)
+        self.load_state_dict(state_dict, include, exclude)
 
-        if save_items is None:
-            for name, item in ckpt.items():
-                _load(name, item)
+    def load_state_dict(self, state_dict: dict, include=None, exclude=None, **kwargs):
+        self.model.load_state_dict(state_dict.pop(self.model_name), strict=False)
+        self._load_state_dict(state_dict, include, exclude)
 
-        else:
-            for name in save_items:
-                if name not in ckpt:
-                    continue
-
-                item = ckpt[name]
-                _load(name, item)
+    def _load_state_dict(self, state_dict: dict, include=None, exclude=None):
+        for name, item in state_dict.items():
+            if (include is None or name in include) and (exclude is None or name not in exclude):
+                if name in self.__dict__ and hasattr(self.__dict__[name], 'load_state_dict'):
+                    self.__dict__[name].load_state_dict(item)
+                else:
+                    self.__dict__[name] = item
 
     def load_jit(self, save_path, **kwargs):
         self.model = torch.jit.load(save_path, map_location=self.device, **kwargs)
 
-    def load_safetensors(self, save_path, **kwargs):
-        from safetensors import safe_open
-
-        tensors = {}
-        with safe_open(save_path, framework="pt", device='cpu') as f:
-            for k in f.keys():
-                tensors[k] = f.get_tensor(k)
-
-        return
-
     load_funcs = {
         MODEL: load_model,
         WEIGHT: load_weight,
+        SAFETENSORS: load_safetensors,
         JIT: load_jit
     }
 
@@ -174,7 +163,7 @@ class CheckpointHooks:
 
     def load_pretrain(self):
         if hasattr(self, 'pretrain_model'):
-            self.load(self.pretrain_model, save_items=())
+            self.load(self.pretrain_model, save_type=WEIGHT, include=())
 
 
 class ModelHooks:
@@ -191,8 +180,8 @@ class ModelHooks:
 
     use_ema = False
     ema: Optional
-    aux_modules: Optional     # all modules in aux_modules must have `step()` function
-    models: Dict[str, nn.Module]    # all module in models would be val
+    aux_modules: Optional  # all modules in aux_modules must have `step()` function
+    models: Dict[str, nn.Module]  # all module in models would be val
 
     def set_aux_model(self):
         if self.use_ema:
@@ -490,11 +479,11 @@ class ModelHooks:
         epoch = self.counters['epoch'] - 1  # epoch in counters is the next epoch, not the last
         self.trace({'epoch': epoch}, (bundled.LOGGING, bundled.WANDB))
 
-        ckpt = self._check_train(max_save_weight_num, epoch)
+        state_dict = self._check_train(max_save_weight_num, epoch)
         self.log_trace(bundled.LOGGING)
 
         if check_period and epoch % check_period == check_period - 1:
-            self._check_metric(ckpt, epoch, max_save_weight_num)
+            self._check_metric(state_dict, epoch, max_save_weight_num)
         self.log_trace(bundled.WANDB)
 
     def _check_train(self, max_save_weight_num, check_num):
@@ -516,26 +505,17 @@ class ModelHooks:
             self.trace({'time_consume': (now - last_check_time) / 60}, (bundled.LOGGING, bundled.WANDB))
             self.train_container['last_check_time'] = now
 
-        ckpt = {
-            'optimizer': self.optimizer.state_dict(),
-            'counters': self.counters,
-            'wandb_id': self.wandb_id,
-            'date': datetime.now().isoformat()
-        }
-
-        for name in ('stopper', 'ema'):
-            if hasattr(self, name):
-                ckpt[name] = getattr(self, name).state_dict()
+        state_dict = self.state_dict()
 
         if not isinstance(max_save_weight_num, int):  # None
-            self.save(f'{self.work_dir}/last.pth', save_type=WEIGHT, save_items=ckpt)
+            self.save(f'{self.work_dir}/last.pth', save_type=WEIGHT, additional_items=state_dict)
         elif max_save_weight_num > 0:
-            self.save(f'{self.work_dir}/{check_num}.pth', save_type=WEIGHT, save_items=ckpt)
+            self.save(f'{self.work_dir}/{check_num}.pth', save_type=WEIGHT, additional_items=state_dict)
             os_lib.FileCacher(f'{self.work_dir}/', max_size=max_save_weight_num, stdout_method=self.log).delete_over_range(suffix='pth')
 
-        return ckpt
+        return state_dict
 
-    def _check_metric(self, ckpt, check_num, max_save_weight_num):
+    def _check_metric(self, state_dict, check_num, max_save_weight_num):
         results = self.metric(**self.train_container.get('metric_kwargs', {}))
         scores = {}
         for name, result in results.items():
@@ -551,9 +531,23 @@ class ModelHooks:
             score = results[self.model_name]['score']
             if score > self.stopper.best_score:
                 if not isinstance(max_save_weight_num, int) or max_save_weight_num > 0:
-                    self.save(f'{self.work_dir}/best.pth', save_type=WEIGHT, save_items=ckpt)
+                    self.save(f'{self.work_dir}/best.pth', save_type=WEIGHT, additional_items=state_dict)
 
             self.train_container['end_flag'] = self.train_container['end_flag'] or self.stopper(check_num, score)
+
+    def state_dict(self):
+        state_dict = {
+            'optimizer': self.optimizer.state_dict(),
+            'counters': self.counters,
+            'wandb_id': self.wandb_id,
+            'date': datetime.now().isoformat()
+        }
+
+        for name in ('stopper', 'ema'):
+            if hasattr(self, name):
+                state_dict[name] = getattr(self, name).state_dict()
+
+        return state_dict
 
     def on_train_end(self, **kwargs):
         self.wandb.finish()

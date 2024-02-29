@@ -333,7 +333,7 @@ class Load:
     @classmethod
     def from_file(cls, save_path, **kwargs):
         load_dict = {
-            'PyTorch': cls.from_model,
+            'PyTorch': cls.from_ckpt,
             'TorchScript': cls.from_jit,
             'Safetensors': cls.from_save_tensor
         }
@@ -341,11 +341,7 @@ class Load:
         return load_dict.get(k)(save_path, **kwargs)
 
     @staticmethod
-    def from_model(save_path, **kwargs):
-        return torch.load(save_path, **kwargs)
-
-    @staticmethod
-    def from_state_dict(save_path, **kwargs):
+    def from_ckpt(save_path, **kwargs):
         return torch.load(save_path, **kwargs)
 
     @staticmethod
