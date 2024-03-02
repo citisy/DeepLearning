@@ -123,7 +123,7 @@ def convert_weights(state_dict):
         'cond_stage_model': 'cond',
         'conditioner': 'cond'
     }
-    state_dict = torch_utils.convert_state_dict(state_dict, convert_dict)
+    state_dict = torch_utils.Converter.convert_keys(state_dict, convert_dict)
 
     return state_dict
 

@@ -291,6 +291,7 @@ class WeightsFormats:
         ['OpenVINO', 'openvino', '_openvino_model', False],
         ['TensorRT', 'engine', '.engine', True],
         ['CoreML', 'coreml', '.mlmodel', False],
+        ['TensorFlow', '-', '.ckpt/.h5', True],
         ['TensorFlow SavedModel', 'saved_model', '_saved_model', True],
         ['TensorFlow GraphDef', 'pb', '.pb', True],
         ['TensorFlow Lite', 'tflite', '.tflite', False],
@@ -343,6 +344,19 @@ class Load:
     @staticmethod
     def from_ckpt(save_path, **kwargs):
         return torch.load(save_path, **kwargs)
+
+    @staticmethod
+    def from_tf_ckpt(save_path, var_names=None, key_types=None, value_types=None, **kwargs):
+        import tensorflow as tf
+
+        loader = lambda name: torch.from_numpy(tf.train.load_variable(save_path, name))
+        assert var_names
+        tensors = OrderedDict()
+        for name in var_names:
+            tensors[name] = loader(name)
+
+        tensors = Converter.tensors_from_tf_to_torch(tensors, key_types, value_types)
+        return tensors
 
     @staticmethod
     def from_save_tensor(save_path, **kwargs):
@@ -520,97 +534,163 @@ class Lora:
         pass
 
 
-def convert_state_dict(state_dict: OrderedDict, convert_dict: dict):
-    """
-    Usages:
-        .. code-block:: python
-
-            model1 = ...
-            model2 = ...
-            convert_dict = {'before': 'after', 'before.a': 'after.aa', 'before.a.{0}.a': 'after.b.{0}.b}
-
-            state_dict = model1.state_dict()
-            # OrderedDict([('before.a.weight', ...), ('before.b.weight', ...), ('before.a.1.a.weight', ...), ('same.weight', ...)])
-
-            state_dict = convert_state_dict(state_dict, convert_dict)
-            # OrderedDict([('after.aa.weight', ...), ('after.b.weight', ...), ('before.b.1.b.weight', ...), ('same.weight', ...)])
-
-            model2.load_state_dict(state_dict)
-    """
-    from .nlp_utils import PrefixTree
-
-    def parse(s):
+class Converter:
+    @staticmethod
+    def convert_keys(state_dict: OrderedDict, convert_dict: dict):
         """
-        >>> parse('a.{0}.a')
-        (('a', '.', '{0}', '.', 'a'), {'idx1': [0], 'values2': [2]})
+        Usages:
+            .. code-block:: python
+
+                model1 = ...
+                model2 = ...
+                convert_dict = {'before': 'after', 'before.a': 'after.aa', 'before.a.{0}.a': 'after.b.{0}.b}
+
+                state_dict = model1.state_dict()
+                # OrderedDict([('before.a.weight', ...), ('before.b.weight', ...), ('before.a.1.a.weight', ...), ('same.weight', ...)])
+
+                state_dict = Converter.convert_keys(state_dict, convert_dict)
+                # OrderedDict([('after.aa.weight', ...), ('after.b.weight', ...), ('before.b.1.b.weight', ...), ('same.weight', ...)])
+
+                model2.load_state_dict(state_dict)
         """
-        match = re.findall('\{\d+?\}', s)
-        end, tmp, spans, idx1 = 0, s, [], []
-        for m in match:
-            start = tmp.index(m) + end
-            end = start + len(m)
-            spans.append((start, end))
-            idx1.append(int(m[1:-1]))
-            tmp = s[end:]
+        from .nlp_utils import PrefixTree
 
-        r = []
-        end = 0
-        idx2 = []
-        for i, span in enumerate(spans):
-            start, end1 = span
-            tmp = list(s[end:start])
-            r += tmp + [match[i]]
-            idx2.append(len(r) - 1)
-            end = end1
+        def parse(s):
+            """split the string with wildcards, and retrun their indexes
+            >>> parse('a.{0}.a')
+            (('a', '.', '{0}', '.', 'a'), {'idx1': [0], 'idx2': [2]})
+            # idx1 is wildcard's values, idx2 is index of wildcard in string
+            """
+            match = re.findall('\{\d+?\}', s)
+            end, tmp, spans, idx1 = 0, s, [], []
+            for m in match:
+                start = tmp.index(m) + end
+                end = start + len(m)
+                spans.append((start, end))
+                idx1.append(int(m[1:-1]))
+                tmp = s[end:]
 
-        r += list(s[end: len(s)])
+            r = []
+            end = 0
+            idx2 = []
+            for i, span in enumerate(spans):
+                start, end1 = span
+                tmp = list(s[end:start])
+                r += tmp + [match[i]]
+                idx2.append(len(r) - 1)
+                end = end1
 
-        return tuple(r), {'idx1': idx1, 'idx2': idx2}
+            r += list(s[end: len(s)])
+            return tuple(r), {'idx1': idx1, 'idx2': idx2}
 
-    split_convert_dict = {}
-    a_values, b_values = {}, {}
-    for a, b in convert_dict.items():
-        a_key, a_value = parse(a)
-        b_key, b_value = parse(b)
-        split_convert_dict[a_key] = b_key
-        a_values[a_key] = a_value
-        b_values[b_key] = b_value
+        split_convert_dict = {}
+        a_values, b_values = {}, {}
+        for a, b in convert_dict.items():
+            a_key, a_value = parse(a)
+            b_key, b_value = parse(b)
+            split_convert_dict[a_key] = b_key
+            a_values[a_key] = a_value
+            b_values[b_key] = b_value
 
-    tree = PrefixTree(list(split_convert_dict.keys()), list(split_convert_dict.keys()), unique_value=True)
-    d = OrderedDict()
+        tree = PrefixTree(list(split_convert_dict.keys()), list(split_convert_dict.keys()), unique_value=True)
+        d = OrderedDict()
 
-    for k, v in state_dict.items():
-        a = tree.get(k, return_last=True)
-        if a in split_convert_dict:
-            b = split_convert_dict[a]
-            a_value = a_values[a]
-            b_value = b_values[b]
+        for k, v in state_dict.items():
+            # find string before convert
+            a = tree.get(k, return_last=True)
+            if a in split_convert_dict:
+                # make string after convert
+                b = split_convert_dict[a]
+                a_value = a_values[a]
+                b_value = b_values[b]
 
-            p, pa = '', ''
-            for i, s in enumerate(a):
-                if i in a_value['idx2']:
-                    p += '(.+?)'
-                    pa += '%s'
-                else:
-                    p += '\\' + s if s == '.' else s
-                    pa += s
+                p, pa = '', ''
+                for i, s in enumerate(a):
+                    if i in a_value['idx2']:
+                        p += '(.+?)'
+                        pa += '%s'
+                    else:
+                        p += '\\' + s if s == '.' else s
+                        pa += s
 
-            if a_value['idx2']:
-                ra = re.findall(p, k)[0]
-                if isinstance(ra, str):
-                    ra = (ra,)
-                pa = pa % ra
+                if a_value['idx2']:
+                    # fill the wildcards with the values for before string
+                    ra = re.findall(p, k)[0]
+                    if isinstance(ra, str):
+                        ra = (ra,)
+                    pa = pa % ra
 
-                sort_ra = [None] * (max(a_value['idx1']) + 1)
-                for i, idx in enumerate(a_value['idx1']):
-                    sort_ra[idx] = ra[i]
+                    sort_ra = [None] * (max(a_value['idx1']) + 1)
+                    for i, idx in enumerate(a_value['idx1']):
+                        sort_ra[idx] = ra[i]
 
-                for idx1, idx2 in zip(b_value['idx1'], b_value['idx2']):
-                    b = list(b)
-                    b[idx2] = sort_ra[idx1]
+                    # fill the wildcards with the values for after string
+                    for idx1, idx2 in zip(b_value['idx1'], b_value['idx2']):
+                        b = list(b)
+                        b[idx2] = sort_ra[idx1]
 
-            pb = ''.join(b)
-            k = k.replace(pa, pb)
-        d[k] = v
+                # replace before string to after string
+                pb = ''.join(b)
+                k = k.replace(pa, pb)
+            d[k] = v
 
-    return d
+        return d
+
+    @staticmethod
+    def conv_weight_from_tf_to_torch(weight):
+        """(h, w, c, n) -> (n, c, h, w)"""
+        return weight.transpose(3, 2, 0, 1)
+
+    @staticmethod
+    def dw_conv_weight_from_tf_to_torch(weight):
+        """(h, w, n, c) -> (n, c, h, w)"""
+        return weight.transpose(2, 3, 0, 1)
+
+    @staticmethod
+    def linear_weight_from_tf_to_torch(weight):
+        """(n, h, w) -> (w, h)"""
+        if len(weight.size()) == 3:
+            weight = weight.squeeze(0)
+        if len(weight.size()) == 2:
+            weight = weight.transpose(1, 0)
+        return weight
+
+    convert_tf_funcs = {
+        'c': conv_weight_from_tf_to_torch,
+        'gc': dw_conv_weight_from_tf_to_torch,
+        'l': linear_weight_from_tf_to_torch,
+    }
+
+    convert_tf_types = {
+        'w': 'weight',
+        'b': 'bias',
+        'g': 'gamma',
+        'bt': 'beta',
+    }
+
+    @classmethod
+    def tensors_from_tf_to_torch(cls, state_dict: OrderedDict, key_types=None, value_types=None):
+        """
+
+        Args:
+            state_dict:
+            key_types (list): see `convert_tf_types`
+            value_types (list): see `convert_tf_funcs`
+
+        """
+
+        key_types = key_types or [''] * len(state_dict)
+        value_types = value_types or [''] * len(state_dict)
+        d = OrderedDict()
+
+        for i, (k, v) in enumerate(state_dict.items()):
+            tmp = k.split('/')
+            suffix = tmp[-1]
+            suffix = cls.convert_tf_types.get(key_types[i], suffix)
+            k = '.'.join(tmp[:-1]) + '.' + suffix
+
+            if key_types[i] == 'w' and value_types[i] in cls.convert_tf_funcs:
+                v = cls.convert_tf_funcs[value_types[i]](v)
+            d[k] = v
+
+        return d

@@ -38,14 +38,14 @@ def convert_hf_weights(state_dict):
         'bert.encoder.layer.{0}.output.LayerNorm': 'backbone.encoder.{0}.res2.act',
         'bert.pooler.dense': 'neck.linear',
     }
-    state_dict = torch_utils.convert_state_dict(state_dict, convert_dict)
+    state_dict = torch_utils.Converter.convert_keys(state_dict, convert_dict)
 
     # convert the original weight
     convert_dict = {
         '{0}.gamma': '{0}.weight',
         '{0}.beta': '{0}.bias'
     }
-    state_dict = torch_utils.convert_state_dict(state_dict, convert_dict)
+    state_dict = torch_utils.Converter.convert_keys(state_dict, convert_dict)
 
     return state_dict
 
@@ -168,7 +168,7 @@ class MLM(nn.Module):
 class Bert(nn.Module):
     def __init__(self, vocab_size, sp_tag_dict, max_seq_len=512, n_segment=2, hidden_size=768, num_hidden_layers=12, num_attention_heads=12, drop_prob=0.1):
         super().__init__()
-        self.embedding = BERTEmbedding(vocab_size, hidden_size, sp_tag_dict, max_seq_len=max_seq_len, n_segment=n_segment, drop_prob=drop_prob)
+        self.embedding = Embedding(vocab_size, hidden_size, sp_tag_dict, max_seq_len=max_seq_len, n_segment=n_segment, drop_prob=drop_prob)
         self.encoder = nn.ModuleList([TransformerBlock(hidden_size, num_attention_heads, hidden_size * 4, drop_prob) for _ in range(num_hidden_layers)])
 
         self.out_features = hidden_size
@@ -182,7 +182,7 @@ class Bert(nn.Module):
         return x
 
 
-class BERTEmbedding(nn.Module):
+class Embedding(nn.Module):
     """TokenEmbedding + PositionalEmbedding + SegmentEmbedding"""
 
     def __init__(self, vocab_size, embedding_dim, sp_tag_dict, max_seq_len=512, n_segment=2, drop_prob=0.1):
