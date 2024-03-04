@@ -338,15 +338,32 @@ class Add(nn.Module):
 
 
 class Residual(nn.Module):
-    def __init__(self, fn, project_fn=None, is_act=True, act=None):
+    def __init__(self, fn, project_fn=None, is_norm=True, norm=None, norm_first=False):
+        """y = x + fn(x)
+
+        Args:
+            fn:
+            project_fn:
+                if not none, y = project_fn(x) + fn(x)
+            is_norm:
+            norm:
+            norm_first:
+                if true, y = x + fn(norm(x))
+                if false, y = norm(x + fn(x))
+        """
         super().__init__()
         self.fn = fn
         self.project_fn = project_fn or nn.Identity()
 
-        if is_act:
-            self.act = act or nn.ReLU(True)
+        if is_norm:
+            assert norm is not None
+            self.norm = norm
         else:
-            self.act = nn.Identity()
+            self.norm = nn.Identity()
+        self.norm_first = norm_first
 
     def forward(self, x, **kwargs):
-        return self.act(self.fn(x, **kwargs) + self.project_fn(x))
+        if self.norm_first:
+            return self.project_fn(x) + self.fn(self.norm(x), **kwargs)
+        else:
+            return self.norm(self.project_fn(x) + self.fn(x, **kwargs))

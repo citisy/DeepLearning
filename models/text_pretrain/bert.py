@@ -32,10 +32,10 @@ def convert_hf_weights(state_dict):
         'bert.encoder.layer.{0}.attention.self.key': 'backbone.encoder.{0}.res1.fn.to_qkv.1',
         'bert.encoder.layer.{0}.attention.self.value': 'backbone.encoder.{0}.res1.fn.to_qkv.2',
         'bert.encoder.layer.{0}.attention.output.dense': 'backbone.encoder.{0}.res1.fn.to_out.linear',
-        'bert.encoder.layer.{0}.attention.output.LayerNorm': 'backbone.encoder.{0}.res1.act',
+        'bert.encoder.layer.{0}.attention.output.LayerNorm': 'backbone.encoder.{0}.res1.norm',
         'bert.encoder.layer.{0}.intermediate.dense': 'backbone.encoder.{0}.res2.fn.0.linear',
         'bert.encoder.layer.{0}.output.dense': 'backbone.encoder.{0}.res2.fn.1.linear',
-        'bert.encoder.layer.{0}.output.LayerNorm': 'backbone.encoder.{0}.res2.act',
+        'bert.encoder.layer.{0}.output.LayerNorm': 'backbone.encoder.{0}.res2.norm',
         'bert.pooler.dense': 'neck.linear',
     }
     state_dict = torch_utils.Converter.convert_keys(state_dict, convert_dict)
@@ -246,7 +246,7 @@ class TransformerBlock(nn.Module):
         super().__init__()
         self.res1 = Residual(
             CrossAttention2D(n_heads=num_attention_heads, model_dim=hidden_size, drop_prob=drop_prob),
-            act=nn.LayerNorm(hidden_size)
+            norm=nn.LayerNorm(hidden_size)
         )
 
         self.res2 = Residual(
@@ -254,7 +254,7 @@ class TransformerBlock(nn.Module):
                 Linear(hidden_size, feed_forward_hidden, mode='la', act=nn.GELU()),
                 Linear(feed_forward_hidden, hidden_size, mode='ld', drop_prob=drop_prob)
             ),  # PositionWiseFeedForward
-            act=nn.LayerNorm(hidden_size)
+            norm=nn.LayerNorm(hidden_size)
         )
 
     def forward(self, x, attention_mask=None):

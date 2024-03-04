@@ -188,7 +188,10 @@ class ScaleAttend(nn.Module):
 
         if attention_mask is not None:  # mask pad
             attention_mask = ~attention_mask.to(dtype=torch.bool)
-            attention_mask = attention_mask[:, None, None].repeat(1, 1, sim.size(2), 1)  # mask pad
+            if len(attention_mask.shape) != len(sim.shape):
+                *t, h, w = sim.shape
+                n, s = attention_mask.shape
+                attention_mask = attention_mask.view(n, *[1] * len(t), s).repeat(1, 1, h, 1)  # (..., s) -> (..., s, s)
             sim = sim.masked_fill(attention_mask, torch.finfo(sim.dtype).min)  # support fp16
 
         attn = F.softmax(sim, dim=-1)
