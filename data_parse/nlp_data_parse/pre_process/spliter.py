@@ -164,13 +164,15 @@ def segments_from_paragraphs(paragraphs: List[str], verbose=False, **kwargs) -> 
 
 
 def segment_from_line(
-        line, sep=None, is_split_punctuation=True, is_strip_accents=True,
+        line, sep=None, sep_pattern=None,
+        is_split_punctuation=True, is_strip_accents=True,
         is_word_piece=False, vocab=None, **filter_kwargs):
     """
 
     Args:
         line:
-        sep:
+        sep: split seq symbol
+        sep_pattern (str or re.Pattern): re pattern seq
         is_split_punctuation:
         is_strip_accents:
         is_word_piece:
@@ -181,6 +183,13 @@ def segment_from_line(
     line = filter_text(line, **filter_kwargs)
     if sep == '':
         seg = list(line)
+    elif sep is not None:
+        seg = line.split(sep)
+    elif sep_pattern is not None:
+        if hasattr(sep_pattern, 'findall'):
+            seg = sep_pattern.findall(line)
+        else:
+            seg = re.findall(sep_pattern, line)
     else:
         seg = line.split(sep)
 

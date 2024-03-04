@@ -69,6 +69,70 @@ def one_hot(segments, word_dict):
     return tag
 
 
+def make_byte_encode_dict():
+    # Meaningful token's id
+    ids = list(range(33, 127)) + list(range(161, 173)) + list(range(174, 256))
+
+    # id: char
+    byte_encode_dict = {i: chr(i) for i in ids}
+
+    # fill the empty ids with token in [256, inf]
+    n = 0
+    max_id = 2 ** 8
+    for i in range(max_id):
+        if i not in byte_encode_dict:
+            byte_encode_dict[i] = chr(2 ** 8 + n)
+            n += 1
+    return byte_encode_dict
+
+
+def bpe(segments, byte_pairs, word_dict, byte_encode_dict=None):
+    """byte pair encode
+    refer to: https://www.drdobbs.com/a-new-algorithm-for-data-compression/184402829
+    """
+    if byte_encode_dict is None:
+        byte_encode_dict = make_byte_encode_dict()
+
+    if not isinstance(byte_pairs, dict):
+        # id: (char1, char2)
+        byte_pairs = {k: i for i, k in enumerate(byte_pairs)}
+
+    tags = []
+    for s in segments:
+        tag = []
+
+        for word in s:
+            # normalize the segment, fall in [0, 255]
+            chars = [byte_encode_dict[c] for c in bytearray(word.encode('utf-8'))]
+
+            while len(chars) > 0:
+                min_pair, min_rank = None, float('inf')
+                for i in range(1, len(chars)):
+                    pair = (chars[i - 1], chars[i])
+                    rank = byte_pairs.get(pair, float('inf'))
+                    if rank < min_rank:
+                        min_rank = rank
+                        min_pair = pair
+                if min_pair is None or min_pair not in byte_pairs:
+                    break
+                last, tail = chars[0], 1
+                for index in range(1, len(chars)):
+                    if (last, chars[index]) == min_pair:
+                        chars[tail - 1] = last + chars[index]
+                        last = last + chars[index]
+                    else:
+                        chars[tail - 1] = last
+                        tail += 1
+                        last = chars[index]
+                chars[tail - 1] = last
+                chars = chars[:tail]
+
+            tag += [word_dict[c] for c in chars]
+        tags.append(tag)
+
+    return tags
+
+
 def target_encode(segments, word_dict):
     pass
 

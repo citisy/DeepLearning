@@ -47,3 +47,12 @@ def beam_search(x, beam_size=4):
 
 def prefix_beam_search(x):
     pass
+
+
+def bpe(tags, word_inv_dict, byte_decoder_dict=None):
+    segments = []
+    for tag in tags:
+        text = ''.join([word_inv_dict[t] for t in tag])
+        s = bytearray([byte_decoder_dict[byte] for byte in text]).decode('utf-8', errors='replace')
+        segments.append(s)
+    return segments
