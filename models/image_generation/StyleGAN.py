@@ -452,11 +452,11 @@ class AttentionBlock(nn.Sequential):
             Residual(nn.Sequential(
                 ChannelNorm(in_ch),
                 ConvAttention(in_ch),
-            ), is_act=False),
+            ), is_norm=False),
             Residual(nn.Sequential(
                 Conv(in_ch, in_ch * 2, 1, mode='nca', act=nn.LeakyReLU(0.2, inplace=True), norm=ChannelNorm(in_ch)),
                 Conv(in_ch * 2, in_ch, 1, mode='c'),
-            ), is_act=False)
+            ), is_norm=False)
         )
 
 

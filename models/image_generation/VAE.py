@@ -136,7 +136,7 @@ class ResBlock(Residual):
         super().__init__(
             fn=ResFn(in_ch, out_ch, time_emb_ch=time_emb_ch, drop_prob=drop_prob),
             project_fn=shortcut,
-            is_act=False
+            is_norm=False
         )
 
 
