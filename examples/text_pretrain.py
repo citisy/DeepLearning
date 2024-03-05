@@ -6,7 +6,7 @@ import pandas as pd
 from typing import List, Optional
 from utils import math_utils, os_lib
 from processor import Process, DataHooks, BaseDataset, ModelHooks, CheckpointHooks, IterIterDataset
-from data_parse.nlp_data_parse.pre_process import spliter, bundled, sp_token_dict, dict_maker, numerizer
+from data_parse.nlp_data_parse.pre_process import spliter, bundled, dict_maker, numerizer, BertVocabOp
 
 
 class RandomChoiceTextPairsDataset(BaseDataset):
@@ -71,9 +71,32 @@ class RandomReverseTextPairsDataset(BaseDataset):
         return self.augment_func(ret)
 
 
+class IterIterBatchDataset(IterIterDataset):
+    """for loading large file"""
+    def __iter__(self):
+        from torch.utils.data import get_worker_info
+
+        worker_info = get_worker_info()
+        n = 1 if worker_info is None else worker_info.num_workers
+
+        i = 0
+        while i < self.length:
+            rets = self.iter_data.get()
+            for ret in self.process_batch(rets):
+                yield ret
+
+                i += n
+
+    def process_batch(self, rets):
+        if self.augment_func:
+            rets = self.augment_func(rets)
+
+        return rets
+
+
 class DataProcess(DataHooks):
     data_dir: str
-    max_seq_len: int
+    max_seq_len: int = 512
 
     val_dataset_ins = BaseDataset
     train_dataset_ins = BaseDataset
@@ -81,25 +104,12 @@ class DataProcess(DataHooks):
     train_data_num = None
     val_data_num = None
 
-    vocab_size: int
-    word_dict: dict
-    vocab: set
-    sp_tag_dict: dict
-    numerizer: Optional
-
     is_mlm: bool
     is_nsp: bool
 
-    def get_vocab(self):
-        # note, vocab must be with word piece, e.g. uncased_L-12_H-768_A-12/vocab.txt
-        # https://github.com/google-research/bert to get more details
-        vocab = super().get_vocab()
-        self.word_dict = {word: i for i, word in enumerate(vocab)}
-        self.vocab = set(vocab)
-        self.vocab_size = len(vocab)
-        self.sp_tag_dict = {k: self.word_dict[v] for k, v in sp_token_dict.items()}
-        self.sp_tag_dict.update(non_mask=-100)
-        self.numerizer = numerizer.KeyValueEncode(self.word_dict, unk_token=sp_token_dict['unk'])
+    vocab_op: Optional
+    numerizer: Optional
+    max_seq_len: int
 
     def _filter_func(self, x):
         if re.search('[0-9]', x):
@@ -114,6 +124,7 @@ class DataProcess(DataHooks):
 class TextProcess(DataProcess):
     def make_vocab(self):
         # todo: make word piece
+        sp_token_dict = self.vocab_op.sp_token_dict
         iter_data = self.get_train_data()
         paragraphs = [ret['text'] for ret in iter_data]
         paragraphs = bundled.lower(paragraphs)
@@ -128,7 +139,7 @@ class TextProcess(DataProcess):
     def data_preprocess(self, iter_data, train=True):
         paragraphs = [ret['text'] for ret in iter_data]
         paragraphs = bundled.lower(paragraphs)
-        segments = spliter.segments_from_paragraphs(paragraphs, is_word_piece=True, vocab=self.vocab, verbose=True)
+        segments = spliter.segments_from_paragraphs(paragraphs, is_word_piece=True, vocab=self.vocab_op.vocab, verbose=True)
         if not self.is_nsp and self.is_chunk and train:
             segments = spliter.chunked_segments_from_segments(segments, max_length=self.max_seq_len - 2, min_length=self.max_seq_len / 8, verbose=True)
 
@@ -160,7 +171,12 @@ class TextProcess(DataProcess):
         segments = [_ret['segment']]
         segment_tags = [_ret['segment_tag']]
         if train and self.is_mlm:
-            segments, mask_tags = bundled.random_mask(segments, self.word_dict, mask_token=sp_token_dict['mask'], unk_tag=self.sp_tag_dict['unk'], non_mask_tag=self.sp_tag_dict['non_mask'])
+            segments, mask_tags = bundled.random_mask(
+                segments, self.vocab_op.word_dict,
+                mask_token=self.vocab_op.sp_token_dict['mask'],
+                unk_tag=self.vocab_op.sp_tag_dict['unk'],
+                non_mask_tag=self.vocab_op.sp_tag_dict['non_mask']
+            )
             ret.update(mask_tag=mask_tags[0])
 
         ret.update(
@@ -177,6 +193,7 @@ class TextProcess(DataProcess):
 class TextPairProcess(DataProcess):
     def make_vocab(self):
         # todo: make word piece
+        sp_token_dict = self.vocab_op.sp_token_dict
         iter_data = self.get_train_data()
         paragraphs = [' '.join(ret['texts']) for ret in iter_data]
         paragraphs = bundled.lower(paragraphs)
@@ -192,7 +209,7 @@ class TextPairProcess(DataProcess):
         tmp = []
         for paragraphs in text_pairs:
             paragraphs = bundled.lower(paragraphs)
-            segments = spliter.segments_from_paragraphs(paragraphs, is_word_piece=True, vocab=self.vocab, verbose=True)
+            segments = spliter.segments_from_paragraphs(paragraphs, is_word_piece=True, vocab=self.vocab_op.vocab, verbose=True)
             tmp.append(segments)
 
         segment_pairs = math_utils.transpose(tmp)
@@ -228,10 +245,10 @@ class TextPairProcess(DataProcess):
             tmp2 = []
             for segments in segment_pairs:
                 segments, mask_tags = bundled.random_mask(
-                    segments, self.word_dict,
-                    mask_token=sp_token_dict['mask'],
-                    unk_tag=self.sp_tag_dict['unk'],
-                    non_mask_tag=self.sp_tag_dict['non_mask']
+                    segments, self.vocab_op.word_dict,
+                    mask_token=self.vocab_op.sp_token_dict['mask'],
+                    unk_tag=self.vocab_op.sp_tag_dict['unk'],
+                    non_mask_tag=self.vocab_op.sp_tag_dict['non_mask']
                 )
                 tmp.append(segments)
                 tmp2.append(mask_tags)
@@ -239,10 +256,10 @@ class TextPairProcess(DataProcess):
             segment_pairs = math_utils.transpose(tmp)
 
             mask_tags_pairs = math_utils.transpose(tmp2)
-            mask_tags = bundled.joint(mask_tags_pairs, sep_token=self.sp_tag_dict['non_mask'], keep_end=False)
+            mask_tags = bundled.joint(mask_tags_pairs, sep_token=self.vocab_op.sp_tag_dict['non_mask'], keep_end=False)
             ret.update(mask_tag=mask_tags[0])
 
-        segments = bundled.joint(segment_pairs, sep_token=sp_token_dict['sep'], keep_end=False)
+        segments = bundled.joint(segment_pairs, sep_token=self.vocab_op.sp_token_dict['sep'], keep_end=False)
         segment_tags = bundled.joint(segment_tag_pairs, sep_token=0, keep_end=False)
 
         ret.update(
@@ -259,7 +276,6 @@ class TextPairProcess(DataProcess):
 class SimpleText(TextProcess):
     dataset_version = 'simple_text'
     data_dir: str
-    max_seq_len = 512
 
     def get_data(self, *args, train=True, **kwargs):
         from data_parse.nlp_data_parse.SimpleText import Loader, DataRegister
@@ -275,7 +291,6 @@ class SimpleText(TextProcess):
 class SimpleTextPair(TextPairProcess):
     dataset_version = 'simple_text_pair'
     data_dir: str
-    max_seq_len = 512
 
     def get_data(self, *args, train=True, **kwargs):
         from data_parse.nlp_data_parse.SimpleTextPair import Loader, DataRegister
@@ -287,33 +302,9 @@ class SimpleTextPair(TextPairProcess):
             return loader.load(set_type=DataRegister.TEST, max_size=self.val_data_num, generator=False)[0]
 
 
-class IterIterProcessBatchDataset(IterIterDataset):
-    def __iter__(self):
-        from torch.utils.data import get_worker_info
-
-        worker_info = get_worker_info()
-        n = 1 if worker_info is None else worker_info.num_workers
-
-        i = 0
-        while i < self.length:
-            rets = self.iter_data.get()
-            for ret in self.process_batch(rets):
-                yield ret
-
-                i += n
-
-    def process_batch(self, rets):
-        if self.augment_func:
-            rets = self.augment_func(rets)
-
-        return rets
-
-
-class IterBatchSimpleText(DataProcess):
+class LargeSimpleText(DataProcess):
     """for loading large file"""
     dataset_version = 'simple_text'
-    data_dir: str
-    max_seq_len = 512
     one_step_data_num = int(1e6)
     is_chunk = False
 
@@ -355,9 +346,9 @@ class IterBatchSimpleText(DataProcess):
         p.start()
 
         if train:
-            return IterIterProcessBatchDataset(q, length=self.one_step_data_num, augment_func=self.train_data_augment)
+            return IterIterBatchDataset(q, length=self.one_step_data_num, augment_func=self.train_data_augment)
         else:
-            return IterIterProcessBatchDataset(q, length=self.one_step_data_num, augment_func=self.val_data_augment)
+            return IterIterBatchDataset(q, length=self.one_step_data_num, augment_func=self.val_data_augment)
 
     def data_augment(self, rets, train=True) -> List[dict]:
         """preprocess + data_augment"""
@@ -371,9 +362,6 @@ class SOP(DataProcess):
     val_dataset_ins = RandomReverseTextPairsDataset
 
     dataset_version = 'simple_text'
-    data_dir: str
-    max_seq_len = 512
-
     is_chunk = False
 
     def get_data(self, *args, train=True, **kwargs):
@@ -404,15 +392,25 @@ class Bert(Process):
     is_nsp = True
     use_scaler = True
     scheduler_strategy = 'step'  # step
+    vocab_op: Optional
+    numerizer: Optional
+    max_seq_len: int
 
     def set_model(self):
         from models.text_pretrain.bert import Model
-
         self.get_vocab()
         self.model = Model(
-            self.vocab_size,
-            sp_tag_dict=self.sp_tag_dict,
+            self.vocab_op.vocab_size,
+            sp_tag_dict=self.vocab_op.sp_tag_dict,
             is_nsp=self.is_nsp, is_mlm=self.is_mlm
+        )
+
+    def get_vocab(self):
+        vocab = super().get_vocab()
+        self.vocab_op = BertVocabOp(vocab)
+        self.numerizer = numerizer.KeyValueEncode(
+            self.vocab_op.word_dict,
+            unk_token=self.vocab_op.sp_token_dict['unk']
         )
 
     def set_optimizer(self):
@@ -421,6 +419,7 @@ class Bert(Process):
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=1e-4, betas=(0.5, 0.999))
 
     def get_model_inputs(self, rets, train=True):
+        sp_token_dict = self.vocab_op.sp_token_dict
         segments = [ret['segment'] for ret in rets]
         attention_mask = [[True] * len(seg) for seg in segments]
         segments = bundled.align(segments, max_seq_len=self.max_seq_len, start_token=sp_token_dict['cls'], end_token=sp_token_dict['sep'], pad_token=sp_token_dict['pad'])
@@ -441,11 +440,12 @@ class Bert(Process):
         )
 
         if train:
+            sp_tag_dict = self.vocab_op.sp_tag_dict
             next_tags = torch.tensor([ret['_class'] for ret in rets]).to(self.device) if self.is_nsp else None
             mask_tags = None
             if self.is_mlm:
                 mask_tags = [ret['mask_tag'] for ret in rets]
-                mask_tags = bundled.align(mask_tags, max_seq_len=self.max_seq_len, start_token=self.sp_tag_dict['non_mask'], end_token=self.sp_tag_dict['non_mask'], pad_token=self.sp_tag_dict['non_mask'])
+                mask_tags = bundled.align(mask_tags, max_seq_len=self.max_seq_len, start_token=sp_tag_dict['non_mask'], end_token=sp_tag_dict['non_mask'], pad_token=sp_tag_dict['non_mask'])
                 mask_tags = torch.tensor(mask_tags).to(self.device)
 
             r.update(
@@ -491,12 +491,13 @@ class Bert(Process):
                 mask_trues = results['mask_trues']
                 mask_preds = results['mask_preds']
 
-                mask_trues = bundled.align(mask_trues, max_seq_len=self.max_seq_len, start_token=self.sp_tag_dict['non_mask'], pad_token=self.sp_tag_dict['non_mask'])
-                mask_preds = bundled.align(mask_preds, max_seq_len=self.max_seq_len, start_token=self.sp_tag_dict['non_mask'], pad_token=self.sp_tag_dict['non_mask'])
+                non_mask_tag = self.vocab_op.sp_tag_dict['non_mask']
+                mask_trues = bundled.align(mask_trues, max_seq_len=self.max_seq_len, start_token=non_mask_tag, pad_token=non_mask_tag)
+                mask_preds = bundled.align(mask_preds, max_seq_len=self.max_seq_len, start_token=non_mask_tag, pad_token=non_mask_tag)
 
                 mask_trues = np.array(mask_trues)
                 mask_preds = np.array(mask_preds)
-                n_quit = np.sum((mask_trues == self.sp_tag_dict['non_mask']) & (mask_preds == self.sp_tag_dict['non_mask']))
+                n_quit = np.sum((mask_trues == non_mask_tag) & (mask_preds == non_mask_tag))
                 n_true = np.sum(mask_trues == mask_preds)
                 mask_score = (n_true - n_quit) / (mask_trues.size - n_quit)
                 result.update({'score.mask': mask_score})
@@ -622,21 +623,24 @@ class FromHFPretrain(CheckpointHooks):
             self.model.load_state_dict(convert_hf_weights(state_dict), strict=False)
 
 
-class BertFromHFPretrain(Bert, FromHFPretrain, SimpleText):
+class BertMLMFromHFPretrain(Bert, FromHFPretrain, TextProcess):
     """
     Usage:
         .. code-block:: python
 
-            from examples.text_pertain import BertFromHFPretrain as Process
+            from examples.text_pertain import BertMLMFromHFPretrain as Process
 
             process = Process(pretrain_model='bert-base-uncased', vocab_fn='...')
+            process.init()
             process.single_predict('The goal of life is [MASK].')
             process.batch_predict([
                 'The goal of life is [MASK].',
                 'Paris is the [MASK] of France.'
             ])
     """
+    dataset_version = ''
     is_nsp = False
+    is_chunk = False
 
 
 class BertMLM_SimpleText(Bert, SimpleText):

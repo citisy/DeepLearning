@@ -43,7 +43,7 @@ class Bert(BertFull):
     def set_model(self):
         from models.text_classification.bert import Model
         self.get_vocab()
-        self.model = Model(self.vocab_size, sp_tag_dict=self.sp_tag_dict, out_features=self.n_classes)
+        self.model = Model(self.vocab_op.vocab_size, sp_tag_dict=self.vocab_op.sp_tag_dict, out_features=self.n_classes)
 
     def set_optimizer(self):
         self.optimizer = torch.optim.AdamW(self.model.parameters(), lr=5e-5)

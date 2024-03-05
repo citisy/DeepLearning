@@ -1,6 +1,6 @@
 import copy
 import numpy as np
-from . import sp_token_dict
+from . import BertVocabOp
 
 
 def lower(paragraphs):
@@ -17,7 +17,7 @@ def add_token(segments, start_token=None, end_token=None):
     return segments
 
 
-def random_mask(segments, word_dict, unk_tag, mask_token=sp_token_dict['mask'], non_mask_tag=-100, mask_prob=0.15):
+def random_mask(segments, word_dict, unk_tag, mask_token=BertVocabOp.sp_token_dict['mask'], non_mask_tag=-100, mask_prob=0.15):
     segments = copy.deepcopy(segments)
     vocab = list(word_dict.keys())
     mask_tags = []
@@ -45,7 +45,7 @@ def random_mask(segments, word_dict, unk_tag, mask_token=sp_token_dict['mask'], 
     return segments, mask_tags
 
 
-def joint(text_pairs, sep_token=sp_token_dict['sep'], keep_end=True):
+def joint(text_pairs, sep_token=BertVocabOp.sp_token_dict['sep'], keep_end=True):
     segments = []
     for segments_pair in text_pairs:
         seg = []
@@ -61,7 +61,7 @@ def truncate(segments, seq_len):
     return [s[:seq_len] for s in segments]
 
 
-def pad(segments, max_seq_len, pad_token=sp_token_dict['pad']):
+def pad(segments, max_seq_len, pad_token=BertVocabOp.sp_token_dict['pad']):
     _segments = []
     for s in segments:
         pad_len = max_seq_len - len(s)
@@ -69,7 +69,7 @@ def pad(segments, max_seq_len, pad_token=sp_token_dict['pad']):
     return _segments
 
 
-def align(segments, max_seq_len, start_token=None, end_token=None, auto_pad=True, pad_token=sp_token_dict['pad']):
+def align(segments, max_seq_len, start_token=None, end_token=None, auto_pad=True, pad_token=BertVocabOp.sp_token_dict['pad']):
     """[[seg]] -> [[start_token], [seg], [end_token], [pad_token]]"""
     segments = add_token(segments, start_token=start_token, end_token=end_token)
     segments = truncate(segments, seq_len=max_seq_len)
