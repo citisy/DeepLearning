@@ -37,6 +37,10 @@ def convert_hf_weights(state_dict):
         'bert.encoder.layer.{0}.output.dense': 'backbone.encoder.{0}.res2.fn.1.linear',
         'bert.encoder.layer.{0}.output.LayerNorm': 'backbone.encoder.{0}.res2.norm',
         'bert.pooler.dense': 'neck.linear',
+        'cls.predictions.transform.dense': 'mlm.0.linear',
+        'cls.predictions.transform.LayerNorm': 'mlm.0.norm',
+        'cls.predictions.decoder': 'mlm.1',
+        'cls.predictions.bias': 'mlm.1.bias'
     }
     state_dict = torch_utils.Converter.convert_keys(state_dict, convert_dict)
 
@@ -148,20 +152,18 @@ class NSP(nn.Module):
         return F.cross_entropy(next_pred, next_true)
 
 
-class MLM(nn.Module):
+class MLM(nn.Sequential):
     """Masked Language Model"""
 
     def __init__(self, in_features, out_features, non_mask_tag):
-        super().__init__()
         self.non_mask_tag = non_mask_tag
-        self.fcn = nn.Linear(in_features, out_features)
-
-    def forward(self, x):
-        x = self.fcn(x)
-        x = x.transpose(1, 2)  # seq first -> class first
-        return x
+        super().__init__(
+            Linear(in_features, in_features, mode='lan', act=nn.GELU(), norm=nn.LayerNorm(in_features, eps=1e-12)),
+            nn.Linear(in_features, out_features)
+        )
 
     def loss(self, mask_pred, mask_true):
+        mask_pred = mask_pred.transpose(1, 2)  # seq first -> class first
         return F.cross_entropy(mask_pred, mask_true, ignore_index=self.non_mask_tag)
 
 
@@ -169,7 +171,7 @@ class Bert(nn.Module):
     def __init__(self, vocab_size, sp_tag_dict, max_seq_len=512, n_segment=2, hidden_size=768, num_hidden_layers=12, num_attention_heads=12, drop_prob=0.1):
         super().__init__()
         self.embedding = Embedding(vocab_size, hidden_size, sp_tag_dict, max_seq_len=max_seq_len, n_segment=n_segment, drop_prob=drop_prob)
-        self.encoder = nn.ModuleList([TransformerBlock(hidden_size, num_attention_heads, hidden_size * 4, drop_prob) for _ in range(num_hidden_layers)])
+        self.encoder = nn.ModuleList([TransformerBlock(hidden_size, num_attention_heads, hidden_size * 4, drop_prob=drop_prob) for _ in range(num_hidden_layers)])
 
         self.out_features = hidden_size
         self.sp_tag_dict = sp_tag_dict

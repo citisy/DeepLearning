@@ -3,10 +3,10 @@ import re
 import torch
 import numpy as np
 import pandas as pd
-from typing import List
+from typing import List, Optional
 from utils import math_utils, os_lib
 from processor import Process, DataHooks, BaseDataset, ModelHooks, CheckpointHooks, IterIterDataset
-from data_parse.nlp_data_parse.pre_process import spliter, encoder, bundled, sp_token_dict, dict_maker
+from data_parse.nlp_data_parse.pre_process import spliter, bundled, sp_token_dict, dict_maker, numerizer
 
 
 class RandomChoiceTextPairsDataset(BaseDataset):
@@ -85,6 +85,7 @@ class DataProcess(DataHooks):
     word_dict: dict
     vocab: set
     sp_tag_dict: dict
+    numerizer: Optional
 
     is_mlm: bool
     is_nsp: bool
@@ -98,6 +99,7 @@ class DataProcess(DataHooks):
         self.vocab_size = len(vocab)
         self.sp_tag_dict = {k: self.word_dict[v] for k, v in sp_token_dict.items()}
         self.sp_tag_dict.update(non_mask=-100)
+        self.numerizer = numerizer.KeyValueEncode(self.word_dict, unk_token=sp_token_dict['unk'])
 
     def _filter_func(self, x):
         if re.search('[0-9]', x):
@@ -423,7 +425,7 @@ class Bert(Process):
         attention_mask = [[True] * len(seg) for seg in segments]
         segments = bundled.align(segments, max_seq_len=self.max_seq_len, start_token=sp_token_dict['cls'], end_token=sp_token_dict['sep'], pad_token=sp_token_dict['pad'])
         attention_mask = bundled.align(attention_mask, max_seq_len=self.max_seq_len, start_token=True, end_token=True, pad_token=False)
-        token_tags = encoder.simple(segments, self.word_dict, unk_tag=self.sp_tag_dict['unk'])
+        token_tags = self.numerizer.encode(segments)
 
         segment_tags = [ret['segment_tag'] for ret in rets]
         segment_tags = bundled.align(segment_tags, max_seq_len=self.max_seq_len, start_token=0, end_token=1, pad_token=0)
@@ -518,12 +520,11 @@ class Bert(Process):
         return metric_results
 
     def on_val_step(self, rets, **kwargs) -> dict:
-        rets = self.get_model_inputs(rets, train=False)
-        token_tags = rets['x']
+        model_inputs = self.get_model_inputs(rets, train=False)
 
         model_results = {}
         for name, model in self.models.items():
-            outputs = model(**rets)
+            outputs = model(**model_inputs)
 
             ret = dict()
 
@@ -534,10 +535,14 @@ class Bert(Process):
                 )
 
             if self.is_mlm:
+                mask_preds = outputs['mask_pred'].argmax(-1).cpu().numpy().tolist()
+                mask_trues = model_inputs['x'].cpu().numpy().tolist()
                 ret.update(
                     mask_outputs=outputs['mask_pred'],
-                    mask_preds=outputs['mask_pred'].argmax(1).cpu().numpy().tolist(),
-                    token_tags=token_tags.cpu().numpy().tolist()
+                    mask_preds=mask_preds,
+                    mask_trues=mask_trues,
+                    pred_segment=self.numerizer.decode(mask_preds),
+                    true_segment=[ret['segment'] for ret in rets]
                 )
 
             model_results[name] = ret
@@ -554,7 +559,7 @@ class Bert(Process):
                 r.setdefault('next_preds', []).extend(results['next_preds'])
 
             if self.is_mlm:
-                r.setdefault('mask_trues', []).extend(results['token_tags'])
+                r.setdefault('mask_trues', []).extend(results['mask_trues'])
                 r.setdefault('mask_preds', []).extend(results['mask_preds'])
 
     def on_val_step_end(self, *args, **kwargs):
@@ -587,6 +592,18 @@ class Bert(Process):
                 df = pd.DataFrame(data)
                 os_lib.Saver(stdout_method=self.log).auto_save(df, f'{self.cache_dir}/{self.counters["epoch"]}/{name}.csv', index=False)
 
+    def gen_predict_inputs(self, *objs, images=None, **kwargs):
+        rets = []
+        for text in objs[0]:
+            ret = dict(text=text)
+            rets.append(ret)
+        rets = self.val_data_preprocess(rets)
+        return rets
+
+    def on_predict_step_end(self, model_results, add_watermark=True, watermark='watermark', **kwargs):
+        for name, results in model_results.items():
+            self.predict_container['model_results'].setdefault(name, []).extend(results['pred_segment'])
+
 
 class FromHFPretrain(CheckpointHooks):
     """load pretrain model from hugging face"""
@@ -598,11 +615,28 @@ class FromHFPretrain(CheckpointHooks):
             if os.path.exists(f'{self.pretrain_model}/pytorch_model.bin'):
                 state_dict = torch.load(f'{self.pretrain_model}/pytorch_model.bin', map_location=self.device)
             else:  # download weight auto
-                from transformers import BertForSequenceClassification
-                model = BertForSequenceClassification.from_pretrained(self.pretrain_model, num_labels=2)
+                from transformers import BertForMaskedLM
+                model = BertForMaskedLM.from_pretrained(self.pretrain_model, num_labels=2)
                 state_dict = model.state_dict()
 
             self.model.load_state_dict(convert_hf_weights(state_dict), strict=False)
+
+
+class BertFromHFPretrain(Bert, FromHFPretrain, SimpleText):
+    """
+    Usage:
+        .. code-block:: python
+
+            from examples.text_pertain import BertFromHFPretrain as Process
+
+            process = Process(pretrain_model='bert-base-uncased', vocab_fn='...')
+            process.single_predict('The goal of life is [MASK].')
+            process.batch_predict([
+                'The goal of life is [MASK].',
+                'Paris is the [MASK] of France.'
+            ])
+    """
+    is_nsp = False
 
 
 class BertMLM_SimpleText(Bert, SimpleText):
@@ -612,7 +646,7 @@ class BertMLM_SimpleText(Bert, SimpleText):
 
             from examples.text_pertain import BertMLM_SimpleText as Process
 
-            Process(device=0).run(max_epoch=20, train_batch_size=16, fit_kwargs=dict(check_period=1, accumulate=192))
+            Process(vocab_fn='...').run(max_epoch=20, train_batch_size=16, fit_kwargs=dict(check_period=1, accumulate=192))
     """
     is_nsp = False
     is_chunk = True
@@ -626,6 +660,6 @@ class Bert_SOP(Bert, SOP):
             from examples.text_pertain import BertMLM_SimpleText as Process
 
             # about 200M data
-            Process(device=0).run(max_epoch=20, train_batch_size=16, fit_kwargs=dict(check_period=1, accumulate=192))
+            Process(vocab_fn='...').run(max_epoch=20, train_batch_size=16, fit_kwargs=dict(check_period=1, accumulate=192))
             {'score': 0.931447}
     """
