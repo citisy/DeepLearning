@@ -99,7 +99,7 @@ def make_attn(in_channels, attn_type=Config.VANILLA, groups=32):
             make_norm(groups, in_ch),
             CrossAttention3D(n_heads=1, head_dim=in_ch, use_xformers=True)
         ),  # use xformers, equal to VANILLA
-        Config.LINEAR: lambda in_ch: LinearAttention3D(n_heads=1, head_dim=in_ch, use_mem_kv=False, separate_conv=True),
+        Config.LINEAR: lambda in_ch: LinearAttention3D(n_heads=1, head_dim=in_ch, use_mem_kv=False, separate=True),
     }
     return attn_dict.get(attn_type, nn.Identity)(in_channels)
 

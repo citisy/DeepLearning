@@ -24,11 +24,17 @@ def get_attention_input(n_heads=None, model_dim=None, head_dim=None):
     return n_heads, model_dim, head_dim
 
 
+def get_qkv(q, k=None, v=None):
+    k = q if k is None else k
+    v = q if v is None else v
+    return q, k, v
+
+
 class CrossAttention2D(nn.Module):
     """cross attention"""
 
     def __init__(self, n_heads=None, model_dim=None, head_dim=None, query_dim=None, context_dim=None,
-                 use_xformers=None, use_conv=False, separate_conv=True, use_mem_kv=False, n_mem_size=4,
+                 use_xformers=None, use_conv=False, separate=True, use_mem_kv=False, n_mem_size=4,
                  drop_prob=0.1, **fn_kwargs):
         super().__init__()
         n_heads, model_dim, head_dim = get_attention_input(n_heads, model_dim, head_dim)
@@ -36,11 +42,11 @@ class CrossAttention2D(nn.Module):
         context_dim = context_dim or model_dim
 
         self.use_conv = use_conv
-        self.separate_conv = separate_conv
+        self.separate = separate
         self.use_mem_kv = use_mem_kv
 
         if use_conv:  # build by conv func
-            if separate_conv:
+            if separate:
                 self.to_qkv = nn.ModuleList([
                     nn.Conv1d(query_dim, model_dim, 1, **fn_kwargs),
                     nn.Conv1d(context_dim, model_dim, 1, **fn_kwargs),
@@ -48,9 +54,6 @@ class CrossAttention2D(nn.Module):
                 ])
             else:  # only for self attention
                 assert query_dim == context_dim
-
-                # different to linear function, each conv filter and feature map is independent
-                # so can use a conv layer to compute, and then, chunk it
                 self.to_qkv = nn.Conv1d(query_dim, model_dim * 3, 1, **fn_kwargs)
 
             self.view_in = Rearrange('b (n c) dk-> b n c dk', n=n_heads)
@@ -62,11 +65,16 @@ class CrossAttention2D(nn.Module):
             self.to_out = nn.Conv1d(model_dim, query_dim, **fn_kwargs)
 
         else:  # build by linear func
-            self.to_qkv = nn.ModuleList([
-                nn.Linear(query_dim, model_dim, **fn_kwargs),
-                nn.Linear(context_dim, model_dim, **fn_kwargs),
-                nn.Linear(context_dim, model_dim, **fn_kwargs),
-            ])
+            if separate:
+                self.to_qkv = nn.ModuleList([
+                    nn.Linear(query_dim, model_dim, **fn_kwargs),
+                    nn.Linear(context_dim, model_dim, **fn_kwargs),
+                    nn.Linear(context_dim, model_dim, **fn_kwargs),
+                ])
+            else:  # only for self attention
+                assert query_dim == context_dim
+                self.to_qkv = nn.Linear(query_dim, model_dim * 3, **fn_kwargs)
+
             self.view_in = Rearrange('b s (n dk)-> b n s dk', n=n_heads)
 
             self.view_out = Rearrange('b n s dk -> b s (n dk)')
@@ -81,15 +89,12 @@ class CrossAttention2D(nn.Module):
             self.attend = ScaleAttend(drop_prob)
 
     def forward(self, q, k=None, v=None, attention_mask=None):
-        if self.use_conv and self.separate_conv:  # note, only for self attention
-            q, k, v = self.to_qkv(q).chunk(3, dim=1)
-        else:
-            if k is None:
-                k = q
-            if v is None:
-                v = q
-
+        if self.separate:
+            q, k, v = get_qkv(q, k, v)
             q, k, v = [m(x) for m, x in zip(self.to_qkv, (q, k, v))]
+        else:
+            dim = 1 if self.use_conv else -1
+            q, k, v = self.to_qkv(q).chunk(3, dim=dim)
 
         q, k, v = [self.view_in(x).contiguous() for x in (q, k, v)]
 
@@ -107,7 +112,7 @@ class CrossAttention3D(nn.Module):
     """cross attention build by conv function"""
 
     def __init__(self, n_heads=None, model_dim=None, head_dim=None, query_dim=None, context_dim=None,
-                 use_xformers=None, separate_conv=True, use_mem_kv=False, n_mem_size=4,
+                 use_xformers=None, separate=True, use_mem_kv=False, n_mem_size=4,
                  drop_prob=0., **conv_kwargs):
         super().__init__()
         n_heads, model_dim, head_dim = get_attention_input(n_heads, model_dim, head_dim)
@@ -116,9 +121,9 @@ class CrossAttention3D(nn.Module):
         self.scale = head_dim ** -0.5
         self.n_heads = n_heads
         self.use_mem_kv = use_mem_kv
-        self.separate_conv = separate_conv
+        self.separate = separate
 
-        if separate_conv:
+        if separate:
             self.to_qkv = nn.ModuleList([
                 nn.Conv2d(query_dim, model_dim, 1, **conv_kwargs),
                 nn.Conv2d(context_dim, model_dim, 1, **conv_kwargs),
@@ -126,9 +131,6 @@ class CrossAttention3D(nn.Module):
             ])
         else:  # only for self attention
             assert query_dim == context_dim
-
-            # different to linear function, each conv filter and feature map is independent
-            # so can use a conv layer to compute, and then, chunk it
             self.to_qkv = nn.Conv2d(query_dim, model_dim * 3, 1, **conv_kwargs)
 
         if use_mem_kv:
@@ -148,12 +150,8 @@ class CrossAttention3D(nn.Module):
 
     def forward(self, q, k=None, v=None):
         b, c, h, w = q.shape
-        if self.separate_conv:
-            if k is None:
-                k = q
-            if v is None:
-                v = q
-
+        if self.separate:
+            q, k, v = get_qkv(q, k, v)
             q, k, v = [m(x) for m, x in zip(self.to_qkv, (q, k, v))]
         else:  # only for self attention
             q, k, v = self.to_qkv(q).chunk(3, dim=1)
@@ -207,7 +205,7 @@ class LinearAttention3D(nn.Module):
     """linear attention build by conv function"""
 
     def __init__(self, n_heads=None, model_dim=None, head_dim=None, query_dim=None, context_dim=None,
-                 separate_conv=True, use_mem_kv=True, n_mem_size=4, norm=None, **conv_kwargs):
+                 separate=True, use_mem_kv=True, n_mem_size=4, norm=None, **conv_kwargs):
         super().__init__()
         n_heads, model_dim, head_dim = get_attention_input(n_heads, model_dim, head_dim)
         query_dim = query_dim or model_dim
@@ -215,9 +213,9 @@ class LinearAttention3D(nn.Module):
         self.scale = head_dim ** -0.5
         self.n_heads = n_heads
         self.use_mem_kv = use_mem_kv
-        self.separate_conv = separate_conv
+        self.separate = separate
 
-        if separate_conv:
+        if separate:
             self.to_qkv = nn.ModuleList([
                 nn.Conv2d(query_dim, model_dim, 1, **conv_kwargs),
                 nn.Conv2d(context_dim, model_dim, 1, **conv_kwargs),
@@ -225,9 +223,6 @@ class LinearAttention3D(nn.Module):
             ])
         else:  # only for self attention
             assert query_dim == context_dim
-
-            # different to linear function, each conv filter and feature map is independent
-            # so can use a conv layer to compute, and then, chunk it
             self.to_qkv = nn.Conv2d(query_dim, model_dim * 3, 1, **conv_kwargs)
 
         self.cvt = Rearrange('b (n d) h w -> b n d (h w)', n=n_heads)
@@ -240,12 +235,8 @@ class LinearAttention3D(nn.Module):
 
     def forward(self, q, k=None, v=None):
         b, c, h, w = q.shape
-        if self.separate_conv:
-            if k is None:
-                k = q
-            if v is None:
-                v = q
-
+        if self.separate:
+            q, k, v = get_qkv(q, k, v)
             q, k, v = [m(x) for m, x in zip(self.to_qkv, (q, k, v))]
         else:  # only for self attention
             q, k, v = self.to_qkv(q).chunk(3, dim=1)
