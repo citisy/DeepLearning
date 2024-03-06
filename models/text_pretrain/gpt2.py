@@ -162,8 +162,7 @@ class Model(nn.Module):
 
     def make_dynamic_mask(self, x):
         batch_size, seq_len, _ = x.size()
-        mask = torch.tril(torch.ones(seq_len, seq_len)).view(1, seq_len, seq_len).repeat(batch_size, 1, 1)
-        mask = mask[:, None]
+        mask = torch.tril(torch.ones(seq_len, seq_len, device=x.device)).view(1, 1, seq_len, seq_len).repeat(batch_size, 1, 1, 1)
         return mask
 
 
