@@ -6,7 +6,7 @@ import pandas as pd
 from typing import List, Optional
 from utils import math_utils, os_lib
 from processor import Process, DataHooks, BaseDataset, ModelHooks, CheckpointHooks, IterIterDataset
-from data_parse.nlp_data_parse.pre_process import spliter, bundled, dict_maker, numerizer, BertVocabOp, GptVocabOp
+from data_parse.nlp_data_parse.pre_process import spliter, bundled, dict_maker, numerizer, cleaner, BertVocabOp, GptVocabOp
 
 
 class RandomChoiceTextPairsDataset(BaseDataset):
@@ -141,8 +141,6 @@ class TextProcess(DataProcess):
 
     def data_preprocess(self, iter_data, train=True):
         paragraphs = [ret['text'] for ret in iter_data]
-        paragraphs = bundled.strip_accents(paragraphs)
-        paragraphs = bundled.lower(paragraphs)
         # ['bert-base-uncased'] -> [['bert', '-', 'base', '-', 'un', '##cased']]
         segments = self.spliter.from_paragraphs(paragraphs)
         if not self.is_nsp and self.is_chunk and train:
@@ -213,7 +211,6 @@ class TextPairProcess(DataProcess):
         text_pairs = math_utils.transpose(text_pairs)
         tmp = []
         for paragraphs in text_pairs:
-            paragraphs = bundled.lower(paragraphs)
             segments = self.spliter.from_paragraphs(paragraphs)
             tmp.append(segments)
 
@@ -414,17 +411,21 @@ class Bert(Process):
 
     def get_vocab(self):
         vocab = super().get_vocab()
-        self.vocab_op = BertVocabOp(vocab, lower=True)
-        self.numerizer = numerizer.KeyValueEncode(
-            self.vocab_op.word_dict,
-            unk_token=self.vocab_op.sp_token_dict['unk']
-        )
+        self.vocab_op = BertVocabOp(vocab)
         self.spliter = spliter.ToSegments(
+            cleaner=cleaner.Apply(
+                cleaner.Lower().from_paragraph,
+                cleaner.StripAccents().from_paragraph,
+            ),
             sp_tokens=set(self.vocab_op.sp_token_dict.values()),
             is_word_piece=True, vocab=self.vocab_op.vocab, verbose=True
         )
         self.chunker_spliter = spliter.ToChunkedSegments(
             max_length=self.max_seq_len - 2, min_length=self.max_seq_len / 8, verbose=True
+        )
+        self.numerizer = numerizer.KeyValueEncode(
+            self.vocab_op.word_dict,
+            unk_token=self.vocab_op.sp_token_dict['unk']
         )
 
     def set_optimizer(self):

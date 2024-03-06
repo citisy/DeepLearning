@@ -140,7 +140,7 @@ class BytePairEncode:
 
             for word in s:
                 if word in self.caches:
-                    tag = self.caches[word]
+                    tag += self.caches[word]
                     continue
 
                 # normalize the segment, fall in [0, 255]
@@ -168,8 +168,9 @@ class BytePairEncode:
                     chars[tail - 1] = last
                     chars = chars[:tail]
 
-                tag += [self.word_dict[c] for c in chars]
-                self.caches[word] = tag
+                t = [self.word_dict[c] for c in chars]
+                tag += t
+                self.caches[word] = t
             tags.append(tag)
 
         return tags

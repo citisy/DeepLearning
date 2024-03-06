@@ -1,27 +1,6 @@
 import copy
-import unicodedata
 import numpy as np
 from . import BertVocabOp
-
-
-def lower(paragraphs):
-    return [i.lower() for i in paragraphs]
-
-
-def strip_accents(paragraphs):
-    """Strips accents from a piece of text.
-    e.g.: 'ü' -> 'u'"""
-    r = []
-    for text in paragraphs:
-        text = unicodedata.normalize("NFD", text)
-        output = []
-        for char in text:
-            cat = unicodedata.category(char)
-            if cat == "Mn":
-                continue
-            output.append(char)
-        r.append("".join(output))
-    return r
 
 
 def add_token(segments, start_token=None, end_token=None):

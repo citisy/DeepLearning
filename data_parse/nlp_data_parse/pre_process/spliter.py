@@ -6,12 +6,16 @@ article (str):
 paragraphs (List[str]):
     all original lines, each itme in list is a str line
     e.g.: ['hello world!', 'hello python!']
+paragraph (str)
+    one paragraph can be an article
 chunked_paragraphs (List[str]):
     each line has the same length as paragraphs as possibly, each itme in list is a str line
     e.g.: ['hello world! hello python!']
 segments (List[List[str]]):
     all lines after cut, each itme in list is a cut word list
     e.g.: [['hello', 'world!'], ['hello', 'python!']]
+segment (List[str])
+    one segment can be a paragraphs
 chunked_segments (List[List[str]]):
     each line has the same length as segments as possibly, each itme in list is a cut word list
     e.g.: [['hello', 'world!', 'hello', 'python!']]
@@ -148,8 +152,8 @@ class ToSegment:
     def __init__(
             self,
             sp_tokens=(),
-            filter_blank=False, filter_pattern=None, keep_pattern=None,
             sep=None, sep_pattern=None,
+            cleaner=None,
             is_split_punctuation=True, is_word_piece=False, vocab=None,
             **kwargs
     ):
@@ -159,10 +163,8 @@ class ToSegment:
             sep: split seq symbol
             sep_pattern (str or re.Pattern): re pattern seq
             is_split_punctuation:
-            is_strip_accents:
             is_word_piece:
             vocab: for `word_piece`
-            **filter_kwargs: kwargs for `filter_text()`
         """
         sp_pattern = []
         for s in sp_tokens:
@@ -172,20 +174,9 @@ class ToSegment:
         self.sp_tokens = sp_tokens
         self.sp_pattern = re.compile('|'.join(sp_pattern))
 
-        self.filter_blank = filter_blank
-
-        if filter_pattern:
-            if isinstance(filter_pattern, (list, tuple)):
-                filter_pattern = re.compile('|'.join([i.pattern for i in filter_pattern]))
-        self.filter_pattern = filter_pattern
-
-        if keep_pattern:
-            if isinstance(keep_pattern, (list, tuple)):
-                keep_pattern = re.compile('|'.join([i.pattern for i in keep_pattern]))
-        self.keep_pattern = keep_pattern
-
         self.sep = sep
         self.sep_pattern = sep_pattern
+        self.cleaner = cleaner
         self.is_split_punctuation = is_split_punctuation
         self.is_word_piece = is_word_piece
         self.vocab = vocab
@@ -201,7 +192,8 @@ class ToSegment:
             if text in self.sp_tokens:
                 segment.append(text)
             else:
-                text = self.filter_text(text)
+                if self.cleaner:
+                    text = self.cleaner(text)
                 seg = self.split_text(text)
                 seg = self.tidy_segment(seg)
                 segment += seg
@@ -222,18 +214,6 @@ class ToSegment:
                 break
 
         return segment
-
-    def filter_text(self, text):
-        if self.filter_blank:
-            text = ''.join(text.split())
-
-        if self.filter_pattern:
-            text = re.sub(self.filter_pattern, '', text)
-
-        if self.keep_pattern:
-            text = ''.join(re.findall(self.keep_pattern, text))
-
-        return text
 
     def split_text(self, text):
         if self.sep == '':
@@ -329,21 +309,10 @@ class ToSegments:
         self.to_segment = ToSegment(**kwargs)
 
     def from_paragraphs(self, paragraphs: List[str]) -> List[List[str]]:
-        """
+        """see also cleaner
         Usage:
             >>> ToSegments().from_paragraphs(['hello world!'])
             [['hello', 'world', '!']]
-
-            >>> ToSegments(filter_blank=True).from_paragraphs(['hello world!'])
-            [['helloworld', '!']]
-
-            >>> from utils.excluded.charset_dict import utf8_pattern_dict
-            >>> ToSegments(is_split_punctuation=False).from_paragraphs(['hello world!'], filter_pattern=utf8_pattern_dict['en_pr'])
-            [['hello', 'world']]
-
-            >>> ToSegments(keep_pattern=(utf8_pattern_dict['en'], re.compile(' '))).from_paragraphs(['hello world!'])
-            [['hello', 'world']]
-
         """
         segments = []
         if self.verbose:
@@ -356,24 +325,14 @@ class ToSegments:
         return segments
 
     def from_paragraphs_by_jieba(self, paragraphs: List[str]) -> List[List[str]]:
-        """
+        """see also cleaner
         Usage:
             >>> ToSegments().from_paragraphs_by_jieba(['你好 世界！'])
             [['你好', ' ', '世界', '！']]
-
-            >>> ToSegments(filter_blank=True).from_paragraphs_by_jieba(['你好 世界！'])
-            [['你好', '世界', '！']]
-
-            >>> from utils.excluded.charset_dict import utf8_pattern_dict
-            >>> ToSegments(filter_pattern=(utf8_pattern_dict['cjk_pr'], utf8_pattern_dict['en_pr_double'])).from_paragraphs_by_jieba(['你好 世界！'])
-            [['你好', ' ', '世界']]
-
-            >>> ToSegments(keep_pattern=utf8_pattern_dict['zh']).from_paragraphs_by_jieba(['你好 世界！'])
-            [['你好', '世界']]
         """
         import jieba
 
-        paragraphs = map(self.to_segment.filter_text, paragraphs)
+        paragraphs = map(self.to_segment.cleaner, paragraphs)
         segments = map(jieba.lcut, paragraphs)
         segments = map(self.to_segment.tidy_segment, segments)
 
