@@ -177,13 +177,17 @@ class ToSegment:
         self.sep = sep
         self.sep_pattern = sep_pattern
         self.cleaner = cleaner
-        self.is_split_punctuation = is_split_punctuation
-        self.is_word_piece = is_word_piece
         self.vocab = vocab
+
+        self.deep_split_funcs = []
+        if is_split_punctuation:
+            self.deep_split_funcs.append(self.from_paragraph_with_punctuation)
+        if is_word_piece:
+            self.deep_split_funcs.append(self.from_paragraph_with_word_piece)
 
     def from_paragraph(self, paragraph):
         if self.sp_tokens:
-            _segment = self.split_sp_tokens(paragraph)
+            _segment = self.from_paragraph_with_sp_tokens(paragraph)
         else:
             _segment = [paragraph]
 
@@ -194,12 +198,12 @@ class ToSegment:
             else:
                 if self.cleaner:
                     text = self.cleaner(text)
-                seg = self.split_text(text)
-                seg = self.tidy_segment(seg)
+                seg = self.shallow_split(text)
+                seg = self.deep_split(seg)
                 segment += seg
         return segment
 
-    def split_sp_tokens(self, paragraph):
+    def from_paragraph_with_sp_tokens(self, paragraph):
         i = 0
         segment = []
         while i < len(paragraph):
@@ -215,26 +219,29 @@ class ToSegment:
 
         return segment
 
-    def split_text(self, text):
+    def shallow_split(self, paragraph):
         if self.sep == '':
-            segment = list(text)
+            segment = list(paragraph)
         elif self.sep is not None:
-            segment = text.split(self.sep)
+            segment = paragraph.split(self.sep)
         elif self.sep_pattern is not None:
             if hasattr(self.sep_pattern, 'findall'):
-                segment = self.sep_pattern.findall(text)
+                segment = self.sep_pattern.findall(paragraph)
             else:
-                segment = re.findall(self.sep_pattern, text)
+                segment = re.findall(self.sep_pattern, paragraph)
         else:
-            segment = text.split(self.sep)
+            segment = paragraph.split(self.sep)
         return segment
 
-    def tidy_segment(self, segment):
-        if self.is_split_punctuation:
-            segment = self.split_punctuation(segment)
+    def deep_split(self, segment):
+        def split(segment, func):
+            _segment = []
+            for seg in segment:
+                _segment += func(seg)
+            return _segment
 
-        if self.is_word_piece:
-            segment = self.word_piece(segment)
+        for func in self.deep_split_funcs:
+            segment = split(segment, func)
 
         return segment
 
@@ -251,56 +258,52 @@ class ToSegment:
             return True
         return False
 
-    @classmethod
-    def split_punctuation(cls, seg):
+    def from_paragraph_with_punctuation(self, text):
         output = []
-        for text in seg:
-            chars = list(text)
-            i = 0
-            start_new_word = True
-            while i < len(chars):
-                char = chars[i]
-                if cls._is_punctuation(char):
-                    output.append([char])
-                    start_new_word = True
-                else:
-                    if start_new_word:
-                        output.append([])
-                    start_new_word = False
-                    output[-1].append(char)
-                i += 1
+        # for text in seg:
+        chars = list(text)
+        i = 0
+        start_new_word = True
+        while i < len(chars):
+            char = chars[i]
+            if self._is_punctuation(char):
+                output.append([char])
+                start_new_word = True
+            else:
+                if start_new_word:
+                    output.append([])
+                start_new_word = False
+                output[-1].append(char)
+            i += 1
 
         return [''.join(x) for x in output]
 
-    def word_piece(self, seg):
-        output_tokens = []
-        for token in seg:
-            chars = list(token)
-            is_bad = False
-            start = 0
-            sub_tokens = []
-            while start < len(chars):
-                end = len(chars)
-                cur_substr = None
-                while start < end:
-                    substr = "".join(chars[start:end])
-                    if start > 0:
-                        substr = "##" + substr
-                    if substr in self.vocab:
-                        cur_substr = substr
-                        break
-                    end -= 1
-                if cur_substr is None:
-                    is_bad = True
+    def from_paragraph_with_word_piece(self, paragraph):
+        chars = list(paragraph)
+        is_bad = False
+        start = 0
+        segment = []
+        while start < len(chars):
+            end = len(chars)
+            cur_substr = None
+            while start < end:
+                substr = "".join(chars[start:end])
+                if start > 0:
+                    substr = "##" + substr
+                if substr in self.vocab:
+                    cur_substr = substr
                     break
-                sub_tokens.append(cur_substr)
-                start = end
+                end -= 1
+            if cur_substr is None:
+                is_bad = True
+                break
+            segment.append(cur_substr)
+            start = end
 
-            if is_bad:
-                output_tokens.append(token)
-            else:
-                output_tokens.extend(sub_tokens)
-        return output_tokens
+        if is_bad:
+            segment = [paragraph]
+
+        return segment
 
 
 class ToSegments:
@@ -334,7 +337,7 @@ class ToSegments:
 
         paragraphs = map(self.to_segment.cleaner, paragraphs)
         segments = map(jieba.lcut, paragraphs)
-        segments = map(self.to_segment.tidy_segment, segments)
+        segments = map(self.to_segment.deep_split, segments)
 
         return list(segments)
 
