@@ -1,10 +1,27 @@
 import copy
+import unicodedata
 import numpy as np
 from . import BertVocabOp
 
 
 def lower(paragraphs):
     return [i.lower() for i in paragraphs]
+
+
+def strip_accents(paragraphs):
+    """Strips accents from a piece of text.
+    e.g.: 'ü' -> 'u'"""
+    r = []
+    for text in paragraphs:
+        text = unicodedata.normalize("NFD", text)
+        output = []
+        for char in text:
+            cat = unicodedata.category(char)
+            if cat == "Mn":
+                continue
+            output.append(char)
+        r.append("".join(output))
+    return r
 
 
 def add_token(segments, start_token=None, end_token=None):
@@ -27,7 +44,7 @@ def random_mask(segments, word_dict, unk_tag, mask_token=BertVocabOp.sp_token_di
         mask_tag = np.where(mask_probs < mask_prob, -1, non_mask_tag)
 
         for i, word in enumerate(segment):
-            if mask_tag[i] == -1:   # 15% to mask
+            if mask_tag[i] == -1:  # 15% to mask
                 prob = mask_probs[i] / mask_prob
 
                 # 80% to add [MASK] token

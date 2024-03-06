@@ -12,11 +12,17 @@ class BertVocabOp:
         mask='[MASK]',
     )
 
-    def __init__(self, vocab, word_dict=None, sp_token_dict=None, non_mask_tag=-100, **kwargs):
+    def __init__(self, vocab, word_dict=None, sp_token_dict=None, lower=False, non_mask_tag=-100, **kwargs):
+        if lower:
+            vocab = [v.lower() for v in vocab]
+
         self.vocab = set(vocab)
         self.vocab_size = len(vocab)
         self.word_dict = word_dict or {word: i for i, word in enumerate(vocab)}
         self.sp_token_dict = sp_token_dict or self.sp_token_dict
+        if lower:
+            self.sp_token_dict = {k: v.lower() for k, v in self.sp_token_dict.items()}
+
         self.sp_tag_dict = {k: self.word_dict[v] for k, v in self.sp_token_dict.items()}
         self.sp_tag_dict.update(non_mask=non_mask_tag)
         self.__dict__.update(kwargs)

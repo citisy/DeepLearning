@@ -6,7 +6,7 @@ import pandas as pd
 from typing import List, Optional
 from utils import math_utils, os_lib
 from processor import Process, DataHooks, BaseDataset, ModelHooks, CheckpointHooks, IterIterDataset
-from data_parse.nlp_data_parse.pre_process import spliter, bundled, dict_maker, numerizer, BertVocabOp
+from data_parse.nlp_data_parse.pre_process import spliter, bundled, dict_maker, numerizer, BertVocabOp, GptVocabOp
 
 
 class RandomChoiceTextPairsDataset(BaseDataset):
@@ -73,6 +73,7 @@ class RandomReverseTextPairsDataset(BaseDataset):
 
 class IterIterBatchDataset(IterIterDataset):
     """for loading large file"""
+
     def __iter__(self):
         from torch.utils.data import get_worker_info
 
@@ -109,6 +110,8 @@ class DataProcess(DataHooks):
 
     vocab_op: Optional
     numerizer: Optional
+    spliter: Optional
+    chunker_spliter: Optional
     max_seq_len: int
 
     def _filter_func(self, x):
@@ -128,7 +131,7 @@ class TextProcess(DataProcess):
         iter_data = self.get_train_data()
         paragraphs = [ret['text'] for ret in iter_data]
         paragraphs = bundled.lower(paragraphs)
-        segments = spliter.segments_from_paragraphs(paragraphs)
+        segments = self.spliter.from_paragraphs(paragraphs)
         word_dict = dict_maker.word_id_dict(segments, start_id=len(sp_token_dict), filter_func=self._filter_func)
         vocab = list(sp_token_dict.values()) + list(word_dict.keys())
         self.save_vocab(vocab)
@@ -138,10 +141,12 @@ class TextProcess(DataProcess):
 
     def data_preprocess(self, iter_data, train=True):
         paragraphs = [ret['text'] for ret in iter_data]
+        paragraphs = bundled.strip_accents(paragraphs)
         paragraphs = bundled.lower(paragraphs)
-        segments = spliter.segments_from_paragraphs(paragraphs, is_word_piece=True, vocab=self.vocab_op.vocab, verbose=True)
+        # ['bert-base-uncased'] -> [['bert', '-', 'base', '-', 'un', '##cased']]
+        segments = self.spliter.from_paragraphs(paragraphs)
         if not self.is_nsp and self.is_chunk and train:
-            segments = spliter.chunked_segments_from_segments(segments, max_length=self.max_seq_len - 2, min_length=self.max_seq_len / 8, verbose=True)
+            segments = self.chunker_spliter.from_segments(segments)
 
             iter_data = []
             for segment in segments:
@@ -197,7 +202,7 @@ class TextPairProcess(DataProcess):
         iter_data = self.get_train_data()
         paragraphs = [' '.join(ret['texts']) for ret in iter_data]
         paragraphs = bundled.lower(paragraphs)
-        segments = spliter.segments_from_paragraphs(paragraphs)
+        segments = self.spliter.from_paragraphs(paragraphs)
         word_dict = dict_maker.word_id_dict(segments, start_id=len(sp_token_dict), filter_func=self._filter_func)
         vocab = list(sp_token_dict.values()) + list(word_dict.keys())
         self.save_vocab(vocab)
@@ -209,7 +214,7 @@ class TextPairProcess(DataProcess):
         tmp = []
         for paragraphs in text_pairs:
             paragraphs = bundled.lower(paragraphs)
-            segments = spliter.segments_from_paragraphs(paragraphs, is_word_piece=True, vocab=self.vocab_op.vocab, verbose=True)
+            segments = self.spliter.from_paragraphs(paragraphs)
             tmp.append(segments)
 
         segment_pairs = math_utils.transpose(tmp)
@@ -394,6 +399,8 @@ class Bert(Process):
     scheduler_strategy = 'step'  # step
     vocab_op: Optional
     numerizer: Optional
+    spliter: Optional
+    chunker_spliter: Optional
     max_seq_len: int
 
     def set_model(self):
@@ -407,10 +414,17 @@ class Bert(Process):
 
     def get_vocab(self):
         vocab = super().get_vocab()
-        self.vocab_op = BertVocabOp(vocab)
+        self.vocab_op = BertVocabOp(vocab, lower=True)
         self.numerizer = numerizer.KeyValueEncode(
             self.vocab_op.word_dict,
             unk_token=self.vocab_op.sp_token_dict['unk']
+        )
+        self.spliter = spliter.ToSegments(
+            sp_tokens=set(self.vocab_op.sp_token_dict.values()),
+            is_word_piece=True, vocab=self.vocab_op.vocab, verbose=True
+        )
+        self.chunker_spliter = spliter.ToChunkedSegments(
+            max_length=self.max_seq_len - 2, min_length=self.max_seq_len / 8, verbose=True
         )
 
     def set_optimizer(self):
@@ -536,7 +550,7 @@ class Bert(Process):
                 )
 
             if self.is_mlm:
-                mask_preds = outputs['mask_pred'].argmax(-1).cpu().numpy().tolist()
+                mask_preds = outputs['mask_pred'][:, 1:-1].argmax(-1).cpu().numpy().tolist()
                 mask_trues = model_inputs['x'].cpu().numpy().tolist()
                 ret.update(
                     mask_outputs=outputs['mask_pred'],
@@ -564,7 +578,7 @@ class Bert(Process):
                 r.setdefault('mask_preds', []).extend(results['mask_preds'])
 
     def on_val_step_end(self, *args, **kwargs):
-        pass
+        """do not visualize"""
 
     def on_val_end(self, is_visualize=False, max_vis_num=None, **kwargs):
         # todo: make a file to be submitted to https://gluebenchmark.com directly
@@ -601,7 +615,7 @@ class Bert(Process):
         rets = self.val_data_preprocess(rets)
         return rets
 
-    def on_predict_step_end(self, model_results, add_watermark=True, watermark='watermark', **kwargs):
+    def on_predict_step_end(self, model_results, **kwargs):
         for name, results in model_results.items():
             self.predict_container['model_results'].setdefault(name, []).extend(results['pred_segment'])
 
@@ -630,13 +644,19 @@ class BertMLMFromHFPretrain(Bert, FromHFPretrain, TextProcess):
 
             from examples.text_pertain import BertMLMFromHFPretrain as Process
 
-            process = Process(pretrain_model='bert-base-uncased', vocab_fn='...')
+            process = Process(pretrain_model='...', vocab_fn='...')
             process.init()
+
+            # if using `bert-base-uncased` pretrain model
             process.single_predict('The goal of life is [MASK].')
+            # ['the', 'goal', 'of', 'life', 'is', 'life', '.']
+
             process.batch_predict([
                 'The goal of life is [MASK].',
                 'Paris is the [MASK] of France.'
             ])
+            # ['the', 'goal', 'of', 'life', 'is', 'life', '.']
+            # ['.', 'is', 'the', 'capital', 'of', 'france', '.']
     """
     dataset_version = ''
     is_nsp = False
@@ -667,3 +687,160 @@ class Bert_SOP(Bert, SOP):
             Process(vocab_fn='...').run(max_epoch=20, train_batch_size=16, fit_kwargs=dict(check_period=1, accumulate=192))
             {'score': 0.931447}
     """
+
+
+class TextProcessForGpt(DataProcess):
+    def data_preprocess(self, iter_data, train=True):
+        paragraphs = [ret['text'] for ret in iter_data]
+        # ['hello world!'] -> [['hello', ' world', '!']]
+        segments = self.spliter.from_paragraphs(paragraphs)
+
+        for ret, segment in zip(iter_data, segments):
+            ret.update(
+                segment=segment,
+                segment_tag=[0] * len(segment),
+                text=''.join(segment)
+            )
+
+        return iter_data
+
+
+class SimpleTextForGpt(TextProcessForGpt):
+    dataset_version = 'simple_text'
+    data_dir: str
+
+    def get_data(self, *args, train=True, **kwargs):
+        from data_parse.nlp_data_parse.SimpleText import Loader, DataRegister
+        loader = Loader(self.data_dir)
+
+        if train:
+            return loader.load(set_type=DataRegister.TRAIN, max_size=self.train_data_num, return_label=self.is_nsp, generator=False)[0]
+
+        else:
+            return loader.load(set_type=DataRegister.TEST, max_size=self.val_data_num, return_label=self.is_nsp, generator=False)[0]
+
+
+class Gpt2(Process):
+    model_version = 'bert'
+    use_scaler = True
+    scheduler_strategy = 'step'  # step
+    vocab_op: Optional
+    numerizer: Optional
+    spliter: Optional
+    max_seq_len: int
+    max_gen_len = 20
+
+    def set_model(self):
+        from models.text_pretrain.gpt2 import Model, Config
+        self.get_vocab()
+        self.model = Model(
+            self.vocab_op.vocab_size,
+            sp_tag_dict=self.vocab_op.sp_tag_dict,
+            **Config.get('117M')
+        )
+
+    encoder_fn: str
+
+    def get_vocab(self):
+        self.vocab_op = GptVocabOp.from_pretrain(self.encoder_fn, self.vocab_fn)
+        self.numerizer = numerizer.BytePairEncode(self.vocab_op.byte_pairs, self.vocab_op.word_dict)
+        self.spliter = spliter.ToSegments(sep_pattern=self.vocab_op.sep_pattern, is_split_punctuation=False)
+        self.vocab_op.sp_tag_dict = dict(
+            pad=self.numerizer.encode(' ')[0][0]
+        )
+
+    def set_optimizer(self):
+        self.optimizer = torch.optim.Adam(self.model.parameters(), lr=1e-4, betas=(0.5, 0.999))
+
+    def get_model_inputs(self, rets, train=True):
+        segments = [ret['segment'] for ret in rets]
+        token_tags = self.numerizer.encode(segments)
+
+        seq_lens = [len(t) for t in token_tags]
+        token_tags = bundled.align(token_tags, max_seq_len=max(seq_lens), pad_token=self.vocab_op.sp_tag_dict['pad'])
+
+        return dict(
+            x=torch.tensor(token_tags, device=self.device, dtype=torch.long),
+            seq_lens=seq_lens,
+            max_gen_len=self.max_gen_len
+        )
+
+    def on_train_step(self, rets, **kwargs) -> dict:
+        rets = self.get_model_inputs(rets)
+        with torch.cuda.amp.autocast(True):
+            output = self.model(**rets)
+
+        return output
+
+    def on_val_step(self, rets, **kwargs) -> dict:
+        model_inputs = self.get_model_inputs(rets, train=False)
+        seq_lens = model_inputs['seq_lens']
+        max_gen_len = model_inputs['max_gen_len']
+
+        model_results = {}
+        for name, model in self.models.items():
+            outputs = model(**model_inputs)
+
+            ret = dict()
+
+            preds = outputs['preds'].cpu().numpy().tolist()
+            preds = [pred[:seq_lens[i] + max_gen_len] for i, pred in enumerate(preds)]
+            ret.update(
+                preds=preds,
+                pred_segment=self.numerizer.decode(preds)
+            )
+
+            model_results[name] = ret
+
+        return model_results
+
+    def on_val_step_end(self, *args, **kwargs):
+        """do not visualize"""
+
+    def gen_predict_inputs(self, *objs, images=None, **kwargs):
+        rets = []
+        for text in objs[0]:
+            ret = dict(text=text)
+            rets.append(ret)
+        rets = self.val_data_preprocess(rets)
+        return rets
+
+    def on_predict_step_end(self, model_results, **kwargs):
+        for name, results in model_results.items():
+            self.predict_container['model_results'].setdefault(name, []).extend(results['pred_segment'])
+
+
+class FromOpenaiPretrain(CheckpointHooks):
+    """load pretrain model from openai"""
+
+    def load_pretrain(self):
+        if hasattr(self, 'pretrain_model'):
+            from models.text_pretrain.gpt2 import convert_weights, load_tf_weights
+
+            state_dict = load_tf_weights(self.pretrain_model)
+            state_dict = convert_weights(state_dict)
+            self.model.load_state_dict(state_dict, strict=False)
+
+
+class Gpt2FromOpenaiPretrain(Gpt2, FromOpenaiPretrain, TextProcessForGpt):
+    """
+    Usage:
+        .. code-block:: python
+
+            from examples.text_pertain import Gpt2FromOpenaiPretrain as Process
+
+            process = Process(pretrain_model='...', vocab_fn='...', encoder_fn='...')
+            process.init()
+
+            # if using `117M` pretrain model
+            process.single_predict('My name is Julien and I like to')
+            # My name is Julien and I like to play with my friends. I'm a big fan of the game and I'm looking forward to playing
+
+            process.batch_predict([
+                'My name is Julien and I like to',
+                'My name is Thomas and my main'
+            ])
+            # My name is Julien and I like to play with my friends. I'm a big fan of the game and I'm looking forward to playing
+            # My name is Thomas and my main goal is to make sure that I'm not just a guy who's going to be a part of
+    """
+    dataset_version = ''

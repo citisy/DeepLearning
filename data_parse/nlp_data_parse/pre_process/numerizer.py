@@ -139,9 +139,9 @@ class BytePairEncode:
             tag = []
 
             for word in s:
-                # if word in self.caches:
-                #     tag = self.caches[word]
-                #     continue
+                if word in self.caches:
+                    tag = self.caches[word]
+                    continue
 
                 # normalize the segment, fall in [0, 255]
                 chars = [self.byte_encode_dict[c] for c in bytearray(word.encode('utf-8'))]
