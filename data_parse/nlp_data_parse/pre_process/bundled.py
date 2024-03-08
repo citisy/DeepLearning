@@ -13,34 +13,6 @@ def add_token(segments, start_token=None, end_token=None):
     return segments
 
 
-def random_mask(segments, word_dict, unk_tag, mask_token=BertVocabOp.sp_token_dict['mask'], non_mask_tag=-100, mask_prob=0.15):
-    segments = copy.deepcopy(segments)
-    vocab = list(word_dict.keys())
-    mask_tags = []
-
-    for segment in segments:
-        mask_probs = np.random.uniform(0., 1., len(segment))
-        mask_tag = np.where(mask_probs < mask_prob, -1, non_mask_tag)
-
-        for i, word in enumerate(segment):
-            if mask_tag[i] == -1:  # 15% to mask
-                prob = mask_probs[i] / mask_prob
-
-                # 80% to add [MASK] token
-                if prob < 0.8:
-                    segment[i] = mask_token
-
-                # 10% to change to another word
-                elif prob < 0.9:
-                    segment[i] = np.random.choice(vocab)
-
-                mask_tag[i] = word_dict.get(word, unk_tag)
-        mask_tag = mask_tag.tolist()
-        mask_tags.append(mask_tag)
-
-    return segments, mask_tags
-
-
 def joint(text_pairs, sep_token=BertVocabOp.sp_token_dict['sep'], keep_end=True):
     segments = []
     for segments_pair in text_pairs:
@@ -66,7 +38,8 @@ def pad(segments, max_seq_len, pad_token=BertVocabOp.sp_token_dict['pad']):
 
 
 def align(segments, max_seq_len, start_token=None, end_token=None, auto_pad=True, pad_token=BertVocabOp.sp_token_dict['pad']):
-    """[[seg]] -> [[start_token], [seg], [end_token], [pad_token]]"""
+    """all segment in segments has the same length,
+    [[seg]] -> [[start_token], [seg], [end_token], [pad_token]]"""
     segments = add_token(segments, start_token=start_token, end_token=end_token)
     segments = truncate(segments, seq_len=max_seq_len)
     if auto_pad:

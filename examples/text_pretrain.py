@@ -6,7 +6,7 @@ import pandas as pd
 from typing import List, Optional
 from utils import math_utils, os_lib
 from processor import Process, DataHooks, BaseDataset, ModelHooks, CheckpointHooks, IterIterDataset
-from data_parse.nlp_data_parse.pre_process import spliter, bundled, dict_maker, numerizer, cleaner, chunker, BertVocabOp, GptVocabOp
+from data_parse.nlp_data_parse.pre_process import spliter, bundled, dict_maker, numerizer, cleaner, chunker, perturbation, BertVocabOp, GptVocabOp
 
 
 class RandomChoiceTextPairsDataset(BaseDataset):
@@ -174,7 +174,7 @@ class TextProcess(DataProcess):
         segments = [_ret['segment']]
         segment_tags = [_ret['segment_tag']]
         if train and self.is_mlm:
-            segments, mask_tags = bundled.random_mask(
+            segments, mask_tags = self.perturbation.from_segments(
                 segments, self.vocab_op.word_dict,
                 mask_token=self.vocab_op.sp_token_dict['mask'],
                 unk_tag=self.vocab_op.sp_tag_dict['unk'],
@@ -246,7 +246,7 @@ class TextPairProcess(DataProcess):
             tmp = []
             tmp2 = []
             for segments in segment_pairs:
-                segments, mask_tags = bundled.random_mask(
+                segments, mask_tags = self.perturbation.from_segments(
                     segments, self.vocab_op.word_dict,
                     mask_token=self.vocab_op.sp_token_dict['mask'],
                     unk_tag=self.vocab_op.sp_tag_dict['unk'],
@@ -427,6 +427,7 @@ class Bert(Process):
             self.vocab_op.word_dict,
             unk_token=self.vocab_op.sp_token_dict['unk']
         )
+        self.perturbation = perturbation.RandomMask(self.vocab_op.word_dict, self.vocab_op.sp_tag_dict)
 
     def set_optimizer(self):
         # todo, use the optimizer config from paper(lr=1e-4, betas=(0.9, 0.999), weight_decay=0.1), the training is failed
