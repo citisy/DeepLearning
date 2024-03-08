@@ -2,9 +2,9 @@ import numpy as np
 
 
 class KeyValueEncode:
-    def __init__(self, word_dict, unk_token='[UNK]'):
+    def __init__(self, word_dict, word_inv_dict=None, unk_token='[UNK]'):
         self.word_dict = word_dict
-        self.word_inv_dict = {v: k for k, v in word_dict.items()}
+        self.word_inv_dict = word_inv_dict or {v: k for k, v in word_dict.items()}
         self.unk_token = unk_token
         self.unk_tag = self.word_dict[unk_token]
 
@@ -99,17 +99,17 @@ class BytePairEncode:
     refer to: https://www.drdobbs.com/a-new-algorithm-for-data-compression/184402829
     """
 
-    def __init__(self, byte_pairs, word_dict, byte_encode_dict=None):
+    def __init__(self, byte_pairs, word_dict, word_inv_dict=None, byte_encode_dict=None, byte_decoder_dict=None):
         self.byte_pairs = byte_pairs
         if not isinstance(self.byte_pairs, dict):
             # id: (char1, char2)
             self.byte_pairs = {tuple(c.split()): i for i, c in enumerate(byte_pairs)}
 
         self.word_dict = word_dict
-        self.word_inv_dict = {v: k for k, v in word_dict.items()}
+        self.word_inv_dict = word_inv_dict or {v: k for k, v in word_dict.items()}
 
         self.byte_encode_dict = byte_encode_dict or self.make_default_byte_encode_dict()
-        self.byte_decoder_dict = {v: k for k, v in self.byte_encode_dict.items()}
+        self.byte_decoder_dict = byte_decoder_dict or {v: k for k, v in self.byte_encode_dict.items()}
 
         self.caches = {}
 

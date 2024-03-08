@@ -26,6 +26,9 @@ class Base:
     def from_segment(self, segment: List[str]):
         return self.from_paragraphs(segment)
 
+    def from_segments(self, segments: List[List[str]]):
+        return map(self.from_segment, segments)
+
 
 class FilterBlank(Base):
     """
@@ -33,8 +36,20 @@ class FilterBlank(Base):
         >>> FilterBlank().from_paragraph('hello world!')
         'helloworld!'
     """
+
     def from_paragraph(self, paragraph: str):
         return ''.join(paragraph.split())
+
+
+class FilterShort(Base):
+    def __init__(self, min_len):
+        self.min_len = min_len
+
+    def from_paragraph(self, paragraph: str):
+        return paragraph if len(paragraph) >= self.min_len else ''
+
+    def from_paragraphs(self, paragraphs: List[str]):
+        return [p for p in paragraphs if len(p) >= self.min_len]
 
 
 class FilterPattern(Base):
@@ -47,6 +62,7 @@ class FilterPattern(Base):
         >>> FilterPattern(utf8_pattern_dict['cjk_pr'], utf8_pattern_dict['en_pr_double']).from_paragraph('你好 世界！')
         '你好 世界'
     """
+
     def __init__(self, *pattern: str or re.Pattern):
         patterns = []
         for p in pattern:
@@ -70,6 +86,7 @@ class KeepPattern(Base):
         >>> KeepPattern(utf8_pattern_dict['zh']).from_paragraph('hello world!你好 世界！')
         '你好世界'
     """
+
     def __init__(self, *pattern: str or re.Pattern):
         patterns = []
         for p in pattern:
@@ -94,6 +111,7 @@ class StripAccents(Base):
         >>> StripAccents().from_paragraph('ü')
         'u'
     """
+
     def from_paragraph(self, paragraph: str):
         paragraph = unicodedata.normalize("NFD", paragraph)
         output = []

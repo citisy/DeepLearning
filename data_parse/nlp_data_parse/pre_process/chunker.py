@@ -139,7 +139,8 @@ class RandomToChunkedParagraphs(ToChunkedParagraphs):
         n = len(paragraphs)
         max_choices = self.max_choices or n
         max_choices = min(max_choices, n)
-        choices = np.random.randint(self.min_choices, max_choices)
+        min_choices = min(self.min_choices, max_choices - 1)
+        choices = np.random.randint(min_choices, max_choices)
         idxes = np.random.choice(range(n), size=choices, replace=False)
         idxes = np.sort(idxes)
         idxes = np.append(idxes, n)

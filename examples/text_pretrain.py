@@ -425,6 +425,7 @@ class Bert(Process):
         )
         self.numerizer = numerizer.KeyValueEncode(
             self.vocab_op.word_dict,
+            self.vocab_op.word_inv_dict,
             unk_token=self.vocab_op.sp_token_dict['unk']
         )
         self.perturbation = perturbation.RandomMask(self.vocab_op.word_dict, self.vocab_op.sp_tag_dict)
