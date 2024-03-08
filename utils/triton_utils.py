@@ -20,6 +20,7 @@ class Requests:
         self.verbose = verbose
         self.logger = get_logger(logger)
         self.model_configs = {}
+        self.model_versions = {}
         self.init()
 
     def init(self):
@@ -34,12 +35,14 @@ class Requests:
                 self.logger.warning(f'{name}:{version}({state}) is not ready, pls check!')
                 continue
 
+            self.model_versions[name] = version
             self.model_configs[name, version] = self.client.get_model_config(name, version)
 
         if self.verbose:
             self.logger.info(self.model_configs)
 
-    def async_infer(self, *inputs: 'np.ndarray', model_name, model_version):
+    def async_infer(self, *inputs: 'np.ndarray', model_name, model_version=None):
+        model_version = model_version or self.model_versions.get(model_name)
         assert (model_name, model_version) in self.model_configs, \
             f'Got {model_name = } and {model_version = }, where the keys is {self.model_configs.keys()}, pls check'
 

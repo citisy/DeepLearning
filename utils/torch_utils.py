@@ -655,11 +655,13 @@ class Converter:
             weight = weight.transpose(1, 0)
         return weight
 
-    convert_tf_funcs = {
-        'c': conv_weight_from_tf_to_torch,
-        'gc': dw_conv_weight_from_tf_to_torch,
-        'l': linear_weight_from_tf_to_torch,
-    }
+    @classmethod
+    def make_convert_tf_funcs(cls):
+        return {
+            'c': cls.conv_weight_from_tf_to_torch,
+            'gc': cls.dw_conv_weight_from_tf_to_torch,
+            'l': cls.linear_weight_from_tf_to_torch,
+        }
 
     convert_tf_types = {
         'w': 'weight',
@@ -682,6 +684,7 @@ class Converter:
         key_types = key_types or [''] * len(state_dict)
         value_types = value_types or [''] * len(state_dict)
         d = OrderedDict()
+        convert_tf_funcs = cls.make_convert_tf_funcs()
 
         for i, (k, v) in enumerate(state_dict.items()):
             tmp = k.split('/')
@@ -689,8 +692,8 @@ class Converter:
             suffix = cls.convert_tf_types.get(key_types[i], suffix)
             k = '.'.join(tmp[:-1]) + '.' + suffix
 
-            if key_types[i] == 'w' and value_types[i] in cls.convert_tf_funcs:
-                v = cls.convert_tf_funcs[value_types[i]](v)
+            if key_types[i] == 'w' and value_types[i] in convert_tf_funcs:
+                v = convert_tf_funcs[value_types[i]](v)
             d[k] = v
 
         return d
