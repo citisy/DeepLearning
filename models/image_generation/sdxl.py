@@ -46,7 +46,7 @@ class Config(sdv2.Config):
         params=dict()
     )
 
-    embedder1 = dict(
+    embedder_clip = dict(
         target='models.image_generation.sdv1.CLIPEmbedder',
         input_key=TXT,
         params=dict(
@@ -55,7 +55,7 @@ class Config(sdv2.Config):
         )
     )
 
-    embedder2 = dict(
+    embedder_open_clip = dict(
         target='models.image_generation.sdv2.OpenCLIPEmbedder',
         input_key=TXT,
         params=dict(
@@ -63,43 +63,43 @@ class Config(sdv2.Config):
             legacy=False
         )
     )
-    embedder3 = dict(
+    embedder_original_size = dict(
         target='models.image_generation.sdxl.ConcatTimestepEmbedderND',
         input_key=ORIGINAL_SIZE_AS_TUPLE,
         params=dict()
     )
 
-    embedder4 = dict(
+    embedder_crop_coords = dict(
         target='models.image_generation.sdxl.ConcatTimestepEmbedderND',
         input_key=CROP_COORDS_TOP_LEFT,
         params=dict()
     )
 
-    embedder5 = dict(
+    embedder_target_size = dict(
         target='models.image_generation.sdxl.ConcatTimestepEmbedderND',
         input_key=TARGET_SIZE_AS_TUPLE,
         params=dict()
     )
 
-    embedder6 = dict(
+    embedder_aesthetic_score = dict(
         target='models.image_generation.sdxl.ConcatTimestepEmbedderND',
         input_key=AESTHETIC_SCORE,
         params=dict()
     )
 
     xl_base_cond = [
-        embedder1,
-        embedder2,
-        embedder3,
-        embedder4,
-        embedder5,
+        embedder_clip,
+        embedder_open_clip,
+        embedder_original_size,
+        embedder_crop_coords,
+        embedder_target_size,
     ]
 
     xl_refiner_cond = [
-        embedder2,
-        embedder3,
-        embedder4,
-        embedder6,
+        embedder_open_clip,
+        embedder_original_size,
+        embedder_crop_coords,
+        embedder_aesthetic_score,
     ]
 
     xl_base_backbone = dict(
@@ -144,6 +144,14 @@ class Config(sdv2.Config):
                 cond_config=cls.xl_refiner_cond,
                 vae_config=cls.vae,
                 backbone_config=cls.xl_refiner_backbone
+            ),
+
+            # support sdxl-Turbo-*
+            xl_turbo=dict(
+                model_config=cls.xl_model,
+                cond_config=cls.xl_base_cond,
+                vae_config=cls.vae,
+                backbone_config=cls.xl_base_backbone
             )
         )
         return config_dict
