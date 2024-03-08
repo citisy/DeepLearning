@@ -6,7 +6,7 @@ import pandas as pd
 from typing import List, Optional
 from utils import math_utils, os_lib
 from processor import Process, DataHooks, BaseDataset, ModelHooks, CheckpointHooks, IterIterDataset
-from data_parse.nlp_data_parse.pre_process import spliter, bundled, dict_maker, numerizer, cleaner, BertVocabOp, GptVocabOp
+from data_parse.nlp_data_parse.pre_process import spliter, bundled, dict_maker, numerizer, cleaner, chunker, BertVocabOp, GptVocabOp
 
 
 class RandomChoiceTextPairsDataset(BaseDataset):
@@ -420,7 +420,7 @@ class Bert(Process):
             sp_tokens=set(self.vocab_op.sp_token_dict.values()),
             is_word_piece=True, vocab=self.vocab_op.vocab, verbose=True
         )
-        self.chunker_spliter = spliter.ToChunkedSegments(
+        self.chunker_spliter = chunker.ToChunkedSegments(
             max_length=self.max_seq_len - 2, min_length=self.max_seq_len / 8, verbose=True
         )
         self.numerizer = numerizer.KeyValueEncode(
