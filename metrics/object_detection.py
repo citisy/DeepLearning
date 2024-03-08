@@ -100,11 +100,38 @@ class Overlap:
     """only judge whether 2 object is overlap or not"""
 
     @staticmethod
+    def point_in_line(points, lines):
+        """point = a, line = (b1, b2)
+        point do not fall in the line means that
+            a after b1 and a before b2 (b1 < a < b2)
+
+        Args:
+            points: (n, )
+            lines: (m, 2)
+        """
+        f = (points[:, None] > lines[None, :, 0]) & (points[:, None] < lines[None, :, 1])
+        return f
+
+    @staticmethod
+    def point_in_line2D(points, lines):
+        """point = (xa, ya), line = (xb1, yb1, xb2, yb2)
+        point do not fall in the line means that
+
+        Args:
+            points: (n, 2)
+            lines: (m, 4)
+        """
+
+    @staticmethod
     def line(lines1, lines2):
         """line1 = (a1, a2), line2 = (b1, b2),
         2 lines do not overlap means that
            a1 after b2 (a1 > b2)
         or a2 before b1 (a2 < b1)
+
+        Args:
+            lines1: (n, 2)
+            lines2: (m, 2)
         """
         a1, a2 = lines1.T
         b1, b2 = lines2.T
@@ -116,6 +143,11 @@ class Overlap:
     @staticmethod
     def line2D(lines1, lines2, return_insert_point=False):
         """line1 = (xa1, ya1, xa2, ya2), line2 = (xb1, yb1, xb2, yb2)
+
+        Args:
+            lines1: (n, 4)
+            lines2: (m, 4)
+            return_insert_point:
         """
         ab = np.repeat((lines1[:, (2, 3)] - lines1[:, (0, 1)])[None, :], len(lines1), axis=0)
         cd = np.repeat((lines2[:, (2, 3)] - lines2[:, (0, 1)])[:, None], len(lines2), axis=1)
@@ -137,11 +169,24 @@ class Overlap:
             return flag
 
     @staticmethod
+    def line_in_box(lines, boxes):
+        """line = (xa1, ya1, xa2, ya2), box = (xb1, yb1, xb2, yb2)
+
+        Args:
+            lines: (n, 4)
+            boxes: (m, 4)
+        """
+
+    @staticmethod
     def box(boxes1, boxes2):
         """box1 = (xa1, ya1, xa2, ya2), box2 = (xb1, yb1, xb2, yb2)
         2 boxes do not overlap means that
            point 'a1' at the right or down of box2 (xa1 > xb2 | ya1 > yb2)
         or point 'a2' at the left or top of box2 (xa2 < xb1 | ya2 < yb1)
+
+        Args:
+            boxes1: (n, 4)
+            boxes2: (m, 4)
         """
 
         xa1, ya1, xa2, ya2 = boxes1.T
