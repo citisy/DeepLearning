@@ -924,6 +924,7 @@ class SDv1Pretrained(SDv1, LoadSDPretrain):
             from examples.image_generation import SDv1Pretrained as Process
 
             process = Process(pretrain_model='...', cond_pretrain_model='...', model_sub_version='...')
+            process.init()
 
             # txt2img
             prompt = 'a painting of a virus monster playing guitar'

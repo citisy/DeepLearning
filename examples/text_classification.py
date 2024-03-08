@@ -91,7 +91,8 @@ class BertHF_CoLA(McMetric, Bert, FromHFPretrain, CoLA):
 
             from examples.text_classification import BertHF_CoLA as Process
 
-            Process(pretrain_model='bert-base-uncased', vocab_fn='...').run(max_epoch=5, train_batch_size=128, fit_kwargs=dict(check_period=1))
+            # if using `bert-base-uncased` pretrain model
+            Process(pretrain_model='...', vocab_fn='...').run(max_epoch=5, train_batch_size=128, fit_kwargs=dict(check_period=1))
             {'score': 0.5481}  # Matthew's Corr
             # benchmark: 0.5653
     """
@@ -134,7 +135,8 @@ class BertHF_SST2(Bert, FromHFPretrain, SST2):
 
             from examples.text_classification import BertHF_SST2 as Process
 
-            Process(pretrain_model='bert-base-uncased', vocab_fn='...').run(max_epoch=5, train_batch_size=128, fit_kwargs=dict(check_period=1))
+            # if using `bert-base-uncased` pretrain model
+            Process(pretrain_model='...', vocab_fn='...').run(max_epoch=5, train_batch_size=128, fit_kwargs=dict(check_period=1))
             {'score': 0.92316}   # acc
             # benchmark: 0.9232
     """

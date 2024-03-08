@@ -129,7 +129,9 @@ class BertHF_MNLI(Bert, FromHFPretrain, MNLI):
 
             from examples.text_pair_classification import BertHF_MNLI as Process
 
-            process = Process(pretrain_model='bert-base-uncased', vocab_fn='...')
+            # if using `bert-base-uncased` pretrain model
+            process = Process(pretrain_model='...', vocab_fn='...')
+            process.init()
             process.fit(max_epoch=5, batch_size=128, dataloader_kwargs=dict(num_workers=8))
 
             process.metric(batch_size=128, data_get_kwargs=dict(task='matched'))
@@ -162,7 +164,8 @@ class BertHF_QQP(Bert, FromHFPretrain, QQP):
 
             from examples.text_pair_classification import BertHF_QQP as Process
 
-            Process(pretrain_model='bert-base-uncased', vocab_fn='...').run(max_epoch=5, train_batch_size=128, fit_kwargs=dict(check_period=1))
+            # if using `bert-base-uncased` pretrain model
+            Process(pretrain_model='...', vocab_fn='...').run(max_epoch=5, train_batch_size=128, fit_kwargs=dict(check_period=1))
             {'score': 0.9117/0.8803}    # acc/f1
             # benchmark: 0.9071/0.8749
     """
@@ -206,7 +209,8 @@ class BertHF_QNLI(Bert, FromHFPretrain, QNLI):
 
             from examples.text_pair_classification import BertHF_QNLI as Process
 
-            Process(pretrain_model='bert-base-uncased', vocab_fn='...').run(max_epoch=5, train_batch_size=128, fit_kwargs=dict(check_period=1))
+            # if using `bert-base-uncased` pretrain model
+            Process(pretrain_model='...', vocab_fn='...').run(max_epoch=5, train_batch_size=128, fit_kwargs=dict(check_period=1))
             {'score': 0.89254}   # acc
             # benchmark: 0.9066
     """
@@ -232,7 +236,8 @@ class BertHF_MRPC(Bert, FromHFPretrain, MRPC):
 
             from examples.text_pair_classification import BertHF_MRPC as Process
 
-            Process(pretrain_model='bert-base-uncased', vocab_fn='...').run(max_epoch=5, train_batch_size=128, fit_kwargs=dict(check_period=1))
+            # if using `bert-base-uncased` pretrain model
+            Process(pretrain_model='...', vocab_fn='...').run(max_epoch=5, train_batch_size=128, fit_kwargs=dict(check_period=1))
             {'score': 0.8521/0.8913}   # acc/f1
             # benchmark: 0.8407/0.8885
     """
@@ -258,7 +263,8 @@ class BertHF_RTE(Bert, FromHFPretrain, RTE):
 
             from examples.text_pair_classification import BertHF_RTE as Process
 
-            Process(pretrain_model='bert-base-uncased', vocab_fn='...').run(max_epoch=5, train_batch_size=128, fit_kwargs=dict(check_period=1))
+            # if using `bert-base-uncased` pretrain model
+            Process(pretrain_model='...', vocab_fn='...').run(max_epoch=5, train_batch_size=128, fit_kwargs=dict(check_period=1))
             {'score': 0.6859}   # acc
             # benchmark: 0.6570
     """
