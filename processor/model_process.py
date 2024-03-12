@@ -655,8 +655,7 @@ class ModelHooks:
         self.on_predict_start(**kwargs)
 
         for i in tqdm(range(0, len(objs[0]), batch_size), desc=visualize.TextVisualize.highlight_str('Predict')):
-            batch_objs = objs[i * batch_size:(i + 1) * batch_size]
-            rets = self.gen_predict_inputs(*batch_objs, **kwargs)
+            rets = self.gen_predict_inputs(*objs, start_idx=i, end_idx=i + batch_size, **kwargs)
             rets = self.on_predict_step_start(rets, **kwargs)
             model_results = self.on_val_step(rets, **kwargs)
             self.on_predict_step_end(model_results, **kwargs)
@@ -675,7 +674,7 @@ class ModelHooks:
         self.counters["total_nums"] = -1
         self.predict_container['model_results'] = dict()
 
-    def gen_predict_inputs(self, *objs, **kwargs):
+    def gen_predict_inputs(self, *objs, start_idx=None, end_idx=None, **kwargs):
         raise NotImplementedError
 
     def on_predict_step_start(self, rets, **kwargs):

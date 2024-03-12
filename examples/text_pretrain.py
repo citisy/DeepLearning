@@ -610,9 +610,9 @@ class Bert(Process):
                 df = pd.DataFrame(data)
                 os_lib.Saver(stdout_method=self.log).auto_save(df, f'{self.cache_dir}/{self.counters["epoch"]}/{name}.csv', index=False)
 
-    def gen_predict_inputs(self, *objs, images=None, **kwargs):
+    def gen_predict_inputs(self, *objs, start_idx=None, end_idx=None, **kwargs):
         rets = []
-        for text in objs[0]:
+        for text in objs[0][start_idx: end_idx]:
             ret = dict(text=text)
             rets.append(ret)
         rets = self.val_data_preprocess(rets)
@@ -800,9 +800,9 @@ class Gpt2(Process):
     def on_val_step_end(self, *args, **kwargs):
         """do not visualize"""
 
-    def gen_predict_inputs(self, *objs, images=None, **kwargs):
+    def gen_predict_inputs(self, *objs, start_idx=None, end_idx=None, **kwargs):
         rets = []
-        for text in objs[0]:
+        for text in objs[0][start_idx: end_idx]:
             ret = dict(text=text)
             rets.append(ret)
         rets = self.val_data_preprocess(rets)

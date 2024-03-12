@@ -837,19 +837,24 @@ class Ldm(DiProcess):
 
     model_input_template = namedtuple('model_inputs', ['text', 'neg_text', 'image'], defaults=[None, None])
 
-    def gen_predict_inputs(self, *objs, images=None, **kwargs):
+    def gen_predict_inputs(self, *objs, images=None, start_idx=None, end_idx=None, **kwargs):
         assert len(objs) <= 2
 
         if len(objs) == 2:
             pos_texts, neg_texts = objs
+            pos_texts = pos_texts[start_idx: end_idx]
+            neg_texts = neg_texts[start_idx: end_idx]
             assert len(pos_texts) == len(neg_texts)
         else:
-            pos_texts = objs[0]
+            pos_texts = objs[0][start_idx: end_idx]
             neg_texts = [None] * len(pos_texts)
 
         if images:
+            # base on one image
             if not isinstance(images, (list, tuple)):
                 images = [images for _ in pos_texts]
+            else:
+                images = images[start_idx: end_idx]
         else:
             images = [None] * len(pos_texts)
 
@@ -943,10 +948,10 @@ class SDv1Pretrained(SDv1, LoadSDPretrain):
             images = ['test1.jpg', 'test2.jpg']
 
             # predict one
-            image = process.single_predict(prompt, image, is_visualize=True)
+            image = process.single_predict(prompt, images=image, is_visualize=True)
 
             # predict batch
-            images = process.batch_predict(prompts, neg_prompt, images=image, batch_size=2, is_visualize=True)     # base on same image
+            images = process.batch_predict(prompts, neg_prompts, images=image, batch_size=2, is_visualize=True)     # base on same image
             images = process.batch_predict(prompts, neg_prompts, images=images, batch_size=2, is_visualize=True)    # base on different image
     """
 
