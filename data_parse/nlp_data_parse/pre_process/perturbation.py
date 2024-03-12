@@ -47,10 +47,12 @@ class Random:
         """
         raise NotImplemented
 
-    def make_one_token(self, segment, i, **kwargs):
+    def make_one_token(self, segment, j, **kwargs):
         return np.random.choice(self.vocab)
 
-    def skip(self, token):
+    def skip(self, segment, mask_tag, j, **kwargs):
+        """true to skip"""
+        token = segment[j]
         return token in self.exclude_tokens or token not in self.include_tokens
 
 
@@ -64,6 +66,7 @@ class TokenJitter(Random):
         ])
         segments = rand.from_segments(segments)
     """
+
     def __init__(self, ins: List[Random], prob=0.15, ins_probs=None, **kwargs):
         self.ins = ins
         self.ins_probs = ins_probs
@@ -95,7 +98,7 @@ class RandomMask(Random):
     def segment_inplace(self, segment, mask_tag, i, shift):
         j = i + shift
         token = segment[j]
-        if self.skip(token):
+        if self.skip(segment, mask_tag, j):
             return None, shift
 
         prob = np.random.random()
@@ -121,16 +124,19 @@ class RandomReplace(Random):
     1 and 2 are tags of 'world' and 'python', means the token got replaced
     """
 
+    def skip(self, segment, mask_tag, j, **kwargs):
+        return (
+                mask_tag[j] != self.non_mask_tag  # if the position of token has been change, skip
+                or super().skip(segment, mask_tag, j)
+        )
+
     def segment_inplace(self, segment, mask_tag, i, shift):
         j = i + shift
+
+        if self.skip(segment, mask_tag, j):
+            return None, shift
+
         token = segment[j]
-
-        if mask_tag[j] != self.non_mask_tag:
-            return None, shift
-
-        if self.skip(token):
-            return None, shift
-
         segment[j] = self.make_one_token(segment, j)
         mask_tag[j] = self.word_dict.get(token, self.unk_tag)
         return j, shift
@@ -156,23 +162,25 @@ class RandomAppend(Random):
     """
     keep_len = True  # keep the length after same to before
 
+    def skip(self, segment, mask_tag, j, **kwargs):
+        return (
+                super().skip(segment, mask_tag, j)
+                or (self.keep_len and mask_tag[j] != self.non_mask_tag)  # if the position of token has been change, skip
+        )
+
     def segment_inplace(self, segment, mask_tag, i, shift):
         j = i + shift
         token = self.make_one_token(segment, j)
 
-        if self.skip(token):
+        if self.skip(segment, mask_tag, j):
             return None, shift
 
         tag = self.word_dict.get(token, self.unk_tag)
 
         if self.keep_len:
-            if mask_tag[j] != self.non_mask_tag:
-                return None, shift
-
             mask_tag[j] = tag
         else:
             j += 1
-
             segment.insert(j, token)
             mask_tag.insert(j, tag)
             shift += 1
@@ -201,30 +209,34 @@ class RandomDelete(Random):
     keep_len = True  # keep the length after same to before
     delete_token = '[DEL]'
 
+    def skip(self, segment, mask_tag, j, **kwargs):
+        return (
+                mask_tag[j] != self.non_mask_tag  # if the position of token has been change, skip
+                # keep_len = True
+                or (self.keep_len and super().skip(segment, mask_tag, j))
+
+                # keep_len = False
+                or (not self.keep_len and (
+                        j + 1 == len(segment)  # if delete the last position token, skip
+                        or mask_tag[j + 1] != self.non_mask_tag  # if the position of token has been change, skip
+                        or super().skip(segment, mask_tag, j + 1)
+                ))
+        )
+
     def segment_inplace(self, segment, mask_tag, i, shift):
         j = i + shift
 
-        if mask_tag[j] != self.non_mask_tag:
+        if self.skip(segment, mask_tag, j):
             return None, shift
 
         if self.keep_len:
             token = segment[j]
-
-            if self.skip(token):
-                return None, shift
-
             tag = self.word_dict.get(token, self.unk_tag)
             segment[j] = self.delete_token
             mask_tag[j] = tag
         else:
-            if j + 1 == len(segment):
-                return None, shift
-
+            # delete the right site token
             token = segment[j + 1]
-
-            if self.skip(token):
-                return None, shift
-
             tag = self.word_dict.get(token, self.unk_tag)
             mask_tag[j] = tag
             mask_tag.pop(j + 1)
