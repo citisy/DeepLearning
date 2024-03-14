@@ -10,6 +10,7 @@ from .ddpm import RandomOrLearnedSinusoidalPosEmb, SinusoidalPosEmb, ResnetBlock
 from . import VAE, ddim
 from ..layers import Linear, Conv, Upsample, Downsample
 from ..attentions import CrossAttention2D, get_attention_input
+from .. import bundles
 
 
 class Config(ddim.Config):
@@ -53,74 +54,86 @@ class Config(ddim.Config):
         return config_dict
 
 
-def convert_weights(state_dict):
-    """convert weights from official model to my own model
-    see https://github.com/CompVis/latent-diffusion?tab=readme-ov-file#model-zoo
-    to get more detail
+class WeightLoader(bundles.WeightLoader):
+    @classmethod
+    def auto_load(cls, save_path, save_name=''):
+        file_name = cls.get_file_name(save_path, save_name)
+        state_dict = torch_utils.Load.from_file(file_name)
+        if torch_utils.WeightsFormats.get_format_from_suffix(file_name) == 'PyTorch':
+            state_dict = state_dict['state_dict']
+        return state_dict
 
-    Usage:
-        .. code-block:: python
 
-            state_dict = torch.load(self.pretrain_model, map_location=self.device)['state_dict']
-            state_dict = convert_hf_weights(state_dict)
-            Model(...).load_state_dict(state_dict)
-    """
+class WeightConverter:
+    @staticmethod
+    def from_official(state_dict):
+        """convert weights from official model to my own model
+        see https://github.com/CompVis/latent-diffusion?tab=readme-ov-file#model-zoo
+        to get more detail
 
-    convert_dict = {
-        'first_stage_model': 'vae',
-        'first_stage_model.{0}.block.{1}.norm{2}.': 'vae.{0}.blocks.{1}.fn.conv{2}.norm.',
-        'first_stage_model.{0}.block.{1}.conv{2}.': 'vae.{0}.blocks.{1}.fn.conv{2}.conv.',
-        'first_stage_model.{0}.block.{1}.nin_shortcut': 'vae.{0}.blocks.{1}.project_fn',
-        'first_stage_model.{0}sample.conv': 'vae.{0}sample.fn.1',
-        'first_stage_model.{0}.mid.block_{1}.norm{2}.': 'vae.{0}.neck.block_{1}.fn.conv{2}.norm.',
-        'first_stage_model.{0}.mid.block_{1}.conv{2}.': 'vae.{0}.neck.block_{1}.fn.conv{2}.conv.',
-        'first_stage_model.{0}.mid.attn_1.norm': 'vae.{0}.neck.attn.0',
-        'first_stage_model.{0}.mid.attn_1.q': 'vae.{0}.neck.attn.1.to_qkv.0',
-        'first_stage_model.{0}.mid.attn_1.k': 'vae.{0}.neck.attn.1.to_qkv.1',
-        'first_stage_model.{0}.mid.attn_1.v': 'vae.{0}.neck.attn.1.to_qkv.2',
-        'first_stage_model.{0}.mid.attn_1.proj_out': 'vae.{0}.neck.attn.1.to_out',
-        'first_stage_model.{0}.norm_out': 'vae.{0}.head.norm',
-        'first_stage_model.{0}.conv_out': 'vae.{0}.head.conv',
+        Usage:
+            .. code-block:: python
 
-        'model.diffusion_model': 'backbone',
-        'model.diffusion_model.time_embed.0': 'backbone.time_embed.1.linear',
-        'model.diffusion_model.time_embed.2': 'backbone.time_embed.2.linear',
-        'model.diffusion_model.label_emb.0.0': 'backbone.label_emb.0',
-        'model.diffusion_model.label_emb.0.2': 'backbone.label_emb.2',
-        'model.diffusion_model.{2}.0.0': 'backbone.{2}.0.layers.0',
-        'model.diffusion_model.{0}.0.in_layers.0': 'backbone.{0}.layers.0.in_layers.norm',
-        'model.diffusion_model.{0}.0.in_layers.2': 'backbone.{0}.layers.0.in_layers.conv',
-        'model.diffusion_model.{0}.0.emb_layers.1': 'backbone.{0}.layers.0.emb_layers.linear',
-        'model.diffusion_model.{0}.0.out_layers.0': 'backbone.{0}.layers.0.norm',
-        'model.diffusion_model.{0}.0.out_layers.3': 'backbone.{0}.layers.0.out_layers.conv',
-        'model.diffusion_model.{0}.1.norm': 'backbone.{0}.layers.1.norm',
-        'model.diffusion_model.{0}.1.proj_in': 'backbone.{0}.layers.1.proj_in',
-        'model.diffusion_model.{0}.1.transformer_blocks.{2}.attn{1}.to_q': 'backbone.{0}.layers.1.transformer_blocks.{2}.attn{1}.to_qkv.0',
-        'model.diffusion_model.{0}.1.transformer_blocks.{2}.attn{1}.to_k': 'backbone.{0}.layers.1.transformer_blocks.{2}.attn{1}.to_qkv.1',
-        'model.diffusion_model.{0}.1.transformer_blocks.{2}.attn{1}.to_v': 'backbone.{0}.layers.1.transformer_blocks.{2}.attn{1}.to_qkv.2',
-        'model.diffusion_model.{0}.1.transformer_blocks.{2}.attn{1}.to_out.0': 'backbone.{0}.layers.1.transformer_blocks.{2}.attn{1}.to_out.linear',
-        'model.diffusion_model.{0}.1.transformer_blocks.{2}.ff.net.0.proj': 'backbone.{0}.layers.1.transformer_blocks.{2}.ff.0.proj',
-        'model.diffusion_model.{0}.1.transformer_blocks.{2}.ff.net.2': 'backbone.{0}.layers.1.transformer_blocks.{2}.ff.2',
-        'model.diffusion_model.{0}.1.transformer_blocks.{2}.norm{1}.': 'backbone.{0}.layers.1.transformer_blocks.{2}.norm{1}.',
-        'model.diffusion_model.{0}.1.proj_out': 'backbone.{0}.layers.1.proj_out',
-        'model.diffusion_model.{0}.1.conv': 'backbone.{0}.layers.1.op.1',
-        'model.diffusion_model.{0}.2.conv': 'backbone.{0}.layers.2.op.1',
-        'model.diffusion_model.{0}.0.op': 'backbone.{0}.layers.0.op',
-        'model.diffusion_model.{0}.0.skip_connection': 'backbone.{0}.layers.0.proj',
-        'model.diffusion_model.middle_block.2.in_layers.0': 'backbone.middle_block.layers.2.in_layers.norm',
-        'model.diffusion_model.middle_block.2.in_layers.2': 'backbone.middle_block.layers.2.in_layers.conv',
-        'model.diffusion_model.middle_block.2.out_layers.0': 'backbone.middle_block.layers.2.norm',
-        'model.diffusion_model.middle_block.2.emb_layers.1': 'backbone.middle_block.layers.2.emb_layers.linear',
-        'model.diffusion_model.middle_block.2.out_layers.3': 'backbone.middle_block.layers.2.out_layers.conv',
-        'model.diffusion_model.out.0': 'backbone.out.norm',
-        'model.diffusion_model.out.2': 'backbone.out.conv',
+                state_dict = torch.load(self.pretrain_model, map_location=self.device)['state_dict']
+                state_dict = convert_hf_weights(state_dict)
+                Model(...).load_state_dict(state_dict)
+        """
 
-        'cond_stage_model': 'cond',
-        'conditioner': 'cond'
-    }
-    state_dict = torch_utils.Converter.convert_keys(state_dict, convert_dict)
+        convert_dict = {
+            'first_stage_model': 'vae',
+            'first_stage_model.{0}.block.{1}.norm{2}.': 'vae.{0}.blocks.{1}.fn.conv{2}.norm.',
+            'first_stage_model.{0}.block.{1}.conv{2}.': 'vae.{0}.blocks.{1}.fn.conv{2}.conv.',
+            'first_stage_model.{0}.block.{1}.nin_shortcut': 'vae.{0}.blocks.{1}.project_fn',
+            'first_stage_model.{0}sample.conv': 'vae.{0}sample.fn.1',
+            'first_stage_model.{0}.mid.block_{1}.norm{2}.': 'vae.{0}.neck.block_{1}.fn.conv{2}.norm.',
+            'first_stage_model.{0}.mid.block_{1}.conv{2}.': 'vae.{0}.neck.block_{1}.fn.conv{2}.conv.',
+            'first_stage_model.{0}.mid.attn_1.norm': 'vae.{0}.neck.attn.0',
+            'first_stage_model.{0}.mid.attn_1.q': 'vae.{0}.neck.attn.1.to_qkv.0',
+            'first_stage_model.{0}.mid.attn_1.k': 'vae.{0}.neck.attn.1.to_qkv.1',
+            'first_stage_model.{0}.mid.attn_1.v': 'vae.{0}.neck.attn.1.to_qkv.2',
+            'first_stage_model.{0}.mid.attn_1.proj_out': 'vae.{0}.neck.attn.1.to_out',
+            'first_stage_model.{0}.norm_out': 'vae.{0}.head.norm',
+            'first_stage_model.{0}.conv_out': 'vae.{0}.head.conv',
 
-    return state_dict
+            'model.diffusion_model': 'backbone',
+            'model.diffusion_model.time_embed.0': 'backbone.time_embed.1.linear',
+            'model.diffusion_model.time_embed.2': 'backbone.time_embed.2.linear',
+            'model.diffusion_model.label_emb.0.0': 'backbone.label_emb.0',
+            'model.diffusion_model.label_emb.0.2': 'backbone.label_emb.2',
+            'model.diffusion_model.{2}.0.0': 'backbone.{2}.0.layers.0',
+            'model.diffusion_model.{0}.0.in_layers.0': 'backbone.{0}.layers.0.in_layers.norm',
+            'model.diffusion_model.{0}.0.in_layers.2': 'backbone.{0}.layers.0.in_layers.conv',
+            'model.diffusion_model.{0}.0.emb_layers.1': 'backbone.{0}.layers.0.emb_layers.linear',
+            'model.diffusion_model.{0}.0.out_layers.0': 'backbone.{0}.layers.0.norm',
+            'model.diffusion_model.{0}.0.out_layers.3': 'backbone.{0}.layers.0.out_layers.conv',
+            'model.diffusion_model.{0}.1.norm': 'backbone.{0}.layers.1.norm',
+            'model.diffusion_model.{0}.1.proj_in': 'backbone.{0}.layers.1.proj_in',
+            'model.diffusion_model.{0}.1.transformer_blocks.{2}.attn{1}.to_q': 'backbone.{0}.layers.1.transformer_blocks.{2}.attn{1}.to_qkv.0',
+            'model.diffusion_model.{0}.1.transformer_blocks.{2}.attn{1}.to_k': 'backbone.{0}.layers.1.transformer_blocks.{2}.attn{1}.to_qkv.1',
+            'model.diffusion_model.{0}.1.transformer_blocks.{2}.attn{1}.to_v': 'backbone.{0}.layers.1.transformer_blocks.{2}.attn{1}.to_qkv.2',
+            'model.diffusion_model.{0}.1.transformer_blocks.{2}.attn{1}.to_out.0': 'backbone.{0}.layers.1.transformer_blocks.{2}.attn{1}.to_out.linear',
+            'model.diffusion_model.{0}.1.transformer_blocks.{2}.ff.net.0.proj': 'backbone.{0}.layers.1.transformer_blocks.{2}.ff.0.proj',
+            'model.diffusion_model.{0}.1.transformer_blocks.{2}.ff.net.2': 'backbone.{0}.layers.1.transformer_blocks.{2}.ff.2',
+            'model.diffusion_model.{0}.1.transformer_blocks.{2}.norm{1}.': 'backbone.{0}.layers.1.transformer_blocks.{2}.norm{1}.',
+            'model.diffusion_model.{0}.1.proj_out': 'backbone.{0}.layers.1.proj_out',
+            'model.diffusion_model.{0}.1.conv': 'backbone.{0}.layers.1.op.1',
+            'model.diffusion_model.{0}.2.conv': 'backbone.{0}.layers.2.op.1',
+            'model.diffusion_model.{0}.0.op': 'backbone.{0}.layers.0.op',
+            'model.diffusion_model.{0}.0.skip_connection': 'backbone.{0}.layers.0.proj',
+            'model.diffusion_model.middle_block.2.in_layers.0': 'backbone.middle_block.layers.2.in_layers.norm',
+            'model.diffusion_model.middle_block.2.in_layers.2': 'backbone.middle_block.layers.2.in_layers.conv',
+            'model.diffusion_model.middle_block.2.out_layers.0': 'backbone.middle_block.layers.2.norm',
+            'model.diffusion_model.middle_block.2.emb_layers.1': 'backbone.middle_block.layers.2.emb_layers.linear',
+            'model.diffusion_model.middle_block.2.out_layers.3': 'backbone.middle_block.layers.2.out_layers.conv',
+            'model.diffusion_model.out.0': 'backbone.out.norm',
+            'model.diffusion_model.out.2': 'backbone.out.conv',
+
+            'cond_stage_model': 'cond',
+            'conditioner': 'cond'
+        }
+        state_dict = torch_utils.Converter.convert_keys(state_dict, convert_dict)
+
+        return state_dict
 
 
 class Model(ddim.Model):

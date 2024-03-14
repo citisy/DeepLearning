@@ -25,13 +25,22 @@ class WeightLoader:
     def from_hf(cls, save_path, save_name='pytorch_model.bin'):
         return cls.auto_load(save_path, save_name)
 
+    @staticmethod
+    def get_file_name(save_path, save_name=''):
+        if os.path.isfile(save_path):
+            file_name = save_path
+        elif os.path.isfile(f'{save_path}/{save_name}'):
+            file_name = f'{save_path}/{save_name}'
+        else:
+            raise ValueError(f'can not find file in {save_path} and {save_name}')
+        return file_name
+
     @classmethod
     def auto_load(cls, save_path, save_name=''):
-        if os.path.isfile(save_path):
-            state_dict = torch.load(save_path)
-        elif os.path.isfile(f'{save_path}/{save_name}'):
-            state_dict = torch.load(f'{save_path}/{save_name}')
-        else:
+        try:
+            file_name = cls.get_file_name(save_path, save_name)
+            state_dict = torch.load(file_name)
+        except ValueError:
             state_dict = cls.auto_download(save_path, save_name)
         return state_dict
 
