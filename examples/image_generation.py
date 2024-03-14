@@ -887,15 +887,13 @@ class Ldm(DiProcess):
         return images
 
 
-class LoadSDPretrain(CheckpointHooks):
+class SDFromPretrain(CheckpointHooks):
     def load_pretrain(self):
         if hasattr(self, 'pretrain_model'):
-            from models.image_generation.ldm import convert_weights
+            from models.image_generation.ldm import WeightLoader, WeightConverter
 
-            state_dict = torch_utils.Load.from_file(self.pretrain_model)
-            if torch_utils.WeightsFormats.get_format_from_suffix(self.pretrain_model) == 'PyTorch':
-                state_dict = state_dict['state_dict']
-            state_dict = convert_weights(state_dict)
+            state_dict = WeightLoader.auto_load(self.pretrain_model)
+            state_dict = WeightConverter.from_official(state_dict)
             self.model.load_state_dict(state_dict, strict=False)
 
 
@@ -920,7 +918,7 @@ class SDv1(Ldm):
         )
 
 
-class SDv1Pretrained(SDv1, LoadSDPretrain):
+class SDv1Pretrained(SDv1, SDFromPretrain):
     """no training, only for prediction
 
     Usage:
@@ -979,7 +977,7 @@ class SDv2(Ldm):
         )
 
 
-class SDv2Pretrained(SDv2, LoadSDPretrain):
+class SDv2Pretrained(SDv2, SDFromPretrain):
     """no training, only for prediction
 
     Usage:
@@ -1016,7 +1014,7 @@ class SDXL(Ldm):
                 module.__call__ = partial(torch_utils.ModuleManager.low_memory_run, module, self.device)
 
 
-class SDXLPretrained(SDXL, LoadSDPretrain):
+class SDXLPretrained(SDXL, SDFromPretrain):
     """no training, only for prediction
 
     Usage:

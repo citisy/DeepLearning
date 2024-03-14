@@ -628,16 +628,10 @@ class FromHFPretrain(CheckpointHooks):
 
     def load_pretrain(self):
         if hasattr(self, 'pretrain_model'):
-            from models.text_pretrain.bert import convert_hf_weights
-
-            if os.path.exists(f'{self.pretrain_model}/pytorch_model.bin'):
-                state_dict = torch.load(f'{self.pretrain_model}/pytorch_model.bin', map_location=self.device)
-            else:  # download weight auto
-                from transformers import BertForMaskedLM
-                model = BertForMaskedLM.from_pretrained(self.pretrain_model, num_labels=2)
-                state_dict = model.state_dict()
-
-            self.model.load_state_dict(convert_hf_weights(state_dict), strict=False)
+            from models.text_pretrain.bert import WeightLoader, WeightConverter
+            state_dict = WeightLoader.from_hf(self.pretrain_model)
+            state_dict = WeightConverter.from_hf(state_dict)
+            self.model.load_state_dict(state_dict, strict=False)
 
 
 class BertMLMFromHFPretrain(Bert, FromHFPretrain, TextProcess):
@@ -818,9 +812,9 @@ class GPT2FromOpenaiPretrain(CheckpointHooks):
 
     def load_pretrain(self):
         if hasattr(self, 'pretrain_model'):
-            from models.text_pretrain.gpt2 import WeightConverter, load_tf_weights
+            from models.text_pretrain.gpt2 import WeightConverter, WeightLoader
 
-            state_dict = load_tf_weights(self.pretrain_model, n_layer=self.model.n_layer)
+            state_dict = WeightLoader.from_openai_tf(self.pretrain_model, n_layer=self.model.n_layer)
             state_dict = WeightConverter.from_openai(state_dict)
             self.model.load_state_dict(state_dict, strict=False)
 
@@ -830,15 +824,8 @@ class GPT2FromHFPretrain(CheckpointHooks):
 
     def load_pretrain(self):
         if hasattr(self, 'pretrain_model'):
-            from models.text_pretrain.gpt2 import WeightConverter
-
-            if os.path.exists(f'{self.pretrain_model}/pytorch_model.bin'):
-                state_dict = torch.load(f'{self.pretrain_model}/pytorch_model.bin', map_location=self.device)
-            else:  # download weight auto
-                from transformers import GPT2PreTrainedModel
-                model = GPT2PreTrainedModel.from_pretrained(self.pretrain_model, num_labels=2)
-                state_dict = model.state_dict()
-
+            from models.text_pretrain.gpt2 import WeightLoader, WeightConverter
+            state_dict = WeightLoader.from_hf(self.pretrain_model)
             self.model.load_state_dict(WeightConverter.from_huggingface(state_dict), strict=False)
 
 

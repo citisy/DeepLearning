@@ -61,8 +61,8 @@ class Config(bundles.Config):
 
 
 class WeightLoader(bundles.WeightLoader):
-    @staticmethod
-    def from_openai_tf(save_path, save_name='model.ckpt', n_layer=12):
+    @classmethod
+    def from_openai_tf(cls, save_path, save_name='model.ckpt', n_layer=12):
         """model download from
         https://github.com/openai/gpt-2/blob/master/download_model.py"""
         info = [
@@ -94,13 +94,7 @@ class WeightLoader(bundles.WeightLoader):
         ]
 
         var_name, key_types, value_types = math_utils.transpose(info)
-        if os.path.isfile(save_path):
-            file_name = save_path
-        elif os.path.isfile(f'{save_path}/{save_name}'):
-            file_name = f'{save_path}/{save_name}'
-        else:
-            raise f'can not find file in {save_path} and {save_name}'
-
+        file_name = cls.get_file_name(save_path, save_name)
         state_dict = torch_utils.Load.from_tf_ckpt(file_name, var_names=var_name, key_types=key_types, value_types=value_types)
 
         return state_dict
