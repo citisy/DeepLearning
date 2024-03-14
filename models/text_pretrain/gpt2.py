@@ -1,3 +1,4 @@
+import os
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -40,6 +41,21 @@ class Config:
             }
 
         }
+
+        # huggingface config
+        config_dict.update(
+            # https://huggingface.co/openai-community/gpt2
+            small=config_dict['117M'],
+
+            # https://huggingface.co/openai-community/gpt2-medium
+            medium=config_dict['345M'],
+
+            # https://huggingface.co/openai-community/gpt2-large
+            large=config_dict['774M'],
+
+            # https://huggingface.co/openai-community/gpt2-xl
+            xl=config_dict['1558M'],
+        )
         return config_dict
 
     @classmethod
@@ -48,57 +64,96 @@ class Config:
         return config_dict.get(name, cls.default_model)
 
 
-def load_tf_weights(save_path, n_layer=12):
-    info = [
-        ('model/wte:0', None, None),
-        ('model/wpe:0', None, None)
-    ]
-
-    for i in range(n_layer):
-        tmp = [
-            ('model/h%d/ln_1/g:0', 'w', 'n'),
-            ('model/h%d/ln_1/b:0', 'b', 'n'),
-            ('model/h%d/attn/c_attn/w:0', 'w', 'l'),
-            ('model/h%d/attn/c_attn/b:0', 'b', 'l'),
-            ('model/h%d/attn/c_proj/w:0', 'w', 'l'),
-            ('model/h%d/attn/c_proj/b:0', 'b', 'l'),
-            ('model/h%d/ln_2/g:0', 'w', 'n'),
-            ('model/h%d/ln_2/b:0', 'b', 'n'),
-            ('model/h%d/mlp/c_fc/w:0', 'w', 'l'),
-            ('model/h%d/mlp/c_fc/b:0', 'b', 'l'),
-            ('model/h%d/mlp/c_proj/w:0', 'w', 'l'),
-            ('model/h%d/mlp/c_proj/b:0', 'b', 'l')
+class WeightLoader:
+    @staticmethod
+    def from_openai_tf(save_path, n_layer=12):
+        """model download from
+        https://github.com/openai/gpt-2/blob/master/download_model.py"""
+        info = [
+            ('model/wte:0', None, None),
+            ('model/wpe:0', None, None)
         ]
-        tmp = [(t[0] % i, *t[1:]) for t in tmp]
-        info += tmp
 
-    info += [
-        ('model/ln_f/g:0', 'w', 'n'),
-        ('model/ln_f/b:0', 'b', 'n')
-    ]
+        for i in range(n_layer):
+            tmp = [
+                ('model/h%d/ln_1/g:0', 'w', 'n'),
+                ('model/h%d/ln_1/b:0', 'b', 'n'),
+                ('model/h%d/attn/c_attn/w:0', 'w', 'l'),
+                ('model/h%d/attn/c_attn/b:0', 'b', 'l'),
+                ('model/h%d/attn/c_proj/w:0', 'w', 'l'),
+                ('model/h%d/attn/c_proj/b:0', 'b', 'l'),
+                ('model/h%d/ln_2/g:0', 'w', 'n'),
+                ('model/h%d/ln_2/b:0', 'b', 'n'),
+                ('model/h%d/mlp/c_fc/w:0', 'w', 'l'),
+                ('model/h%d/mlp/c_fc/b:0', 'b', 'l'),
+                ('model/h%d/mlp/c_proj/w:0', 'w', 'l'),
+                ('model/h%d/mlp/c_proj/b:0', 'b', 'l')
+            ]
+            tmp = [(t[0] % i, *t[1:]) for t in tmp]
+            info += tmp
 
-    var_name, key_types, value_types = math_utils.transpose(info)
-    tensors = torch_utils.Load.from_tf_ckpt(save_path, var_names=var_name, key_types=key_types, value_types=value_types)
+        info += [
+            ('model/ln_f/g:0', 'w', 'n'),
+            ('model/ln_f/b:0', 'b', 'n')
+        ]
 
-    return tensors
+        var_name, key_types, value_types = math_utils.transpose(info)
+        tensors = torch_utils.Load.from_tf_ckpt(save_path, var_names=var_name, key_types=key_types, value_types=value_types)
+
+        return tensors
+
+    @staticmethod
+    def from_hf(save_path, save_name='pytorch_model.bin'):
+        if os.path.isfile(save_path):
+            state_dict = torch.load(save_path)
+        elif os.path.isfile(f'{save_path}/{save_name}'):
+            state_dict = torch.load(f'{save_path}/{save_name}')
+        else:  # download weight auto
+            from transformers import GPT2PreTrainedModel
+            model = GPT2PreTrainedModel.from_pretrained(save_path)
+            state_dict = model.state_dict()
+        return state_dict
 
 
-def convert_weights(state_dict):
-    """https://github.com/openai/gpt-2/blob/master/download_model.py"""
-    convert_dict = {
-        'model.wte:0': 'embedding.token.weight',
-        'model.wpe:0': 'embedding.position.weight',
-        'model.h{0}.ln_1': 'encoder.{0}.res1.norm',
-        'model.h{0}.attn.c_attn': 'encoder.{0}.res1.fn.to_qkv',
-        'model.h{0}.attn.c_proj': 'encoder.{0}.res1.fn.to_out.linear',
-        'model.h{0}.ln_2': 'encoder.{0}.res2.norm',
-        'model.h{0}.mlp.c_fc': 'encoder.{0}.res2.fn.0.linear',
-        'model.h{0}.mlp.c_proj': 'encoder.{0}.res2.fn.1.linear',
-        'model.ln_f': 'norm',
-    }
+class WeightConverter:
+    @staticmethod
+    def from_openai(state_dict):
+        convert_dict = {
+            'model.wte:0': 'embedding.token.weight',
+            'model.wpe:0': 'embedding.position.weight',
+            'model.h{0}.ln_1': 'encoder.{0}.res1.norm',
+            'model.h{0}.attn.c_attn': 'encoder.{0}.res1.fn.to_qkv',
+            'model.h{0}.attn.c_proj': 'encoder.{0}.res1.fn.to_out.linear',
+            'model.h{0}.ln_2': 'encoder.{0}.res2.norm',
+            'model.h{0}.mlp.c_fc': 'encoder.{0}.res2.fn.0.linear',
+            'model.h{0}.mlp.c_proj': 'encoder.{0}.res2.fn.1.linear',
+            'model.ln_f': 'norm',
+        }
 
-    state_dict = torch_utils.Converter.convert_keys(state_dict, convert_dict)
-    return state_dict
+        state_dict = torch_utils.Converter.convert_keys(state_dict, convert_dict)
+        return state_dict
+
+    @staticmethod
+    def from_huggingface(state_dict):
+        for k, v in state_dict.items():
+            for a in ('c_attn', 'c_fc', 'c_proj'):
+                if k.endswith(a + '.weight'):
+                    state_dict[k] = v.T
+
+        convert_dict = {
+            'wte': 'embedding.token',
+            'wpe': 'embedding.position',
+            'h.{0}.ln_1': 'encoder.{0}.res1.norm',
+            'h.{0}.attn.c_attn': 'encoder.{0}.res1.fn.to_qkv',
+            'h.{0}.attn.c_proj': 'encoder.{0}.res1.fn.to_out.linear',
+            'h.{0}.ln_2': 'encoder.{0}.res2.norm',
+            'h.{0}.mlp.c_fc': 'encoder.{0}.res2.fn.0.linear',
+            'h.{0}.mlp.c_proj': 'encoder.{0}.res2.fn.1.linear',
+            'ln_f': 'norm',
+        }
+
+        state_dict = torch_utils.Converter.convert_keys(state_dict, convert_dict)
+        return state_dict
 
 
 class Model(nn.Module):

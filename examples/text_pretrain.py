@@ -645,7 +645,7 @@ class BertMLMFromHFPretrain(Bert, FromHFPretrain, TextProcess):
     Usage:
         .. code-block:: python
 
-            from examples.text_pertain import BertMLMFromHFPretrain as Process
+            from examples.text_pretrain import BertMLMFromHFPretrain as Process
 
             process = Process(pretrain_model='...', vocab_fn='...')
             process.init()
@@ -671,7 +671,7 @@ class BertMLM_SimpleText(Bert, SimpleText):
     Usage:
         .. code-block:: python
 
-            from examples.text_pertain import BertMLM_SimpleText as Process
+            from examples.text_pretrain import BertMLM_SimpleText as Process
 
             Process(vocab_fn='...').run(max_epoch=20, train_batch_size=16, fit_kwargs=dict(check_period=1, accumulate=192))
     """
@@ -684,7 +684,7 @@ class Bert_SOP(Bert, SOP):
     Usage:
         .. code-block:: python
 
-            from examples.text_pertain import BertMLM_SimpleText as Process
+            from examples.text_pretrain import BertMLM_SimpleText as Process
 
             # about 200M data
             Process(vocab_fn='...').run(max_epoch=20, train_batch_size=16, fit_kwargs=dict(check_period=1, accumulate=192))
@@ -813,24 +813,41 @@ class Gpt2(Process):
             self.predict_container['model_results'].setdefault(name, []).extend(results['pred_segment'])
 
 
-class FromOpenaiPretrain(CheckpointHooks):
+class GPT2FromOpenaiPretrain(CheckpointHooks):
     """load pretrain model from openai"""
 
     def load_pretrain(self):
         if hasattr(self, 'pretrain_model'):
-            from models.text_pretrain.gpt2 import convert_weights, load_tf_weights
+            from models.text_pretrain.gpt2 import WeightConverter, load_tf_weights
 
-            state_dict = load_tf_weights(self.pretrain_model)
-            state_dict = convert_weights(state_dict)
+            state_dict = load_tf_weights(self.pretrain_model, n_layer=self.model.n_layer)
+            state_dict = WeightConverter.from_openai(state_dict)
             self.model.load_state_dict(state_dict, strict=False)
 
 
-class Gpt2FromOpenaiPretrain(Gpt2, FromOpenaiPretrain, TextProcessForGpt):
+class GPT2FromHFPretrain(CheckpointHooks):
+    """load pretrain model from huggingface"""
+
+    def load_pretrain(self):
+        if hasattr(self, 'pretrain_model'):
+            from models.text_pretrain.gpt2 import WeightConverter
+
+            if os.path.exists(f'{self.pretrain_model}/pytorch_model.bin'):
+                state_dict = torch.load(f'{self.pretrain_model}/pytorch_model.bin', map_location=self.device)
+            else:  # download weight auto
+                from transformers import GPT2PreTrainedModel
+                model = GPT2PreTrainedModel.from_pretrained(self.pretrain_model, num_labels=2)
+                state_dict = model.state_dict()
+
+            self.model.load_state_dict(WeightConverter.from_huggingface(state_dict), strict=False)
+
+
+class Gpt2FromOpenaiPretrain(Gpt2, GPT2FromOpenaiPretrain, TextProcessForGpt):
     """
     Usage:
         .. code-block:: python
 
-            from examples.text_pertain import Gpt2FromOpenaiPretrain as Process
+            from examples.text_pretrain import Gpt2FromOpenaiPretrain as Process
 
             process = Process(pretrain_model='...', vocab_fn='...', encoder_fn='...')
             process.init()
@@ -846,4 +863,4 @@ class Gpt2FromOpenaiPretrain(Gpt2, FromOpenaiPretrain, TextProcessForGpt):
             # My name is Julien and I like to play with my friends. I'm a big fan of the game and I'm looking forward to playing
             # My name is Thomas and my main goal is to make sure that I'm not just a guy who's going to be a part of
     """
-    dataset_version = ''
+    dataset_version = 'openai_pretrain'
