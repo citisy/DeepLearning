@@ -1,3 +1,12 @@
+"""numeralization:
+    encode: change str-type token to number-type id
+    decode: change number-type id to str-type token
+
+tokens:
+    e.g.: ['hello', 'world!']
+ids:
+    e.g: [1, 2]
+"""
 import numpy as np
 
 
@@ -6,7 +15,7 @@ class KeyValueEncode:
         self.word_dict = word_dict
         self.word_inv_dict = word_inv_dict or {v: k for k, v in word_dict.items()}
         self.unk_token = unk_token
-        self.unk_tag = self.word_dict[unk_token]
+        self.unk_id = self.word_dict[unk_token]
 
     def encode(self, segments):
         """
@@ -16,17 +25,17 @@ class KeyValueEncode:
             >>> KeyValueEncode.encode(segments)
             [[0, 1], [0, 2, 3]]
         """
-        return [[self.word_dict.get(c, self.unk_tag) for c in seg] for seg in segments]
+        return [[self.word_dict.get(c, self.unk_id) for c in seg] for seg in segments]
 
-    def decode(self, tags):
-        return [[self.word_inv_dict.get(t, self.unk_token) for t in tag] for tag in tags]
+    def decode(self, ids):
+        return [[self.word_inv_dict.get(t, self.unk_token) for t in _id] for _id in ids]
 
 
 class SeqEncode:
     def __init__(self, sep_token='[SEP]'):
         self.sep_token = sep_token
 
-    def encode(self, segments, new_tag_start=True, start_index=0, max_sep=None):
+    def encode(self, segments, new_id_start=True, start_index=0, max_sep=None):
         """
         Usages:
             >>> segments = [['hello', 'world', '[SEP]', 'hello', 'deep', 'learning'], ['hello', 'world', '[SEP]', 'hello', 'deep', 'learning']]
@@ -37,32 +46,32 @@ class SeqEncode:
             [[0, 0, 0, 1, 1, 1], [2, 2, 2, 3, 3, 3]]
         """
         max_sep = max_sep or float('inf')
-        tags = []
+        ids = []
         t = start_index
         for s in segments:
-            tag = []
-            if new_tag_start:
+            _id = []
+            if new_id_start:
                 t = start_index
             a = 0
             while s:
                 if a >= max_sep:
                     i = len(s)
-                    tag += [t - 1] * i
+                    _id += [t - 1] * i
                     break
 
                 if self.sep_token in s:
                     i = s.index(self.sep_token) + 1
                 else:
                     i = len(s)
-                tag += [t] * i
+                _id += [t] * i
                 s = s[i:]
                 t += 1
                 a += 1
 
-            tags.append(tag)
-        return tags
+            ids.append(_id)
+        return ids
 
-    def decode(self, tags):
+    def decode(self, ids):
         pass
 
 
@@ -84,13 +93,13 @@ class OneHot:
                [0, 0, 0, 1]])]
         """
         tmp = self.kve.encode(segments)
-        tag = []
+        _id = []
         for seg, t in zip(segments, tmp):
             a = np.eye(len(self.word_dict), dtype=int)
-            tag.append(a[t])
-        return tag
+            _id.append(a[t])
+        return _id
 
-    def decode(self, tags):
+    def decode(self, ids):
         pass
 
 
@@ -134,13 +143,13 @@ class BytePairEncode:
         """byte pair encode
         refer to: https://www.drdobbs.com/a-new-algorithm-for-data-compression/184402829
         """
-        tags = []
+        ids = []
         for s in segments:
-            tag = []
+            _id = []
 
             for word in s:
                 if word in self.caches:
-                    tag += self.caches[word]
+                    _id += self.caches[word]
                     continue
 
                 # normalize the segment, fall in [0, 255]
@@ -169,16 +178,16 @@ class BytePairEncode:
                     chars = chars[:tail]
 
                 t = [self.word_dict[c] for c in chars]
-                tag += t
+                _id += t
                 self.caches[word] = t
-            tags.append(tag)
+            ids.append(_id)
 
-        return tags
+        return ids
 
-    def decode(self, tags):
+    def decode(self, ids):
         segments = []
-        for tag in tags:
-            text = ''.join([self.word_inv_dict[t] for t in tag])
+        for _id in ids:
+            text = ''.join([self.word_inv_dict[t] for t in _id])
             s = bytearray([self.byte_decoder_dict[byte] for byte in text]).decode('utf-8', errors='replace')
             segments.append(s)
         return segments
@@ -188,7 +197,7 @@ class TargetEncode:
     def encode(self, segments):
         pass
 
-    def decode(self, tags):
+    def decode(self, ids):
         pass
 
 
@@ -196,7 +205,7 @@ class LeaveOneOut:
     def encode(self, segments):
         pass
 
-    def decode(self, tags):
+    def decode(self, ids):
         pass
 
 
@@ -204,5 +213,5 @@ class WoE:
     def encode(self, segments):
         pass
 
-    def decode(self, tags):
+    def decode(self, ids):
         pass

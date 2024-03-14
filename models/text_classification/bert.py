@@ -2,10 +2,10 @@ from ..text_pretrain.bert import *
 
 
 class Model(nn.Module):
-    def __init__(self, vocab_size, sp_tag_dict, out_features=2, bert_config=Config.base):
+    def __init__(self, vocab_size, pad_id, out_features=2, bert_config=Config.get()):
         super().__init__()
 
-        self.backbone = Bert(vocab_size, sp_tag_dict, **bert_config)
+        self.backbone = Bert(vocab_size, pad_id, **bert_config)
         self.neck = Linear(self.backbone.out_features, self.backbone.out_features, mode='lad', act=nn.Tanh(), drop_prob=0.1)
         self.head = NSP(self.backbone.out_features, out_features)
 

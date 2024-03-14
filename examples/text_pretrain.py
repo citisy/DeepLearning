@@ -4,9 +4,9 @@ import torch
 import numpy as np
 import pandas as pd
 from typing import List, Optional
-from utils import math_utils, os_lib
+from utils import math_utils, os_lib, torch_utils
 from processor import Process, DataHooks, BaseDataset, ModelHooks, CheckpointHooks, IterIterDataset
-from data_parse.nlp_data_parse.pre_process import spliter, bundled, dict_maker, numerizer, cleaner, chunker, perturbation, BertVocabOp, GptVocabOp
+from data_parse.nlp_data_parse.pre_process import spliter, bundled, dict_maker, cleaner, snack
 
 
 class RandomChoiceTextPairsDataset(BaseDataset):
@@ -17,18 +17,18 @@ class RandomChoiceTextPairsDataset(BaseDataset):
         ret = self.iter_data[idx]
         texts = ret['texts']
         segment_pair = ret['segment_pair']
-        segment_tag_pair = ret['segment_tag_pair']
+        segment_pair_tags_pair = ret['segment_pair_tags_pair']
 
         # 50% to select another text as the false sample
         if np.random.random() < 0.5:
             next_ret = np.random.choice(self.iter_data)
             next_text = next_ret['texts'][1]
             next_segment = next_ret['segment_pair'][1]
-            next_segment_tag = next_ret['segment_tag_pair'][1]
+            next_segment_pair_tags = next_ret['segment_pair_tags_pair'][1]
 
             texts = (texts[0], next_text)
             segment_pair = (segment_pair[0], next_segment)
-            segment_tag_pair = (segment_tag_pair[0], next_segment_tag)
+            segment_pair_tags_pair = (segment_pair_tags_pair[0], next_segment_pair_tags)
             _class = 0
 
         else:
@@ -37,7 +37,7 @@ class RandomChoiceTextPairsDataset(BaseDataset):
         ret = dict(
             texts=texts,
             segment_pair=segment_pair,
-            segment_tag_pair=segment_tag_pair,
+            segment_pair_tags_pair=segment_pair_tags_pair,
             _class=_class
         )
 
@@ -51,7 +51,7 @@ class RandomReverseTextPairsDataset(BaseDataset):
         ret = self.iter_data[idx]
         text = ret['text']
         segment = ret['segment']
-        segment_tag = ret['segment_tag']
+        segment_pair_tags = ret['segment_pair_tags']
 
         # 50% to reverse the text
         if np.random.random() < 0.5:
@@ -64,7 +64,7 @@ class RandomReverseTextPairsDataset(BaseDataset):
         ret = dict(
             texts=(text, text),
             segment_pair=(segment, next_segment),
-            segment_tag_pair=(segment_tag, [1] * len(segment_tag)),
+            segment_pair_tags_pair=(segment_pair_tags, [1] * len(segment_pair_tags)),
             _class=_class
         )
 
@@ -108,10 +108,7 @@ class DataProcess(DataHooks):
     is_mlm: bool
     is_nsp: bool
 
-    vocab_op: Optional
-    numerizer: Optional
-    spliter: Optional
-    chunker_spliter: Optional
+    tokenizer: bundled.BertTokenizer
     max_seq_len: int
 
     def _filter_func(self, x):
@@ -127,11 +124,11 @@ class DataProcess(DataHooks):
 class TextProcess(DataProcess):
     def make_vocab(self):
         # todo: make word piece
-        sp_token_dict = self.vocab_op.sp_token_dict
+        sp_token_dict = self.tokenizer.sp_token_dict
         iter_data = self.get_train_data()
         paragraphs = [ret['text'] for ret in iter_data]
-        paragraphs = bundled.lower(paragraphs)
-        segments = self.spliter.from_paragraphs(paragraphs)
+        paragraphs = cleaner.Lower().from_paragraphs(paragraphs)
+        segments = self.tokenizer.spliter.from_paragraphs(paragraphs)
         word_dict = dict_maker.word_id_dict(segments, start_id=len(sp_token_dict), filter_func=self._filter_func)
         vocab = list(sp_token_dict.values()) + list(word_dict.keys())
         self.save_vocab(vocab)
@@ -142,22 +139,23 @@ class TextProcess(DataProcess):
     def data_preprocess(self, iter_data, train=True):
         paragraphs = [ret['text'] for ret in iter_data]
         # ['bert-base-uncased'] -> [['bert', '-', 'base', '-', 'un', '##cased']]
-        segments = self.spliter.from_paragraphs(paragraphs)
+        segments = self.tokenizer.spliter.from_paragraphs(paragraphs)
         if not self.is_nsp and self.is_chunk and train:
-            segments = self.chunker_spliter.from_segments(segments)
+            segments = self.tokenizer.chunker_spliter.from_segments(segments)
 
             iter_data = []
             for segment in segments:
                 iter_data.append(dict(
                     segment=segment,
-                    segment_tag=[0] * len(segment),
+                    segment_pair_tags=[0] * len(segment),
                     text=' '.join(segment)
                 ))
         else:
             for ret, segment in zip(iter_data, segments):
+                # _class need
                 ret.update(
                     segment=segment,
-                    segment_tag=[0] * len(segment),
+                    segment_pair_tags=[0] * len(segment),
                     text=' '.join(segment)
                 )
         return iter_data
@@ -172,19 +170,14 @@ class TextProcess(DataProcess):
         _ret = ret
         ret = dict(ori_text=_ret['text'])
         segments = [_ret['segment']]
-        segment_tags = [_ret['segment_tag']]
+        segment_pair_tags = [_ret['segment_pair_tags']]
         if train and self.is_mlm:
-            segments, mask_tags = self.perturbation.from_segments(
-                segments, self.vocab_op.word_dict,
-                mask_token=self.vocab_op.sp_token_dict['mask'],
-                unk_tag=self.vocab_op.sp_tag_dict['unk'],
-                non_mask_tag=self.vocab_op.sp_tag_dict['non_mask']
-            )
+            segments, mask_tags = self.tokenizer.perturbation.from_segments(segments)
             ret.update(mask_tag=mask_tags[0])
 
         ret.update(
             segment=segments[0],
-            segment_tag=segment_tags[0],
+            segment_pair_tags=segment_pair_tags[0],
         )
 
         if self.is_nsp:
@@ -196,11 +189,11 @@ class TextProcess(DataProcess):
 class TextPairProcess(DataProcess):
     def make_vocab(self):
         # todo: make word piece
-        sp_token_dict = self.vocab_op.sp_token_dict
+        sp_token_dict = self.tokenizer.sp_token_dict
         iter_data = self.get_train_data()
         paragraphs = [' '.join(ret['texts']) for ret in iter_data]
-        paragraphs = bundled.lower(paragraphs)
-        segments = self.spliter.from_paragraphs(paragraphs)
+        paragraphs = cleaner.Lower().from_paragraphs(paragraphs)
+        segments = self.tokenizer.spliter.from_paragraphs(paragraphs)
         word_dict = dict_maker.word_id_dict(segments, start_id=len(sp_token_dict), filter_func=self._filter_func)
         vocab = list(sp_token_dict.values()) + list(word_dict.keys())
         self.save_vocab(vocab)
@@ -211,7 +204,7 @@ class TextPairProcess(DataProcess):
         text_pairs = math_utils.transpose(text_pairs)
         tmp = []
         for paragraphs in text_pairs:
-            segments = self.spliter.from_paragraphs(paragraphs)
+            segments = self.tokenizer.spliter.from_paragraphs(paragraphs)
             tmp.append(segments)
 
         segment_pairs = math_utils.transpose(tmp)
@@ -219,7 +212,7 @@ class TextPairProcess(DataProcess):
             # todo, replace unused token by unknown word here, and then save the vocab
             ret.update(
                 segment_pair=segment_pair,
-                segment_tag_pair=([0] * len(segment_pair[0]), [1] * len(segment_pair[1]))
+                segment_pair_tags_pair=([0] * len(segment_pair[0]), [1] * len(segment_pair[1]))
             )
 
         return iter_data
@@ -239,34 +232,29 @@ class TextPairProcess(DataProcess):
         _ret = ret
         ret = dict(ori_text=_ret['texts'])
         segment_pairs = [_ret['segment_pair']]
-        segment_tag_pairs = [_ret['segment_tag_pair']]
+        segment_pair_tags_pairs = [_ret['segment_pair_tags_pair']]
 
         if train and self.is_mlm:
             segment_pairs = math_utils.transpose(segment_pairs)
             tmp = []
             tmp2 = []
             for segments in segment_pairs:
-                segments, mask_tags = self.perturbation.from_segments(
-                    segments, self.vocab_op.word_dict,
-                    mask_token=self.vocab_op.sp_token_dict['mask'],
-                    unk_tag=self.vocab_op.sp_tag_dict['unk'],
-                    non_mask_tag=self.vocab_op.sp_tag_dict['non_mask']
-                )
+                segments, mask_tags = self.tokenizer.perturbation.from_segments(segments)
                 tmp.append(segments)
                 tmp2.append(mask_tags)
 
             segment_pairs = math_utils.transpose(tmp)
 
             mask_tags_pairs = math_utils.transpose(tmp2)
-            mask_tags = bundled.joint(mask_tags_pairs, sep_token=self.vocab_op.sp_tag_dict['non_mask'], keep_end=False)
+            mask_tags = snack.joint(mask_tags_pairs, sep_obj=self.tokenizer.skip_id, keep_end=False)
             ret.update(mask_tag=mask_tags[0])
 
-        segments = bundled.joint(segment_pairs, sep_token=self.vocab_op.sp_token_dict['sep'], keep_end=False)
-        segment_tags = bundled.joint(segment_tag_pairs, sep_token=0, keep_end=False)
+        segments = snack.joint(segment_pairs, sep_obj=self.tokenizer.sep_token, keep_end=False)
+        segment_pair_tags = snack.joint(segment_pair_tags_pairs, sep_obj=0, keep_end=False)
 
         ret.update(
             segment=segments[0],
-            segment_tag=segment_tags[0]
+            segment_pair_tags=segment_pair_tags[0]
         )
 
         if self.is_nsp:
@@ -394,41 +382,22 @@ class Bert(Process):
     is_nsp = True
     use_scaler = True
     scheduler_strategy = 'step'  # step
-    vocab_op: Optional
-    numerizer: Optional
-    spliter: Optional
-    chunker_spliter: Optional
+    tokenizer: bundled.BertTokenizer
     max_seq_len: int
 
     def set_model(self):
         from models.text_pretrain.bert import Model
         self.get_vocab()
         self.model = Model(
-            self.vocab_op.vocab_size,
-            sp_tag_dict=self.vocab_op.sp_tag_dict,
+            self.tokenizer.vocab_size,
+            pad_id=self.tokenizer.pad_id,
+            skip_id=self.tokenizer.skip_id,
             is_nsp=self.is_nsp, is_mlm=self.is_mlm
         )
 
     def get_vocab(self):
         vocab = super().get_vocab()
-        self.vocab_op = BertVocabOp(vocab)
-        self.spliter = spliter.ToSegments(
-            cleaner=cleaner.Apply(
-                cleaner.Lower().from_paragraph,
-                cleaner.StripAccents().from_paragraph,
-            ),
-            sp_tokens=set(self.vocab_op.sp_token_dict.values()),
-            is_word_piece=True, vocab=self.vocab_op.vocab, verbose=True
-        )
-        self.chunker_spliter = chunker.ToChunkedSegments(
-            max_length=self.max_seq_len - 2, min_length=self.max_seq_len / 8, verbose=True
-        )
-        self.numerizer = numerizer.KeyValueEncode(
-            self.vocab_op.word_dict,
-            self.vocab_op.word_inv_dict,
-            unk_token=self.vocab_op.sp_token_dict['unk']
-        )
-        self.perturbation = perturbation.RandomMask(self.vocab_op.word_dict, self.vocab_op.sp_tag_dict)
+        self.tokenizer = bundled.BertTokenizer(vocab, max_seq_len=self.max_seq_len)
 
     def set_optimizer(self):
         # todo, use the optimizer config from paper(lr=1e-4, betas=(0.9, 0.999), weight_decay=0.1), the training is failed
@@ -436,46 +405,38 @@ class Bert(Process):
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=1e-4, betas=(0.5, 0.999))
 
     def get_model_inputs(self, rets, train=True):
-        sp_token_dict = self.vocab_op.sp_token_dict
         segments = [ret['segment'] for ret in rets]
-        attention_mask = [[True] * len(seg) for seg in segments]
-        segments = bundled.align(segments, max_seq_len=self.max_seq_len, start_token=sp_token_dict['cls'], end_token=sp_token_dict['sep'], pad_token=sp_token_dict['pad'])
-        attention_mask = bundled.align(attention_mask, max_seq_len=self.max_seq_len, start_token=True, end_token=True, pad_token=False)
-        token_tags = self.numerizer.encode(segments)
-
-        segment_tags = [ret['segment_tag'] for ret in rets]
-        segment_tags = bundled.align(segment_tags, max_seq_len=self.max_seq_len, start_token=0, end_token=1, pad_token=0)
-
-        token_tags = torch.tensor(token_tags).to(self.device)
-        segment_tags = torch.tensor(segment_tags).to(self.device)
-        attention_mask = torch.tensor(attention_mask).to(self.device)
-
-        r = dict(
-            x=token_tags,
-            segment_label=segment_tags,
-            attention_mask=attention_mask,
+        segment_pair_tags = [ret['segment_pair_tags'] for ret in rets]
+        r = self.tokenizer.encode_segments(segments, segment_pair_tags)
+        r = torch_utils.Converter.arrays_to_tensors(r, self.device)
+        inputs = dict(
+            x=r['segments_ids'],
+            segment_label=r['segment_pair_tags'],
+            attention_mask=r['valid_segment_tags'],
         )
 
         if train:
-            sp_tag_dict = self.vocab_op.sp_tag_dict
             next_tags = torch.tensor([ret['_class'] for ret in rets]).to(self.device) if self.is_nsp else None
             mask_tags = None
             if self.is_mlm:
                 mask_tags = [ret['mask_tag'] for ret in rets]
-                mask_tags = bundled.align(mask_tags, max_seq_len=self.max_seq_len, start_token=sp_tag_dict['non_mask'], end_token=sp_tag_dict['non_mask'], pad_token=sp_tag_dict['non_mask'])
+                mask_tags = snack.align(
+                    mask_tags, max_seq_len=self.max_seq_len,
+                    start_obj=self.tokenizer.skip_id, end_obj=self.tokenizer.skip_id, pad_obj=self.tokenizer.skip_id
+                )
                 mask_tags = torch.tensor(mask_tags).to(self.device)
 
-            r.update(
+            inputs.update(
                 next_true=next_tags,
                 mask_true=mask_tags
             )
 
-        return r
+        return inputs
 
     def on_train_step(self, rets, **kwargs) -> dict:
-        rets = self.get_model_inputs(rets)
+        inputs = self.get_model_inputs(rets)
         with torch.cuda.amp.autocast(True):
-            output = self.model(**rets)
+            output = self.model(**inputs)
 
         return output
 
@@ -508,13 +469,13 @@ class Bert(Process):
                 mask_trues = results['mask_trues']
                 mask_preds = results['mask_preds']
 
-                non_mask_tag = self.vocab_op.sp_tag_dict['non_mask']
-                mask_trues = bundled.align(mask_trues, max_seq_len=self.max_seq_len, start_token=non_mask_tag, pad_token=non_mask_tag)
-                mask_preds = bundled.align(mask_preds, max_seq_len=self.max_seq_len, start_token=non_mask_tag, pad_token=non_mask_tag)
+                skip_id = self.tokenizer.skip_id
+                mask_trues = snack.align(mask_trues, max_seq_len=self.max_seq_len, start_obj=skip_id, pad_obj=skip_id)
+                mask_preds = snack.align(mask_preds, max_seq_len=self.max_seq_len, start_obj=skip_id, pad_obj=skip_id)
 
                 mask_trues = np.array(mask_trues)
                 mask_preds = np.array(mask_preds)
-                n_quit = np.sum((mask_trues == non_mask_tag) & (mask_preds == non_mask_tag))
+                n_quit = np.sum((mask_trues == skip_id) & (mask_preds == skip_id))
                 n_true = np.sum(mask_trues == mask_preds)
                 mask_score = (n_true - n_quit) / (mask_trues.size - n_quit)
                 result.update({'score.mask': mask_score})
@@ -559,7 +520,7 @@ class Bert(Process):
                     mask_outputs=outputs['mask_pred'],
                     mask_preds=mask_preds,
                     mask_trues=mask_trues,
-                    pred_segment=self.numerizer.decode(mask_preds),
+                    pred_segment=self.tokenizer.numeralizer.decode(mask_preds),
                     true_segment=[ret['segment'] for ret in rets]
                 )
 
@@ -690,12 +651,12 @@ class TextProcessForGpt(DataProcess):
     def data_preprocess(self, iter_data, train=True):
         paragraphs = [ret['text'] for ret in iter_data]
         # ['hello world!'] -> [['hello', ' world', '!']]
-        segments = self.spliter.from_paragraphs(paragraphs)
+        segments = self.tokenizer.spliter.from_paragraphs(paragraphs)
 
         for ret, segment in zip(iter_data, segments):
             ret.update(
                 segment=segment,
-                segment_tag=[0] * len(segment),
+                segment_pair_tags=[0] * len(segment),
                 text=''.join(segment)
             )
 
@@ -721,9 +682,7 @@ class Gpt2(Process):
     model_version = 'bert'
     use_scaler = True
     scheduler_strategy = 'step'  # step
-    vocab_op: Optional
-    numerizer: Optional
-    spliter: Optional
+    tokenizer: bundled.GPT2Tokenizer
     max_seq_len: int
     max_gen_len = 20
 
@@ -731,52 +690,43 @@ class Gpt2(Process):
         from models.text_pretrain.gpt2 import Model, Config
         self.get_vocab()
         self.model = Model(
-            self.vocab_op.vocab_size,
-            sp_tag_dict=self.vocab_op.sp_tag_dict,
+            self.tokenizer.vocab_size,
+            pad_id=self.tokenizer.pad_id,
             **Config.get('117M')
         )
 
     encoder_fn: str
 
     def get_vocab(self):
-        self.vocab_op = GptVocabOp.from_pretrain(self.encoder_fn, self.vocab_fn)
-        self.numerizer = numerizer.BytePairEncode(self.vocab_op.byte_pairs, self.vocab_op.word_dict)
-        self.spliter = spliter.ToSegments(sep_pattern=self.vocab_op.sep_pattern, is_split_punctuation=False)
-        self.vocab_op.sp_tag_dict = dict(
-            pad=self.numerizer.encode(' ')[0][0]
-        )
+        self.tokenizer = bundled.GPT2Tokenizer.from_pretrain(self.encoder_fn, self.vocab_fn)
 
     def set_optimizer(self):
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=1e-4, betas=(0.5, 0.999))
 
     def get_model_inputs(self, rets, train=True):
         segments = [ret['segment'] for ret in rets]
-        token_tags = self.numerizer.encode(segments)
-
-        seq_lens = [len(t) for t in token_tags]
-        token_tags = bundled.align(token_tags, max_seq_len=max(seq_lens), pad_token=self.vocab_op.sp_tag_dict['pad'])
-
+        r = self.tokenizer.encode_segments(segments)
         return dict(
-            x=torch.tensor(token_tags, device=self.device, dtype=torch.long),
-            seq_lens=seq_lens,
+            x=torch.tensor(r['segments_ids'], device=self.device, dtype=torch.long),
+            seq_lens=r['seq_lens'],
             max_gen_len=self.max_gen_len
         )
 
     def on_train_step(self, rets, **kwargs) -> dict:
-        rets = self.get_model_inputs(rets)
+        inputs = self.get_model_inputs(rets)
         with torch.cuda.amp.autocast(True):
-            output = self.model(**rets)
+            output = self.model(**inputs)
 
         return output
 
     def on_val_step(self, rets, **kwargs) -> dict:
-        model_inputs = self.get_model_inputs(rets, train=False)
-        seq_lens = model_inputs['seq_lens']
-        max_gen_len = model_inputs['max_gen_len']
+        inputs = self.get_model_inputs(rets, train=False)
+        seq_lens = inputs['seq_lens']
+        max_gen_len = inputs['max_gen_len']
 
         model_results = {}
         for name, model in self.models.items():
-            outputs = model(**model_inputs)
+            outputs = model(**inputs)
 
             ret = dict()
 
@@ -784,7 +734,7 @@ class Gpt2(Process):
             preds = [pred[:seq_lens[i] + max_gen_len] for i, pred in enumerate(preds)]
             ret.update(
                 preds=preds,
-                pred_segment=self.numerizer.decode(preds)
+                pred_segment=self.tokenizer.numerizer.decode(preds)
             )
 
             model_results[name] = ret

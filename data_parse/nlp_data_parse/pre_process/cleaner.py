@@ -3,16 +3,6 @@ import unicodedata
 from typing import List
 
 
-class Apply:
-    def __init__(self, *funcs):
-        self.funcs = funcs
-
-    def __call__(self, obj):
-        for func in self.funcs:
-            obj = func(obj)
-        return obj
-
-
 class Base:
     def from_article(self, article: str):
         return self.from_paragraph(article)

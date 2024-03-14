@@ -95,21 +95,20 @@ class Model(nn.Module):
     """
 
     def __init__(
-            self, vocab_size, sp_tag_dict,
+            self, vocab_size, pad_id, skip_id,
             bert_config=Config.get(),
             is_nsp=True, nsp_out_features=2,
             is_mlm=True
     ):
         super().__init__()
-        self.sp_tag_dict = sp_tag_dict
         self.is_nsp = is_nsp
         self.is_mlm = is_mlm
 
-        self.backbone = Bert(vocab_size, sp_tag_dict, **bert_config)
+        self.backbone = Bert(vocab_size, pad_id, **bert_config)
         if is_nsp:
             self.nsp = NSP(self.backbone.out_features, nsp_out_features)
         if is_mlm:
-            self.mlm = MLM(self.backbone.out_features, vocab_size, sp_tag_dict['non_mask'])
+            self.mlm = MLM(self.backbone.out_features, vocab_size, skip_id)
 
         torch_utils.ModuleManager.initialize_layers(self)
 
@@ -172,8 +171,8 @@ class NSP(nn.Module):
 class MLM(nn.Sequential):
     """Masked Language Model"""
 
-    def __init__(self, in_features, out_features, non_mask_tag):
-        self.non_mask_tag = non_mask_tag
+    def __init__(self, in_features, out_features, skip_id):
+        self.skip_id = skip_id
         super().__init__(
             Linear(in_features, in_features, mode='lan', act=nn.GELU(), norm=nn.LayerNorm(in_features, eps=1e-12)),
             nn.Linear(in_features, out_features)
@@ -181,17 +180,16 @@ class MLM(nn.Sequential):
 
     def loss(self, mask_pred, mask_true):
         mask_pred = mask_pred.transpose(1, 2)  # seq first -> class first
-        return F.cross_entropy(mask_pred, mask_true, ignore_index=self.non_mask_tag)
+        return F.cross_entropy(mask_pred, mask_true, ignore_index=self.skip_id)
 
 
 class Bert(nn.Module):
-    def __init__(self, vocab_size, sp_tag_dict, max_seq_len=512, n_segment=2, hidden_size=768, num_hidden_layers=12, num_attention_heads=12, drop_prob=0.1):
+    def __init__(self, vocab_size, pad_id, max_seq_len=512, n_segment=2, hidden_size=768, num_hidden_layers=12, num_attention_heads=12, drop_prob=0.1):
         super().__init__()
-        self.embedding = Embedding(vocab_size, hidden_size, sp_tag_dict, max_seq_len=max_seq_len, n_segment=n_segment, drop_prob=drop_prob)
+        self.embedding = Embedding(vocab_size, hidden_size, pad_id, max_seq_len=max_seq_len, n_segment=n_segment, drop_prob=drop_prob)
         self.encoder = nn.ModuleList([TransformerBlock(hidden_size, num_attention_heads, hidden_size * 4, drop_prob=drop_prob) for _ in range(num_hidden_layers)])
 
         self.out_features = hidden_size
-        self.sp_tag_dict = sp_tag_dict
 
     def forward(self, x, segment_info, attention_mask=None):
         x = self.embedding(x, segment_info)
@@ -204,9 +202,9 @@ class Bert(nn.Module):
 class Embedding(nn.Module):
     """TokenEmbedding + PositionalEmbedding + SegmentEmbedding"""
 
-    def __init__(self, vocab_size, embedding_dim, sp_tag_dict, max_seq_len=512, n_segment=2, drop_prob=0.1):
+    def __init__(self, vocab_size, embedding_dim, pad_id, max_seq_len=512, n_segment=2, drop_prob=0.1):
         super().__init__()
-        self.token = nn.Embedding(vocab_size, embedding_dim, padding_idx=sp_tag_dict['pad'])
+        self.token = nn.Embedding(vocab_size, embedding_dim, padding_idx=pad_id)
 
         # note, in vanilla attention, using cosine positional embeddings
         # to see `PositionalEmbedding` to get more detail

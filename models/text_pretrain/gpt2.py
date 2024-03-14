@@ -94,7 +94,7 @@ class WeightLoader(bundles.WeightLoader):
         ]
 
         var_name, key_types, value_types = math_utils.transpose(info)
-        file_name = cls.get_file_name(save_path, save_name)
+        file_name = save_path
         state_dict = torch_utils.Load.from_tf_ckpt(file_name, var_names=var_name, key_types=key_types, value_types=value_types)
 
         return state_dict
@@ -154,11 +154,11 @@ class Model(nn.Module):
     """https://github.com/openai/gpt-2"""
 
     def __init__(self, vocab_size, max_seq_len=1024, hidden_size=768, num_attention_heads=12, n_layer=12,
-                 drop_prob=0.1, sp_tag_dict=None):
+                 drop_prob=0.1, pad_id=None):
         super().__init__()
-        self.sp_tag_dict = sp_tag_dict
+        self.pad_id = pad_id
         self.n_layer = n_layer
-        self.embedding = Embedding(vocab_size, hidden_size, sp_tag_dict, max_seq_len=max_seq_len)
+        self.embedding = Embedding(vocab_size, hidden_size, pad_id, max_seq_len=max_seq_len)
         self.encoder = nn.ModuleList([
             TransformerBlock(
                 hidden_size, num_attention_heads, hidden_size * 4, norm_first=True, drop_prob=drop_prob, separate=False
@@ -169,7 +169,7 @@ class Model(nn.Module):
 
     def forward(self, x, **kwargs):
         if self.training:
-            trues = torch.cat([x[:, 1:], torch.full((len(x), 1), self.sp_tag_dict['pad'])], dim=1)
+            trues = torch.cat([x[:, 1:], torch.full((len(x), 1), self.pad_id)], dim=1)
             preds = self.decode(x)
             loss = self.loss(preds, trues)
             return {'loss': loss}
@@ -218,9 +218,9 @@ class Model(nn.Module):
 class Embedding(nn.Module):
     """TokenEmbedding + PositionalEmbedding + SegmentEmbedding"""
 
-    def __init__(self, vocab_size, embedding_dim, sp_tag_dict=None, max_seq_len=512):
+    def __init__(self, vocab_size, embedding_dim, pad_id=None, max_seq_len=512):
         super().__init__()
-        self.token = nn.Embedding(vocab_size, embedding_dim, padding_idx=sp_tag_dict['pad'] if sp_tag_dict else None)
+        self.token = nn.Embedding(vocab_size, embedding_dim, padding_idx=pad_id)
         self.position = nn.Embedding(max_seq_len, embedding_dim)
         self.register_buffer("position_ids", torch.arange(max_seq_len).expand((1, -1)))
         self.embedding_dim = embedding_dim

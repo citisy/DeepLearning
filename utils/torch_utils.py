@@ -2,6 +2,7 @@ import re
 import copy
 import math
 import pandas as pd
+import numpy as np
 import torch
 from torch import nn
 from pathlib import Path
@@ -535,6 +536,24 @@ class Lora:
 
 
 class Converter:
+    @staticmethod
+    def arrays_to_tensors(objs: dict, device=None):
+        for k, v in objs.items():
+            if isinstance(v, np.ndarray):
+                objs[k] = torch.from_numpy(v).to(device)
+            elif isinstance(v, (list, tuple)):
+                objs[k] = torch.tensor(v, device=device)
+
+        return objs
+
+    @staticmethod
+    def tensors_to_array(objs: dict):
+        for k, v in objs.items():
+            if isinstance(k, torch.Tensor):
+                objs[k] = v.cpu().numpy()
+
+        return objs
+
     @staticmethod
     def convert_keys(state_dict: OrderedDict, convert_dict: dict):
         """

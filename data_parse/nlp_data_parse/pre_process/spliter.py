@@ -1,4 +1,4 @@
-"""context split to different fine-grained type
+"""split: context split to different fine-grained type
 
 article (str):
     all lines fatten to a string
