@@ -2,11 +2,12 @@ import os
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from .bert import TransformerBlock
+from .. import bundles
+from .transformers import TransformerBlock
 from utils import torch_utils, math_utils
 
 
-class Config:
+class Config(bundles.Config):
     default_model = '117M'
 
     @classmethod
@@ -58,15 +59,10 @@ class Config:
         )
         return config_dict
 
-    @classmethod
-    def get(cls, name=None):
-        config_dict = cls.make_full_config()
-        return config_dict.get(name, cls.default_model)
 
-
-class WeightLoader:
+class WeightLoader(bundles.WeightLoader):
     @staticmethod
-    def from_openai_tf(save_path, n_layer=12):
+    def from_openai_tf(save_path, save_name='model.ckpt', n_layer=12):
         """model download from
         https://github.com/openai/gpt-2/blob/master/download_model.py"""
         info = [
@@ -98,20 +94,24 @@ class WeightLoader:
         ]
 
         var_name, key_types, value_types = math_utils.transpose(info)
-        tensors = torch_utils.Load.from_tf_ckpt(save_path, var_names=var_name, key_types=key_types, value_types=value_types)
-
-        return tensors
-
-    @staticmethod
-    def from_hf(save_path, save_name='pytorch_model.bin'):
         if os.path.isfile(save_path):
-            state_dict = torch.load(save_path)
+            file_name = save_path
         elif os.path.isfile(f'{save_path}/{save_name}'):
-            state_dict = torch.load(f'{save_path}/{save_name}')
-        else:  # download weight auto
-            from transformers import GPT2PreTrainedModel
-            model = GPT2PreTrainedModel.from_pretrained(save_path)
-            state_dict = model.state_dict()
+            file_name = f'{save_path}/{save_name}'
+        else:
+            raise f'can not find file in {save_path} and {save_name}'
+
+        state_dict = torch_utils.Load.from_tf_ckpt(file_name, var_names=var_name, key_types=key_types, value_types=value_types)
+
+        return state_dict
+
+    @classmethod
+    def auto_download(cls, save_path, save_name=''):
+        # download weight auto from transformers
+        from transformers import GPT2PreTrainedModel
+
+        model = GPT2PreTrainedModel.from_pretrained(save_path)
+        state_dict = model.state_dict()
         return state_dict
 
 

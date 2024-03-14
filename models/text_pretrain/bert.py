@@ -3,68 +3,85 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 from utils import torch_utils
-from ..layers import Linear, Residual
-from ..attentions import CrossAttention2D
+from .transformers import TransformerBlock
+from .. import bundles
+from ..layers import Linear
 
 
-def convert_hf_weights(state_dict):
-    """convert weights from huggingface model to my own model
-
-    Usage:
-        .. code-block:: python
-
-            state_dict = torch.load('...')
-            state_dict = convert_hf_weights(state_dict)
-            Model(...).load_state_dict(state_dict)
-
-            from transformers import BertForPreTraining
-            state_dict = BertForPreTraining.from_pretrained('...')
-            state_dict = convert_hf_weights(state_dict)
-            Model(...).load_state_dict(state_dict)
-    """
-    convert_dict = {
-        'bert.embeddings.word_embeddings': 'backbone.embedding.token',
-        'bert.embeddings.position_embeddings': 'backbone.embedding.position',
-        'bert.embeddings.position_ids': 'backbone.embedding.position_ids',
-        'bert.embeddings.token_type_embeddings': 'backbone.embedding.segment',
-        'bert.embeddings.LayerNorm': 'backbone.embedding.head.0',
-        'bert.encoder.layer.{0}.attention.self.query': 'backbone.encoder.{0}.res1.fn.to_qkv.0',
-        'bert.encoder.layer.{0}.attention.self.key': 'backbone.encoder.{0}.res1.fn.to_qkv.1',
-        'bert.encoder.layer.{0}.attention.self.value': 'backbone.encoder.{0}.res1.fn.to_qkv.2',
-        'bert.encoder.layer.{0}.attention.output.dense': 'backbone.encoder.{0}.res1.fn.to_out.linear',
-        'bert.encoder.layer.{0}.attention.output.LayerNorm': 'backbone.encoder.{0}.res1.norm',
-        'bert.encoder.layer.{0}.intermediate.dense': 'backbone.encoder.{0}.res2.fn.0.linear',
-        'bert.encoder.layer.{0}.output.dense': 'backbone.encoder.{0}.res2.fn.1.linear',
-        'bert.encoder.layer.{0}.output.LayerNorm': 'backbone.encoder.{0}.res2.norm',
-        'bert.pooler.dense': 'neck.linear',
-        'cls.predictions.transform.dense': 'mlm.0.linear',
-        'cls.predictions.transform.LayerNorm': 'mlm.0.norm',
-        'cls.predictions.decoder': 'mlm.1',
-        'cls.predictions.bias': 'mlm.1.bias'
-    }
-    state_dict = torch_utils.Converter.convert_keys(state_dict, convert_dict)
-
-    # convert the original weight
-    convert_dict = {
-        '{0}.gamma': '{0}.weight',
-        '{0}.beta': '{0}.bias'
-    }
-    state_dict = torch_utils.Converter.convert_keys(state_dict, convert_dict)
-
-    return state_dict
-
-
-class Config:
-    tiny = dict(hidden_size=128, num_hidden_layers=2, num_attention_heads=2)
-    mini = dict(hidden_size=256, num_hidden_layers=4, num_attention_heads=4)
-    small = dict(hidden_size=512, num_hidden_layers=4, num_attention_heads=8)
-    medium = dict(hidden_size=512, num_hidden_layers=8, num_attention_heads=8)
-    base = dict(hidden_size=768, num_hidden_layers=12, num_attention_heads=12)
-    large = dict(hidden_size=1024, num_hidden_layers=24, num_attention_heads=16)
+class Config(bundles.Config):
+    default_model = 'base'
 
     @classmethod
-    def get(cls, name='base'):
-        return getattr(cls, name)
+    def make_full_config(cls) -> dict:
+        config_dict = dict(
+            tiny=dict(hidden_size=128, num_hidden_layers=2, num_attention_heads=2),
+            mini=dict(hidden_size=256, num_hidden_layers=4, num_attention_heads=4),
+            small=dict(hidden_size=512, num_hidden_layers=4, num_attention_heads=8),
+            medium=dict(hidden_size=512, num_hidden_layers=8, num_attention_heads=8),
+            base=dict(hidden_size=768, num_hidden_layers=12, num_attention_heads=12),
+            large=dict(hidden_size=1024, num_hidden_layers=24, num_attention_heads=16),
+        )
+        return config_dict
+
+
+class WeightLoader(bundles.WeightLoader):
+    @classmethod
+    def auto_download(cls, save_path, save_name=''):
+        # download weight auto from transformers
+        from transformers import BertForMaskedLM
+
+        model = BertForMaskedLM.from_pretrained(save_path, num_labels=2)
+        state_dict = model.state_dict()
+        return state_dict
+
+
+class WeightConverter:
+    @staticmethod
+    def from_hf(state_dict):
+        """convert weights from huggingface model to my own model
+
+        Usage:
+            .. code-block:: python
+
+                state_dict = torch.load('...')
+                state_dict = convert_hf_weights(state_dict)
+                Model(...).load_state_dict(state_dict)
+
+                from transformers import BertForPreTraining
+                state_dict = BertForPreTraining.from_pretrained('...')
+                state_dict = convert_hf_weights(state_dict)
+                Model(...).load_state_dict(state_dict)
+        """
+        convert_dict = {
+            'bert.embeddings.word_embeddings': 'backbone.embedding.token',
+            'bert.embeddings.position_embeddings': 'backbone.embedding.position',
+            'bert.embeddings.position_ids': 'backbone.embedding.position_ids',
+            'bert.embeddings.token_type_embeddings': 'backbone.embedding.segment',
+            'bert.embeddings.LayerNorm': 'backbone.embedding.head.0',
+            'bert.encoder.layer.{0}.attention.self.query': 'backbone.encoder.{0}.res1.fn.to_qkv.0',
+            'bert.encoder.layer.{0}.attention.self.key': 'backbone.encoder.{0}.res1.fn.to_qkv.1',
+            'bert.encoder.layer.{0}.attention.self.value': 'backbone.encoder.{0}.res1.fn.to_qkv.2',
+            'bert.encoder.layer.{0}.attention.output.dense': 'backbone.encoder.{0}.res1.fn.to_out.linear',
+            'bert.encoder.layer.{0}.attention.output.LayerNorm': 'backbone.encoder.{0}.res1.norm',
+            'bert.encoder.layer.{0}.intermediate.dense': 'backbone.encoder.{0}.res2.fn.0.linear',
+            'bert.encoder.layer.{0}.output.dense': 'backbone.encoder.{0}.res2.fn.1.linear',
+            'bert.encoder.layer.{0}.output.LayerNorm': 'backbone.encoder.{0}.res2.norm',
+            'bert.pooler.dense': 'neck.linear',
+            'cls.predictions.transform.dense': 'mlm.0.linear',
+            'cls.predictions.transform.LayerNorm': 'mlm.0.norm',
+            'cls.predictions.decoder': 'mlm.1',
+            'cls.predictions.bias': 'mlm.1.bias'
+        }
+        state_dict = torch_utils.Converter.convert_keys(state_dict, convert_dict)
+
+        # convert the original weight
+        convert_dict = {
+            '{0}.gamma': '{0}.weight',
+            '{0}.beta': '{0}.bias'
+        }
+        state_dict = torch_utils.Converter.convert_keys(state_dict, convert_dict)
+
+        return state_dict
 
 
 class Model(nn.Module):
@@ -79,7 +96,7 @@ class Model(nn.Module):
 
     def __init__(
             self, vocab_size, sp_tag_dict,
-            bert_config=Config.base,
+            bert_config=Config.get(),
             is_nsp=True, nsp_out_features=2,
             is_mlm=True
     ):
@@ -237,32 +254,3 @@ class PositionalEmbedding(nn.Module):
 
     def forward(self, x):
         return self.pe[:, :x.size(1)]
-
-
-class TransformerBlock(nn.Module):
-    """SelfAttention + PositionWiseFeedForward
-    refer to [Attention is All You Need](https://arxiv.org/pdf/1706.03762.pdf)
-    """
-
-    def __init__(self, hidden_size, num_attention_heads, feed_forward_hidden, norm_first=False, drop_prob=0.1, **attn_kwargs):
-        super().__init__()
-        self.res1 = Residual(
-            CrossAttention2D(n_heads=num_attention_heads, model_dim=hidden_size, drop_prob=drop_prob, **attn_kwargs),
-            norm=nn.LayerNorm(hidden_size),
-            norm_first=norm_first
-        )
-
-        self.res2 = Residual(
-            nn.Sequential(
-                Linear(hidden_size, feed_forward_hidden, mode='la', act=nn.GELU()),
-                Linear(feed_forward_hidden, hidden_size, mode='ld', drop_prob=drop_prob)
-            ),  # PositionWiseFeedForward
-            norm=nn.LayerNorm(hidden_size),
-            norm_first=norm_first
-        )
-
-    def forward(self, x, attention_mask=None):
-        """(b, s, h) -> (b, s, h)"""
-        x = self.res1(x, attention_mask=attention_mask)
-        x = self.res2(x)
-        return x
