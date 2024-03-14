@@ -9,9 +9,10 @@ from functools import partial
 from utils import torch_utils
 from ..layers import Linear, Conv, Upsample, Downsample
 from ..attentions import CrossAttention3D, LinearAttention3D
+from .. import bundles
 
 
-class Config:
+class Config(bundles.Config):
     PRED_X0 = 1
     PRED_Z = 2
     PRED_V = 3
@@ -33,11 +34,13 @@ class Config:
     )
 
     @classmethod
-    def get(cls, name=None):
-        return dict(
-            in_module_config=cls.in_module_config,
-            backbone_config=cls.backbone_config
-        )
+    def make_full_config(cls) -> dict:
+        return {
+            '': dict(
+                in_module_config=cls.in_module_config,
+                backbone_config=cls.backbone_config
+            )
+        }
 
 
 def extract(a, t, x_shape):

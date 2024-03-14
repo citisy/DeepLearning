@@ -52,11 +52,6 @@ class Config(ddim.Config):
         )
         return config_dict
 
-    @classmethod
-    def get(cls, name=None):
-        config_dict = cls.make_full_config()
-        return config_dict.get(name, cls.default_model)
-
 
 def convert_weights(state_dict):
     """convert weights from official model to my own model
