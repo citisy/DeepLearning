@@ -161,7 +161,8 @@ class Model(nn.Module):
         self.embedding = Embedding(vocab_size, hidden_size, pad_id, max_seq_len=max_seq_len)
         self.encoder = nn.ModuleList([
             TransformerBlock(
-                hidden_size, num_attention_heads, hidden_size * 4, norm_first=True, drop_prob=drop_prob, separate=False
+                hidden_size, num_attention_heads, hidden_size * 4, norm_first=True, drop_prob=drop_prob,
+                fn_kwargs=dict(separate=False)
             ) for _ in range(n_layer)
         ])
         self.norm = nn.LayerNorm(hidden_size)
@@ -196,8 +197,8 @@ class Model(nn.Module):
                 preds = preds / preds.sum()
 
                 # random sampling
-                next_tag = keep[preds.multinomial(1)[0]]
-                x[index][j + 1] = next_tag
+                next_id = keep[preds.multinomial(1)[0]]
+                x[index][j + 1] = next_id
         return x
 
     def decode(self, sequence):

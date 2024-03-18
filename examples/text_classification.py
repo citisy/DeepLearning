@@ -1,9 +1,9 @@
 import torch
 import numpy as np
-from .text_pretrain import TextProcess, Bert as BertFull, FromHFPretrain
+from .text_pretrain import TextProcessForBert, Bert as BertFull, LoadBertFromHFPretrain
 
 
-class CoLA(TextProcess):
+class CoLA(TextProcessForBert):
     dataset_version = 'CoLA'
     data_dir = 'data/CoLA'
 
@@ -20,7 +20,7 @@ class CoLA(TextProcess):
             return loader.load(set_type=DataRegister.DEV, max_size=self.val_data_num, generator=False)[0]
 
 
-class SST2(TextProcess):
+class SST2(TextProcessForBert):
     dataset_version = 'SST2'
     data_dir = 'data/SST2'
 
@@ -84,7 +84,7 @@ class Bert_CoLA(McMetric, Bert, CoLA):
     """
 
 
-class BertHF_CoLA(McMetric, Bert, FromHFPretrain, CoLA):
+class BertHF_CoLA(McMetric, Bert, LoadBertFromHFPretrain, CoLA):
     """
     Usage:
         .. code-block:: python
@@ -128,7 +128,7 @@ class BertFull_SST2(BertFull, SST2):
     """
 
 
-class BertHF_SST2(Bert, FromHFPretrain, SST2):
+class BertHF_SST2(Bert, LoadBertFromHFPretrain, SST2):
     """
     Usage:
         .. code-block:: python

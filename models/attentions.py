@@ -1,3 +1,4 @@
+import math
 import torch
 from torch import nn
 import torch.nn.functional as F
@@ -35,7 +36,7 @@ class CrossAttention2D(nn.Module):
 
     def __init__(self, n_heads=None, model_dim=None, head_dim=None, query_dim=None, context_dim=None,
                  use_xformers=None, use_conv=False, separate=True, use_mem_kv=False, n_mem_size=4,
-                 drop_prob=0.1, **fn_kwargs):
+                 drop_prob=0.1, attend=None, **fn_kwargs):
         super().__init__()
         n_heads, model_dim, head_dim = get_attention_input(n_heads, model_dim, head_dim)
         query_dim = query_dim or model_dim
@@ -78,17 +79,20 @@ class CrossAttention2D(nn.Module):
             self.view_in = Rearrange('b s (n dk)-> b n s dk', n=n_heads)
 
             self.view_out = Rearrange('b n s dk -> b s (n dk)')
-            self.to_out = Linear(model_dim, query_dim, mode='ld', drop_prob=drop_prob)
+            self.to_out = Linear(model_dim, query_dim, mode='ld', drop_prob=drop_prob, **fn_kwargs)
 
-        if use_xformers:
-            # faster and less memory
-            # requires pytorch > 2.0
-            from xformers.ops import memory_efficient_attention
-            self.attend = memory_efficient_attention
-        else:
-            self.attend = ScaleAttend(drop_prob)
+        if attend is None:
+            if use_xformers:
+                # faster and less memory
+                # requires pytorch > 2.0
+                from xformers.ops import memory_efficient_attention
+                attend = memory_efficient_attention
+            else:
+                attend = ScaleAttend(drop_prob=drop_prob)
 
-    def forward(self, q, k=None, v=None, attention_mask=None):
+        self.attend = attend
+
+    def forward(self, q, k=None, v=None, attention_mask=None, **kwargs):
         if self.separate:
             q, k, v = get_qkv(q, k, v)
             q, k, v = [m(x) for m, x in zip(self.to_qkv, (q, k, v))]
@@ -102,10 +106,11 @@ class CrossAttention2D(nn.Module):
             mk, mv = map(lambda t: repeat(t, 'n j d -> b n j d', b=q.shape[0]), self.mem_kv)
             k, v = map(partial(torch.cat, dim=-2), ((mk, k), (mv, v)))
 
-        x = self.attend(q, k, v, attention_mask=attention_mask)
+        x = self.attend(q, k, v, attention_mask=attention_mask, **kwargs)
         x = self.view_out(x)
 
-        return self.to_out(x)
+        x = self.to_out(x)
+        return x
 
 
 class CrossAttention3D(nn.Module):
@@ -113,7 +118,7 @@ class CrossAttention3D(nn.Module):
 
     def __init__(self, n_heads=None, model_dim=None, head_dim=None, query_dim=None, context_dim=None,
                  use_xformers=None, separate=True, use_mem_kv=False, n_mem_size=4,
-                 drop_prob=0., **conv_kwargs):
+                 drop_prob=0., **fn_kwargs):
         super().__init__()
         n_heads, model_dim, head_dim = get_attention_input(n_heads, model_dim, head_dim)
         query_dim = query_dim or model_dim
@@ -125,13 +130,13 @@ class CrossAttention3D(nn.Module):
 
         if separate:
             self.to_qkv = nn.ModuleList([
-                nn.Conv2d(query_dim, model_dim, 1, **conv_kwargs),
-                nn.Conv2d(context_dim, model_dim, 1, **conv_kwargs),
-                nn.Conv2d(context_dim, model_dim, 1, **conv_kwargs),
+                nn.Conv2d(query_dim, model_dim, 1, **fn_kwargs),
+                nn.Conv2d(context_dim, model_dim, 1, **fn_kwargs),
+                nn.Conv2d(context_dim, model_dim, 1, **fn_kwargs),
             ])
         else:  # only for self attention
             assert query_dim == context_dim
-            self.to_qkv = nn.Conv2d(query_dim, model_dim * 3, 1, **conv_kwargs)
+            self.to_qkv = nn.Conv2d(query_dim, model_dim * 3, 1, **fn_kwargs)
 
         if use_mem_kv:
             self.view_in = Rearrange('b (n d) h w -> b n (h w) d', n=n_heads)
@@ -180,17 +185,10 @@ class ScaleAttend(nn.Module):
 
     def forward(self, q, k, v, attention_mask=None):
         scale = q.shape[-1] ** -0.5
-        # similarity
+        # similarity -> (..., i, j), usually i=j=s
         # sim = torch.einsum('... i d, ... j d -> ... i j', q, k) * self.scale
         sim = torch.matmul(q, k.transpose(-2, -1)) * scale
-
-        if attention_mask is not None:  # mask pad
-            attention_mask = ~attention_mask.to(dtype=torch.bool)
-            if len(attention_mask.shape) != len(sim.shape):
-                *t, h, w = sim.shape
-                n, s = attention_mask.shape
-                attention_mask = attention_mask.view(n, *[1] * len(t), s).repeat(1, 1, h, 1)  # (..., s) -> (..., s, s)
-            sim = sim.masked_fill(attention_mask, torch.finfo(sim.dtype).min)  # support fp16
+        sim = self.mask(sim, attention_mask)
 
         attn = F.softmax(sim, dim=-1)
         attn = self.dropout(attn)
@@ -200,12 +198,23 @@ class ScaleAttend(nn.Module):
 
         return attn
 
+    def mask(self, sim, attention_mask):
+        if attention_mask is not None:  # mask pad
+            # [[1,1,1,0,0,....]] -> [F,F,F,T,T,...]
+            attention_mask = ~attention_mask.to(dtype=torch.bool)
+            if len(attention_mask.shape) != len(sim.shape):
+                *t, i, j = sim.shape
+                n, j = attention_mask.shape
+                attention_mask = attention_mask.view(n, *[1] * len(t), j).repeat(1, 1, i, 1)  # (n, j) -> (n, 1, i, j)
+            sim = sim.masked_fill(attention_mask, torch.finfo(sim.dtype).min)  # support fp16
+        return sim
+
 
 class LinearAttention3D(nn.Module):
     """linear attention build by conv function"""
 
     def __init__(self, n_heads=None, model_dim=None, head_dim=None, query_dim=None, context_dim=None,
-                 separate=True, use_mem_kv=True, n_mem_size=4, norm=None, **conv_kwargs):
+                 separate=True, use_mem_kv=True, n_mem_size=4, norm=None, **fn_kwargs):
         super().__init__()
         n_heads, model_dim, head_dim = get_attention_input(n_heads, model_dim, head_dim)
         query_dim = query_dim or model_dim
@@ -217,13 +226,13 @@ class LinearAttention3D(nn.Module):
 
         if separate:
             self.to_qkv = nn.ModuleList([
-                nn.Conv2d(query_dim, model_dim, 1, **conv_kwargs),
-                nn.Conv2d(context_dim, model_dim, 1, **conv_kwargs),
-                nn.Conv2d(context_dim, model_dim, 1, **conv_kwargs),
+                nn.Conv2d(query_dim, model_dim, 1, **fn_kwargs),
+                nn.Conv2d(context_dim, model_dim, 1, **fn_kwargs),
+                nn.Conv2d(context_dim, model_dim, 1, **fn_kwargs),
             ])
         else:  # only for self attention
             assert query_dim == context_dim
-            self.to_qkv = nn.Conv2d(query_dim, model_dim * 3, 1, **conv_kwargs)
+            self.to_qkv = nn.Conv2d(query_dim, model_dim * 3, 1, **fn_kwargs)
 
         self.cvt = Rearrange('b (n d) h w -> b n d (h w)', n=n_heads)
 

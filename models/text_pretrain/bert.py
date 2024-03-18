@@ -96,7 +96,7 @@ class Model(nn.Module):
 
     def __init__(
             self, vocab_size, pad_id, skip_id,
-            bert_config=Config.get(),
+            bert_config=Config.get('base'),
             is_nsp=True, nsp_out_features=2,
             is_mlm=True
     ):
@@ -194,7 +194,7 @@ class Bert(nn.Module):
     def forward(self, x, segment_info, attention_mask=None):
         x = self.embedding(x, segment_info)
         for m in self.encoder:
-            x = m(x, attention_mask)
+            x = m(x, attention_mask=attention_mask)
 
         return x
 

@@ -95,7 +95,7 @@ class IterIterBatchDataset(IterIterDataset):
         return rets
 
 
-class DataProcess(DataHooks):
+class DataProcessForBert(DataHooks):
     data_dir: str
     max_seq_len: int = 512
 
@@ -109,7 +109,6 @@ class DataProcess(DataHooks):
     is_nsp: bool
 
     tokenizer: bundled.BertTokenizer
-    max_seq_len: int
 
     def _filter_func(self, x):
         if re.search('[0-9]', x):
@@ -121,7 +120,7 @@ class DataProcess(DataHooks):
         return True
 
 
-class TextProcess(DataProcess):
+class TextProcessForBert(DataProcessForBert):
     def make_vocab(self):
         # todo: make word piece
         sp_token_dict = self.tokenizer.sp_token_dict
@@ -186,7 +185,7 @@ class TextProcess(DataProcess):
         return ret
 
 
-class TextPairProcess(DataProcess):
+class TextPairProcessForBert(DataProcessForBert):
     def make_vocab(self):
         # todo: make word piece
         sp_token_dict = self.tokenizer.sp_token_dict
@@ -263,7 +262,7 @@ class TextPairProcess(DataProcess):
         return ret
 
 
-class SimpleText(TextProcess):
+class SimpleTextForBert(TextProcessForBert):
     dataset_version = 'simple_text'
     data_dir: str
 
@@ -278,7 +277,7 @@ class SimpleText(TextProcess):
             return loader.load(set_type=DataRegister.TEST, max_size=self.val_data_num, return_label=self.is_nsp, generator=False)[0]
 
 
-class SimpleTextPair(TextPairProcess):
+class SimpleTextPairForBert(TextPairProcessForBert):
     dataset_version = 'simple_text_pair'
     data_dir: str
 
@@ -292,7 +291,7 @@ class SimpleTextPair(TextPairProcess):
             return loader.load(set_type=DataRegister.TEST, max_size=self.val_data_num, generator=False)[0]
 
 
-class LargeSimpleText(DataProcess):
+class LargeSimpleTextForBert(DataProcessForBert):
     """for loading large file"""
     dataset_version = 'simple_text'
     one_step_data_num = int(1e6)
@@ -342,12 +341,12 @@ class LargeSimpleText(DataProcess):
 
     def data_augment(self, rets, train=True) -> List[dict]:
         """preprocess + data_augment"""
-        rets = TextProcess.data_preprocess(self, rets, train)
-        rets = [TextProcess.data_augment(self, ret, train) for ret in rets]
+        rets = TextProcessForBert.data_preprocess(self, rets, train)
+        rets = [TextProcessForBert.data_augment(self, ret, train) for ret in rets]
         return rets
 
 
-class SOP(DataProcess):
+class SOP(DataProcessForBert):
     train_dataset_ins = RandomReverseTextPairsDataset
     val_dataset_ins = RandomReverseTextPairsDataset
 
@@ -364,16 +363,16 @@ class SOP(DataProcess):
             return loader.load(set_type=DataRegister.TEST, max_size=self.val_data_num, return_label=False, generator=False)[0]
 
     def make_vocab(self):
-        return TextProcess.make_vocab(self)
+        return TextProcessForBert.make_vocab(self)
 
     def count_seq_len(self):
-        return TextProcess.count_seq_len(self)
+        return TextProcessForBert.count_seq_len(self)
 
     def data_preprocess(self, iter_data, train=True):
-        return TextProcess.data_preprocess(self, iter_data, train)
+        return TextProcessForBert.data_preprocess(self, iter_data, train)
 
     def data_augment(self, ret, train=True) -> dict:
-        return TextPairProcess.data_augment(self, ret, train)
+        return TextPairProcessForBert.data_augment(self, ret, train)
 
 
 class Bert(Process):
@@ -584,7 +583,7 @@ class Bert(Process):
             self.predict_container['model_results'].setdefault(name, []).extend(results['pred_segment'])
 
 
-class FromHFPretrain(CheckpointHooks):
+class LoadBertFromHFPretrain(CheckpointHooks):
     """load pretrain model from hugging face"""
 
     def load_pretrain(self):
@@ -595,7 +594,7 @@ class FromHFPretrain(CheckpointHooks):
             self.model.load_state_dict(state_dict, strict=False)
 
 
-class BertMLMFromHFPretrain(Bert, FromHFPretrain, TextProcess):
+class BertMLMFromHFPretrain(Bert, LoadBertFromHFPretrain, TextProcessForBert):
     """
     Usage:
         .. code-block:: python
@@ -621,7 +620,7 @@ class BertMLMFromHFPretrain(Bert, FromHFPretrain, TextProcess):
     is_chunk = False
 
 
-class BertMLM_SimpleText(Bert, SimpleText):
+class BertMLM_SimpleText(Bert, SimpleTextForBert):
     """
     Usage:
         .. code-block:: python
@@ -647,7 +646,18 @@ class Bert_SOP(Bert, SOP):
     """
 
 
-class TextProcessForGpt(DataProcess):
+class TextProcessForGpt(DataHooks):
+    data_dir: str
+    max_seq_len: int = 512
+
+    val_dataset_ins = BaseDataset
+    train_dataset_ins = BaseDataset
+
+    train_data_num = None
+    val_data_num = None
+
+    tokenizer: bundled.GPT2Tokenizer
+
     def data_preprocess(self, iter_data, train=True):
         paragraphs = [ret['text'] for ret in iter_data]
         # ['hello world!'] -> [['hello', ' world', '!']]
@@ -672,14 +682,14 @@ class SimpleTextForGpt(TextProcessForGpt):
         loader = Loader(self.data_dir)
 
         if train:
-            return loader.load(set_type=DataRegister.TRAIN, max_size=self.train_data_num, return_label=self.is_nsp, generator=False)[0]
+            return loader.load(set_type=DataRegister.TRAIN, max_size=self.train_data_num, return_label=True, generator=False)[0]
 
         else:
-            return loader.load(set_type=DataRegister.TEST, max_size=self.val_data_num, return_label=self.is_nsp, generator=False)[0]
+            return loader.load(set_type=DataRegister.TEST, max_size=self.val_data_num, return_label=True, generator=False)[0]
 
 
-class Gpt2(Process):
-    model_version = 'bert'
+class GPT2(Process):
+    model_version = 'GPT2'
     use_scaler = True
     scheduler_strategy = 'step'  # step
     tokenizer: bundled.GPT2Tokenizer
@@ -757,7 +767,7 @@ class Gpt2(Process):
             self.predict_container['model_results'].setdefault(name, []).extend(results['pred_segment'])
 
 
-class GPT2FromOpenaiPretrain(CheckpointHooks):
+class LoadGPT2FromOpenaiPretrain(CheckpointHooks):
     """load pretrain model from openai"""
 
     def load_pretrain(self):
@@ -769,7 +779,7 @@ class GPT2FromOpenaiPretrain(CheckpointHooks):
             self.model.load_state_dict(state_dict, strict=False)
 
 
-class GPT2FromHFPretrain(CheckpointHooks):
+class LoadGPT2FromHFPretrain(CheckpointHooks):
     """load pretrain model from huggingface"""
 
     def load_pretrain(self):
@@ -779,12 +789,12 @@ class GPT2FromHFPretrain(CheckpointHooks):
             self.model.load_state_dict(WeightConverter.from_huggingface(state_dict), strict=False)
 
 
-class Gpt2FromOpenaiPretrain(Gpt2, GPT2FromOpenaiPretrain, TextProcessForGpt):
+class GPT2FromOpenaiPretrain(GPT2, LoadGPT2FromOpenaiPretrain, TextProcessForGpt):
     """
     Usage:
         .. code-block:: python
 
-            from examples.text_pretrain import Gpt2FromOpenaiPretrain as Process
+            from examples.text_pretrain import GPT2FromOpenaiPretrain as Process
 
             process = Process(pretrain_model='...', vocab_fn='...', encoder_fn='...')
             process.init()
@@ -801,3 +811,143 @@ class Gpt2FromOpenaiPretrain(Gpt2, GPT2FromOpenaiPretrain, TextProcessForGpt):
             # My name is Thomas and my main goal is to make sure that I'm not just a guy who's going to be a part of
     """
     dataset_version = 'openai_pretrain'
+
+
+class SimpleTextForT5(DataHooks):
+    dataset_version = 'simple_text'
+    data_dir: str
+
+    max_seq_len: int = 512
+
+    val_dataset_ins = BaseDataset
+    train_dataset_ins = BaseDataset
+
+    train_data_num = None
+    val_data_num = None
+
+    tokenizer: bundled.T5Tokenizer
+
+    def get_data(self, *args, train=True, **kwargs):
+        from data_parse.nlp_data_parse.SimpleText import Loader, DataRegister
+        loader = Loader(self.data_dir)
+
+        if train:
+            return loader.load(set_type=DataRegister.TRAIN, max_size=self.train_data_num, return_label=True, generator=False)[0]
+
+        else:
+            return loader.load(set_type=DataRegister.TEST, max_size=self.val_data_num, return_label=True, generator=False)[0]
+
+
+class T5(Process):
+    model_version = 'T5'
+    use_scaler = True
+    scheduler_strategy = 'step'  # step
+    tokenizer: bundled.T5Tokenizer
+    max_seq_len: int
+    max_gen_len = 20
+
+    def set_model(self):
+        from models.text_pretrain.T5 import Model, Config
+        self.get_vocab()
+        self.model = Model(
+            self.tokenizer.vocab_size,
+            eos_id=self.tokenizer.eos_id,
+            **Config.get('small')
+        )
+
+    encoder_fn: str
+
+    def get_vocab(self):
+        self.tokenizer = bundled.T5Tokenizer.from_pretrain(self.vocab_fn)
+
+    def set_optimizer(self):
+        self.optimizer = torch.optim.Adam(self.model.parameters(), lr=1e-4, betas=(0.5, 0.999))
+
+    def get_model_inputs(self, rets, train=True):
+        paragraphs = [ret['text'] for ret in rets]
+        inputs = self.tokenizer.encode(paragraphs)
+        inputs = torch_utils.Converter.arrays_to_tensors(inputs, self.device)
+        return dict(
+            x=inputs['segments_ids'],
+            seq_lens=inputs['seq_lens'],
+            attention_mask=inputs['valid_segment_tags'],
+            max_gen_len=self.max_gen_len
+        )
+
+    def on_train_step(self, rets, **kwargs) -> dict:
+        inputs = self.get_model_inputs(rets)
+        with torch.cuda.amp.autocast(True):
+            output = self.model(**inputs)
+
+        return output
+
+    def on_val_step(self, rets, **kwargs) -> dict:
+        inputs = self.get_model_inputs(rets, train=False)
+        inputs.pop('seq_lens')
+        inputs.pop('max_gen_len')
+
+        model_results = {}
+        for name, model in self.models.items():
+            outputs = model(**inputs)
+
+            ret = dict()
+
+            preds = outputs['preds'].cpu().numpy().tolist()
+            ret.update(
+                preds=preds,
+                pred_segment=self.tokenizer.decode(preds)
+            )
+
+            model_results[name] = ret
+
+        return model_results
+
+    def on_val_step_end(self, *args, **kwargs):
+        """do not visualize"""
+
+    def gen_predict_inputs(self, *objs, start_idx=None, end_idx=None, **kwargs):
+        rets = []
+        for text in objs[0][start_idx: end_idx]:
+            ret = dict(text=text)
+            rets.append(ret)
+        rets = self.val_data_preprocess(rets)
+        return rets
+
+    def on_predict_step_end(self, model_results, **kwargs):
+        for name, results in model_results.items():
+            self.predict_container['model_results'].setdefault(name, []).extend(results['pred_segment'])
+
+
+class LoadT5FromHFPretrain(CheckpointHooks):
+    """load pretrain model from huggingface"""
+
+    def load_pretrain(self):
+        if hasattr(self, 'pretrain_model'):
+            from models.text_pretrain.T5 import WeightLoader, WeightConverter
+            state_dict = WeightLoader.from_hf(self.pretrain_model)
+            state_dict = WeightConverter.from_hf(state_dict)
+            self.model.load_state_dict(state_dict, strict=False)
+
+
+class T5FromHFPretrain(T5, LoadT5FromHFPretrain, SimpleTextForT5):
+    """
+    Usage:
+        .. code-block:: python
+
+            from examples.text_pretrain import T5FromHFPretrain as Process
+
+            process = Process(pretrain_model='...', vocab_fn='...', encoder_fn='...')
+            process.init()
+
+            # if using `117M` pretrain model
+            process.single_predict('translate English to German: The house is wonderful.')
+            # Das Haus ist wunderbar.
+
+            process.batch_predict([
+                'translate English to German: The house is wonderful.'
+                'summarize: studies have shown that owning a dog is good for you',
+            ])
+            # Das Haus ist wunderbar.
+            # studies have shown that owning a dog is good for you .
+    """
+    dataset_version = 'huggingface_pretrain'

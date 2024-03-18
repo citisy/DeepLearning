@@ -1,3 +1,4 @@
+import numpy as np
 from . import spliter, chunker, cleaner, snack, numeralizer, perturbation
 from utils import os_lib
 
@@ -119,6 +120,7 @@ class BertTokenizer:
 
         """
         valid_segment_tags = [[True] * len(seg) for seg in segments]
+        seq_lens = [len(t) for t in segments]
         segments = snack.align(
             segments, max_seq_len=self.max_seq_len,
             start_obj=self.cls_token, end_obj=self.sep_token, pad_obj=self.pad_token
@@ -135,7 +137,8 @@ class BertTokenizer:
         return dict(
             segments_ids=segments_ids,
             segment_pair_tags=segment_pair_tags,
-            valid_segment_tags=valid_segment_tags
+            valid_segment_tags=valid_segment_tags,
+            seq_lens=seq_lens
         )
 
     def decode_to_segments(self, segments_ids, valid_segment_tags):
@@ -152,12 +155,13 @@ class GPT2Tokenizer:
     - numerizer(bpe): [1, 2]
     """
 
-    def __init__(self, byte_pairs, word_dict, pad_id=None, **kwargs):
+    def __init__(self, byte_pairs, word_dict, pad_id=None, max_seq_len=512, **kwargs):
         import regex
 
         self.byte_pairs = byte_pairs
         self.word_dict = word_dict
         self.vocab_size = len(word_dict)
+        self.max_seq_len = max_seq_len
 
         # https://github.com/openai/gpt-2/blob/master/src/encoder.py#L53
         self.sep_pattern = regex.compile(r"""'s|'t|'re|'ve|'m|'ll|'d| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+""")
@@ -179,10 +183,68 @@ class GPT2Tokenizer:
         segments_ids = self.numerizer.encode(segments)
 
         seq_lens = [len(t) for t in segments_ids]
-        segments_ids = snack.align(segments_ids, max_seq_len=max(seq_lens), pad_obj=self.pad_id)
+        segments_ids = snack.align(segments_ids, max_seq_len=self.max_seq_len, pad_obj=self.pad_id)
 
         return dict(
             segments_ids=segments_ids,
             seq_lens=seq_lens
         )
 
+
+class T5Tokenizer:
+    additional_sp_token_dict = {f'extra_id_{i}': f'<extra_id_{i}>' for i in range(100)}
+    sp_token_dict = dict(
+        eos='</s>',
+        pad='<pad>',
+        unk='<unk>'
+    )
+    total_sp_token_dict = {
+        **sp_token_dict,
+        **additional_sp_token_dict
+    }
+
+    def __init__(self, sp_model: 'SentencePieceProcessor', max_seq_len=512, **kwargs):
+        self.max_seq_len = max_seq_len
+        self.sp_model = sp_model
+        # note, there are 32000 in sp_model.vocab_size(), and 100 in additional_sp_token,
+        # but not 32128, so doubtful how the get the number
+        # self.vocab_size: int = self.sp_model.vocab_size()
+        self.vocab_size: int = 32128
+        self.bos_id: int = self.sp_model.bos_id()
+        self.eos_id: int = self.sp_model.eos_id()
+        self.pad_id: int = self.sp_model.pad_id()
+
+        self.__dict__.update(kwargs)
+        self.__dict__.update({f'{k}_token': v for k, v in self.sp_token_dict.items()})
+
+    @staticmethod
+    def from_pretrain(vocab_path):
+        # pip install sentencepiece
+        from sentencepiece import SentencePieceProcessor
+
+        sp_model = SentencePieceProcessor(model_file=vocab_path)
+        return T5Tokenizer(sp_model)
+
+    def encode(self, paragraphs):
+        segments_ids = self.sp_model.encode(paragraphs)
+        valid_segment_tags = [[True] * len(seg) for seg in segments_ids]
+        seq_lens = [len(t) for t in segments_ids]
+        segments_ids = snack.align(
+            segments_ids, self.max_seq_len,
+            end_obj=self.eos_id, pad_obj=self.pad_id
+        )
+        valid_segment_tags = snack.align(
+            valid_segment_tags, max_seq_len=self.max_seq_len,
+            end_obj=True, pad_obj=False
+        )
+
+        return dict(
+            segments_ids=segments_ids,
+            valid_segment_tags=valid_segment_tags,
+            seq_lens=seq_lens
+        )
+
+    def decode(self, segments_ids):
+        if isinstance(segments_ids, np.ndarray):
+            segments_ids = segments_ids.tolist()
+        return self.sp_model.decode(segments_ids)

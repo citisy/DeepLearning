@@ -25,6 +25,9 @@ def truncate(seqs, seq_len):
 
 
 def pad(seqs, max_seq_len, pad_obj=None):
+    if pad_obj is None:
+        return seqs
+
     _segments = []
     for s in seqs:
         pad_len = max_seq_len - len(s)

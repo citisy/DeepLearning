@@ -1,8 +1,8 @@
 import torch
-from .text_pretrain import TextPairProcess, Bert as BertFull, FromHFPretrain
+from .text_pretrain import TextPairProcessForBert, Bert as BertFull, LoadBertFromHFPretrain
 
 
-class MNLI(TextPairProcess):
+class MNLI(TextPairProcessForBert):
     dataset_version = 'MNLI'
     data_dir = 'data/MNLI'
 
@@ -20,7 +20,7 @@ class MNLI(TextPairProcess):
             return loader.load(set_type=DataRegister.DEV, max_size=self.val_data_num, generator=False, task=task)[0]
 
 
-class QQP(TextPairProcess):
+class QQP(TextPairProcessForBert):
     dataset_version = 'QQP'
     data_dir = 'data/QQP'
 
@@ -38,7 +38,7 @@ class QQP(TextPairProcess):
             return loader.load(set_type=DataRegister.DEV, max_size=self.val_data_num, generator=False)[0]
 
 
-class QNLI(TextPairProcess):
+class QNLI(TextPairProcessForBert):
     dataset_version = 'QNLI'
     data_dir = 'data/QNLI'
 
@@ -55,7 +55,7 @@ class QNLI(TextPairProcess):
             return loader.load(set_type=DataRegister.DEV, max_size=self.val_data_num, generator=False)[0]
 
 
-class MRPC(TextPairProcess):
+class MRPC(TextPairProcessForBert):
     dataset_version = 'MRPC'
     data_dir = 'data/MRPC'
 
@@ -72,7 +72,7 @@ class MRPC(TextPairProcess):
             return loader.load(set_type=DataRegister.TEST, max_size=self.val_data_num, generator=False)[0]
 
 
-class RTE(TextPairProcess):
+class RTE(TextPairProcessForBert):
     dataset_version = 'RTE'
     data_dir = 'data/RTE'
 
@@ -122,7 +122,7 @@ class Bert_MNLI(Bert, MNLI):
     """
 
 
-class BertHF_MNLI(Bert, FromHFPretrain, MNLI):
+class BertHF_MNLI(Bert, LoadBertFromHFPretrain, MNLI):
     """
     Usage:
         .. code-block:: python
@@ -157,7 +157,7 @@ class Bert_QQP(Bert, QQP):
     """
 
 
-class BertHF_QQP(Bert, FromHFPretrain, QQP):
+class BertHF_QQP(Bert, LoadBertFromHFPretrain, QQP):
     """
     Usage:
         .. code-block:: python
@@ -202,7 +202,7 @@ class BertFull_QNLI(BertFull, QNLI):
     """
 
 
-class BertHF_QNLI(Bert, FromHFPretrain, QNLI):
+class BertHF_QNLI(Bert, LoadBertFromHFPretrain, QNLI):
     """
     Usage:
         .. code-block:: python
@@ -229,7 +229,7 @@ class Bert_MRPC(Bert, MRPC):
     """
 
 
-class BertHF_MRPC(Bert, FromHFPretrain, MRPC):
+class BertHF_MRPC(Bert, LoadBertFromHFPretrain, MRPC):
     """
     Usage:
         .. code-block:: python
@@ -256,7 +256,7 @@ class Bert_RTE(Bert, RTE):
     """
 
 
-class BertHF_RTE(Bert, FromHFPretrain, RTE):
+class BertHF_RTE(Bert, LoadBertFromHFPretrain, RTE):
     """
     Usage:
         .. code-block:: python
