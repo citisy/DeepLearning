@@ -174,16 +174,27 @@ class Model(nn.Module):
         ) for _ in range(num_hidden_layers)])
         self.decoder_norm = LayerNorm(hidden_size)
 
+        # note, EmbeddingSim
         self.head = nn.Linear(hidden_size, vocab_size, bias=False)
 
     def forward(self, x, y=None, seq_lens=None, attention_mask=None, **kwargs):
         context = self.encode(x, attention_mask=attention_mask)
-        if not self.training:
+        if self.training:
+            # note, shift one token to predict the future word
+            trues = torch.cat([x[:, 1:], torch.full((len(x), 1), self.pad_id)], dim=1)
+            preds = self.decode(x, context=context, context_mask=attention_mask)
+            loss = self.loss(preds, trues)
+            return {'loss': loss}
+        else:
             if y is None:
                 y = torch.zeros((len(x), 1), dtype=torch.long, device=x.device)
                 seq_lens = [1] * len(x)
             preds = self.post_process(y, context=context, context_mask=attention_mask, seq_lens=seq_lens, **kwargs)
             return {'preds': preds}
+
+    def loss(self, preds, trues):
+        preds = preds.transpose(1, 2)  # seq first -> class first
+        return F.cross_entropy(preds, trues)
 
     def encode(self, x, attention_mask=None):
         x = self.embedding(x)
