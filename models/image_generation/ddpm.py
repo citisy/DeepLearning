@@ -8,7 +8,7 @@ from random import random
 from functools import partial
 from utils import torch_utils
 from ..layers import Linear, Conv, Upsample, Downsample
-from ..attentions import CrossAttention3D, LinearAttention3D
+from ..attentions import CrossAttention3D, LinearAttention3D, MemoryLinearAttend
 from .. import bundles
 
 
@@ -428,14 +428,13 @@ class UNetModel(nn.Module):
         self.downs = nn.ModuleList([])
         for i in range(num_stages):
             is_bottom = i == num_stages - 1
-            attn_layer = CrossAttention3D if is_bottom else partial(LinearAttention3D, norm=RMSNorm(in_ch))
             out_ch = unit_dim * dim_factors[i]
 
             self.downs.append(nn.ModuleList([
                 make_res(in_ch, in_ch),
                 make_res(in_ch, in_ch),
                 RMSNorm(in_ch),
-                attn_layer(in_ch, head_dim=attn_dim_heads[i], n_heads=attn_heads[i]),
+                make_attn(in_ch, head_dim=attn_dim_heads[i], n_heads=attn_heads[i], is_bottom=is_bottom),
                 nn.Conv2d(in_ch, out_ch, 3, padding=1) if is_bottom else Downsample(in_ch, out_ch),
             ]))
 
@@ -449,14 +448,13 @@ class UNetModel(nn.Module):
         for i in reversed(range(num_stages)):
             is_top = i == 0
             is_bottom = i == num_stages - 1
-            attn_layer = CrossAttention3D if is_bottom else partial(LinearAttention3D, norm=RMSNorm(out_ch))
             in_ch = unit_dim if i == 0 else unit_dim * dim_factors[i - 1]
 
             self.ups.append(nn.ModuleList([
                 make_res(out_ch + in_ch, out_ch),
                 make_res(out_ch + in_ch, out_ch),
                 RMSNorm(out_ch),
-                attn_layer(out_ch, head_dim=attn_dim_heads[i], n_heads=attn_heads[i]),
+                make_attn(out_ch, head_dim=attn_dim_heads[i], n_heads=attn_heads[i], is_bottom=is_bottom),
                 nn.Conv2d(out_ch, in_ch, 3, padding=1) if is_top else Upsample(out_ch, in_ch),
             ]))
 
@@ -533,6 +531,15 @@ class SinusoidalPosEmb(nn.Module):
         emb = x[:, None] * emb[None, :]
         emb = torch.cat((emb.cos(), emb.sin()), dim=-1)
         return emb
+
+
+def make_attn(in_ch, n_heads, head_dim, is_bottom, n_mem_size=4):
+    attn = CrossAttention3D if is_bottom else partial(
+        LinearAttention3D,
+        attend=MemoryLinearAttend(n_heads, head_dim, n_mem_size),
+        out_fn=Conv(n_heads * head_dim, n_heads * head_dim, 1, mode='cn', norm=RMSNorm(in_ch)),
+    )
+    return attn(in_ch, head_dim=head_dim, n_heads=n_heads)
 
 
 class GroupNorm32(nn.GroupNorm):
