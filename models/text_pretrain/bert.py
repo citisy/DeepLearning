@@ -3,7 +3,7 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 from utils import torch_utils
-from .transformers import TransformerBlock
+from .transformers import EncoderEmbedding, TransformerSequential
 from .. import bundles
 from ..layers import Linear
 
@@ -43,14 +43,10 @@ class WeightConverter:
         Usage:
             .. code-block:: python
 
-                state_dict = torch.load('...')
-                state_dict = convert_hf_weights(state_dict)
+                state_dict = WeightLoader.from_hf(...)
+                state_dict = WeightConverter.from_hf(state_dict)
                 Model(...).load_state_dict(state_dict)
 
-                from transformers import BertForPreTraining
-                state_dict = BertForPreTraining.from_pretrained('...')
-                state_dict = convert_hf_weights(state_dict)
-                Model(...).load_state_dict(state_dict)
         """
         convert_dict = {
             'bert.embeddings.word_embeddings': 'backbone.embedding.token',
@@ -58,14 +54,14 @@ class WeightConverter:
             'bert.embeddings.position_ids': 'backbone.embedding.position_ids',
             'bert.embeddings.token_type_embeddings': 'backbone.embedding.segment',
             'bert.embeddings.LayerNorm': 'backbone.embedding.head.0',
-            'bert.encoder.layer.{0}.attention.self.query': 'backbone.encoder.{0}.res1.fn.to_qkv.0',
-            'bert.encoder.layer.{0}.attention.self.key': 'backbone.encoder.{0}.res1.fn.to_qkv.1',
-            'bert.encoder.layer.{0}.attention.self.value': 'backbone.encoder.{0}.res1.fn.to_qkv.2',
-            'bert.encoder.layer.{0}.attention.output.dense': 'backbone.encoder.{0}.res1.fn.to_out.linear',
-            'bert.encoder.layer.{0}.attention.output.LayerNorm': 'backbone.encoder.{0}.res1.norm',
-            'bert.encoder.layer.{0}.intermediate.dense': 'backbone.encoder.{0}.res2.fn.0.linear',
-            'bert.encoder.layer.{0}.output.dense': 'backbone.encoder.{0}.res2.fn.1.linear',
-            'bert.encoder.layer.{0}.output.LayerNorm': 'backbone.encoder.{0}.res2.norm',
+            'bert.encoder.layer.{0}.attention.self.query': 'backbone.encoder.{0}.attn_res.fn.to_qkv.0',
+            'bert.encoder.layer.{0}.attention.self.key': 'backbone.encoder.{0}.attn_res.fn.to_qkv.1',
+            'bert.encoder.layer.{0}.attention.self.value': 'backbone.encoder.{0}.attn_res.fn.to_qkv.2',
+            'bert.encoder.layer.{0}.attention.output.dense': 'backbone.encoder.{0}.attn_res.fn.to_out.linear',
+            'bert.encoder.layer.{0}.attention.output.LayerNorm': 'backbone.encoder.{0}.attn_res.norm',
+            'bert.encoder.layer.{0}.intermediate.dense': 'backbone.encoder.{0}.ff_res.fn.0.linear',
+            'bert.encoder.layer.{0}.output.dense': 'backbone.encoder.{0}.ff_res.fn.1.linear',
+            'bert.encoder.layer.{0}.output.LayerNorm': 'backbone.encoder.{0}.ff_res.norm',
             'bert.pooler.dense': 'neck.linear',
             'cls.predictions.transform.dense': 'mlm.0.linear',
             'cls.predictions.transform.LayerNorm': 'mlm.0.norm',
@@ -112,7 +108,7 @@ class Model(nn.Module):
 
         torch_utils.ModuleManager.initialize_layers(self)
 
-    def forward(self, x, segment_label, attention_mask=None, next_true=None, mask_true=None):
+    def forward(self, x, segment_label, attention_mask=None, next_true=None, mask_true=None, **kwargs):
         x = self.backbone(x, segment_label, attention_mask)
 
         outputs = {}
@@ -186,69 +182,15 @@ class MLM(nn.Sequential):
 class Bert(nn.Module):
     def __init__(self, vocab_size, pad_id, max_seq_len=512, n_segment=2, hidden_size=768, num_hidden_layers=12, num_attention_heads=12, drop_prob=0.1):
         super().__init__()
-        self.embedding = Embedding(vocab_size, hidden_size, pad_id, max_seq_len=max_seq_len, n_segment=n_segment, drop_prob=drop_prob)
-        self.encoder = nn.ModuleList([TransformerBlock(hidden_size, num_attention_heads, hidden_size * 4, drop_prob=drop_prob) for _ in range(num_hidden_layers)])
+        self.embedding = EncoderEmbedding(vocab_size, hidden_size, pad_id, max_seq_len=max_seq_len, n_segment=n_segment, drop_prob=drop_prob)
+        self.encoder = TransformerSequential(
+            hidden_size, num_attention_heads, hidden_size * 4,
+            drop_prob=drop_prob, num_blocks=num_hidden_layers
+        )
 
         self.out_features = hidden_size
 
     def forward(self, x, segment_info, attention_mask=None):
         x = self.embedding(x, segment_info)
-        for m in self.encoder:
-            x = m(x, attention_mask=attention_mask)
-
+        x = self.encoder(x, attention_mask=attention_mask)
         return x
-
-
-class Embedding(nn.Module):
-    """TokenEmbedding + PositionalEmbedding + SegmentEmbedding"""
-
-    def __init__(self, vocab_size, embedding_dim, pad_id, max_seq_len=512, n_segment=2, drop_prob=0.1):
-        super().__init__()
-        self.token = nn.Embedding(vocab_size, embedding_dim, padding_idx=pad_id)
-
-        # note, in vanilla attention, using cosine positional embeddings
-        # to see `PositionalEmbedding` to get more detail
-        # but in `transformers.BertForPreTraining`, using learned positional embeddings
-        # to support weights from hf, there using learned positional embeddings also
-        self.position = nn.Embedding(max_seq_len, embedding_dim)
-        self.register_buffer("position_ids", torch.arange(max_seq_len).expand((1, -1)))
-
-        # note, there add 1 to apply pad token usually
-        # but in `transformers.BertForPreTraining` does not add yet
-        # to support weights from hf, there do not add either
-        self.segment = nn.Embedding(n_segment, embedding_dim)
-
-        self.head = nn.Sequential(
-            nn.LayerNorm(embedding_dim),
-            nn.Dropout(drop_prob)
-        )
-        self.embedding_dim = embedding_dim
-
-    def forward(self, sequence, segment_label):
-        """(b, s) -> (b, s, h)
-        note, s is a dynamic var"""
-        x = (
-                self.token(sequence)
-                + self.position(self.position_ids[:, :sequence.shape[1]])
-                + self.segment(segment_label)
-        )
-        return self.head(x)
-
-
-class PositionalEmbedding(nn.Module):
-    def __init__(self, num_embeddings, embedding_dim):
-        super().__init__()
-        pe = torch.zeros(num_embeddings, embedding_dim).float()
-        position = torch.arange(0, num_embeddings).float().unsqueeze(1)
-        div_term = (torch.arange(0, embedding_dim, 2).float() * -(math.log(10000.0) / embedding_dim)).exp()
-
-        pe[:, 0::2] = torch.sin(position * div_term)
-        pe[:, 1::2] = torch.cos(position * div_term)
-
-        pe = pe.unsqueeze(0)
-        self.register_buffer('pe', pe)
-        self.num_embeddings = num_embeddings
-        self.embedding_dim = embedding_dim
-
-    def forward(self, x):
-        return self.pe[:, :x.size(1)]

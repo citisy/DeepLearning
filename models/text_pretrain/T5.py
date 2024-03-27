@@ -2,7 +2,7 @@ import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from .transformers import TransformerBlock
+from .transformers import make_causal_attention_mask, TransformerSequential, EmbeddingSim
 from .. import bundles, attentions
 from utils import torch_utils
 
@@ -78,15 +78,15 @@ class WeightConverter:
         convert_dict = {
             'shared': 'embedding',
 
-            '{1}.block.{0}.layer.0.SelfAttention.q': '{1}.{0}.res1.fn.to_qkv.0',
-            '{1}.block.{0}.layer.0.SelfAttention.k': '{1}.{0}.res1.fn.to_qkv.1',
-            '{1}.block.{0}.layer.0.SelfAttention.v': '{1}.{0}.res1.fn.to_qkv.2',
-            '{1}.block.{0}.layer.0.SelfAttention.o': '{1}.{0}.res1.fn.to_out.linear',
-            '{1}.block.{0}.layer.0.layer_norm': '{1}.{0}.res1.norm',
+            '{1}.block.{0}.layer.0.SelfAttention.q': '{1}.{0}.attn_res.fn.to_qkv.0',
+            '{1}.block.{0}.layer.0.SelfAttention.k': '{1}.{0}.attn_res.fn.to_qkv.1',
+            '{1}.block.{0}.layer.0.SelfAttention.v': '{1}.{0}.attn_res.fn.to_qkv.2',
+            '{1}.block.{0}.layer.0.SelfAttention.o': '{1}.{0}.attn_res.fn.to_out.linear',
+            '{1}.block.{0}.layer.0.layer_norm': '{1}.{0}.attn_res.norm',
 
-            'encoder.block.{0}.layer.1.DenseReluDense.wi': 'encoder.{0}.res2.fn.0.linear',
-            'encoder.block.{0}.layer.1.DenseReluDense.wo': 'encoder.{0}.res2.fn.1.linear',
-            'encoder.block.{0}.layer.1.layer_norm': 'encoder.{0}.res2.norm',
+            'encoder.block.{0}.layer.1.DenseReluDense.wi': 'encoder.{0}.ff_res.fn.0.linear',
+            'encoder.block.{0}.layer.1.DenseReluDense.wo': 'encoder.{0}.ff_res.fn.1.linear',
+            'encoder.block.{0}.layer.1.layer_norm': 'encoder.{0}.ff_res.norm',
 
             'decoder.block.{0}.layer.1.EncDecAttention.q': 'decoder.{0}.de_attn_res.fn.to_qkv.0',
             'decoder.block.{0}.layer.1.EncDecAttention.k': 'decoder.{0}.de_attn_res.fn.to_qkv.1',
@@ -94,18 +94,15 @@ class WeightConverter:
             'decoder.block.{0}.layer.1.EncDecAttention.o': 'decoder.{0}.de_attn_res.fn.to_out.linear',
             'decoder.block.{0}.layer.1.layer_norm': 'decoder.{0}.de_attn_res.norm',
 
-            'decoder.block.{0}.layer.2.DenseReluDense.wi': 'decoder.{0}.res2.fn.0.linear',
-            'decoder.block.{0}.layer.2.DenseReluDense.wo': 'decoder.{0}.res2.fn.1.linear',
-            'decoder.block.{0}.layer.2.layer_norm': 'decoder.{0}.res2.norm',
+            'decoder.block.{0}.layer.2.DenseReluDense.wi': 'decoder.{0}.ff_res.fn.0.linear',
+            'decoder.block.{0}.layer.2.DenseReluDense.wo': 'decoder.{0}.ff_res.fn.1.linear',
+            'decoder.block.{0}.layer.2.layer_norm': 'decoder.{0}.ff_res.norm',
 
             '{0}.block.0.layer.0.SelfAttention.relative_attention_bias': '{0}_relative_bias',
             '{0}.final_layer_norm': '{0}_norm',
-            'lm_head': 'head',
+
         }
         state_dict = torch_utils.Converter.convert_keys(state_dict, convert_dict)
-
-        if 'head' not in state_dict:
-            state_dict['head.weight'] = state_dict['embedding.weight']
 
         return state_dict
 
@@ -139,8 +136,7 @@ class Model(nn.Module):
             bias=False,
         )
         self.encoder_relative_bias = nn.Embedding(32, 8)
-
-        self.encoder = nn.ModuleList([TransformerBlock(
+        self.encoder = TransformerSequential(
             hidden_size, num_attention_heads, hidden_size * 4,
             norm_first=True,
             norm_fn=LayerNorm,
@@ -151,12 +147,13 @@ class Model(nn.Module):
                 is_relative_bidirectional=True,
                 **attend_kwargs
             ),
-            ff_kwargs=ff_kwargs
-        ) for _ in range(num_hidden_layers)])
+            ff_kwargs=ff_kwargs,
+            num_blocks=num_hidden_layers
+        )
         self.encoder_norm = LayerNorm(hidden_size)
 
         self.decoder_relative_bias = nn.Embedding(32, 8)
-        self.decoder = nn.ModuleList([TransformerBlock(
+        self.decoder = TransformerSequential(
             hidden_size, num_attention_heads, hidden_size * 4,
             is_decode=True,
             norm_first=True,
@@ -170,12 +167,12 @@ class Model(nn.Module):
                 **attend_kwargs
             ),
             de_attend=ScaleAttend(),
-            ff_kwargs=ff_kwargs
-        ) for _ in range(num_hidden_layers)])
+            ff_kwargs=ff_kwargs,
+            num_blocks=num_hidden_layers
+        )
         self.decoder_norm = LayerNorm(hidden_size)
 
-        # note, EmbeddingSim
-        self.head = nn.Linear(hidden_size, vocab_size, bias=False)
+        self.head = EmbeddingSim(self.embedding.weight, use_bias=False)
 
     def forward(self, x, y=None, seq_lens=None, attention_mask=None, **kwargs):
         context = self.encode(x, attention_mask=attention_mask)
@@ -198,26 +195,19 @@ class Model(nn.Module):
 
     def encode(self, x, attention_mask=None):
         x = self.embedding(x)
-        for m in self.encoder:
-            x = m(x, attention_mask=attention_mask)
+        x = self.encoder(x, attention_mask=attention_mask)
         x = self.encoder_norm(x)
         return x
 
     def decode(self, x, context=None, context_mask=None):
-        attention_mask = self.make_dynamic_mask(x)
+        attention_mask = make_causal_attention_mask(x)
         x = self.embedding(x)
-        for m in self.decoder:
-            x = m(x, context=context, attention_mask=attention_mask, context_mask=context_mask)
+        x = self.decoder(x, context=context, attention_mask=attention_mask, context_mask=context_mask)
         x = self.decoder_norm(x)
         # note, don't scale in attention but here
         x = x * (self.hidden_size ** -0.5)
         x = self.head(x)
         return x
-
-    def make_dynamic_mask(self, x):
-        batch_size, seq_len = x.size()
-        mask = torch.tril(torch.ones(seq_len, seq_len, device=x.device)).view(1, 1, seq_len, seq_len).repeat(batch_size, 1, 1, 1)
-        return mask
 
     def post_process(self, x, context=None, context_mask=None, seq_lens=None, max_gen_len=100, top_k=1):
         assert seq_lens is not None

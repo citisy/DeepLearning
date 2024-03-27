@@ -1,9 +1,8 @@
-import os
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from .. import bundles
-from .transformers import TransformerBlock
+from .transformers import DecoderEmbedding, make_causal_attention_mask, TransformerSequential, EmbeddingSim
 from utils import torch_utils, math_utils
 
 
@@ -115,12 +114,12 @@ class WeightConverter:
         convert_dict = {
             'model.wte:0': 'embedding.token.weight',
             'model.wpe:0': 'embedding.position.weight',
-            'model.h{0}.ln_1': 'encoder.{0}.res1.norm',
-            'model.h{0}.attn.c_attn': 'encoder.{0}.res1.fn.to_qkv',
-            'model.h{0}.attn.c_proj': 'encoder.{0}.res1.fn.to_out.linear',
-            'model.h{0}.ln_2': 'encoder.{0}.res2.norm',
-            'model.h{0}.mlp.c_fc': 'encoder.{0}.res2.fn.0.linear',
-            'model.h{0}.mlp.c_proj': 'encoder.{0}.res2.fn.1.linear',
+            'model.h{0}.ln_1': 'encoder.{0}.attn_res.norm',
+            'model.h{0}.attn.c_attn': 'encoder.{0}.attn_res.fn.to_qkv',
+            'model.h{0}.attn.c_proj': 'encoder.{0}.attn_res.fn.to_out.linear',
+            'model.h{0}.ln_2': 'encoder.{0}.ff_res.norm',
+            'model.h{0}.mlp.c_fc': 'encoder.{0}.ff_res.fn.0.linear',
+            'model.h{0}.mlp.c_proj': 'encoder.{0}.ff_res.fn.1.linear',
             'model.ln_f': 'norm',
         }
 
@@ -137,12 +136,12 @@ class WeightConverter:
         convert_dict = {
             'wte': 'embedding.token',
             'wpe': 'embedding.position',
-            'h.{0}.ln_1': 'encoder.{0}.res1.norm',
-            'h.{0}.attn.c_attn': 'encoder.{0}.res1.fn.to_qkv',
-            'h.{0}.attn.c_proj': 'encoder.{0}.res1.fn.to_out.linear',
-            'h.{0}.ln_2': 'encoder.{0}.res2.norm',
-            'h.{0}.mlp.c_fc': 'encoder.{0}.res2.fn.0.linear',
-            'h.{0}.mlp.c_proj': 'encoder.{0}.res2.fn.1.linear',
+            'h.{0}.ln_1': 'encoder.{0}.attn_res.norm',
+            'h.{0}.attn.c_attn': 'encoder.{0}.attn_res.fn.to_qkv',
+            'h.{0}.attn.c_proj': 'encoder.{0}.attn_res.fn.to_out.linear',
+            'h.{0}.ln_2': 'encoder.{0}.ff_res.norm',
+            'h.{0}.mlp.c_fc': 'encoder.{0}.ff_res.fn.0.linear',
+            'h.{0}.mlp.c_proj': 'encoder.{0}.ff_res.fn.1.linear',
             'ln_f': 'norm',
         }
 
@@ -158,18 +157,19 @@ class Model(nn.Module):
         super().__init__()
         self.pad_id = pad_id
         self.n_layer = n_layer
-        self.embedding = Embedding(vocab_size, hidden_size, pad_id, max_seq_len=max_seq_len)
-        self.encoder = nn.ModuleList([
-            TransformerBlock(
-                hidden_size, num_attention_heads, hidden_size * 4, norm_first=True, drop_prob=drop_prob,
-                fn_kwargs=dict(separate=False)
-            ) for _ in range(n_layer)
-        ])
+        self.embedding = DecoderEmbedding(vocab_size, hidden_size, pad_id, max_seq_len=max_seq_len)
+        self.encoder = TransformerSequential(
+            hidden_size, num_attention_heads, hidden_size * 4,
+            norm_first=True, drop_prob=drop_prob,
+            fn_kwargs=dict(separate=False),
+            num_blocks=n_layer
+        )
         self.norm = nn.LayerNorm(hidden_size)
-        self.embedding_sim = EmbeddingSim(vocab_size, use_bias=False)
+        self.embedding_sim = EmbeddingSim(self.embedding.token.weight, use_bias=False)
 
     def forward(self, x, **kwargs):
         if self.training:
+            # note, shift one token to predict the future word
             trues = torch.cat([x[:, 1:], torch.full((len(x), 1), self.pad_id)], dim=1)
             preds = self.decode(x)
             loss = self.loss(preds, trues)
@@ -203,49 +203,11 @@ class Model(nn.Module):
 
     def decode(self, sequence):
         x = self.embedding(sequence)
-        mask = self.make_dynamic_mask(x)
-        for component in self.encoder:
-            x = component(x, attention_mask=mask)
+        mask = make_causal_attention_mask(x)
+        x = self.encoder(x, attention_mask=mask)
         x = self.norm(x)
-        preds = self.embedding_sim(x, self.embedding.token.weight)
+        preds = self.embedding_sim(x)
         return preds
 
-    def make_dynamic_mask(self, x):
-        batch_size, seq_len, _ = x.size()
-        mask = torch.tril(torch.ones(seq_len, seq_len, device=x.device)).view(1, 1, seq_len, seq_len).repeat(batch_size, 1, 1, 1)
-        return mask
 
 
-class Embedding(nn.Module):
-    """TokenEmbedding + PositionalEmbedding + SegmentEmbedding"""
-
-    def __init__(self, vocab_size, embedding_dim, pad_id=None, max_seq_len=512):
-        super().__init__()
-        self.token = nn.Embedding(vocab_size, embedding_dim, padding_idx=pad_id)
-        self.position = nn.Embedding(max_seq_len, embedding_dim)
-        self.register_buffer("position_ids", torch.arange(max_seq_len).expand((1, -1)))
-        self.embedding_dim = embedding_dim
-
-    def forward(self, sequence):
-        """(b, s) -> (b, s, h)
-        note, s is a dynamic var"""
-        x = (
-                self.token(sequence)
-                + self.position(self.position_ids[:, :sequence.shape[1]])
-        )
-        return x
-
-
-class EmbeddingSim(nn.Module):
-    def __init__(self, num_embeddings, use_bias=True):
-        super().__init__()
-        self.num_embeddings = num_embeddings
-        self.use_bias = use_bias
-        if use_bias:
-            self.bias = nn.Parameter(torch.Tensor(num_embeddings))
-
-    def forward(self, x, weight):
-        y = x.matmul(weight.transpose(1, 0).detach())
-        if self.use_bias:
-            y += self.bias
-        return F.softmax(y, dim=-1)

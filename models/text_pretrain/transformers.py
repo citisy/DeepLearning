@@ -1,10 +1,74 @@
-import math
 import torch
-import torch.nn.functional as F
 from torch import nn
-from utils import torch_utils
 from ..layers import Linear, Residual
 from ..attentions import CrossAttention2D
+from ..embeddings import LearnedPositionEmbedding
+
+
+class EncoderEmbedding(nn.Module):
+    """TokenEmbedding + PositionalEmbedding + SegmentEmbedding"""
+
+    def __init__(self, vocab_size, embedding_dim, pad_id, max_seq_len=512, n_segment=2, drop_prob=0.1):
+        super().__init__()
+        self.token = nn.Embedding(vocab_size, embedding_dim, padding_idx=pad_id)
+
+        # note, in vanilla attention, using cosine positional embeddings
+        # to see `PositionalEmbedding` to get more detail
+        # but in `transformers.BertForPreTraining`, using learned positional embeddings
+        # to support weights from hf, there using learned positional embeddings also
+        self.position = LearnedPositionEmbedding(max_seq_len, embedding_dim)
+
+        # note, there add 1 to apply pad token usually
+        # but in `transformers.BertForPreTraining` does not add yet
+        # to support weights from hf, there do not add either
+        self.segment = nn.Embedding(n_segment, embedding_dim)
+
+        self.head = nn.Sequential(
+            nn.LayerNorm(embedding_dim),
+            nn.Dropout(drop_prob)
+        )
+        self.embedding_dim = embedding_dim
+
+    def forward(self, sequence, segment_label):
+        """(b, s) -> (b, s, h)
+        note, s is a dynamic var"""
+        x = (
+                self.token(sequence)
+                + self.position(sequence)
+                + self.segment(segment_label)
+        )
+        return self.head(x)
+
+
+class DecoderEmbedding(nn.Module):
+    """TokenEmbedding + PositionalEmbedding + SegmentEmbedding"""
+
+    def __init__(self, vocab_size, embedding_dim, pad_id=None, max_seq_len=512):
+        super().__init__()
+        self.token = nn.Embedding(vocab_size, embedding_dim, padding_idx=pad_id)
+        self.position = LearnedPositionEmbedding(max_seq_len, embedding_dim)
+
+    def forward(self, sequence):
+        """(b, s) -> (b, s, h)
+        note, s is a dynamic var"""
+        x = (
+                self.token(sequence)
+                + self.position(sequence)
+        )
+        return x
+
+
+class TransformerSequential(nn.ModuleList):
+    def __init__(self, *args, num_blocks=None, **kwargs):
+        assert num_blocks is not None
+        super().__init__(
+            [TransformerBlock(*args, **kwargs) for _ in range(num_blocks)]
+        )
+
+    def forward(self, x, attention_mask=None, **kwargs):
+        for m in self:
+            x = m(x, attention_mask=attention_mask, **kwargs)
+        return x
 
 
 class TransformerBlock(nn.Module):
@@ -20,7 +84,7 @@ class TransformerBlock(nn.Module):
     ):
         super().__init__()
         norm_fn = norm_fn or nn.LayerNorm
-        self.res1 = Residual(
+        self.attn_res = Residual(
             CrossAttention2D(n_heads=num_attention_heads, model_dim=hidden_size, drop_prob=drop_prob, attend=attend, **fn_kwargs),  # SelfAttention
             norm=norm_fn(hidden_size),
             norm_first=norm_first
@@ -34,7 +98,7 @@ class TransformerBlock(nn.Module):
                 norm_first=norm_first
             )
 
-        self.res2 = Residual(
+        self.ff_res = Residual(
             PositionWiseFeedForward(hidden_size, feed_forward_hidden, drop_prob=drop_prob, **ff_kwargs),  # PositionWiseFeedForward
             norm=norm_fn(hidden_size),
             norm_first=norm_first
@@ -42,10 +106,10 @@ class TransformerBlock(nn.Module):
 
     def forward(self, x, context=None, attention_mask=None, context_mask=None, **kwargs):
         """(b, s, h) -> (b, s, h)"""
-        x = self.res1(x, attention_mask=attention_mask, **kwargs)
+        x = self.attn_res(x, attention_mask=attention_mask, **kwargs)
         if self.is_decode:
             x = self.de_attn_res(x, k=context, v=context, attention_mask=context_mask, **kwargs)
-        x = self.res2(x)
+        x = self.ff_res(x)
         return x
 
 
@@ -56,3 +120,35 @@ class PositionWiseFeedForward(nn.Sequential):
             Linear(hidden_size, feed_forward_hidden, mode='la', act=act, **kwargs),
             Linear(feed_forward_hidden, hidden_size, mode='ld', drop_prob=drop_prob, **kwargs)
         )
+
+
+def make_causal_attention_mask(x):
+    """
+    e.g.:
+        x.shape=(b, 3, -1) -> mask.shape=(b, 1, 3, 3)
+        [[1, 0, 0],
+        [1, 1, 0],
+        [1, 1, 1]
+
+    """
+    batch_size, seq_len = x.shape[:2]
+    mask = torch.tril(torch.ones(seq_len, seq_len, device=x.device)).view(1, 1, seq_len, seq_len).repeat(batch_size, 1, 1, 1)
+    return mask
+
+
+class EmbeddingSim(nn.Module):
+    """as a linear layer"""
+
+    def __init__(self, weight, use_bias=True):
+        super().__init__()
+        self.weight = weight
+        self.use_bias = use_bias
+        if use_bias:
+            num_embeddings = weight.shape[0]
+            self.bias = nn.Parameter(torch.zeros(num_embeddings))
+
+    def forward(self, x):
+        y = x.matmul(self.weight.transpose(1, 0).detach())
+        if self.use_bias:
+            y += self.bias
+        return y
