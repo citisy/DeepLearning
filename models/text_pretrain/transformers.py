@@ -65,10 +65,16 @@ class TransformerSequential(nn.ModuleList):
             [TransformerBlock(*args, **kwargs) for _ in range(num_blocks)]
         )
 
-    def forward(self, x, attention_mask=None, **kwargs):
+    def forward(self, x, attention_mask=None, return_hidden_states=False, **kwargs):
+        hidden_states = [x]
         for m in self:
             x = m(x, attention_mask=attention_mask, **kwargs)
-        return x
+            if return_hidden_states:
+                hidden_states.append(x)
+        if return_hidden_states:
+            return x, hidden_states
+        else:
+            return x
 
 
 class TransformerBlock(nn.Module):
@@ -79,13 +85,13 @@ class TransformerBlock(nn.Module):
     def __init__(
             self, hidden_size, num_attention_heads, feed_forward_hidden,
             is_decode=False, norm_first=False, norm_fn=None, drop_prob=0.1,
-            attend=None, de_attend=None,
+            attend=None, de_attend=None, separate=True,
             fn_kwargs=dict(), de_fn_kwargs=dict(), ff_kwargs=dict(),
     ):
         super().__init__()
         norm_fn = norm_fn or nn.LayerNorm
         self.attn_res = Residual(
-            CrossAttention2D(n_heads=num_attention_heads, model_dim=hidden_size, drop_prob=drop_prob, attend=attend, **fn_kwargs),  # SelfAttention
+            CrossAttention2D(n_heads=num_attention_heads, model_dim=hidden_size, drop_prob=drop_prob, attend=attend, separate=separate, **fn_kwargs),  # SelfAttention
             norm=norm_fn(hidden_size),
             norm_first=norm_first
         )
@@ -93,7 +99,7 @@ class TransformerBlock(nn.Module):
         self.is_decode = is_decode
         if is_decode:
             self.de_attn_res = Residual(
-                CrossAttention2D(n_heads=num_attention_heads, model_dim=hidden_size, drop_prob=drop_prob, attend=de_attend, **de_fn_kwargs),  # CrossAttention
+                CrossAttention2D(n_heads=num_attention_heads, model_dim=hidden_size, drop_prob=drop_prob, attend=de_attend, separate=separate, **de_fn_kwargs),  # CrossAttention
                 norm=norm_fn(hidden_size),
                 norm_first=norm_first
             )

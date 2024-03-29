@@ -41,7 +41,7 @@ class Model(BaseImgClsModel):
 
         backbone = Backbone(**backbone_config)
         neck = ClsNeck(backbone.output_size)
-        head = out_module or OutModule(out_features, in_features=backbone.output_size)
+        head = out_module or Linear(backbone.output_size, out_features, mode='nl', norm=nn.LayerNorm(backbone.output_size))
 
         super().__init__(
             in_module=nn.Identity(),  # placeholder
@@ -101,10 +101,6 @@ class VisionEmbedding(nn.Module):
 
 class ClsNeck(nn.Module):
     """for class prediction"""
-    def __init__(self, hidden_size):
-        super().__init__()
-        self.norm = nn.LayerNorm(hidden_size)
-
     def forward(self, x):
-        x = x[:, 0]
-        return self.norm(x)
+        x = x[:, 0, :]
+        return x
