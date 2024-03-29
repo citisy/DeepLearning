@@ -22,11 +22,11 @@ class Config:
 
 class WeightLoader:
     @classmethod
-    def from_hf(cls, save_path, save_name='pytorch_model.bin'):
-        return cls.auto_load(save_path, save_name)
+    def from_hf(cls, save_path, save_name='pytorch_model.bin', **kwargs):
+        return cls.auto_load(save_path, save_name, **kwargs)
 
     @staticmethod
-    def get_file_name(save_path, save_name=''):
+    def get_file_name(save_path, save_name='', **kwargs):
         if os.path.isfile(save_path):
             file_name = save_path
         elif os.path.isfile(f'{save_path}/{save_name}'):
@@ -36,14 +36,14 @@ class WeightLoader:
         return file_name
 
     @classmethod
-    def auto_load(cls, save_path, save_name=''):
+    def auto_load(cls, save_path, save_name='', **kwargs):
         try:
-            file_name = cls.get_file_name(save_path, save_name)
+            file_name = cls.get_file_name(save_path, save_name, **kwargs)
             state_dict = torch.load(file_name)
         except ValueError:
-            state_dict = cls.auto_download(save_path, save_name)
+            state_dict = cls.auto_download(save_path, save_name=save_name, **kwargs)
         return state_dict
 
     @classmethod
-    def auto_download(cls, save_path, save_name=''):
+    def auto_download(cls, save_path, **kwargs):
         raise NotImplemented
