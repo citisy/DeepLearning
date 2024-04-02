@@ -96,7 +96,7 @@ class Config(bundles.Config):
     )
 
     laion_text_bigG_14 = dict(
-        output_size=1024,
+        output_size=1280,
         hidden_size=1280,
         vocab_size=49408,
         max_seq_len=77,
@@ -188,73 +188,72 @@ class WeightConverter:
         else:
             raise f'Dont support version: {version}'
 
-    @staticmethod
-    def from_openai(state_dict):
-        convert_dict = {
-            'vision_model.embeddings.patch_embedding': 'vision_model.embedding.patch.fn.0',
-            'vision_model.embeddings.class_embedding': 'vision_model.embedding.cls',
-            'vision_model.embeddings.position_embedding': 'vision_model.embedding.position',
-            'vision_model.pre_layrnorm': 'vision_model.norm1',  # a stupid bug for the var name spelling
-            'vision_model.post_layernorm': 'vision_model.norm2',
+    openai_convert_dict = {
+        'vision_model.embeddings.patch_embedding': 'vision_model.embedding.patch.fn.0',
+        'vision_model.embeddings.class_embedding': 'vision_model.embedding.cls',
+        'vision_model.embeddings.position_embedding': 'vision_model.embedding.position',
+        'vision_model.pre_layrnorm': 'vision_model.norm1',  # a stupid bug for the var name spelling
+        'vision_model.post_layernorm': 'vision_model.norm2',
 
-            '{1}.encoder.layers.{0}.self_attn.q_proj': '{1}.encoder.{0}.attn_res.fn.to_qkv.0',
-            '{1}.encoder.layers.{0}.self_attn.k_proj': '{1}.encoder.{0}.attn_res.fn.to_qkv.1',
-            '{1}.encoder.layers.{0}.self_attn.v_proj': '{1}.encoder.{0}.attn_res.fn.to_qkv.2',
-            '{1}.encoder.layers.{0}.self_attn.out_proj': '{1}.encoder.{0}.attn_res.fn.to_out.linear',
-            '{1}.encoder.layers.{0}.layer_norm1': '{1}.encoder.{0}.attn_res.norm',
-            '{1}.encoder.layers.{0}.mlp.fc1': '{1}.encoder.{0}.ff_res.fn.0.linear',
-            '{1}.encoder.layers.{0}.mlp.fc2': '{1}.encoder.{0}.ff_res.fn.1.linear',
-            '{1}.encoder.layers.{0}.layer_norm2': '{1}.encoder.{0}.ff_res.norm',
+        '{1}.encoder.layers.{0}.self_attn.q_proj': '{1}.encoder.{0}.attn_res.fn.to_qkv.0',
+        '{1}.encoder.layers.{0}.self_attn.k_proj': '{1}.encoder.{0}.attn_res.fn.to_qkv.1',
+        '{1}.encoder.layers.{0}.self_attn.v_proj': '{1}.encoder.{0}.attn_res.fn.to_qkv.2',
+        '{1}.encoder.layers.{0}.self_attn.out_proj': '{1}.encoder.{0}.attn_res.fn.to_out.linear',
+        '{1}.encoder.layers.{0}.layer_norm1': '{1}.encoder.{0}.attn_res.norm',
+        '{1}.encoder.layers.{0}.mlp.fc1': '{1}.encoder.{0}.ff_res.fn.0.linear',
+        '{1}.encoder.layers.{0}.mlp.fc2': '{1}.encoder.{0}.ff_res.fn.1.linear',
+        '{1}.encoder.layers.{0}.layer_norm2': '{1}.encoder.{0}.ff_res.norm',
 
-            'text_model.embeddings.token_embedding': 'text_model.embedding.token',
-            'text_model.embeddings.position_embedding': 'text_model.embedding.position',
-            'text_model.final_layer_norm': 'text_model.norm',
+        'text_model.embeddings.token_embedding': 'text_model.embedding.token',
+        'text_model.embeddings.position_embedding': 'text_model.embedding.position',
+        'text_model.final_layer_norm': 'text_model.norm',
 
-            'visual_projection': 'vision_model.head',
-            'text_projection': 'text_model.head'
-        }
+        'visual_projection': 'vision_model.proj',
+        'text_projection': 'text_model.proj'
+    }
 
-        state_dict = torch_utils.Converter.convert_keys(state_dict, convert_dict)
-
+    @classmethod
+    def from_openai(cls, state_dict):
+        state_dict = torch_utils.Converter.convert_keys(state_dict, cls.openai_convert_dict)
         return state_dict
 
-    @staticmethod
-    def from_laion(state_dict):
-        convert_dict = {
-            'visual.conv1': 'vision_model.embedding.patch.fn.0',
-            'visual.class_embedding': 'vision_model.embedding.cls',
-            'visual.positional_embedding': 'vision_model.embedding.position.weight',
-            'visual.ln_pre': 'vision_model.norm1',
-            'visual.ln_post': 'vision_model.norm2',
+    laion_convert_dict = {
+        'visual.conv1': 'vision_model.embedding.patch.fn.0',
+        'visual.class_embedding': 'vision_model.embedding.cls',
+        'visual.positional_embedding': 'vision_model.embedding.position.weight',
+        'visual.ln_pre': 'vision_model.norm1',
+        'visual.ln_post': 'vision_model.norm2',
 
-            'visual.transformer.resblocks.{0}.ln_1': 'vision_model.encoder.{0}.attn_res.norm',
-            'visual.transformer.resblocks.{0}.ln_2': 'vision_model.encoder.{0}.ff_res.norm',
-            'visual.transformer.resblocks.{0}.attn.in_proj_weight': 'vision_model.encoder.{0}.attn_res.fn.to_qkv.weight',
-            'visual.transformer.resblocks.{0}.attn.in_proj_bias': 'vision_model.encoder.{0}.attn_res.fn.to_qkv.bias',
-            'visual.transformer.resblocks.{0}.attn.out_proj': 'vision_model.encoder.{0}.attn_res.fn.to_out.linear',
-            'visual.transformer.resblocks.{0}.mlp.c_fc': 'vision_model.encoder.{0}.ff_res.fn.0.linear',
-            'visual.transformer.resblocks.{0}.mlp.c_proj': 'vision_model.encoder.{0}.ff_res.fn.1.linear',
+        'visual.transformer.resblocks.{0}.ln_1': 'vision_model.encoder.{0}.attn_res.norm',
+        'visual.transformer.resblocks.{0}.ln_2': 'vision_model.encoder.{0}.ff_res.norm',
+        'visual.transformer.resblocks.{0}.attn.in_proj_weight': 'vision_model.encoder.{0}.attn_res.fn.to_qkv.weight',
+        'visual.transformer.resblocks.{0}.attn.in_proj_bias': 'vision_model.encoder.{0}.attn_res.fn.to_qkv.bias',
+        'visual.transformer.resblocks.{0}.attn.out_proj': 'vision_model.encoder.{0}.attn_res.fn.to_out.linear',
+        'visual.transformer.resblocks.{0}.mlp.c_fc': 'vision_model.encoder.{0}.ff_res.fn.0.linear',
+        'visual.transformer.resblocks.{0}.mlp.c_proj': 'vision_model.encoder.{0}.ff_res.fn.1.linear',
 
-            'transformer.resblocks.{0}.ln_1': 'text_model.encoder.{0}.attn_res.norm',
-            'transformer.resblocks.{0}.ln_2': 'text_model.encoder.{0}.ff_res.norm',
-            'transformer.resblocks.{0}.attn.in_proj_weight': 'text_model.encoder.{0}.attn_res.fn.to_qkv.weight',
-            'transformer.resblocks.{0}.attn.in_proj_bias': 'text_model.encoder.{0}.attn_res.fn.to_qkv.bias',
-            'transformer.resblocks.{0}.attn.out_proj': 'text_model.encoder.{0}.attn_res.fn.to_out.linear',
-            'transformer.resblocks.{0}.mlp.c_fc': 'text_model.encoder.{0}.ff_res.fn.0.linear',
-            'transformer.resblocks.{0}.mlp.c_proj': 'text_model.encoder.{0}.ff_res.fn.1.linear',
+        'transformer.resblocks.{0}.ln_1': 'text_model.encoder.{0}.attn_res.norm',
+        'transformer.resblocks.{0}.ln_2': 'text_model.encoder.{0}.ff_res.norm',
+        'transformer.resblocks.{0}.attn.in_proj_weight': 'text_model.encoder.{0}.attn_res.fn.to_qkv.weight',
+        'transformer.resblocks.{0}.attn.in_proj_bias': 'text_model.encoder.{0}.attn_res.fn.to_qkv.bias',
+        'transformer.resblocks.{0}.attn.out_proj': 'text_model.encoder.{0}.attn_res.fn.to_out.linear',
+        'transformer.resblocks.{0}.mlp.c_fc': 'text_model.encoder.{0}.ff_res.fn.0.linear',
+        'transformer.resblocks.{0}.mlp.c_proj': 'text_model.encoder.{0}.ff_res.fn.1.linear',
 
-            'token_embedding': 'text_model.embedding.token',
-            'positional_embedding': 'text_model.embedding.position.weight',
-            'ln_final': 'text_model.norm',
+        'token_embedding': 'text_model.embedding.token',
+        'positional_embedding': 'text_model.embedding.position.weight',
+        'ln_final': 'text_model.norm',
 
-            'visual.proj': 'vision_model.head.weight',
-            'text_projection': 'text_model.head.weight',
+        'visual.proj': 'vision_model.proj.weight',
+        'text_projection': 'text_model.proj.weight',
 
-        }
+    }
 
-        state_dict = torch_utils.Converter.convert_keys(state_dict, convert_dict)
+    @classmethod
+    def from_laion(cls, state_dict):
+        state_dict = torch_utils.Converter.convert_keys(state_dict, cls.laion_convert_dict)
 
-        for k in ['vision_model.head.weight', 'text_model.head.weight']:
+        for k in ['vision_model.proj.weight', 'text_model.proj.weight']:
             state_dict[k] = state_dict[k].t()
 
         return state_dict
@@ -354,18 +353,29 @@ class VisionTransformer(nn.Module):
         )
         self.norm2 = nn.LayerNorm(hidden_size)
         if is_proj:
-            self.head = nn.Linear(hidden_size, output_size, bias=False)
+            self.proj = nn.Linear(hidden_size, output_size, bias=False)
         else:
-            self.head = nn.Identity()
+            self.proj = nn.Identity()
 
-    def forward(self, image):
+    def backbone(self, image):
         x = self.embedding(image)
         x = self.norm1(x)
         x = self.encoder(x)
+        return x
 
-        pooled_output = x[:, 0, :]
-        pooled_output = self.norm2(pooled_output)
-        pooled_output = self.head(pooled_output)
+    def neck(self, x):
+        h = self.norm2(x)
+        return h
+
+    def head(self, h):
+        pooled_output = h[:, 0, :]
+        pooled_output = self.proj(pooled_output)
+        return pooled_output
+
+    def forward(self, image):
+        x = self.backbone(image)
+        h = self.neck(x)
+        pooled_output = self.head(h)
         return dict(
             hidden_state=x,
             pooled_output=pooled_output
@@ -385,17 +395,14 @@ class TextTransformer(nn.Module):
         )
         self.norm = nn.LayerNorm(hidden_size)
         if is_proj:
-            self.head = nn.Linear(hidden_size, output_size, bias=False)
+            self.proj = nn.Linear(hidden_size, output_size, bias=False)
         else:
-            self.head = nn.Identity()
+            self.proj = nn.Identity()
 
-    def forward(
-            self,
-            sequence=None,
-            attention_mask=None,
-            return_hidden_states=False,
-            **kwargs
-    ):
+    def backbone(self,
+                 sequence=None,
+                 attention_mask=None,
+                 **encoder_kwargs):
         x = self.embedding(sequence)
 
         causal_attention_mask = make_causal_attention_mask(x).to(dtype=torch.bool)
@@ -406,22 +413,39 @@ class TextTransformer(nn.Module):
         else:
             attention_mask = causal_attention_mask
 
-        x = self.encoder(x, attention_mask=attention_mask, return_hidden_states=return_hidden_states)
-        hidden_states = None
-        if return_hidden_states:
-            x, hidden_states = x
-        h = self.norm(x)
+        x = self.encoder(x, attention_mask=attention_mask, **encoder_kwargs)
+        return x
 
+    def neck(self, x):
+        h = self.norm(x)
+        return h
+
+    def head(self, sequence, h):
         # text_embeds.shape = [batch_size, sequence_length, transformer.width]
         # take features from the eot embedding (eot_token is the highest number in each sequence)
         # casting to torch.int for onnx compatibility: argmax doesn't support int64 inputs with opset 14
         pooled_output = h[
             torch.arange(h.shape[0], device=sequence.device), sequence.to(torch.int).argmax(dim=-1)
         ]
-        pooled_output = self.head(pooled_output)
+        pooled_output = self.proj(pooled_output)
+        return pooled_output
+
+    def forward(
+            self,
+            sequence=None,
+            attention_mask=None,
+            **encoder_kwargs
+    ):
+        x = self.backbone(
+            sequence=sequence,
+            attention_mask=attention_mask,
+            **encoder_kwargs
+        )
+
+        h = self.neck(x)
+        pooled_output = self.head(sequence, h)
 
         return dict(
-            hidden_states=hidden_states,
             last_hidden_state=h,  # have been normalized
             pooled_output=pooled_output
         )

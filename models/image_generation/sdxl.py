@@ -5,6 +5,8 @@ from einops import rearrange, repeat, reduce
 from utils import torch_utils
 from . import ldm, ddpm, ddim, sdv1, sdv2
 from .ddpm import extract
+from .ldm import WeightLoader
+from ..text_image_pretrain import CLIP
 
 
 class Config(sdv2.Config):
@@ -41,48 +43,54 @@ class Config(sdv2.Config):
     )
 
     legacy_v2_embedder = dict(
-        target='models.image_generation.sdv2.OpenCLIPEmbedder',
+        name='clip',
         input_key=TXT,
-        params=dict()
+        params=CLIP.Config.laion_text_H_14
     )
 
     embedder_clip = dict(
-        target='models.image_generation.sdv1.CLIPEmbedder',
+        name='clip',
         input_key=TXT,
         params=dict(
+            is_proj=False,
+            **CLIP.Config.openai_text_large,
             layer=sdv1.Config.HIDDEN,
-            layer_idx=11,
+            layer_idx=CLIP.Config.openai_text_large['num_hidden_layers'] - 2,  # second to last state
         )
     )
 
     embedder_open_clip = dict(
-        target='models.image_generation.sdv2.OpenCLIPEmbedder',
+        name='clip',
         input_key=TXT,
         params=dict(
-            arch='ViT-bigG-14',
-            legacy=False
+            **CLIP.Config.laion_text_bigG_14,
+            # legacy=False,
+            layer=sdv2.Config.HIDDEN,
+            layer_idx=CLIP.Config.laion_text_bigG_14['num_hidden_layers'] - 2,  # second to last state
+            return_pooled=True
         )
     )
+
     embedder_original_size = dict(
-        target='models.image_generation.sdxl.ConcatTimestepEmbedderND',
+        name='timestep',
         input_key=ORIGINAL_SIZE_AS_TUPLE,
         params=dict()
     )
 
     embedder_crop_coords = dict(
-        target='models.image_generation.sdxl.ConcatTimestepEmbedderND',
+        name='timestep',
         input_key=CROP_COORDS_TOP_LEFT,
         params=dict()
     )
 
     embedder_target_size = dict(
-        target='models.image_generation.sdxl.ConcatTimestepEmbedderND',
+        name='timestep',
         input_key=TARGET_SIZE_AS_TUPLE,
         params=dict()
     )
 
     embedder_aesthetic_score = dict(
-        target='models.image_generation.sdxl.ConcatTimestepEmbedderND',
+        name='timestep',
         input_key=AESTHETIC_SCORE,
         params=dict()
     )
@@ -155,6 +163,33 @@ class Config(sdv2.Config):
             )
         )
         return config_dict
+
+
+class WeightConverter(ldm.WeightConverter):
+    cond0 = {
+        'conditioner.embedders.{5}.transformer.' + k: 'cond.embedders.{5}.transformer.' + v
+        for k, v in CLIP.WeightConverter.openai_convert_dict.items()
+    }
+
+    cond1 = {
+        'conditioner.embedders.{5}.model.' + k: 'cond.embedders.{5}.transformer.' + v
+        for k, v in CLIP.WeightConverter.laion_convert_dict.items()
+    }
+
+    cond_convert_dict = {
+        **cond0,
+        **cond1
+    }
+
+    transpose_keys = ('cond.embedders.1.transformer.text_model.proj.weight',)
+
+
+def make_emb(name):
+    d = dict(
+        clip=sdv1.CLIPEmbedder,
+        timestep=ConcatTimestepEmbedderND
+    )
+    return d[name]
 
 
 class Model(ldm.Model):
@@ -286,8 +321,7 @@ class Model(ldm.Model):
         return c_skip, c_out, c_in, c_noise
 
     def make_txt_cond(self, text, neg_text=None, **kwargs) -> dict:
-        if neg_text is None:
-            neg_text = [''] * len(text)
+        assert neg_text is not None
 
         default_value = {
             Config.ORIGINAL_SIZE_AS_TUPLE: self.image_size,
@@ -355,14 +389,11 @@ class EmbedderWarp(nn.Module):
 
     def __init__(self, cond_configs: list):
         super().__init__()
-        from utils import converter
-
         embedders = []
         input_keys = []
         output_size = 0
         for cond_config in cond_configs:
-            ins = converter.InsConvert.str_to_instance(cond_config['target'])
-            layer = ins(**cond_config['params'])
+            layer = make_emb(cond_config['name'])(**cond_config['params'])
             input_key = cond_config['input_key']
             embedders.append(layer)
             input_keys.append(input_key)
@@ -427,8 +458,8 @@ class EmbedderWarp(nn.Module):
             if k not in batch_uc:
                 batch_uc[k] = torch.clone(batch[k])
 
-        batch[Config.TXT] = [value_dict["prompt"] for value_dict in value_dicts]
-        batch_uc[Config.TXT] = [value_dict["negative_prompt"] for value_dict in value_dicts]
+        batch[Config.TXT] = torch.stack([value_dict["prompt"] for value_dict in value_dicts])
+        batch_uc[Config.TXT] = torch.stack([value_dict["negative_prompt"] for value_dict in value_dicts])
 
         return batch, batch_uc
 

@@ -65,16 +65,12 @@ class TransformerSequential(nn.ModuleList):
             [TransformerBlock(*args, **kwargs) for _ in range(num_blocks)]
         )
 
-    def forward(self, x, attention_mask=None, return_hidden_states=False, **kwargs):
-        hidden_states = [x]
-        for m in self:
+    def forward(self, x, attention_mask=None, callback_fn=None, **kwargs):
+        for i, m in enumerate(self):
             x = m(x, attention_mask=attention_mask, **kwargs)
-            if return_hidden_states:
-                hidden_states.append(x)
-        if return_hidden_states:
-            return x, hidden_states
-        else:
-            return x
+            if callback_fn:
+                callback_fn(i, x)
+        return x
 
 
 class TransformerBlock(nn.Module):

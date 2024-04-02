@@ -786,6 +786,14 @@ class Ldm(DiProcess):
     in_ch = 3
     input_size = 512
 
+    encoder_fn: str
+    vocab_fn: str
+    tokenizer: 'CLIPTokenizer'
+
+    def get_vocab(self):
+        from data_parse.nlp_data_parse.pre_process.bundled import CLIPTokenizer
+        self.tokenizer = CLIPTokenizer.from_pretrain(self.encoder_fn, self.vocab_fn)
+
     def set_optimizer(self):
         self.optimizer = optim.Adam(self.model.parameters(), lr=1e-4, betas=(0.9, 0.99))
 
@@ -808,19 +816,24 @@ class Ldm(DiProcess):
         for ret in rets:
             if 'text' in ret:
                 texts.append(ret['text'])
-            if 'image' in ret and ret['image'] is not None:
-                images.append(torch.from_numpy(ret.pop('image')).to(self.device, non_blocking=True, dtype=torch.float))
+
             if 'neg_text' in ret and ret['neg_text']:
                 neg_texts.append(ret['neg_text'])
+            else:
+                neg_texts.append('')
 
-        neg_texts = neg_texts if neg_texts else None
+            if 'image' in ret and ret['image'] is not None:
+                images.append(torch.from_numpy(ret.pop('image')).to(self.device, non_blocking=True, dtype=torch.float))
+
+        inputs = self.tokenizer.encode_paragraphs(texts)
+        texts = torch.tensor(inputs['segments_ids']).to(self.device)
+        neg_inputs = self.tokenizer.encode_paragraphs(neg_texts)
+        neg_texts = torch.tensor(neg_inputs['segments_ids']).to(self.device)
 
         if images:
             images = torch.stack(images)
             images /= 255.
             images = images * 2 - 1  # normalize, [0, 1] -> [-1, 1]
-        else:
-            images = None
 
         model_results = {}
         for name, model in self.models.items():
@@ -899,26 +912,32 @@ class SDFromPretrain(CheckpointHooks):
 
 class SDv1(Ldm):
     model_version = 'sd'
-    model_sub_version = 'vanilla'  # for config choose
+    model_sub_version = 'v1'  # for config choose
     dataset_version = model_sub_version
-    cond_pretrain_model = 'openai/clip-vit-large-patch14'
+    encoder_fn = 'openai/clip-vit-large-patch14/vocab.json'
+    vocab_fn = 'openai/clip-vit-large-patch14/merges.txt'
 
     def set_model(self):
         from models.image_generation.sdv1 import Model, Config
+        self.get_vocab()
         self.model = Model(
             img_ch=self.in_ch,
             image_size=self.input_size,
-            cond_config=dict(
-                pretrain_model=self.cond_pretrain_model,
-                # if having ldm pretrain_model, do not download the clip weight file, only the config file
-                # 'cause the ldm pretrain_model contains the clip weight
-                load_weight=not hasattr(self, 'pretrain_model')
-            ),
             **Config.get(self.model_sub_version)
         )
 
 
-class SDv1Pretrained(SDv1, SDFromPretrain):
+class SDv1FromPretrain(CheckpointHooks):
+    def load_pretrain(self):
+        if hasattr(self, 'pretrain_model'):
+            from models.image_generation.sdv1 import WeightLoader, WeightConverter
+
+            state_dict = WeightLoader.auto_load(self.pretrain_model)
+            state_dict = WeightConverter.from_official(state_dict)
+            self.model.load_state_dict(state_dict, strict=False)
+
+
+class SDv1Pretrained(SDv1, SDv1FromPretrain):
     """no training, only for prediction
 
     Usage:
@@ -926,7 +945,7 @@ class SDv1Pretrained(SDv1, SDFromPretrain):
 
             from examples.image_generation import SDv1Pretrained as Process
 
-            process = Process(pretrain_model='...', cond_pretrain_model='...', model_sub_version='...')
+            process = Process(pretrain_model='...', encoder_fn='...', vocab_fn='...', model_sub_version='...')
             process.init()
 
             # txt2img
@@ -958,26 +977,33 @@ class SDv2(Ldm):
     model_version = 'sd'
     model_sub_version = 'v2'  # for config choose
     dataset_version = model_sub_version
-    cond_pretrain_model = None
     input_size = 768
+    encoder_fn = 'laion/CLIP-ViT-H-14-laion2B-s32B-b79K/vocab.json'
+    vocab_fn = 'laion/CLIP-ViT-H-14-laion2B-s32B-b79K/merges.txt'
 
     def set_model(self):
         from models.image_generation.sdv2 import Model, Config
-
+        self.get_vocab()
+        # note, special pad_id for laion clip model
+        self.tokenizer.pad_id = 0
         self.model = Model(
             img_ch=self.in_ch,
             image_size=self.input_size,
-            cond_config=dict(
-                # if having ldm pretrain_model, set `self.cond_pretrain_model=None`,
-                # do not download the clip weight file, only the config file
-                # 'cause the ldm pretrain_model contains the clip weight
-                pretrain_model=self.cond_pretrain_model,
-            ),
             **Config.get(self.model_sub_version)
         )
 
 
-class SDv2Pretrained(SDv2, SDFromPretrain):
+class SDv2FromPretrain(CheckpointHooks):
+    def load_pretrain(self):
+        if hasattr(self, 'pretrain_model'):
+            from models.image_generation.sdv2 import WeightLoader, WeightConverter
+
+            state_dict = WeightLoader.auto_load(self.pretrain_model)
+            state_dict = WeightConverter.from_official(state_dict)
+            self.model.load_state_dict(state_dict, strict=False)
+
+
+class SDv2Pretrained(SDv2, SDv2FromPretrain):
     """no training, only for prediction
 
     Usage:
@@ -1000,7 +1026,8 @@ class SDXL(Ldm):
 
     def set_model(self):
         from models.image_generation.sdxl import Model, Config
-
+        # todo: different pad_id from sdv1 adn sdv2
+        self.get_vocab()
         self.model = Model(
             img_ch=self.in_ch,
             image_size=self.input_size,
@@ -1014,7 +1041,17 @@ class SDXL(Ldm):
                 module.__call__ = partial(torch_utils.ModuleManager.low_memory_run, module, self.device)
 
 
-class SDXLPretrained(SDXL, SDFromPretrain):
+class SDXLFromPretrain(CheckpointHooks):
+    def load_pretrain(self):
+        if hasattr(self, 'pretrain_model'):
+            from models.image_generation.sdxl import WeightLoader, WeightConverter
+
+            state_dict = WeightLoader.auto_load(self.pretrain_model)
+            state_dict = WeightConverter.from_official(state_dict)
+            self.model.load_state_dict(state_dict, strict=False)
+
+
+class SDXLPretrained(SDXL, SDXLFromPretrain):
     """no training, only for prediction
 
     Usage:
