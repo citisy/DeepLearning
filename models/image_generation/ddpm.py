@@ -321,18 +321,18 @@ class Model(nn.ModuleList):
     def post_process(self, x_t, **kwargs):
         return self.p_sample_loop(x_t, **kwargs)
 
-    def p_sample_loop(self, x_t, t0=None, visual_fn=None, **kwargs):
+    def p_sample_loop(self, x_t, t0=None, callback_fn=None, **kwargs):
         timestep_seq = self.make_timesteps(t0)
         x_0 = None
-        if visual_fn:
-            visual_fn(x_t)
+        if callback_fn:
+            callback_fn(x_t, self.timesteps)
 
         # t: T-1 -> 0
         for t in reversed(timestep_seq):
             self_cond = x_0 if self.self_condition else None
             x_t, x_0 = self.p_sample(x_t, t, self_cond, **kwargs)
-            if visual_fn:
-                visual_fn(x_t)
+            if callback_fn:
+                callback_fn(x_t, t)
 
         return x_t
 

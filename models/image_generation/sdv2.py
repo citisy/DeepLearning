@@ -1,8 +1,3 @@
-import torch
-import torch.nn.functional as F
-from torch.utils.checkpoint import checkpoint
-from torch import nn, einsum
-from utils import torch_utils
 from . import ldm, ddpm, VAE, sdv1
 from .sdv1 import WeightLoader, Model
 from ..text_image_pretrain import CLIP
@@ -18,7 +13,7 @@ class Config(sdv1.Config):
 
     v2_cond = dict(
         **CLIP.Config.laion_text_H_14,
-        layer=sdv1.Config.PENULTIMATE,
+        layer=sdv1.Config.NORM_HIDDEN,
         layer_idx=CLIP.Config.laion_text_H_14['num_hidden_layers'] - 2  # second to last state
     )
 

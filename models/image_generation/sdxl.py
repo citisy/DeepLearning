@@ -42,10 +42,11 @@ class Config(sdv2.Config):
         objective=Z,
     )
 
+    # for vanilla v2 model
     legacy_v2_embedder = dict(
         name='clip',
         input_key=TXT,
-        params=CLIP.Config.laion_text_H_14
+        params=sdv2.Config.v2_cond
     )
 
     embedder_clip = dict(
@@ -54,7 +55,7 @@ class Config(sdv2.Config):
         params=dict(
             is_proj=False,
             **CLIP.Config.openai_text_large,
-            layer=sdv1.Config.HIDDEN,
+            layer=sdv1.Config.RAW_HIDDEN,
             layer_idx=CLIP.Config.openai_text_large['num_hidden_layers'] - 2,  # second to last state
         )
     )
@@ -64,8 +65,7 @@ class Config(sdv2.Config):
         input_key=TXT,
         params=dict(
             **CLIP.Config.laion_text_bigG_14,
-            # legacy=False,
-            layer=sdv2.Config.HIDDEN,
+            layer=sdv1.Config.RAW_HIDDEN,
             layer_idx=CLIP.Config.laion_text_bigG_14['num_hidden_layers'] - 2,  # second to last state
             return_pooled=True
         )

@@ -11,9 +11,9 @@ class Config(ldm.Config):
 
     # for CLIPEmbedder layer output
     LAST = 'last'
-    HIDDEN = 'hidden'
+    RAW_HIDDEN = 'raw_hidden'
+    NORM_HIDDEN = 'norm_hidden'
     POOLED = 'pooled'
-    PENULTIMATE = 'penultimate'
 
     cond = dict(
         is_proj=False,
@@ -53,12 +53,12 @@ class Model(ldm.Model):
 
 
 class CLIPEmbedder(nn.Module):
-    def __init__(self, layer=Config.HIDDEN, layer_idx=None, return_pooled=False, **kwargs):
+    def __init__(self, layer=Config.RAW_HIDDEN, layer_idx=None, return_pooled=False, **kwargs):
         super().__init__()
         self.transformer = CLIP.TextModel(**kwargs)
 
-        self.max_length = kwargs['max_seq_len']  # 77
-        self.output_size = kwargs['output_size']  # 1024
+        self.max_length = kwargs['max_seq_len']
+        self.output_size = kwargs['output_size']
         self.layer = layer
         self.layer_idx = layer_idx
         self.return_pooled = return_pooled
@@ -68,26 +68,37 @@ class CLIPEmbedder(nn.Module):
         x = self.transformer.text_model.backbone(text_ids, callback_fn=self.callback)
         pooled_output = None
 
-        if self.layer == Config.HIDDEN:
+        if self.layer == Config.RAW_HIDDEN:     # without norm
             z = self.callback.cache_hidden_state
-        elif self.layer == Config.PENULTIMATE:
+
+        elif self.layer == Config.NORM_HIDDEN:  # with norm
             z = self.callback.cache_hidden_state
             z = self.transformer.text_model.neck(z)
+
         elif self.layer == Config.LAST:
             z = self.transformer.text_model.neck(x)
+
         elif self.layer == Config.POOLED:
             h = self.transformer.text_model.neck(x)
             pooled_output = self.transformer.text_model.head(text_ids, h)
             z = pooled_output[:, None, :]
+
         else:
-            raise f'Do not support layer={self.layer}'
+            raise f'do not support layer={self.layer}'
 
         if self.return_pooled:
-            if self.layer == Config.LAST:
-                pooled_output = self.transformer.text_model.head(text_ids, z)
-            elif self.layer == Config.HIDDEN:
+            if self.layer in {Config.RAW_HIDDEN, Config.NORM_HIDDEN}:
                 h = self.transformer.text_model.neck(x)
                 pooled_output = self.transformer.text_model.head(text_ids, h)
+
+            elif self.layer == Config.LAST:
+                pooled_output = self.transformer.text_model.head(text_ids, z)
+
+            elif self.layer == Config.POOLED:
+                pass
+
+            else:
+                raise f'return_pooled do not support layer={self.layer}'
 
             return z, pooled_output
 
