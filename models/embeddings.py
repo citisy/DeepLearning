@@ -5,22 +5,31 @@ from einops.layers.torch import Rearrange
 
 
 class PositionalEmbedding(nn.Module):
-    def __init__(self, num_embeddings, embedding_dim):
+    """
+    emb_{2i} = sin{n * \theta^{-2d/D}}
+    emb_{2i+1} = cos{n * \theta^{-2d/d}}
+    where, n is token position of N, d is emb position of D
+    """
+
+    def __init__(self, num_embeddings, embedding_dim, theta=10000.):
         super().__init__()
-        pe = torch.zeros(num_embeddings, embedding_dim).float()
+        weight = torch.zeros(num_embeddings, embedding_dim).float()
         position = torch.arange(0, num_embeddings).float().unsqueeze(1)
-        div_term = (torch.arange(0, embedding_dim, 2).float() * -(math.log(10000.0) / embedding_dim)).exp()
+        # exp{-d / D * log{\theta}} = \theta ^ {-d / D}
+        # same to
+        # div_term = 1.0 / (theta ** (torch.arange(0, embedding_dim, 2)[: (embedding_dim // 2)].float() / embedding_dim))
+        div_term = (torch.arange(0, embedding_dim, 2).float() * -(math.log(theta) / embedding_dim)).exp()
 
-        pe[:, 0::2] = torch.sin(position * div_term)
-        pe[:, 1::2] = torch.cos(position * div_term)
+        weight[:, 0::2] = torch.sin(position * div_term)
+        weight[:, 1::2] = torch.cos(position * div_term)
 
-        pe = pe.unsqueeze(0)
-        self.register_buffer('pe', pe)
+        weight = weight.unsqueeze(0)
+        self.register_buffer('weight', weight)
         self.num_embeddings = num_embeddings
         self.embedding_dim = embedding_dim
 
     def forward(self, x):
-        return self.pe[:, :x.size(1)]
+        return self.weight[:, :x.shape[1]]
 
 
 class LearnedPositionEmbedding(nn.Embedding):
@@ -33,28 +42,32 @@ class LearnedPositionEmbedding(nn.Embedding):
         return super().forward(self.position_ids[:, :x.shape[1]])
 
 
-class SinusoidalPositionEmbedding(nn.Module):
+class SinusoidalEmbedding(nn.Module):
     """
-    emb_2i = sin{x * \theta^{-2i/d}}
-    emb_{2i+1} = cos{x * \theta^{-2i/d}}
+    emb_{2i} = sin{x * \theta^{-2d/D}}
+    emb_{2i+1} = cos{x * \theta^{-2d/D}}
+    where, x is seq vec, d is emb position of D
     """
 
-    def __init__(self, dim, theta=10000):
+    def __init__(self, embedding_dim, theta=10000.):
         super().__init__()
-        half_dim = dim // 2
-        log_theta = math.log(theta)
-        emb = log_theta / half_dim
-        emb = torch.exp(torch.arange(half_dim) * -emb)
-        self.register_buffer('emb', emb)
+        weights = torch.zeros(embedding_dim).float()
+        # exp{-d / D * log{\theta}} = \theta ^ {-d / D}
+        div_term = (torch.arange(0, embedding_dim, 2).float() * -(math.log(theta) / embedding_dim)).exp()
+
+        weights[0::2] = torch.sin(div_term)
+        weights[1::2] = torch.cos(div_term)
+
+        self.register_buffer('weights', weights)
+        self.embedding_dim = embedding_dim
 
     def forward(self, x):
-        emb = self.emb
-        emb = x[:, None] * emb[None, :]
-        emb = torch.cat((emb.cos(), emb.sin()), dim=-1)
+        freqs = x[:, None] * self.weights[None, :]
+        emb = torch.cat((freqs.cos(), freqs.sin()), dim=-1)
         return emb
 
 
-class LearnedSinusoidalPositionEmbedding(nn.Module):
+class LearnedSinusoidalEmbedding(nn.Module):
     """following @crowsonkb's lead with random (learned optional) sinusoidal pos emb
     https://github.com/crowsonkb/v-diffusion-jax/blob/master/diffusion/models/danbooru_128.py#L8 """
 
@@ -69,6 +82,30 @@ class LearnedSinusoidalPositionEmbedding(nn.Module):
         fouriered = torch.cat((freqs.sin(), freqs.cos()), dim=-1)
         fouriered = torch.cat((x, fouriered), dim=-1)
         return fouriered
+
+
+class RotaryEmbedding(nn.Module):
+    """for qk of rotary attention, not for seq"""
+    def __init__(self, num_embeddings, embedding_dim, theta=10000.):
+        super().__init__()
+        position = torch.arange(0, num_embeddings).float()
+
+        # exp{-d / D * log{\theta}} = \theta ^ {-d / D}
+        # same to
+        # div_term = 1.0 / (theta ** (torch.arange(0, embedding_dim, 2)[: (embedding_dim // 2)].float() / embedding_dim))
+        div_term = (torch.arange(0, embedding_dim, 2).float() * -(math.log(theta) / embedding_dim)).exp()
+        freqs = torch.outer(position, div_term).float()  # type: ignore
+        weights = torch.polar(torch.ones_like(freqs), freqs)
+        weights = weights[None, :, None, :]  # (s d) -> (1 s 1 d)
+        self.register_buffer('weights', weights)
+
+    def forward(self, x, start_pos=0):
+        """x: (b s n d)"""
+        s = x.shape[1]
+        weights = self.weights[:, start_pos:start_pos + s, :, :]
+        y = torch.view_as_complex(x.float().reshape(*x.shape[:-1], -1, 2))
+        y = torch.view_as_real(y * weights).flatten(3)
+        return y.type_as(x)
 
 
 class PatchEmbedding(nn.Module):

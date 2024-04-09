@@ -31,6 +31,33 @@ def get_qkv(q, k=None, v=None):
     return q, k, v
 
 
+def get_mask(attention_mask, det_shape, det_dtype=None, return_bool=True):
+    if attention_mask is None:
+        return attention_mask
+
+    # [1,1,1,0,0,....] -> [F,F,F,T,T,...]
+    attention_mask = ~attention_mask.to(dtype=torch.bool)
+    if len(attention_mask.shape) != len(det_shape):
+        *t, i, j = det_shape
+        n, j = attention_mask.shape
+        attention_mask = attention_mask.view(n, *[1] * len(t), j).repeat(1, 1, i, 1)  # (n, j) -> (n, 1, i, j)
+
+    if not return_bool:
+        # [1,1,1,0,0,....] -> [0,0,0,-inf,-inf,,...]
+        tmp = torch.zeros_like(attention_mask).to(attention_mask.device, dtype=det_dtype)
+        tmp[attention_mask] = torch.finfo(det_dtype).min
+        attention_mask = tmp
+
+    return attention_mask
+
+
+def mask(sim, attention_mask=None):
+    if attention_mask is not None:  # mask pad
+        attention_mask = get_mask(attention_mask, sim.shape)
+        sim = sim.masked_fill(attention_mask, torch.finfo(sim.dtype).min)  # support fp16
+    return sim
+
+
 class CrossAttention2D(nn.Module):
     """cross attention"""
 
@@ -189,11 +216,15 @@ class ScaleAttend(nn.Module):
         self.dropout = nn.Dropout(drop_prob)
 
     def forward(self, q, k, v, attention_mask=None):
+        """
+        in(q|k|v): (b n s d) or (b*n s d)
+        out(attn): (b n s d) or (b*n s d)
+        """
         scale = q.shape[-1] ** -0.5
         # similarity -> (..., i, j), usually i=j=s
         # sim = torch.einsum('... i d, ... j d -> ... i j', q, k) * self.scale
         sim = torch.matmul(q, k.transpose(-2, -1)) * scale
-        sim = self.mask(sim, attention_mask)
+        sim = mask(sim, attention_mask)
 
         attn = F.softmax(sim, dim=-1)
         attn = self.dropout(attn)
@@ -203,28 +234,22 @@ class ScaleAttend(nn.Module):
 
         return attn
 
-    def mask(self, sim, attention_mask):
-        if attention_mask is not None:  # mask pad
-            # [[1,1,1,0,0,....]] -> [F,F,F,T,T,...]
-            attention_mask = ~attention_mask.to(dtype=torch.bool)
-            if len(attention_mask.shape) != len(sim.shape):
-                *t, i, j = sim.shape
-                n, j = attention_mask.shape
-                attention_mask = attention_mask.view(n, *[1] * len(t), j).repeat(1, 1, i, 1)  # (n, j) -> (n, 1, i, j)
-            sim = sim.masked_fill(attention_mask, torch.finfo(sim.dtype).min)  # support fp16
-        return sim
-
 
 class ScaleAttendWithXformers(nn.Module):
-    def __init__(self, **kwargs):
+    def __init__(self, drop_prob=0., **kwargs):
         super().__init__()
         # faster and less memory
         # requires pytorch > 2.0
         from xformers.ops import memory_efficient_attention
-        self.fn = memory_efficient_attention
+        self.fn = partial(memory_efficient_attention, p=drop_prob)
 
     def forward(self, q, k, v, attention_mask=None, **kwargs):
-        return self.fn(q, k, v, attention_mask=attention_mask, **kwargs)
+        """
+        in(q|k|v): (b n s d)
+        out(attn): (b n s d)
+        """
+        attention_mask = get_mask(attention_mask, q.shape, q.dtype, return_bool=True)
+        return self.fn(q, k, v, attn_bias=attention_mask, **kwargs)
 
 
 class LinearAttend(nn.Module):
@@ -236,10 +261,14 @@ class LinearAttend(nn.Module):
     when s >> d, got less computation
     """
 
-    def __init__(self, **kwargs):
+    def __init__(self, *args, **kwargs):
         super().__init__()
 
     def attend(self, q, k, v):
+        """
+        in(q|k|v): (b n d s)
+        out(attn): (b n d s)
+        """
         q = q.softmax(dim=-2)
         k = k.softmax(dim=-1)
 
@@ -290,13 +319,9 @@ class FlashAttend(nn.Module):
 
     def forward(self, q, k, v):
         """
-        einstein notation
-        b - batch
-        h - heads
-        n, i, j - sequence length (base sequence length, source, target)
-        d - feature dimension
+        in(q|k|v): (b n s d)
+        out(attn): (b n s d)
         """
-
         _, heads, q_len, _ = q.shape
 
         q, k, v = map(lambda t: t.contiguous(), (q, k, v))
@@ -305,7 +330,7 @@ class FlashAttend(nn.Module):
         config = self.cuda_config if q.is_cuda else self.cpu_config
 
         # pytorch 2.0 flash attn: q, k, v, mask, dropout, causal, softmax_scale
-        with torch.backends.cuda.sdp_kernel(**config._asdict()):
+        with torch.backends.cuda.sdp_kernel(**config):
             out = F.scaled_dot_product_attention(
                 q, k, v,
                 dropout_p=self.drop_prob if self.training else 0.
@@ -315,36 +340,129 @@ class FlashAttend(nn.Module):
 
 
 class MemoryScaleAttend2D(ScaleAttend):
+    def __init__(self, n_heads, n_mem_size, head_dim, max_batch_size, drop_prob=0., **kwargs):
+        super().__init__(drop_prob=drop_prob)
+        self.mem_kv = torch.zeros(2, max_batch_size, n_heads, n_mem_size, head_dim)
+
+    def forward(self, q, k, v, attention_mask=None, start_pos=0):
+        """q,k,v: (b,n,s,d)"""
+        k = MemoryScaleAttend2D.cache(self.mem_kv[0], k, start_pos=start_pos)
+        v = MemoryScaleAttend2D.cache(self.mem_kv[1], v, start_pos=start_pos)
+        return super().forward(q, k, v, attention_mask=attention_mask)
+
+    @staticmethod
+    def cache(mem_x, x, start_pos):
+        b, _, s, _ = x.shape
+        mem_x[:b, :, start_pos:start_pos + s, :] = x
+        return mem_x[:b, :, :start_pos + s, :]
+
+
+class LearnedMemoryScaleAttend2D(ScaleAttend):
+    """apply kv cache"""
+
     def __init__(self, n_heads, n_mem_size, head_dim, drop_prob=0., **kwargs):
         super().__init__(drop_prob=drop_prob)
         self.mem_kv = nn.Parameter(torch.randn(2, n_heads, n_mem_size, head_dim))
 
     def forward(self, q, k, v, attention_mask=None):
+        """
+        in(q|k|v): (b n s d)
+        out(attn): (b n s d)
+        """
         mk, mv = map(lambda t: repeat(t, 'n j d -> b n j d', b=q.shape[0]), self.mem_kv)
         k, v = map(partial(torch.cat, dim=-2), ((mk, k), (mv, v)))
 
         return super().forward(q, k, v, attention_mask=attention_mask)
 
 
-class MemoryScaleAttend3D(ScaleAttend):
+class LearnedMemoryScaleAttend3D(ScaleAttend):
+    """apply kv cache"""
+
     def __init__(self, n_heads, n_mem_size, head_dim, drop_prob=0., **kwargs):
         super().__init__(drop_prob=drop_prob)
         self.mem_kv = nn.Parameter(torch.randn(2, 1, n_mem_size, n_heads * head_dim))
 
     def forward(self, q, k, v, attention_mask=None):
+        """
+        in(q|k|v): (b n s d)
+        out(attn): (b n s d)
+        """
         mk, mv = map(lambda t: repeat(t, 'n j d -> b n j d', b=q.shape[0]), self.mem_kv)
         k, v = map(partial(torch.cat, dim=-2), ((mk, k), (mv, v)))
 
         return super().forward(q, k, v, attention_mask=attention_mask)
 
 
-class MemoryLinearAttend(LinearAttend):
+class LearnedMemoryLinearAttend(LinearAttend):
+    """apply kv cache"""
+
     def __init__(self, n_heads, head_dim, n_mem_size, drop_prob=0., **kwargs):
         super().__init__(drop_prob=drop_prob)
         self.mem_kv = nn.Parameter(torch.randn(2, n_heads, n_mem_size, head_dim))
 
     def forward(self, q, k, v, attention_mask=None):
+        """
+        in(q|k|v): (b n d s)
+        out(attn): (b n d s)
+        """
         mk, mv = map(lambda t: repeat(t, 'n d j -> b n d j', b=q.shape[0]), self.mem_kv)
         k, v = map(partial(torch.cat, dim=-1), ((mk, k), (mv, v)))
 
         return super().forward(q, k, v, attention_mask=attention_mask)
+
+
+class RotaryAttend(ScaleAttend):
+    def __init__(self, embedding=None, max_seq_len=None, dim=None, **kwargs):
+        super().__init__(**kwargs)
+        if embedding is None:
+            from .embeddings import RotaryEmbedding
+            embedding = RotaryEmbedding(max_seq_len, dim)
+
+        self.view_in = Rearrange('b n s d -> b s n d')
+        self.embedding = embedding
+        self.view_out = Rearrange('b s n d -> b n s d')
+
+    def forward(self, q, k, v, attention_mask=None):
+        """
+        in(q|k|v): (b n s d)
+        out(attn): (b n s d)
+        """
+        q, k, v = [self.view_in(x).contiguous() for x in (q, k, v)]
+        q, k = map(self.embedding, (q, k))
+        q, k, v = [self.view_out(x).contiguous() for x in (q, k, v)]
+        attn = super().forward(q, k, v, attention_mask=attention_mask)
+        return attn
+
+
+class MemoryRotaryAttend(ScaleAttend):
+    def __init__(self, n_heads, n_mem_size, head_dim, max_batch_size, embedding=None, max_seq_len=None, dim=None, **kwargs):
+        super().__init__(**kwargs)
+        if embedding is None:
+            from .embeddings import RotaryEmbedding
+            embedding = RotaryEmbedding(max_seq_len, dim)
+
+        self.view_in = Rearrange('b n s d -> b s n d')
+        self.embedding = embedding
+        self.view_out = Rearrange('b s n d -> b n s d')
+        self.mem_kv = torch.zeros(2, max_batch_size, n_mem_size, n_heads, head_dim)
+
+    def forward(self, q, k, v, attention_mask=None, start_pos=0):
+        """
+        in(q|k|v): (b n s d)
+        out(attn): (b n s d)
+        """
+        b, _, s, _ = q.shape
+        q, k, v = [self.view_in(x).contiguous() for x in (q, k, v)]
+        q, k = map(partial(self.embedding, start_pos=start_pos), (q, k))
+        k = self.cache(self.mem_kv[0], k, start_pos=start_pos)
+        v = self.cache(self.mem_kv[1], v, start_pos=start_pos)
+
+        q, k, v = [self.view_out(x).contiguous() for x in (q, k, v)]
+        attn = super().forward(q, k, v, attention_mask=attention_mask)
+        return attn
+
+    @staticmethod
+    def cache(mem_x, x, start_pos):
+        b, s, _, _ = x.shape
+        mem_x[:b, start_pos:start_pos + s, :, :] = x
+        return mem_x[:b, :start_pos + s, :, :]

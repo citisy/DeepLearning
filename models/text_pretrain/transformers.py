@@ -79,16 +79,24 @@ class TransformerBlock(nn.Module):
     """
 
     def __init__(
-            self, hidden_size, num_attention_heads, feed_forward_hidden,
-            is_decode=False, norm_first=False, norm_fn=None, drop_prob=0.1,
-            attend=None, de_attend=None, separate=True,
+            self, hidden_size, num_attention_heads, ff_hidden_size,
+            is_decode=False, norm_first=False, separate=True, drop_prob=0.1,
+            attend=None, de_attend=None, attend_fn=None, de_attend_fn=None,
+            feed_forward_fn=None, norm_fn=None,
             fn_kwargs=dict(), de_fn_kwargs=dict(), ff_kwargs=dict(),
+            attend_fn_kwargs=dict(), de_attend_fn_kwargs=dict(), norm_kwargs=dict(),
     ):
         super().__init__()
         norm_fn = norm_fn or nn.LayerNorm
+        feed_forward_fn = feed_forward_fn or PositionWiseFeedForward
+        if not attend and attend_fn:
+            attend = attend_fn(**attend_fn_kwargs)
+        if not de_attend and de_attend_fn:
+            de_attend = de_attend_fn(**de_attend_fn_kwargs)
+
         self.attn_res = Residual(
             CrossAttention2D(n_heads=num_attention_heads, model_dim=hidden_size, drop_prob=drop_prob, attend=attend, separate=separate, **fn_kwargs),  # SelfAttention
-            norm=norm_fn(hidden_size),
+            norm=norm_fn(hidden_size, **norm_kwargs),
             norm_first=norm_first
         )
 
@@ -101,7 +109,7 @@ class TransformerBlock(nn.Module):
             )
 
         self.ff_res = Residual(
-            PositionWiseFeedForward(hidden_size, feed_forward_hidden, drop_prob=drop_prob, **ff_kwargs),  # PositionWiseFeedForward
+            feed_forward_fn(hidden_size, ff_hidden_size, drop_prob=drop_prob, **ff_kwargs),
             norm=norm_fn(hidden_size),
             norm_first=norm_first
         )
@@ -116,6 +124,8 @@ class TransformerBlock(nn.Module):
 
 
 class PositionWiseFeedForward(nn.Sequential):
+    """y = F2(a(F1(x)))"""
+
     def __init__(self, hidden_size, feed_forward_hidden, act=None, drop_prob=0.1, **kwargs):
         act = act or nn.GELU()
         super().__init__(
@@ -124,7 +134,7 @@ class PositionWiseFeedForward(nn.Sequential):
         )
 
 
-def make_causal_attention_mask(x):
+def make_causal_attention_mask(x, start_pos=0):
     """
     e.g.:
         x.shape=(b, 3, -1) -> mask.shape=(b, 1, 3, 3)
@@ -134,7 +144,12 @@ def make_causal_attention_mask(x):
 
     """
     batch_size, seq_len = x.shape[:2]
-    mask = torch.tril(torch.ones(seq_len, seq_len, device=x.device)).view(1, 1, seq_len, seq_len).repeat(batch_size, 1, 1, 1)
+    mask = torch.tril(torch.ones(seq_len, seq_len, device=x.device))
+    mask = torch.hstack([
+        torch.ones((seq_len, start_pos), dtype=mask.dtype, device=x.device),
+        mask
+    ])
+    mask = mask[None, None].repeat(batch_size, 1, 1, 1)  # (b, 1, s, s+p)
     return mask
 
 
