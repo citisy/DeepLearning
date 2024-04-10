@@ -8,7 +8,7 @@ from random import random
 from functools import partial
 from utils import torch_utils
 from ..layers import Linear, Conv, Upsample, Downsample
-from ..attentions import CrossAttention3D, LinearAttention3D, MemoryLinearAttend
+from ..attentions import CrossAttention3D, LinearAttention3D, LearnedMemoryLinearAttend
 from .. import bundles
 
 
@@ -536,7 +536,7 @@ class SinusoidalPosEmb(nn.Module):
 def make_attn(in_ch, n_heads, head_dim, is_bottom, n_mem_size=4):
     attn = CrossAttention3D if is_bottom else partial(
         LinearAttention3D,
-        attend=MemoryLinearAttend(n_heads, head_dim, n_mem_size),
+        attend=LearnedMemoryLinearAttend(n_heads, head_dim, n_mem_size),
         out_fn=Conv(n_heads * head_dim, n_heads * head_dim, 1, mode='cn', norm=RMSNorm(in_ch)),
     )
     return attn(in_ch, head_dim=head_dim, n_heads=n_heads)

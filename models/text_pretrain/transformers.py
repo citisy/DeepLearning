@@ -104,13 +104,13 @@ class TransformerBlock(nn.Module):
         if is_decode:
             self.de_attn_res = Residual(
                 CrossAttention2D(n_heads=num_attention_heads, model_dim=hidden_size, drop_prob=drop_prob, attend=de_attend, separate=separate, **de_fn_kwargs),  # CrossAttention
-                norm=norm_fn(hidden_size),
+                norm=norm_fn(hidden_size, **norm_kwargs),
                 norm_first=norm_first
             )
 
         self.ff_res = Residual(
             feed_forward_fn(hidden_size, ff_hidden_size, drop_prob=drop_prob, **ff_kwargs),
-            norm=norm_fn(hidden_size),
+            norm=norm_fn(hidden_size, **norm_kwargs),
             norm_first=norm_first
         )
 

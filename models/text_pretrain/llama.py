@@ -52,11 +52,15 @@ class WeightConverter:
 
 
 class Model(nn.Module):
+    eos_id = None
+    pad_id = None
+
     def __init__(self, vocab_size, hidden_size,
                  num_attention_heads, n_layer, multiple_of,
                  max_seq_len=512, max_batch_size=8,
-                 drop_prob=0., norm_eps=1e-05):
+                 drop_prob=0., norm_eps=1e-05, **kwargs):
         super().__init__()
+        self.__dict__.update(kwargs)
 
         self.embedding = nn.Embedding(vocab_size, hidden_size)
         rotary_embedding = embeddings.RotaryEmbedding(max_seq_len * 2, hidden_size // num_attention_heads)
@@ -75,7 +79,7 @@ class Model(nn.Module):
             ),
             feed_forward_fn=FeedForward,
             norm_fn=normalizations.RMSNorm2D,
-            norm_kwargs=dict(eps=1e-5),
+            norm_kwargs=dict(eps=norm_eps),
             fn_kwargs=dict(bias=False),
             ff_kwargs=dict(bias=False),
             num_blocks=n_layer
@@ -102,12 +106,20 @@ class Model(nn.Module):
         batch_size = len(x)
         prev_pos = 0
         min_pos = min(seq_lens)
+        eos_flag = [False] * batch_size
         for cur_pos in range(min_pos, max_gen_len):
             output_data = self.decode(x[:, prev_pos: cur_pos], start_pos=prev_pos, **kwargs)
             # add next preds
             x = torch.cat([x, torch.zeros((batch_size, 1)).to(x)], dim=-1)
             for index in range(batch_size):
+                if eos_flag[index]:
+                    continue
+
+                if x[index][cur_pos] != 0:
+                    continue
+
                 preds = output_data[index, -1]
+                preds = torch.softmax(preds / 0.6, dim=-1)
                 arg = torch.argsort(preds, descending=True)
                 keep = arg[:top_k]
                 preds = preds[keep]
@@ -116,6 +128,13 @@ class Model(nn.Module):
                 # random sampling
                 next_id = keep[preds.multinomial(1)[0]]
                 x[index][cur_pos] = next_id
+
+                if next_id == self.eos_id:
+                    eos_flag[index] = True
+
+            if all(eos_flag):
+                break
+
             prev_pos = cur_pos
         return x
 
@@ -131,7 +150,7 @@ class Model(nn.Module):
 class FeedForward(nn.Module):
     """y = F2(a(F1(x)) * F3(x))"""
 
-    def __init__(self, hidden_size, ff_hidden_size, act=None, drop_prob=0.1, **kwargs):
+    def __init__(self, hidden_size, ff_hidden_size, act=None, drop_prob=0., **kwargs):
         super().__init__()
         act = act or nn.SiLU()
         self.f1 = layers.Linear(hidden_size, ff_hidden_size, mode='la', act=act, **kwargs)

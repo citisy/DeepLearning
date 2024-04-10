@@ -1,9 +1,6 @@
-import math
 import torch
 from torch import nn
 import torch.nn.functional as F
-import numpy as np
-from collections import OrderedDict
 from functools import partial
 from einops.layers.torch import Rearrange
 from einops import rearrange, repeat, reduce
@@ -51,10 +48,11 @@ def get_mask(attention_mask, det_shape, det_dtype=None, return_bool=True):
     return attention_mask
 
 
-def mask(sim, attention_mask=None):
+def mask(sim, attention_mask=None, use_min=True):
     if attention_mask is not None:  # mask pad
         attention_mask = get_mask(attention_mask, sim.shape)
-        sim = sim.masked_fill(attention_mask, torch.finfo(sim.dtype).min)  # support fp16
+        min_num = torch.finfo(sim.dtype).min if use_min else -float('inf')
+        sim = sim.masked_fill(attention_mask, min_num)  # support fp16
     return sim
 
 
@@ -215,7 +213,7 @@ class ScaleAttend(nn.Module):
         super().__init__()
         self.dropout = nn.Dropout(drop_prob)
 
-    def forward(self, q, k, v, attention_mask=None):
+    def forward(self, q, k, v, attention_mask=None, use_min=True, **kwargs):
         """
         in(q|k|v): (b n s d) or (b*n s d)
         out(attn): (b n s d) or (b*n s d)
@@ -224,7 +222,7 @@ class ScaleAttend(nn.Module):
         # similarity -> (..., i, j), usually i=j=s
         # sim = torch.einsum('... i d, ... j d -> ... i j', q, k) * self.scale
         sim = torch.matmul(q, k.transpose(-2, -1)) * scale
-        sim = mask(sim, attention_mask)
+        sim = mask(sim, attention_mask, use_min=use_min)
 
         attn = F.softmax(sim, dim=-1)
         attn = self.dropout(attn)
@@ -446,7 +444,7 @@ class MemoryRotaryAttend(ScaleAttend):
         self.view_out = Rearrange('b s n d -> b n s d')
         self.mem_kv = torch.zeros(2, max_batch_size, n_mem_size, n_heads, head_dim)
 
-    def forward(self, q, k, v, attention_mask=None, start_pos=0):
+    def forward(self, q, k, v, start_pos=0, **kwargs):
         """
         in(q|k|v): (b n s d)
         out(attn): (b n s d)
@@ -458,7 +456,7 @@ class MemoryRotaryAttend(ScaleAttend):
         v = self.cache(self.mem_kv[1], v, start_pos=start_pos)
 
         q, k, v = [self.view_out(x).contiguous() for x in (q, k, v)]
-        attn = super().forward(q, k, v, attention_mask=attention_mask)
+        attn = super().forward(q, k, v, **kwargs)
         return attn
 
     @staticmethod
