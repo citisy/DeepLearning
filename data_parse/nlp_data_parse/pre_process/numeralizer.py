@@ -108,7 +108,7 @@ class BytePairEncode:
     refer to: https://www.drdobbs.com/a-new-algorithm-for-data-compression/184402829
     """
 
-    def __init__(self, byte_pairs, word_dict, word_inv_dict=None, byte_encode_dict=None, byte_decoder_dict=None):
+    def __init__(self, byte_pairs, word_dict, word_inv_dict=None, byte_encode_dict=None, byte_decoder_dict=None, unk_token=None):
         self.byte_pairs = byte_pairs
         if not isinstance(self.byte_pairs, dict):
             # id: (char1, char2)
@@ -119,6 +119,7 @@ class BytePairEncode:
 
         self.byte_encode_dict = byte_encode_dict or self.make_default_byte_encode_dict()
         self.byte_decoder_dict = byte_decoder_dict or {v: k for k, v in self.byte_encode_dict.items()}
+        self.unk_id = self.word_dict.get(unk_token)
 
         self.caches = {}
 
@@ -139,6 +140,10 @@ class BytePairEncode:
                 n += 1
         return byte_encode_dict
 
+    def make_chars(self, word):
+        # normalize the segment, fall in [0, 255]
+        return [self.byte_encode_dict[c] for c in bytearray(word.encode('utf-8'))]
+
     def encode(self, segments):
         """byte pair encode
         refer to: https://www.drdobbs.com/a-new-algorithm-for-data-compression/184402829
@@ -152,8 +157,7 @@ class BytePairEncode:
                     _id += self.caches[word]
                     continue
 
-                # normalize the segment, fall in [0, 255]
-                chars = [self.byte_encode_dict[c] for c in bytearray(word.encode('utf-8'))]
+                chars = self.make_chars(word)
 
                 while len(chars) > 0:
                     min_pair, min_rank = None, float('inf')
@@ -177,7 +181,7 @@ class BytePairEncode:
                     chars[tail - 1] = last
                     chars = chars[:tail]
 
-                t = [self.word_dict[c] for c in chars]
+                t = [self.word_dict.get(c, self.unk_id) for c in chars]
                 _id += t
                 self.caches[word] = t
             ids.append(_id)

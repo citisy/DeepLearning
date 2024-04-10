@@ -1,4 +1,5 @@
 import numpy as np
+import torch
 from . import spliter, chunker, cleaner, snack, numeralizer, perturbation
 from utils import os_lib
 
@@ -76,11 +77,11 @@ class BertTokenizer:
         self.perturbation = perturbation.RandomMask(self.word_dict, self.sp_id_dict, self.sp_token_dict)
 
     @staticmethod
-    def from_pretrain(vocab_fn):
+    def from_pretrain(vocab_fn, **kwargs):
         # note, vocab must be with word piece, e.g. uncased_L-12_H-768_A-12/vocab.txt
         # https://github.com/google-research/bert to get more details
         vocab = os_lib.loader.auto_load(vocab_fn)
-        return BertTokenizer(vocab)
+        return BertTokenizer(vocab, **kwargs)
 
     def encode(self, paragraphs, mask=False):
         segments = self.encode_paragraphs_to_segments(paragraphs)
@@ -155,6 +156,10 @@ class GPT2Tokenizer:
     - numerizer(bpe): [1, 2]
     """
 
+    sp_token_dict = dict(
+        pad=' '
+    )
+
     def __init__(self, byte_pairs, word_dict, pad_id=None, max_seq_len=512, **kwargs):
         import regex
 
@@ -168,16 +173,16 @@ class GPT2Tokenizer:
 
         self.spliter = spliter.ToSegments(sep_pattern=self.sep_pattern, is_split_punctuation=False)
         self.numerizer = numeralizer.BytePairEncode(self.byte_pairs, self.word_dict)
-        self.pad_id = pad_id or self.numerizer.encode(' ')[0][0]
+        self.pad_id = pad_id or self.numerizer.encode([' '])[0][0]
 
         self.__dict__.update(kwargs)
 
     @staticmethod
-    def from_pretrain(encoder_path, vocab_path):
+    def from_pretrain(encoder_path, vocab_path, **kwargs):
         word_dict = os_lib.loader.load_json(encoder_path)
         byte_pairs = os_lib.loader.load_txt(vocab_path)
         byte_pairs = byte_pairs[1:]
-        return GPT2Tokenizer(byte_pairs, word_dict)
+        return GPT2Tokenizer(byte_pairs, word_dict, **kwargs)
 
     def encode_segments(self, segments):
         segments_ids = self.numerizer.encode(segments)
@@ -207,7 +212,7 @@ class T5Tokenizer:
         self.max_seq_len = max_seq_len
         self.sp_model = sp_model
         # note, there are 32000 in sp_model.vocab_size(), and 100 in additional_sp_token,
-        # but not 32128, so doubtful how the get the number
+        # but got vocab_size of 32128 by official T5 model, so doubtful how to get the number
         # self.vocab_size: int = self.sp_model.vocab_size()
         self.vocab_size: int = 32128
         self.bos_id: int = self.sp_model.bos_id()
@@ -218,12 +223,12 @@ class T5Tokenizer:
         self.__dict__.update({f'{k}_token': v for k, v in self.sp_token_dict.items()})
 
     @staticmethod
-    def from_pretrain(vocab_path):
+    def from_pretrain(vocab_path, **kwargs):
         # pip install sentencepiece
         from sentencepiece import SentencePieceProcessor
 
         sp_model = SentencePieceProcessor(model_file=vocab_path)
-        return T5Tokenizer(sp_model)
+        return T5Tokenizer(sp_model, **kwargs)
 
     def encode(self, paragraphs):
         segments_ids = self.sp_model.encode(paragraphs)
@@ -247,4 +252,78 @@ class T5Tokenizer:
     def decode(self, segments_ids):
         if isinstance(segments_ids, np.ndarray):
             segments_ids = segments_ids.tolist()
+        elif isinstance(segments_ids, torch.Tensor):
+            segments_ids = segments_ids.cpu().numpy().tolist()
         return self.sp_model.decode(segments_ids)
+
+
+class CLIPTokenizer:
+    sp_token_dict = dict(
+        unk="<|endoftext|>",
+        bos="<|startoftext|>",
+        eos="<|endoftext|>",
+        pad="<|endoftext|>",
+    )
+
+    def __init__(self, byte_pairs, word_dict, max_seq_len=77, **kwargs):
+        import regex
+
+        self.byte_pairs = byte_pairs
+        self.word_dict = word_dict
+        self.vocab_size = len(word_dict)
+        self.max_seq_len = max_seq_len
+
+        self.sep_pattern = regex.compile(
+            r"""<\|startoftext\|>|<\|endoftext\|>|'s|'t|'re|'ve|'m|'ll|'d|[\p{L}]+|[\p{N}]|[^\s\p{L}\p{N}]+""",
+            regex.IGNORECASE,
+        )
+
+        self.spliter = spliter.ToSegments(
+            sep_pattern=self.sep_pattern,
+            is_split_punctuation=False,
+            cleaner=Apply(
+                cleaner.Lower().from_paragraph,
+            ),
+            sp_tokens=set(self.sp_token_dict.values()),
+        )
+        self.numerizer = numeralizer.BytePairEncode(self.byte_pairs, self.word_dict)
+        self.numerizer.make_chars = self.make_chars
+        self.sp_id_dict = {k: self.word_dict.get(v) for k, v in self.sp_token_dict.items()}
+        self.word_suffix = '</w>'
+
+        self.__dict__.update(kwargs)
+        self.__dict__.update({f'{k}_token': v for k, v in self.sp_token_dict.items()})
+        self.__dict__.update({f'{k}_id': v for k, v in self.sp_id_dict.items()})
+
+    def make_chars(self, word):
+        """for bpe char pairs
+        'hello' -> ['h', 'e', 'l', 'l', 'o</w>']"""
+        return list(word[:-1]) + [word[-1] + self.word_suffix]
+
+    @staticmethod
+    def from_pretrain(encoder_path, vocab_path, **kwargs):
+        word_dict = os_lib.loader.load_json(encoder_path)
+        byte_pairs = os_lib.loader.load_txt(vocab_path)
+        byte_pairs = byte_pairs[1:]
+        return CLIPTokenizer(byte_pairs, word_dict, **kwargs)
+
+    def encode_paragraphs(self, paragraphs):
+        segments = self.spliter.from_paragraphs(paragraphs)
+        r = self.encode_segments(segments)
+        return r
+
+    def encode_segments(self, segments):
+        segments_ids = self.numerizer.encode(segments)
+
+        seq_lens = [len(t) for t in segments_ids]
+        segments_ids = snack.align(
+            segments_ids, max_seq_len=self.max_seq_len, auto_pad=False,
+            start_obj=self.bos_id,
+            end_obj=self.eos_id,
+            pad_obj=self.pad_id,
+        )
+
+        return dict(
+            segments_ids=segments_ids,
+            seq_lens=seq_lens
+        )

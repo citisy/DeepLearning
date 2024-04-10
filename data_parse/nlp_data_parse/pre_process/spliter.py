@@ -69,7 +69,7 @@ class ToSegment:
     def __init__(
             self,
             sep=None, sep_pattern=None,
-            sp_tokens=(), cleaner=None,
+            sp_tokens=(), cleaner=None, deep_split_funcs=(),
             is_split_punctuation=True, is_word_piece=False, vocab=None,
             **kwargs
     ):
@@ -100,6 +100,7 @@ class ToSegment:
             self.deep_split_funcs.append(self.from_paragraph_with_punctuation)
         if is_word_piece:
             self.deep_split_funcs.append(self.from_paragraph_with_word_piece)
+        self.deep_split_funcs.extend(deep_split_funcs)
 
     def from_paragraph(self, paragraph):
         if self.sp_tokens:
@@ -175,6 +176,7 @@ class ToSegment:
         return False
 
     def from_paragraph_with_punctuation(self, text):
+        """'hello,world' -> ['hello', ',', 'world']"""
         output = []
         # for text in seg:
         chars = list(text)
@@ -195,6 +197,7 @@ class ToSegment:
         return [''.join(x) for x in output]
 
     def from_paragraph_with_word_piece(self, paragraph):
+        """'uncased' -> ['un', '##cased']"""
         chars = list(paragraph)
         is_bad = False
         start = 0
