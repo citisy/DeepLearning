@@ -2,6 +2,7 @@ import numpy as np
 import torch
 from . import spliter, chunker, cleaner, snack, numeralizer, perturbation
 from utils import os_lib
+from typing import List, Dict
 
 
 class Apply:
@@ -327,3 +328,119 @@ class CLIPTokenizer:
             segments_ids=segments_ids,
             seq_lens=seq_lens
         )
+
+
+class LlamaTokenizer:
+    sp_token_dict = dict(
+        b_inst="[INST]",
+        e_inst="[/INST]",
+        b_sys="<<SYS>>\n",
+        e_sys="\n<</SYS>>\n\n",
+        raw_b_sys="<<SYS>>",
+        raw_e_sys="<</SYS>>"
+    )
+
+    def __init__(self, sp_model: 'SentencePieceProcessor', max_seq_len=512, **kwargs):
+        self.max_seq_len = max_seq_len
+        self.sp_model = sp_model
+        self.vocab_size: int = 32000
+        self.bos_id: int = self.sp_model.bos_id()
+        self.eos_id: int = self.sp_model.eos_id()
+        self.pad_id: int = self.sp_model.pad_id()
+
+        self.__dict__.update(kwargs)
+        self.__dict__.update({f'{k}_token': v for k, v in self.sp_token_dict.items()})
+
+        self.role_to_token_dict = dict(
+            system=f'{self.b_sys_token}%s{self.e_sys_token}',
+            user=f'{self.b_inst_token} %s {self.e_inst_token}',
+            assistant=f'{self.b_inst_token} %s {self.e_inst_token}',
+        )
+
+    @staticmethod
+    def from_pretrain(vocab_path, **kwargs):
+        # pip install sentencepiece
+        from sentencepiece import SentencePieceProcessor
+
+        sp_model = SentencePieceProcessor(model_file=vocab_path)
+        return LlamaTokenizer(sp_model, **kwargs)
+
+    def encode_dialogs(self, dialogs: List[List[Dict]]):
+        segments_ids = []
+        for dialog in dialogs:
+            segments_id = self.encode_dialog(dialog)
+            segments_ids.append(segments_id)
+
+        seq_lens = [len(t) for t in segments_ids]
+        valid_segment_tags = [[True] * len(seg) for seg in segments_ids]
+        segments_ids = snack.align(
+            segments_ids, self.max_seq_len,
+            pad_obj=self.pad_id
+        )
+        valid_segment_tags = snack.align(
+            valid_segment_tags, max_seq_len=self.max_seq_len,
+            pad_obj=False
+        )
+
+        return dict(
+            segments_ids=segments_ids,
+            valid_segment_tags=valid_segment_tags,
+            seq_lens=seq_lens
+        )
+
+    def encode_dialog(self, dialog):
+        """
+        dialog format: [{'role': ..., 'content': ...}]
+        content format after encoding like that:
+            '[bos] [INST] <<SYS>>\n system \n<</SYS>>\n\n question1 [/INST] answer1 [eos] [bos] [INST] question2'
+        """
+        if dialog[0]["role"] == "system":
+            # merge system content to question
+            dialog = [
+                         {
+                             "role": dialog[1]["role"],
+                             "content": f'{self.b_sys_token}{dialog[0]["content"]}{self.e_sys_token}{dialog[1]["content"]}',
+                         }
+                     ] + dialog[2:]
+
+        # todo: it should be considered to continuous questions or answers
+        assert all([msg["role"] == "user" for msg in dialog[::2]]) and all([msg["role"] == "assistant" for msg in dialog[1::2]]), \
+            "model only supports 'system', 'user' and 'assistant' roles, starting with 'system', then 'user' and alternating (u/a/u/a/u...)"
+
+        # must remain the last content of user
+        assert dialog[-1]["role"] == "user", f"Last message must be from user, got {dialog[-1]['role']}"
+        segments_id = sum(
+            [
+                self.encode_paragraph(
+                    f"{self.b_inst_token} {(prompt['content']).strip()} {self.e_inst_token} {(answer['content']).strip()} ",
+                    bos=True,
+                    eos=True,
+                )
+                for prompt, answer in zip(dialog[::2], dialog[1::2])
+            ],
+            [],
+        )
+
+        segments_id += self.encode_paragraph(
+            f"{self.b_inst_token} {(dialog[-1]['content']).strip()} {self.e_inst_token}",
+            bos=True,
+            eos=False,
+        )
+        return segments_id
+
+    def encode_paragraph(self, paragraph, bos=True, eos=True):
+        segments_id = self.sp_model.encode(paragraph)
+        if bos:
+            segments_id = [self.bos_id] + segments_id
+
+        if eos:
+            segments_id = segments_id + [self.eos_id]
+
+        return segments_id
+
+    def decode(self, segments_ids):
+        if isinstance(segments_ids, np.ndarray):
+            segments_ids = segments_ids.tolist()
+        elif isinstance(segments_ids, torch.Tensor):
+            segments_ids = segments_ids.cpu().numpy().tolist()
+        return self.sp_model.decode(segments_ids)
