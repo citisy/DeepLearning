@@ -266,7 +266,7 @@ class Loader:
         return obj
 
     def load_json(self, path) -> dict:
-        with open(path, 'r', encoding='utf8') as f:
+        with open(path, 'r', encoding='utf8', errors='ignore') as f:
             obj = json.load(f)
         self.stdout(path)
 
@@ -286,7 +286,7 @@ class Loader:
         return obj
 
     def load_txt(self, path) -> iter:
-        with open(path, 'r', encoding='utf8') as f:
+        with open(path, 'r', encoding='utf8', errors='ignore') as f:
             obj = f.read().rstrip().split('\n')
 
         self.stdout(path)

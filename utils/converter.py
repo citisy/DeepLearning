@@ -1,3 +1,4 @@
+import io
 import base64
 import cv2
 import hashlib
@@ -203,6 +204,9 @@ class DataConvert:
 class InsConvert:
     @staticmethod
     def str_to_instance(obj: str):
+        """give a str, return a class instance
+        >>> InsConvert.str_to_instance('utils.InsConvert')
+        """
         import importlib
         module, cls = obj.rsplit('.', 1)
         return getattr(importlib.import_module(module, package=None), cls)
@@ -210,4 +214,11 @@ class InsConvert:
     @staticmethod
     def instance_to_str(obj):
         pass
+
+    @staticmethod
+    def bytes_to_BytesIO(obj: bytes):
+        """give a bytes, return a BytesIO instance contained the bytes"""
+        f = io.BytesIO()
+        f.write(obj)
+        return f
 

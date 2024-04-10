@@ -340,7 +340,7 @@ class TextVisualize:
         return s if return_list else ''.join(s)
 
     @classmethod
-    def highlight_subtexts(cls, text, spans, highlight_objs=None, fmt='', return_list=False, **kwargs):
+    def highlight_subtexts(cls, text, spans, highlight_objs=None, fmt='', return_list=False, ignore_overlap=False, **kwargs):
         """highlight multiple strings where giving by spans of a text
         See Also `TextVisualize.highlight_str`
 
@@ -349,13 +349,16 @@ class TextVisualize:
             spans(List[tuple]):
             highlight_objs(List[List[str]):
             fmt(str or list):
-            return_list(bool)
+            return_list(bool):
+            ignore_overlap(bool):
             kwargs: see also `TextVisualize.highlight_str()` to get more info
 
         Examples:
             >>> TextVisualize.highlight_subtexts('hello world', [(2, 3), (6, 7)])
 
         """
+        if not spans:
+            return text
 
         arg = np.argsort(spans, axis=0)
 
@@ -363,7 +366,12 @@ class TextVisualize:
         a = 0
         for i in arg[:, 0]:
             span = spans[i]
-            assert a <= span[0], f'{span = } overlap, please check'
+            if a > span[0]:
+                if ignore_overlap:
+                    print(f'{span = } overlap, please check')
+                    continue
+                else:
+                    raise f'{span = } overlap, please check'
 
             if highlight_objs:
                 highlight_obj = highlight_objs[i]
@@ -402,6 +410,7 @@ class TextVisualize:
         highlight_objs = []
         for i, (span, mark) in enumerate(zip(spans, marks)):
             _fmt = fmt[i] if isinstance(fmt, list) else fmt
+            _fmt = _fmt or '(%s -> %s)'
             highlight_obj = cls.highlight_str((text[span[0]:span[1]], mark), types=types, fmt=_fmt, **kwargs)
             highlight_objs.append(highlight_obj)
         return cls.highlight_subtexts(text, spans, highlight_objs, **kwargs)

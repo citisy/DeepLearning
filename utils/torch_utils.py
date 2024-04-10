@@ -285,7 +285,7 @@ class ModuleManager:
 
 class WeightsFormats:
     formats = pd.DataFrame([
-        ['PyTorch', '-', '.pt/.pth/.ckpt', True],
+        ['PyTorch', '-', '.pt/.pth/.ckpt/.bin', True],
         ['TorchScript', 'torchscript', '.torchscript', True],
         ['Safetensors', 'safetensors', '.safetensors', True],
         ['ONNX', 'onnx', '.onnx', True],

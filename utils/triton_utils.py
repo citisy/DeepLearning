@@ -21,7 +21,7 @@ class Requests:
         self.logger = get_logger(logger)
         self.model_configs = {}
         self.model_versions = {}
-        self.init()
+        # self.init()
 
     def init(self):
         model_info = self.client.get_model_repository_index()
@@ -42,6 +42,11 @@ class Requests:
             self.logger.info(self.model_configs)
 
     def async_infer(self, *inputs: 'np.ndarray', model_name, model_version=None):
+        if not self.model_versions:
+            # note, in some version of triton, it will be got some unknown exceptions when init early
+            # so init when using
+            self.init()
+
         model_version = model_version or self.model_versions.get(model_name)
         assert (model_name, model_version) in self.model_configs, \
             f'Got {model_name = } and {model_version = }, where the keys is {self.model_configs.keys()}, pls check'
