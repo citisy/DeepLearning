@@ -406,12 +406,14 @@ class Bert(Process):
     def get_model_inputs(self, rets, train=True):
         segments = [ret['segment'] for ret in rets]
         segment_pair_tags = [ret['segment_pair_tags'] for ret in rets]
+        lens = [len(seg) for seg in segments]
         r = self.tokenizer.encode_segments(segments, segment_pair_tags)
         r = torch_utils.Converter.arrays_to_tensors(r, self.device)
         inputs = dict(
             x=r['segments_ids'],
             segment_label=r['segment_pair_tags'],
             attention_mask=r['valid_segment_tags'],
+            lens=lens
         )
 
         if train:
@@ -469,8 +471,8 @@ class Bert(Process):
                 mask_preds = results['mask_preds']
 
                 skip_id = self.tokenizer.skip_id
-                mask_trues = snack.align(mask_trues, max_seq_len=self.max_seq_len, start_obj=skip_id, pad_obj=skip_id)
-                mask_preds = snack.align(mask_preds, max_seq_len=self.max_seq_len, start_obj=skip_id, pad_obj=skip_id)
+                mask_trues = snack.align(mask_trues, max_seq_len=self.max_seq_len, pad_obj=skip_id, auto_pad=False)
+                mask_preds = snack.align(mask_preds, max_seq_len=self.max_seq_len, pad_obj=skip_id, auto_pad=False)
 
                 mask_trues = np.array(mask_trues)
                 mask_preds = np.array(mask_preds)
@@ -513,7 +515,9 @@ class Bert(Process):
                 )
 
             if self.is_mlm:
-                mask_preds = outputs['mask_pred'][:, 1:-1].argmax(-1).cpu().numpy().tolist()
+                lens = model_inputs['lens']
+                mask_preds = outputs['mask_pred'].argmax(-1).cpu().numpy().tolist()
+                mask_preds = [preds[1: l + 1] for preds, l in zip(mask_preds, lens)]
                 mask_trues = model_inputs['x'].cpu().numpy().tolist()
                 ret.update(
                     mask_outputs=outputs['mask_pred'],

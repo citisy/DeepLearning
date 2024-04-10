@@ -147,6 +147,9 @@ class CheckpointHooks:
                 if name in self.__dict__ and hasattr(self.__dict__[name], 'load_state_dict'):
                     self.__dict__[name].load_state_dict(item)
                 else:
+                    self.logger.warning(f'It found that `{name}` in weight file but not in processor, '
+                                        f'creating the new var by the name, and making sure it is not harmful, '
+                                        f'or using `exclude` instead')
                     self.__dict__[name] = item
 
     def load_jit(self, save_path, **kwargs):
@@ -537,15 +540,16 @@ class ModelHooks:
 
     def state_dict(self):
         state_dict = {
-            'optimizer': self.optimizer.state_dict(),
-            'counters': self.counters,
-            'wandb_id': self.wandb_id,
             'date': datetime.now().isoformat()
         }
 
-        for name in ('stopper', 'ema'):
+        for name in ('optimizer', 'stopper', 'ema', 'counters', 'wandb_id'):
             if hasattr(self, name):
-                state_dict[name] = getattr(self, name).state_dict()
+                var = getattr(self, name)
+                if hasattr(var, 'state_dict'):
+                    state_dict[name] = var.state_dict()
+                elif var is not None:
+                    state_dict[name] = var
 
         return state_dict
 
