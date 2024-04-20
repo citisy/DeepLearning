@@ -108,7 +108,7 @@ class Model(nn.Module):
 
         torch_utils.ModuleManager.initialize_layers(self)
 
-    def forward(self, x, segment_label, attention_mask=None, next_true=None, mask_true=None, **kwargs):
+    def forward(self, x, segment_label=None, attention_mask=None, next_true=None, mask_true=None, **kwargs):
         x = self.backbone(x, segment_label, attention_mask)
 
         outputs = {}
@@ -190,7 +190,7 @@ class Bert(nn.Module):
 
         self.out_features = hidden_size
 
-    def forward(self, x, segment_info, attention_mask=None):
-        x = self.embedding(x, segment_info)
+    def forward(self, x, segment_label, attention_mask=None):
+        x = self.embedding(x, segment_label)
         x = self.encoder(x, attention_mask=attention_mask)
         return x

@@ -193,10 +193,10 @@ class ModuleManager:
 
     @staticmethod
     def freeze_module(module: nn.Module, allow_train=False):
-        module.eval()
         module.requires_grad_(False)
         if not allow_train:
             # module only be allowed to eval, does not change to train mode anymore
+            module.eval()
             module.train = lambda self, mode=True: self
 
     @staticmethod
@@ -281,6 +281,44 @@ class ModuleManager:
         ch = min(in_channels, out_channels)
         weight[range(ch), range(ch), :, :] = f
         return weight
+
+    @staticmethod
+    def get_module_by_name(module, key=None, include=(), exclude=()):
+        """
+        >>> module = ...
+        >>> ModuleManager.get_module_by_name(module, key='q')
+        >>> ModuleManager.get_module_by_name(module, include=('q', 'k', 'v'), exclude=('l0.q', 'l0.k', 'l0.v'))
+        """
+        def cur(current_m: nn.Module, prev_name=''):
+            for name, m in current_m._modules.items():
+                if m is None:
+                    continue
+
+                if len(m._modules) == 0:
+                    full_name = f'{prev_name}.{name}'[1:]
+                    if is_find(full_name):
+                        r.append((current_m, name, full_name))
+
+                else:
+                    cur(m, f'{prev_name}.{name}')
+
+        def is_find(name):
+            flag = False
+            for k in include:
+                if k in name:
+                    flag = True
+
+            for k in exclude:
+                if k in name:
+                    flag = False
+
+            return flag
+
+        r = []
+        if key is not None:
+            include += (key, )
+        cur(module)
+        return r
 
 
 class WeightsFormats:
@@ -498,41 +536,6 @@ class EMA:
 
     def load_state_dict(self, *args, **kwargs):
         return self.ema_model.load_state_dict(*args, **kwargs)
-
-
-class Lora:
-    def __init__(self, model, include=(), exclude=()):
-        self.model = model
-
-    def make_lora_module(self):
-        class LoraModule(nn.Module):
-            def __init__(self, in_dims, out_dims, r=8):
-                super().__init__()
-                self.in_dims = in_dims
-                self.out_dims = out_dims
-                self.A = nn.Parameter(torch.randn(in_dims, r))
-                self.B = nn.Parameter(torch.zeros(r, out_dims))
-
-            def forward(self, x, module):
-                with torch.no_grad():
-                    y = module(x)
-
-                x = x.view(-1, self.in_dims)
-                return y + torch.mm(torch.mm(x, self.A), self.B)
-
-        return LoraModule
-
-    def step(self):
-        pass
-
-    def __call__(self, *args, **kwargs):
-        pass
-
-    def state_dict(self):
-        pass
-
-    def load_state_dict(self):
-        pass
 
 
 class Converter:

@@ -41,7 +41,7 @@ class EncoderEmbedding(nn.Module):
 
 
 class DecoderEmbedding(nn.Module):
-    """TokenEmbedding + PositionalEmbedding + SegmentEmbedding"""
+    """TokenEmbedding + PositionalEmbedding"""
 
     def __init__(self, vocab_size, embedding_dim, pad_id=None, max_seq_len=512):
         super().__init__()
