@@ -134,7 +134,7 @@ class BertTokenizer:
         segments_ids = self.numeralizer.encode(segments)
         segment_pair_tags = snack.align(
             segment_pair_tags, max_seq_len=self.max_seq_len,
-            start_obj=0, end_obj=1, pad_obj=0
+            start_obj=0, end_obj=segment_pair_tags[0][-1], pad_obj=0
         )
         return dict(
             segments_ids=segments_ids,
