@@ -63,6 +63,7 @@ class ModelWarp:
 
             model = ...
             model = ModelWarp(include=['to_qkv']).warp(model)
+            model.to(device)
 
             # your train step
             ...
@@ -80,6 +81,7 @@ class ModelWarp:
         self.r = r
 
     def warp(self, model: nn.Module):
+        torch_utils.ModuleManager.freeze_module(model, allow_train=True)
         objs = torch_utils.ModuleManager.get_module_by_name(model, include=self.include, exclude=self.exclude)
         if len(objs) == 0:
             warnings.warn(f'can not find any layer by include={self.include} and exclude={self.exclude}')

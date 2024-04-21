@@ -45,19 +45,20 @@ class ModelWarpForPT:
         self.spell_length = self.cum_template[-1]  # prompt length
 
     def warp(self, model):
-        model.forward = partial(self.model_forward, model.forward)
+        torch_utils.ModuleManager.freeze_module(model, allow_train=True)
+        model.forward = partial(self.model_forward, model)
 
         objs = torch_utils.ModuleManager.get_module_by_name(model, self.embedding_layer_name)
         assert len(objs), f'can not find embedding layer by input name {self.embedding_layer_name}'
         current_m, name, full_name = objs[0]
         emb_layer = getattr(current_m, name)
-        self.prompt_encoder = PromptEncoder(self.spell_length, emb_layer.embedding_dim)
-        emb_layer.forward = partial(self.emb_forward, emb_layer.forward)
+        emb_layer.prompt_encoder = PromptEncoder(self.spell_length, emb_layer.embedding_dim)
+        emb_layer.forward = partial(self.emb_forward, emb_layer)
 
         return model
 
     def model_forward(
-            self, forward_func, x, *args,
+            self, base_layer, x, *args,
             segment_label=None, attention_mask=None, x_t=None,
             **kwargs
     ):
@@ -75,7 +76,7 @@ class ModelWarpForPT:
                 attention_mask
             ), dim=1)
 
-        return forward_func(
+        return base_layer.forward(
             x, *args,
             segment_label=segment_label, attention_mask=attention_mask,
             **kwargs
@@ -84,11 +85,11 @@ class ModelWarpForPT:
     def get_queries(self, x_h, **kwargs):
         raise NotImplementedError
 
-    def emb_forward(self, forward_func, x, *args, **kwargs):
+    def emb_forward(self, base_layer, x, *args, **kwargs):
         with torch.no_grad():
-            raw_embeds = forward_func(x, *args, **kwargs)
+            raw_embeds = base_layer.forward(x, *args, **kwargs)
 
-        replace_embeds = self.prompt_encoder()
+        replace_embeds = base_layer.prompt_encoder()
         raw_embeds[x == self.sp_id_dict['prompt']] = replace_embeds.repeat(x.shape[0], 1).to(raw_embeds)
 
         return raw_embeds
@@ -101,6 +102,7 @@ class ModelWarpForBert(ModelWarpForPT):
 
             model = ...
             model = ModelWarpForBert(sp_id_dict).warp(model)
+            model.to(device)
 
             # your train step
             ...
@@ -138,6 +140,7 @@ class ModelWarpForGpt(ModelWarpForPT):
 
             model = ...
             model = ModelWarpForGpt(sp_id_dict).warp(model)
+            model.to(device)
 
             # your train step
             ...
