@@ -82,11 +82,11 @@ class ModelWarp:
 
     def warp(self, model: nn.Module):
         torch_utils.ModuleManager.freeze_module(model, allow_train=True)
-        objs = torch_utils.ModuleManager.get_module_by_name(model, include=self.include, exclude=self.exclude)
-        if len(objs) == 0:
+        layers = torch_utils.ModuleManager.get_module_by_name(model, include=self.include, exclude=self.exclude)
+        if len(layers) == 0:
             warnings.warn(f'can not find any layer by include={self.include} and exclude={self.exclude}')
 
-        for current_m, name, full_name in objs:
+        for current_m, name, full_name in layers:
             new = self.get_new_module(getattr(current_m, name))
             if new:
                 setattr(current_m, name, new)

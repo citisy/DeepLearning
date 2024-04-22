@@ -37,9 +37,9 @@ class PromptEncoder(nn.Module):
 
 
 class ModelWarpForPT:
-    def __init__(self, sp_id_dict, template, embedding_layer_name='token'):
+    def __init__(self, sp_id_dict, template, layer_name='token'):
         self.sp_id_dict = sp_id_dict
-        self.embedding_layer_name = embedding_layer_name
+        self.layer_name = layer_name
         self.template = template
         self.cum_template = np.cumsum(template)
         self.spell_length = self.cum_template[-1]  # prompt length
@@ -48,8 +48,8 @@ class ModelWarpForPT:
         torch_utils.ModuleManager.freeze_module(model, allow_train=True)
         model.forward = partial(self.model_forward, model)
 
-        objs = torch_utils.ModuleManager.get_module_by_name(model, self.embedding_layer_name)
-        assert len(objs), f'can not find embedding layer by input name {self.embedding_layer_name}'
+        objs = torch_utils.ModuleManager.get_module_by_name(model, self.layer_name)
+        assert len(objs), f'can not find embedding layer by input name {self.layer_name}'
         current_m, name, full_name = objs[0]
         emb_layer = getattr(current_m, name)
         emb_layer.prompt_encoder = PromptEncoder(self.spell_length, emb_layer.embedding_dim)
@@ -100,15 +100,16 @@ class ModelWarpForBert(ModelWarpForPT):
     Usages:
         .. code-block:: python
 
+            # model having an embedding layer with name of 'token'
             model = ...
-            model = ModelWarpForBert(sp_id_dict).warp(model)
+            model = ModelWarpForBert(sp_id_dict, layer_name='token').warp(model)
             model.to(device)
 
             # your train step
             ...
     """
-    def __init__(self, sp_id_dict, template=(3, 3, 3), embedding_layer_name='token'):
-        super().__init__(sp_id_dict, template, embedding_layer_name)
+    def __init__(self, sp_id_dict, template=(3, 3, 3), layer_name='token'):
+        super().__init__(sp_id_dict, template, layer_name)
 
     def get_queries(self, x_h, **kwargs):
         """[C][X][S] -> [C][P][M][P][X][P][S]"""
@@ -138,16 +139,17 @@ class ModelWarpForGpt(ModelWarpForPT):
     Usages:
         .. code-block:: python
 
+            # model having an embedding layer with name of 'token'
             model = ...
-            model = ModelWarpForGpt(sp_id_dict).warp(model)
+            model = ModelWarpForGpt(sp_id_dict, layer_name='token').warp(model)
             model.to(device)
 
             # your train step
             ...
     """
 
-    def __init__(self, sp_id_dict, template=(3, 3), embedding_layer_name='token'):
-        super().__init__(sp_id_dict, template, embedding_layer_name)
+    def __init__(self, sp_id_dict, template=(3, 3), layer_name='token'):
+        super().__init__(sp_id_dict, template, layer_name)
 
     def get_queries(self, x_h, x_t=None, **kwargs):
         """

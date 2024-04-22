@@ -342,10 +342,10 @@ class MemoryScaleAttend2D(ScaleAttend):
         super().__init__(drop_prob=drop_prob)
         self.mem_kv = torch.zeros(2, max_batch_size, n_heads, n_mem_size, head_dim)
 
-    def forward(self, q, k, v, attention_mask=None, start_pos=0):
+    def forward(self, q, k, v, attention_mask=None, start_pos=0, **kwargs):
         """q,k,v: (b,n,s,d)"""
-        k = MemoryScaleAttend2D.cache(self.mem_kv[0], k, start_pos=start_pos)
-        v = MemoryScaleAttend2D.cache(self.mem_kv[1], v, start_pos=start_pos)
+        k = self.cache(self.mem_kv[0], k, start_pos=start_pos)
+        v = self.cache(self.mem_kv[1], v, start_pos=start_pos)
         return super().forward(q, k, v, attention_mask=attention_mask)
 
     @staticmethod
@@ -355,58 +355,57 @@ class MemoryScaleAttend2D(ScaleAttend):
         return mem_x[:b, :, :start_pos + s, :]
 
 
-class LearnedMemoryScaleAttend2D(ScaleAttend):
-    """apply kv cache"""
+class LearnedMemoryScaleAttend(nn.Module):
+    """apply learned kv cache"""
 
-    def __init__(self, n_heads, n_mem_size, head_dim, drop_prob=0., **kwargs):
-        super().__init__(drop_prob=drop_prob)
-        self.mem_kv = nn.Parameter(torch.randn(2, n_heads, n_mem_size, head_dim))
+    def __init__(self, base_layer=None, mem_kv=None, **kwargs):
+        super().__init__()
+        self.base_layer = base_layer
+        self.mem_kv = mem_kv
 
-    def forward(self, q, k, v, attention_mask=None):
-        """
-        in(q|k|v): (b n s d)
-        out(attn): (b n s d)
-        """
-        mk, mv = map(lambda t: repeat(t, 'n j d -> b n j d', b=q.shape[0]), self.mem_kv)
-        k, v = map(partial(torch.cat, dim=-2), ((mk, k), (mv, v)))
+    def get_mem_kv(self, k, v):
+        b, *a = k
+        mem_kv = self.mem_kv
+        # (2, ...) -> (2, b, ...)
+        mem_kv = mem_kv[:, None].repeat(1, b, *[1] * len(a))
+        return mem_kv
 
-        return super().forward(q, k, v, attention_mask=attention_mask)
+    def forward(self, q, k, v, **kwargs):
+        mem_kv = self.get_mem_kv(k, v)
+        k, v = map(partial(torch.cat, dim=-2), ((mem_kv[0], k), (mem_kv[1], v)))
+
+        return self.base_layer(q, k, v, **kwargs)
 
 
-class LearnedMemoryScaleAttend3D(ScaleAttend):
-    """apply kv cache"""
+class LearnedMemoryScaleAttend2D(LearnedMemoryScaleAttend):
+    """apply learned kv cache for 2D scale attend
+    in(q|k|v): (b n s d)
+    out(attn): (b n s d)
+    """
 
-    def __init__(self, n_heads, n_mem_size, head_dim, drop_prob=0., **kwargs):
-        super().__init__(drop_prob=drop_prob)
-        self.mem_kv = nn.Parameter(torch.randn(2, 1, n_mem_size, n_heads * head_dim))
+    def __init__(self, n_heads, n_mem_size, head_dim, **kwargs):
+        mem_kv = nn.Parameter(torch.randn(2, n_heads, n_mem_size, head_dim))
+        super().__init__(ScaleAttend(**kwargs), mem_kv)
 
-    def forward(self, q, k, v, attention_mask=None):
-        """
-        in(q|k|v): (b n s d)
-        out(attn): (b n s d)
-        """
-        mk, mv = map(lambda t: repeat(t, 'n j d -> b n j d', b=q.shape[0]), self.mem_kv)
-        k, v = map(partial(torch.cat, dim=-2), ((mk, k), (mv, v)))
 
-        return super().forward(q, k, v, attention_mask=attention_mask)
+class LearnedMemoryScaleAttend3D(LearnedMemoryScaleAttend):
+    """apply learned kv cache for 3D scale attend
+    in(q|k|v): (b n s d)
+    out(attn): (b n s d)
+    """
+    def __init__(self, n_heads, n_mem_size, head_dim, **kwargs):
+        mem_kv = nn.Parameter(torch.randn(2, 1, n_mem_size, n_heads * head_dim))
+        super().__init__(ScaleAttend(**kwargs), mem_kv)
 
 
 class LearnedMemoryLinearAttend(LinearAttend):
-    """apply kv cache"""
-
-    def __init__(self, n_heads, head_dim, n_mem_size, drop_prob=0., **kwargs):
-        super().__init__(drop_prob=drop_prob)
-        self.mem_kv = nn.Parameter(torch.randn(2, n_heads, n_mem_size, head_dim))
-
-    def forward(self, q, k, v, attention_mask=None):
-        """
-        in(q|k|v): (b n d s)
-        out(attn): (b n d s)
-        """
-        mk, mv = map(lambda t: repeat(t, 'n d j -> b n d j', b=q.shape[0]), self.mem_kv)
-        k, v = map(partial(torch.cat, dim=-1), ((mk, k), (mv, v)))
-
-        return super().forward(q, k, v, attention_mask=attention_mask)
+    """apply learned kv cache for linear attend
+    in(q|k|v): (b n d s)
+    out(attn): (b n d s)
+    """
+    def __init__(self, n_heads, n_mem_size, head_dim, **kwargs):
+        mem_kv = nn.Parameter(torch.randn(2, n_heads, n_mem_size, head_dim))
+        super().__init__(LinearAttend(**kwargs), mem_kv)
 
 
 class RotaryAttend(ScaleAttend):
@@ -420,7 +419,7 @@ class RotaryAttend(ScaleAttend):
         self.embedding = embedding
         self.view_out = Rearrange('b s n d -> b n s d')
 
-    def forward(self, q, k, v, attention_mask=None):
+    def forward(self, q, k, v, attention_mask=None, **kwargs):
         """
         in(q|k|v): (b n s d)
         out(attn): (b n s d)
