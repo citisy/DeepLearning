@@ -283,7 +283,7 @@ class ModuleManager:
         return weight
 
     @staticmethod
-    def get_module_by_name(module, key=None, include=(), exclude=()):
+    def get_module_by_name(module, key=None, include=(), exclude=(), is_last=False):
         """
         >>> module = ...
         >>> ModuleManager.get_module_by_name(module, key='q')
@@ -294,12 +294,18 @@ class ModuleManager:
                 if m is None:
                     continue
 
-                if len(m._modules) == 0:
-                    full_name = f'{prev_name}.{name}'[1:]
+                full_name = f'{prev_name}.{name}'[1:]
+
+                if is_last:
+                    for k in include:
+                        if full_name.endswith(k):
+                            r.append((current_m, name, full_name))
+
+                elif len(m._modules) == 0:
                     if is_find(full_name):
                         r.append((current_m, name, full_name))
 
-                else:
+                if len(m._modules) > 0:
                     cur(m, f'{prev_name}.{name}')
 
         def is_find(name):

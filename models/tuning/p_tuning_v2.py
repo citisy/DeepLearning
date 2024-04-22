@@ -16,6 +16,7 @@ class PrefixEncoder(nn.Module):
         self.n_heads = n_heads
         self.head_dim = head_dim
         self.num_hidden_layers = num_hidden_layers
+        self.pre_seq_len = pre_seq_len
         model_dim = n_heads * head_dim
         self.prefix_projection = prefix_projection
         if self.prefix_projection:
@@ -78,7 +79,7 @@ class ModelWarp:
     def warp(self, model: nn.Module):
         torch_utils.ModuleManager.freeze_module(model, allow_train=True)
         # add prefix layers
-        layers = torch_utils.ModuleManager.get_module_by_name(model, include=self.include, exclude=self.exclude)
+        layers = torch_utils.ModuleManager.get_module_by_name(model, include=self.include, exclude=self.exclude, is_last=True)
         if len(layers) == 0:
             warnings.warn(f'can not find any layer by include={self.include} and exclude={self.exclude}')
 
@@ -97,11 +98,12 @@ class ModelWarp:
         )
         self.pre_seq_len = model.prefix_encoder.pre_seq_len
         model.prefix_tokens = torch.arange(self.pre_seq_len).long()
-        model.forward = partial(self.model_forward, model)
+        model.forward = partial(self.model_forward, model, model.forward)
+        return model
 
     def model_forward(
-            self, base_layer, x, *args,
-            segment_label=None, attention_mask=None,
+            self, base_layer, base_forward, x, *args,
+            attention_mask=None,
             **kwargs
     ):
         b = x.shape[0]
@@ -109,13 +111,7 @@ class ModelWarp:
         past_key_values = base_layer.prefix_encoder(prefix_tokens)
 
         for i, layer in enumerate(self.layers):
-            layer.mem_kv = past_key_values[i]
-
-        if segment_label is not None:
-            segment_label = torch.cat((
-                torch.zeros((x.shape[0], self.pre_seq_len)).to(segment_label),
-                segment_label
-            ), dim=1)
+            layer.mem_kv = past_key_values[i].squeeze(1)
 
         if attention_mask is not None:
             attention_mask = torch.cat((
@@ -123,8 +119,8 @@ class ModelWarp:
                 attention_mask
             ), dim=1)
 
-        return base_layer.forward(
+        return base_forward(
             x, *args,
-            segment_label=segment_label, attention_mask=attention_mask,
+            attention_mask=attention_mask,
             **kwargs
         )

@@ -364,7 +364,7 @@ class LearnedMemoryScaleAttend(nn.Module):
         self.mem_kv = mem_kv
 
     def get_mem_kv(self, k, v):
-        b, *a = k
+        b, *a = k.shape
         mem_kv = self.mem_kv
         # (2, ...) -> (2, b, ...)
         mem_kv = mem_kv[:, None].repeat(1, b, *[1] * len(a))

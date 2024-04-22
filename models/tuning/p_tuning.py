@@ -46,19 +46,19 @@ class ModelWarpForPT:
 
     def warp(self, model):
         torch_utils.ModuleManager.freeze_module(model, allow_train=True)
-        model.forward = partial(self.model_forward, model)
+        model.forward = partial(self.model_forward, model, model.forward)
 
         objs = torch_utils.ModuleManager.get_module_by_name(model, self.layer_name)
         assert len(objs), f'can not find embedding layer by input name {self.layer_name}'
         current_m, name, full_name = objs[0]
         emb_layer = getattr(current_m, name)
         emb_layer.prompt_encoder = PromptEncoder(self.spell_length, emb_layer.embedding_dim)
-        emb_layer.forward = partial(self.emb_forward, emb_layer)
+        emb_layer.forward = partial(self.emb_forward, emb_layer, emb_layer.forward)
 
         return model
 
     def model_forward(
-            self, base_layer, x, *args,
+            self, base_layer, base_forward, x, *args,
             segment_label=None, attention_mask=None, x_t=None,
             **kwargs
     ):
@@ -76,7 +76,7 @@ class ModelWarpForPT:
                 attention_mask
             ), dim=1)
 
-        return base_layer.forward(
+        return base_forward(
             x, *args,
             segment_label=segment_label, attention_mask=attention_mask,
             **kwargs
@@ -85,9 +85,9 @@ class ModelWarpForPT:
     def get_queries(self, x_h, **kwargs):
         raise NotImplementedError
 
-    def emb_forward(self, base_layer, x, *args, **kwargs):
+    def emb_forward(self, base_layer, base_forward, x, *args, **kwargs):
         with torch.no_grad():
-            raw_embeds = base_layer.forward(x, *args, **kwargs)
+            raw_embeds = base_forward(x, *args, **kwargs)
 
         replace_embeds = base_layer.prompt_encoder()
         raw_embeds[x == self.sp_id_dict['prompt']] = replace_embeds.repeat(x.shape[0], 1).to(raw_embeds)
