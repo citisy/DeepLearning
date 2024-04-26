@@ -8,9 +8,9 @@ from functools import partial
 class PromptEncoder(nn.Module):
     def __init__(self, spell_length, hidden_size):
         super().__init__()
+        self.spell_length = spell_length
         self.hidden_size = hidden_size
 
-        self.seq_indices = torch.LongTensor(list(range(spell_length)))
         self.embedding = nn.Embedding(spell_length, self.hidden_size)
         self.lstm_head = nn.LSTM(
             input_size=self.hidden_size,
@@ -30,8 +30,13 @@ class PromptEncoder(nn.Module):
         """for inference"""
         return self.forward()
 
+    @property
+    def device(self):
+        return torch_utils.ModuleInfo.possible_device(self)
+
     def forward(self):
-        input_embeds = self.embedding(self.seq_indices).unsqueeze(0)
+        seq_indices = torch.LongTensor(list(range(self.spell_length))).to(self.device)
+        input_embeds = self.embedding(seq_indices).unsqueeze(0)
         output_embeds = self.mlp_head(self.lstm_head(input_embeds)[0]).squeeze()
         return output_embeds
 
@@ -52,17 +57,17 @@ class ModelWarpForPT:
         assert len(objs), f'can not find embedding layer by input name {self.layer_name}'
         current_m, name, full_name = objs[0]
         emb_layer = getattr(current_m, name)
-        emb_layer.prompt_encoder = PromptEncoder(self.spell_length, emb_layer.embedding_dim)
+        emb_layer.register_module('prompt_encoder', PromptEncoder(self.spell_length, emb_layer.embedding_dim))
         emb_layer.forward = partial(self.emb_forward, emb_layer, emb_layer.forward)
 
         return model
 
     def model_forward(
             self, base_layer, base_forward, x, *args,
-            segment_label=None, attention_mask=None, x_t=None,
+            segment_label=None, attention_mask=None, mask_true=None,
             **kwargs
     ):
-        x = self.get_queries(x, x_t=x_t)
+        x, flags = self.get_queries(x, x_t=mask_true)
 
         if segment_label is not None:
             segment_label = torch.cat((
@@ -76,11 +81,24 @@ class ModelWarpForPT:
                 attention_mask
             ), dim=1)
 
-        return base_forward(
+        if mask_true is not None:
+            tmp = []
+            for i in range(x.shape[0]):
+                a = torch.full_like(x[i], self.sp_id_dict['skip'])
+                a[~flags[i]] = mask_true[i]
+                tmp.append(a)
+            mask_true = torch.stack(tmp)
+
+        outputs = base_forward(
             x, *args,
-            segment_label=segment_label, attention_mask=attention_mask,
+            segment_label=segment_label, attention_mask=attention_mask, mask_true=mask_true,
             **kwargs
         )
+
+        if 'mask_pred' in outputs:
+            outputs['mask_pred'] = torch.stack(outputs['mask_pred'][~flags].chunk(x.shape[0]))
+
+        return outputs
 
     def get_queries(self, x_h, **kwargs):
         raise NotImplementedError
@@ -108,6 +126,7 @@ class ModelWarpForBert(ModelWarpForPT):
             # your train step
             ...
     """
+
     def __init__(self, sp_id_dict, template=(3, 3, 3), layer_name='token'):
         super().__init__(sp_id_dict, template, layer_name)
 
@@ -116,8 +135,14 @@ class ModelWarpForBert(ModelWarpForPT):
         prompts = torch.full((self.spell_length,), self.sp_id_dict['prompt']).to(x_h)
 
         queries = []
+        flags = []
         for x in x_h:
-            idx = (x == self.sp_id_dict['sep']).nonzero()[0]
+            idxes = (x == self.sp_id_dict['sep']).nonzero()
+            if idxes.shape[0] > 0:
+                idx = idxes[-1]
+            else:
+                idx = len(x)
+
             q = [
                 x[0:1],
                 prompts[0: self.cum_template[0]],
@@ -127,11 +152,17 @@ class ModelWarpForBert(ModelWarpForPT):
                 prompts[self.cum_template[1]: self.cum_template[2]],
                 x[idx:]
             ]
+            q = torch.cat(q)
+            flag = torch.zeros((len(q),), device=q.device, dtype=torch.bool)
+            flag[1:1 + 1 + self.cum_template[1]] = True
+            flag[1 + self.cum_template[1] + idx: 1 + self.cum_template[2] + idx] = True
 
-            queries.append(torch.cat(q))
+            queries.append(q)
+            flags.append(flag)
 
         queries = torch.stack(queries)
-        return queries
+        flags = torch.stack(flags)
+        return queries, flags
 
 
 class ModelWarpForGpt(ModelWarpForPT):
@@ -159,12 +190,13 @@ class ModelWarpForGpt(ModelWarpForPT):
         prompts = torch.full((self.spell_length,), self.sp_id_dict['prompt']).to(x_h)
 
         queries = []
+        flags = []
         for i in range(b):
             q = torch.cat([
-                prompts[0: self.template[0]],
+                prompts[0: self.cum_template[0]],
                 torch.full((1,), self.sp_id_dict['pad']).to(x_h),  # add token of ' '
                 x_h[i],
-                prompts[self.template[0]: self.template[1]],
+                prompts[self.cum_template[0]: self.cum_template[1]],
             ])
             c = 1
 
@@ -181,7 +213,16 @@ class ModelWarpForGpt(ModelWarpForPT):
                 torch.full((b - self.spell_length - c,), self.sp_id_dict['pad']).to(x_h),  # add token of ' '
             ])
 
+            flag = torch.zeros((q.shape[1], ), device=q.device, dtype=torch.bool)
+            flag[:self.cum_template[0] + 1] = True
+            flag[self.cum_template[0] + 1 + len(x_h[i]): self.cum_template[1] + 1 + len(x_h[i])] = True
+            if x_t is not None:
+                flag[self.cum_template[1] + 1 + len(x_h[i])] = True
+            flag[-1] = True
+
             queries.append(q)
+            flags.append(flag)
 
         queries = torch.stack(queries)
-        return queries
+        flags = torch.stack(flags)
+        return queries, flags

@@ -424,7 +424,7 @@ class ModelHooks:
 
         self.optimizer.zero_grad()
 
-    def on_train_step_end(self, rets, outputs, more_log=False, **kwargs) -> bool:
+    def on_train_step_end(self, rets, outputs, more_log=False, ignore_non_loss=False, **kwargs) -> bool:
         self.counters['total_nums'] += len(rets)
         self.counters['total_steps'] += 1
         self.counters['per_epoch_nums'] += len(rets)
@@ -435,9 +435,12 @@ class ModelHooks:
             if k.startswith('loss'):
                 v = v.item()
                 n = f'check_{k}'
-                self.counters[n] = self.counters.get(n, 0) + v
-                losses[k] = v
-                losses[f'mean_{k}'] = self.counters[n] / self.counters['check_nums']
+                if ignore_non_loss and np.isnan(v):
+                    pass
+                else:
+                    self.counters[n] = self.counters.get(n, 0) + v
+                    losses[k] = v
+                    losses[f'mean_{k}'] = self.counters[n] / self.counters['check_nums']
 
         self.train_container['losses'] = losses
 

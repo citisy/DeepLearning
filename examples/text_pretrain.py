@@ -172,6 +172,9 @@ class TextProcessForBert(DataProcessForBert):
         segment_pair_tags = [_ret['segment_pair_tags']]
         if train and self.is_mlm:
             segments, mask_tags = self.tokenizer.perturbation.from_segments(segments)
+            # while all([j == self.tokenizer.sp_id_dict['skip'] for i in mask_tags for j in i]):
+            #     # to avoid nan loss
+            #     segments, mask_tags = self.tokenizer.perturbation.from_segments(segments)
             ret.update(mask_tag=mask_tags[0])
 
         ret.update(
@@ -519,6 +522,7 @@ class Bert(Process):
                 mask_preds = outputs['mask_pred'].argmax(-1).cpu().numpy().tolist()
                 mask_preds = [preds[1: l + 1] for preds, l in zip(mask_preds, lens)]
                 mask_trues = model_inputs['x'].cpu().numpy().tolist()
+                mask_trues = [t[1: l + 1] for t, l in zip(mask_trues, lens)]
                 ret.update(
                     mask_outputs=outputs['mask_pred'],
                     mask_preds=mask_preds,

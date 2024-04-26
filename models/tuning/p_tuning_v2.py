@@ -85,7 +85,7 @@ class ModelWarp:
 
         self.layers = []
         for current_m, name, full_name in layers:
-            new = attentions.LearnedMemoryScaleAttend(getattr(current_m, name))
+            new = attentions.LearnedMemoryScaleAttend(getattr(current_m, name), is_repeat=False)
             setattr(current_m, name, new)
             self.layers.append(new)
 
@@ -97,7 +97,6 @@ class ModelWarp:
             **self.prefix_encoder_kwargs
         )
         self.pre_seq_len = model.prefix_encoder.pre_seq_len
-        model.prefix_tokens = torch.arange(self.pre_seq_len).long()
         model.forward = partial(self.model_forward, model, model.forward)
         return model
 
@@ -107,7 +106,8 @@ class ModelWarp:
             **kwargs
     ):
         b = x.shape[0]
-        prefix_tokens = base_layer.prefix_tokens.unsqueeze(0).expand(b, -1)
+        prefix_tokens = torch.arange(self.pre_seq_len).long().to(x.device)
+        prefix_tokens = prefix_tokens.unsqueeze(0).expand(b, -1)
         past_key_values = base_layer.prefix_encoder(prefix_tokens)
 
         for i, layer in enumerate(self.layers):

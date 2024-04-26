@@ -75,7 +75,7 @@ class BertTokenizer:
             self.word_inv_dict,
             unk_token=self.unk_token
         )
-        self.perturbation = perturbation.RandomMask(self.word_dict, self.sp_id_dict, self.sp_token_dict)
+        self.perturbation = perturbation.RandomMask(self.word_dict, self.sp_id_dict, self.total_sp_token_dict)
 
     @staticmethod
     def from_pretrain(vocab_fn, **kwargs):

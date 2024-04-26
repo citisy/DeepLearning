@@ -10,7 +10,7 @@ class LoraModule(nn.Module):
             y = super().forward(x)
 
         x = x.view(-1, self.A.shape[0])
-        return y + torch.mm(torch.mm(x, self.A), self.B)
+        return y + torch.mm(torch.mm(x, self.A), self.B).view(*y.shape)
 
 
 class Linear(LoraModule, nn.Linear):

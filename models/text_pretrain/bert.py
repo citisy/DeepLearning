@@ -109,7 +109,7 @@ class Model(nn.Module):
         torch_utils.ModuleManager.initialize_layers(self)
 
     def forward(self, x, segment_label=None, attention_mask=None, next_true=None, mask_true=None, **kwargs):
-        x = self.backbone(x, segment_label, attention_mask)
+        x = self.backbone(x, segment_label=segment_label, attention_mask=attention_mask)
 
         outputs = {}
 

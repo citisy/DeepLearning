@@ -358,16 +358,18 @@ class MemoryScaleAttend2D(ScaleAttend):
 class LearnedMemoryScaleAttend(nn.Module):
     """apply learned kv cache"""
 
-    def __init__(self, base_layer=None, mem_kv=None, **kwargs):
+    def __init__(self, base_layer=None, mem_kv=None, is_repeat=True, **kwargs):
         super().__init__()
         self.base_layer = base_layer
         self.mem_kv = mem_kv
+        self.is_repeat = is_repeat
 
     def get_mem_kv(self, k, v):
         b, *a = k.shape
         mem_kv = self.mem_kv
-        # (2, ...) -> (2, b, ...)
-        mem_kv = mem_kv[:, None].repeat(1, b, *[1] * len(a))
+        if self.is_repeat:
+            # (2, ...) -> (2, b, ...)
+            mem_kv = mem_kv[:, None].repeat(1, b, *[1] * len(a))
         return mem_kv
 
     def forward(self, q, k, v, **kwargs):

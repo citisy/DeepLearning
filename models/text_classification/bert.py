@@ -10,7 +10,7 @@ class Model(nn.Module):
         self.head = NSP(self.backbone.out_features, out_features)
 
     def forward(self, x, segment_label, attention_mask=None, next_true=None, **kwargs):
-        x = self.backbone(x, segment_label, attention_mask)
+        x = self.backbone(x, segment_label=segment_label, attention_mask=attention_mask)
 
         next_pred = self.head(x)
         outputs = {'next_pred': next_pred}

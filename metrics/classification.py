@@ -186,13 +186,14 @@ class PR:
         ret.update(self.confusion_matrix.fp(true, pred))
         ret.update(self.confusion_matrix.fn(true, pred))
 
-        acc_tp = ret.pop('acc_tp')
-        acc_tn = ret.pop('acc_tn')
-        acc_fp = ret.pop('acc_fp')
-        acc_fn = ret.pop('acc_fn')
+        # note, convert to int64 to avoid overflow
+        acc_tp = ret.pop('acc_tp').astype(np.int64)
+        acc_tn = ret.pop('acc_tn').astype(np.int64)
+        acc_fp = ret.pop('acc_fp').astype(np.int64)
+        acc_fn = ret.pop('acc_fn').astype(np.int64)
 
         result = dict(
-            mcc=(acc_tp * acc_tn - acc_fp * acc_fn) / np.sqrt((acc_tp + acc_fp) * (acc_tp + acc_fn) * (acc_tn + acc_fp) * (acc_tn + acc_fn)),
+            mcc=(acc_tp * acc_tn - acc_fp * acc_fn) / np.sqrt((acc_tp + acc_fp) * (acc_tp + acc_fn) * (acc_tn + acc_fp) * (acc_tn + acc_fn) + 1e-6),
             acc_tp=acc_tp,
             acc_tn=acc_tn,
             acc_fp=acc_fp,
