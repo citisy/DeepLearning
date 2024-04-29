@@ -179,8 +179,8 @@ class Model(nn.Module):
         if self.training:
             # note, shift one token to predict the future word
             trues = torch.cat([x[:, 1:], torch.full((len(x), 1), self.pad_id)], dim=1)
-            preds = self.decode(x, context=context, context_mask=attention_mask)
-            loss = self.loss(preds, trues)
+            logits = self.decode(x, context=context, context_mask=attention_mask)
+            loss = self.loss(logits, trues)
             return {'loss': loss}
         else:
             if y is None:
@@ -189,9 +189,9 @@ class Model(nn.Module):
             preds = self.post_process(y, context=context, context_mask=attention_mask, seq_lens=seq_lens, **kwargs)
             return {'preds': preds}
 
-    def loss(self, preds, trues):
-        preds = preds.transpose(1, 2)  # seq first -> class first
-        return F.cross_entropy(preds, trues)
+    def loss(self, logits, trues):
+        logits = logits.transpose(1, 2)  # seq first -> class first
+        return F.cross_entropy(logits, trues)
 
     def encode(self, x, attention_mask=None):
         x = self.embedding(x)
@@ -214,7 +214,7 @@ class Model(nn.Module):
         batch_size = len(x)
         eos_flag = [False] * batch_size
         for i in range(max_gen_len):
-            output_data = self.decode(x, context=context, context_mask=context_mask)
+            logits = self.decode(x, context=context, context_mask=context_mask)
             x = torch.cat([x, torch.zeros((batch_size, 1)).to(x)], dim=-1)
 
             for index in range(batch_size):
@@ -222,7 +222,7 @@ class Model(nn.Module):
                     continue
 
                 j = seq_lens[index] + i - 1
-                preds = output_data[index, j]
+                preds = logits[index, j]
                 arg = torch.argsort(preds, descending=True)
                 keep = arg[:top_k]
                 preds = preds[keep]

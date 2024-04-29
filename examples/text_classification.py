@@ -38,7 +38,7 @@ class SST2(TextProcessForBert):
 
 
 class Bert(BertFull):
-    is_mlm = False  # only nsp strategy
+    is_token_cls = False  # only nsp strategy
 
     def set_model(self):
         from models.text_classification.bert import Model
@@ -57,9 +57,9 @@ class McMetric:
 
         metric_results = {}
         for name, results in container['model_results'].items():
-            next_trues = np.array(results['next_trues'])
-            next_preds = np.array(results['next_preds'])
-            result = classification.pr.mcc(next_trues, next_preds)
+            seq_cls_trues = np.array(results['seq_cls_trues'])
+            seq_cls_preds = np.array(results['seq_cls_preds'])
+            result = classification.pr.mcc(seq_cls_trues, seq_cls_preds)
 
             result.update(
                 score=result['mcc']

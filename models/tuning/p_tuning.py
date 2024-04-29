@@ -66,10 +66,10 @@ class ModelWarpForPT:
 
     def model_forward(
             self, base_layer, base_forward, x, *args,
-            segment_label=None, attention_mask=None, mask_true=None,
+            segment_label=None, attention_mask=None, token_cls_true=None,
             **kwargs
     ):
-        x, flags = self.get_queries(x, x_t=mask_true)
+        x, flags = self.get_queries(x, x_t=token_cls_true)
 
         if segment_label is not None:
             segment_label = torch.cat((
@@ -83,22 +83,22 @@ class ModelWarpForPT:
                 attention_mask
             ), dim=1)
 
-        if mask_true is not None:
+        if token_cls_true is not None:
             tmp = []
             for i in range(x.shape[0]):
                 a = torch.full_like(x[i], self.sp_id_dict['skip'])
-                a[~flags[i]] = mask_true[i]
+                a[~flags[i]] = token_cls_true[i]
                 tmp.append(a)
-            mask_true = torch.stack(tmp)
+            token_cls_true = torch.stack(tmp)
 
         outputs = base_forward(
             x, *args,
-            segment_label=segment_label, attention_mask=attention_mask, mask_true=mask_true,
+            segment_label=segment_label, attention_mask=attention_mask, token_cls_true=token_cls_true,
             **kwargs
         )
 
-        if 'mask_pred' in outputs:
-            outputs['mask_pred'] = torch.stack(outputs['mask_pred'][~flags].chunk(x.shape[0]))
+        if 'token_cls_logit' in outputs:
+            outputs['token_cls_logit'] = torch.stack(outputs['token_cls_logit'][~flags].chunk(x.shape[0]))
 
         return outputs
 

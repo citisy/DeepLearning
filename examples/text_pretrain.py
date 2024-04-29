@@ -105,8 +105,8 @@ class DataProcessForBert(DataHooks):
     train_data_num = None
     val_data_num = None
 
-    is_mlm: bool
-    is_nsp: bool
+    is_token_cls: bool
+    is_seq_cls: bool
 
     tokenizer: bundled.BertTokenizer
 
@@ -139,7 +139,7 @@ class TextProcessForBert(DataProcessForBert):
         paragraphs = [ret['text'] for ret in iter_data]
         # ['bert-base-uncased'] -> [['bert', '-', 'base', '-', 'un', '##cased']]
         segments = self.tokenizer.spliter.from_paragraphs(paragraphs)
-        if not self.is_nsp and self.is_chunk and train:
+        if not self.is_seq_cls and self.is_chunk and train:
             segments = self.tokenizer.chunker_spliter.from_segments(segments)
 
             iter_data = []
@@ -170,7 +170,7 @@ class TextProcessForBert(DataProcessForBert):
         ret = dict(ori_text=_ret['text'])
         segments = [_ret['segment']]
         segment_pair_tags = [_ret['segment_pair_tags']]
-        if train and self.is_mlm:
+        if train and self.is_token_cls:
             segments, mask_tags = self.tokenizer.perturbation.from_segments(segments)
             # while all([j == self.tokenizer.sp_id_dict['skip'] for i in mask_tags for j in i]):
             #     # to avoid nan loss
@@ -182,7 +182,7 @@ class TextProcessForBert(DataProcessForBert):
             segment_pair_tags=segment_pair_tags[0],
         )
 
-        if self.is_nsp:
+        if self.is_seq_cls:
             ret.update(_class=_ret['_class'])
 
         return ret
@@ -236,7 +236,7 @@ class TextPairProcessForBert(DataProcessForBert):
         segment_pairs = [_ret['segment_pair']]
         segment_pair_tags_pairs = [_ret['segment_pair_tags_pair']]
 
-        if train and self.is_mlm:
+        if train and self.is_token_cls:
             segment_pairs = math_utils.transpose(segment_pairs)
             tmp = []
             tmp2 = []
@@ -259,7 +259,7 @@ class TextPairProcessForBert(DataProcessForBert):
             segment_pair_tags=segment_pair_tags[0]
         )
 
-        if self.is_nsp:
+        if self.is_seq_cls:
             ret.update(_class=_ret['_class'])
 
         return ret
@@ -274,10 +274,10 @@ class SimpleTextForBert(TextProcessForBert):
         loader = Loader(self.data_dir)
 
         if train:
-            return loader.load(set_type=DataRegister.TRAIN, max_size=self.train_data_num, return_label=self.is_nsp, generator=False)[0]
+            return loader.load(set_type=DataRegister.TRAIN, max_size=self.train_data_num, return_label=self.is_seq_cls, generator=False)[0]
 
         else:
-            return loader.load(set_type=DataRegister.TEST, max_size=self.val_data_num, return_label=self.is_nsp, generator=False)[0]
+            return loader.load(set_type=DataRegister.TEST, max_size=self.val_data_num, return_label=self.is_seq_cls, generator=False)[0]
 
 
 class SimpleTextPairForBert(TextPairProcessForBert):
@@ -308,9 +308,9 @@ class LargeSimpleTextForBert(DataProcessForBert):
             loader = Loader(self.data_dir)
 
             if train:
-                iter_data = loader.load(set_type=DataRegister.TRAIN, max_size=self.train_data_num, return_label=self.is_nsp, generator=True)[0]
+                iter_data = loader.load(set_type=DataRegister.TRAIN, max_size=self.train_data_num, return_label=self.is_seq_cls, generator=True)[0]
             else:
-                iter_data = loader.load(set_type=DataRegister.TEST, max_size=self.val_data_num, return_label=self.is_nsp, generator=True)[0]
+                iter_data = loader.load(set_type=DataRegister.TEST, max_size=self.val_data_num, return_label=self.is_seq_cls, generator=True)[0]
 
             rets = []
             for i, ret in enumerate(iter_data):
@@ -380,8 +380,8 @@ class SOP(DataProcessForBert):
 
 class Bert(Process):
     model_version = 'bert'
-    is_mlm = True
-    is_nsp = True
+    is_token_cls = True
+    is_seq_cls = True
     use_scaler = True
     scheduler_strategy = 'step'  # step
     tokenizer: bundled.BertTokenizer
@@ -394,7 +394,7 @@ class Bert(Process):
             self.tokenizer.vocab_size,
             pad_id=self.tokenizer.pad_id,
             skip_id=self.tokenizer.skip_id,
-            is_nsp=self.is_nsp, is_mlm=self.is_mlm
+            is_seq_cls=self.is_seq_cls, is_token_cls=self.is_token_cls
         )
 
     def get_vocab(self):
@@ -420,19 +420,19 @@ class Bert(Process):
         )
 
         if train:
-            next_tags = torch.tensor([ret['_class'] for ret in rets]).to(self.device) if self.is_nsp else None
-            mask_tags = None
-            if self.is_mlm:
-                mask_tags = [ret['mask_tag'] for ret in rets]
-                mask_tags = snack.align(
-                    mask_tags, max_seq_len=self.max_seq_len,
+            seq_cls_tags = torch.tensor([ret['_class'] for ret in rets]).to(self.device) if self.is_seq_cls else None
+            token_cls_tags = None
+            if self.is_token_cls:
+                token_cls_tags = [ret['mask_tag'] for ret in rets]
+                token_cls_tags = snack.align(
+                    token_cls_tags, max_seq_len=self.max_seq_len,
                     start_obj=self.tokenizer.skip_id, end_obj=self.tokenizer.skip_id, pad_obj=self.tokenizer.skip_id
                 )
-                mask_tags = torch.tensor(mask_tags).to(self.device)
+                token_cls_tags = torch.tensor(token_cls_tags).to(self.device)
 
             inputs.update(
-                next_true=next_tags,
-                mask_true=mask_tags
+                seq_cls_true=seq_cls_tags,
+                token_cls_true=token_cls_tags
             )
 
         return inputs
@@ -449,7 +449,7 @@ class Bert(Process):
 
         Args:
             *args:
-            return_score: 'full', 'next' or 'mask'
+            return_score: 'full', 'seq' or 'token'
             **kwargs:
 
         """
@@ -459,42 +459,42 @@ class Bert(Process):
         metric_results = {}
         for name, results in container['model_results'].items():
             result = {}
-            if self.is_nsp:
-                next_trues = np.array(results['next_trues'])
-                next_preds = np.array(results['next_preds'])
-                acc = np.sum(next_trues == next_preds) / next_trues.size
-                next_result = classification.top_metric.f1(next_trues, next_preds)
+            if self.is_seq_cls:
+                seq_cls_trues = np.array(results['seq_cls_trues'])
+                seq_cls_preds = np.array(results['seq_cls_preds'])
+                acc = np.sum(seq_cls_trues == seq_cls_preds) / seq_cls_trues.size
+                seq_cls_result = classification.top_metric.f1(seq_cls_trues, seq_cls_preds)
                 result.update({
                     'score.acc': acc,
-                    'score.f1': next_result['f'],
-                    **next_result})
+                    'score.f1': seq_cls_result['f'],
+                    **seq_cls_result})
 
-            if self.is_mlm:
-                mask_trues = results['mask_trues']
-                mask_preds = results['mask_preds']
+            if self.is_token_cls:
+                token_cls_trues = results['token_cls_trues']
+                token_cls_preds = results['token_cls_preds']
 
                 skip_id = self.tokenizer.skip_id
-                mask_trues = snack.align(mask_trues, max_seq_len=self.max_seq_len, pad_obj=skip_id, auto_pad=False)
-                mask_preds = snack.align(mask_preds, max_seq_len=self.max_seq_len, pad_obj=skip_id, auto_pad=False)
+                token_cls_trues = snack.align(token_cls_trues, max_seq_len=self.max_seq_len, pad_obj=skip_id, auto_pad=False)
+                token_cls_preds = snack.align(token_cls_preds, max_seq_len=self.max_seq_len, pad_obj=skip_id, auto_pad=False)
 
-                mask_trues = np.array(mask_trues)
-                mask_preds = np.array(mask_preds)
-                n_quit = np.sum((mask_trues == skip_id) & (mask_preds == skip_id))
-                n_true = np.sum(mask_trues == mask_preds)
-                mask_score = (n_true - n_quit) / (mask_trues.size - n_quit)
-                result.update({'score.mask': mask_score})
+                token_cls_trues = np.array(token_cls_trues)
+                token_cls_preds = np.array(token_cls_preds)
+                n_quit = np.sum((token_cls_trues == skip_id) & (token_cls_preds == skip_id))
+                n_true = np.sum(token_cls_trues == token_cls_preds)
+                token_cls_score = (n_true - n_quit) / (token_cls_trues.size - n_quit)
+                result.update({'score.token': token_cls_score})
 
-            if return_score == 'next':
+            if return_score == 'seq':
                 result.update(score=result['score.acc'])
-            elif return_score == 'mask':
-                result.update(score=result['score.mask'])
+            elif return_score == 'token':
+                result.update(score=result['score.token'])
             elif return_score == 'full':
-                if not self.is_nsp:
-                    result.update(score=result['score.mask'])
-                elif not self.is_mlm:
+                if not self.is_seq_cls:
+                    result.update(score=result['score.token'])
+                elif not self.is_token_cls:
                     result.update(score=result['score.acc'])
                 else:
-                    result.update(score=(result['score.acc'] + result['score.mask']) / 2)
+                    result.update(score=(result['score.acc'] + result['score.token']) / 2)
             else:
                 raise
 
@@ -511,23 +511,23 @@ class Bert(Process):
 
             ret = dict()
 
-            if self.is_nsp:
+            if self.is_seq_cls:
                 ret.update(
-                    next_outputs=outputs['next_pred'],
-                    next_preds=outputs['next_pred'].argmax(1).cpu().numpy().tolist(),
+                    seq_cls_logit=outputs['seq_cls_logit'],
+                    seq_cls_preds=outputs['seq_cls_logit'].argmax(1).cpu().numpy().tolist(),
                 )
 
-            if self.is_mlm:
+            if self.is_token_cls:
                 lens = model_inputs['lens']
-                mask_preds = outputs['mask_pred'].argmax(-1).cpu().numpy().tolist()
-                mask_preds = [preds[1: l + 1] for preds, l in zip(mask_preds, lens)]
-                mask_trues = model_inputs['x'].cpu().numpy().tolist()
-                mask_trues = [t[1: l + 1] for t, l in zip(mask_trues, lens)]
+                token_cls_preds = outputs['token_cls_logit'].argmax(-1).cpu().numpy().tolist()
+                token_cls_preds = [preds[1: l + 1] for preds, l in zip(token_cls_preds, lens)]
+                token_cls_trues = model_inputs['x'].cpu().numpy().tolist()
+                token_cls_trues = [t[1: l + 1] for t, l in zip(token_cls_trues, lens)]
                 ret.update(
-                    mask_outputs=outputs['mask_pred'],
-                    mask_preds=mask_preds,
-                    mask_trues=mask_trues,
-                    pred_segment=self.tokenizer.numeralizer.decode(mask_preds),
+                    token_cls_logit=outputs['token_cls_logit'],
+                    token_cls_preds=token_cls_preds,
+                    token_cls_trues=token_cls_trues,
+                    pred_segment=self.tokenizer.numeralizer.decode(token_cls_preds),
                     true_segment=[ret['segment'] for ret in rets]
                 )
 
@@ -540,13 +540,13 @@ class Bert(Process):
             r = self.val_container['model_results'].setdefault(name, dict())
             r.setdefault('texts', []).extend([ret['ori_text'] for ret in rets])
 
-            if self.is_nsp:
-                r.setdefault('next_trues', []).extend([ret['_class'] for ret in rets])
-                r.setdefault('next_preds', []).extend(results['next_preds'])
+            if self.is_seq_cls:
+                r.setdefault('seq_cls_trues', []).extend([ret['_class'] for ret in rets])
+                r.setdefault('seq_cls_preds', []).extend(results['seq_cls_preds'])
 
-            if self.is_mlm:
-                r.setdefault('mask_trues', []).extend(results['mask_trues'])
-                r.setdefault('mask_preds', []).extend(results['mask_preds'])
+            if self.is_token_cls:
+                r.setdefault('token_cls_trues', []).extend(results['token_cls_trues'])
+                r.setdefault('token_cls_preds', []).extend(results['token_cls_preds'])
 
     def on_val_step_end(self, *args, **kwargs):
         """do not visualize"""
@@ -566,13 +566,13 @@ class Bert(Process):
                         d['text1'] = text[0]
                         d['text2'] = text[1]
 
-                    if self.is_nsp:
-                        d['next_true'] = results['next_trues'][i]
-                        d['next_pred'] = results['next_preds'][i]
+                    if self.is_seq_cls:
+                        d['seq_cls_true'] = results['seq_cls_trues'][i]
+                        d['seq_cls_preds'] = results['seq_cls_preds'][i]
 
-                    if self.is_mlm:
-                        d['mask_true'] = results['mask_trues'][i]
-                        d['mask_pred'] = results['mask_preds'][i]
+                    if self.is_token_cls:
+                        d['token_cls_true'] = results['token_cls_trues'][i]
+                        d['token_cls_preds'] = results['token_cls_preds'][i]
 
                     data.append(d)
                 df = pd.DataFrame(data)
@@ -624,7 +624,7 @@ class BertMLMFromHFPretrain(Bert, LoadBertFromHFPretrain, TextProcessForBert):
             # ['.', 'is', 'the', 'capital', 'of', 'france', '.']
     """
     dataset_version = ''
-    is_nsp = False
+    is_seq_cls = False
     is_chunk = False
 
 
@@ -637,7 +637,7 @@ class BertMLM_SimpleText(Bert, SimpleTextForBert):
 
             Process(vocab_fn='...').run(max_epoch=20, train_batch_size=16, fit_kwargs=dict(check_period=1, accumulate=192))
     """
-    is_nsp = False
+    is_seq_cls = False
     is_chunk = True
 
 

@@ -91,15 +91,15 @@ class Model(nn.Module):
         if self.training:
             # note, shift one token to predict the future word
             trues = torch.cat([x[:, 1:], torch.full((len(x), 1), self.pad_id)], dim=1)
-            preds = self.decode(x)
-            loss = self.loss(preds, trues)
+            logits = self.decode(x)
+            loss = self.loss(logits, trues)
             return {'loss': loss}
         else:
             return {'preds': self.post_process(x, **kwargs)}
 
-    def loss(self, preds, trues):
-        preds = preds.transpose(1, 2)  # seq first -> class first
-        return F.cross_entropy(preds, trues)
+    def loss(self, logits, trues):
+        logits = logits.transpose(1, 2)  # seq first -> class first
+        return F.cross_entropy(logits, trues)
 
     def post_process(self, x, seq_lens=None, max_gen_len=100, top_k=1, **kwargs):
         assert seq_lens is not None
@@ -108,7 +108,7 @@ class Model(nn.Module):
         min_pos = min(seq_lens)
         eos_flag = [False] * batch_size
         for cur_pos in range(min_pos, max_gen_len):
-            output_data = self.decode(x[:, prev_pos: cur_pos], start_pos=prev_pos, **kwargs)
+            logits = self.decode(x[:, prev_pos: cur_pos], start_pos=prev_pos, **kwargs)
             # add next preds
             x = torch.cat([x, torch.zeros((batch_size, 1)).to(x)], dim=-1)
             for index in range(batch_size):
@@ -118,7 +118,7 @@ class Model(nn.Module):
                 if x[index][cur_pos] != 0:
                     continue
 
-                preds = output_data[index, -1]
+                preds = logits[index, -1]
                 preds = torch.softmax(preds / 0.6, dim=-1)
                 arg = torch.argsort(preds, descending=True)
                 keep = arg[:top_k]

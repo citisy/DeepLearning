@@ -90,7 +90,7 @@ class RTE(TextPairProcessForBert):
 
 
 class Bert(BertFull):
-    is_mlm = False  # only nsp strategy
+    is_token_cls = False  # only nsp strategy
     use_scheduler = True
 
     def set_model(self):

@@ -63,10 +63,10 @@ class WeightConverter:
             'bert.encoder.layer.{0}.output.dense': 'backbone.encoder.{0}.ff_res.fn.1.linear',
             'bert.encoder.layer.{0}.output.LayerNorm': 'backbone.encoder.{0}.ff_res.norm',
             'bert.pooler.dense': 'neck.linear',
-            'cls.predictions.transform.dense': 'mlm.0.linear',
-            'cls.predictions.transform.LayerNorm': 'mlm.0.norm',
-            'cls.predictions.decoder': 'mlm.1',
-            'cls.predictions.bias': 'mlm.1.bias'
+            'cls.predictions.transform.dense': 'token_cls_head.0.linear',
+            'cls.predictions.transform.LayerNorm': 'token_cls_head.0.norm',
+            'cls.predictions.decoder': 'token_cls_head.1',
+            'cls.predictions.bias': 'token_cls_head.1.bias'
         }
         state_dict = torch_utils.Converter.convert_keys(state_dict, convert_dict)
 
@@ -93,64 +93,64 @@ class Model(nn.Module):
     def __init__(
             self, vocab_size, pad_id, skip_id,
             bert_config=Config.get('base'),
-            is_nsp=True, nsp_out_features=2,
-            is_mlm=True
+            is_seq_cls=True, nsp_out_features=2,
+            is_token_cls=True
     ):
         super().__init__()
-        self.is_nsp = is_nsp
-        self.is_mlm = is_mlm
+        self.is_seq_cls = is_seq_cls
+        self.is_token_cls = is_token_cls
 
         self.backbone = Bert(vocab_size, pad_id, **bert_config)
-        if is_nsp:
-            self.nsp = NSP(self.backbone.out_features, nsp_out_features)
-        if is_mlm:
-            self.mlm = MLM(self.backbone.out_features, vocab_size, skip_id)
+        if is_seq_cls:
+            self.seq_cls_head = ModelForSeqCls(self.backbone.out_features, nsp_out_features)
+        if is_token_cls:
+            self.token_cls_head = ModelForTokenCls(self.backbone.out_features, vocab_size, skip_id)
 
         torch_utils.ModuleManager.initialize_layers(self)
 
-    def forward(self, x, segment_label=None, attention_mask=None, next_true=None, mask_true=None, **kwargs):
+    def forward(self, x, segment_label=None, attention_mask=None, seq_cls_true=None, token_cls_true=None, **kwargs):
         x = self.backbone(x, segment_label=segment_label, attention_mask=attention_mask)
 
         outputs = {}
 
-        next_pred = None
-        if self.is_nsp:
-            next_pred = self.nsp(x)
-            outputs['next_pred'] = next_pred
+        seq_cls_logit = None
+        if self.is_seq_cls:
+            seq_cls_logit = self.seq_cls_head(x)
+            outputs['seq_cls_logit'] = seq_cls_logit
 
-        mask_pred = None
-        if self.is_mlm:
-            mask_pred = self.mlm(x)
-            outputs['mask_pred'] = mask_pred
+        token_cls_logit = None
+        if self.is_token_cls:
+            token_cls_logit = self.token_cls_head(x)
+            outputs['token_cls_logit'] = token_cls_logit
 
         losses = {}
         if self.training:
-            losses = self.loss(x.device, next_pred, mask_pred, next_true, mask_true)
+            losses = self.loss(x.device, seq_cls_logit, token_cls_logit, seq_cls_true, token_cls_true)
 
         outputs.update(losses)
         return outputs
 
-    def loss(self, device, next_pred=None, mask_pred=None, next_true=None, mask_true=None):
+    def loss(self, device, seq_cls_logit=None, token_cls_logit=None, seq_cls_true=None, token_cls_true=None):
         losses = {}
         loss = torch.zeros(1, device=device)
 
-        if self.is_nsp:
-            next_loss = self.nsp.loss(next_pred, next_true)
-            loss += next_loss
-            losses['loss.next'] = next_loss
+        if self.is_seq_cls:
+            seq_cls_loss = self.seq_cls_head.loss(seq_cls_logit, seq_cls_true)
+            loss += seq_cls_loss
+            losses['loss.seq'] = seq_cls_loss
 
-        if self.is_mlm:
-            mask_loss = self.mlm.loss(mask_pred, mask_true)
-            loss += mask_loss
-            losses['loss.mask'] = mask_loss
+        if self.is_token_cls:
+            token_cls_loss = self.token_cls_head.loss(token_cls_logit, token_cls_true)
+            loss += token_cls_loss
+            losses['loss.token'] = token_cls_loss
 
         losses['loss'] = loss
 
         return losses
 
 
-class NSP(nn.Module):
-    """Next Sentence Prediction"""
+class ModelForSeqCls(nn.Module):
+    """for example, Next Sentence Prediction(NSP)"""
 
     def __init__(self, in_features, out_features=2):
         super().__init__()
@@ -160,12 +160,12 @@ class NSP(nn.Module):
         x = self.fcn(x[:, 0])  # select the first output
         return x
 
-    def loss(self, next_pred, next_true):
-        return F.cross_entropy(next_pred, next_true)
+    def loss(self, seq_cls_logit, seq_cls_true):
+        return F.cross_entropy(seq_cls_logit, seq_cls_true)
 
 
-class MLM(nn.Sequential):
-    """Masked Language Model"""
+class ModelForTokenCls(nn.Sequential):
+    """for example, Masked Language Model(MLM)"""
 
     def __init__(self, in_features, out_features, skip_id):
         self.skip_id = skip_id
@@ -174,9 +174,9 @@ class MLM(nn.Sequential):
             nn.Linear(in_features, out_features)
         )
 
-    def loss(self, mask_pred, mask_true):
-        mask_pred = mask_pred.transpose(1, 2)  # seq first -> class first
-        return F.cross_entropy(mask_pred, mask_true, ignore_index=self.skip_id)
+    def loss(self, token_cls_logit, token_cls_true):
+        token_cls_logit = token_cls_logit.transpose(1, 2)  # seq first -> class first
+        return F.cross_entropy(token_cls_logit, token_cls_true, ignore_index=self.skip_id)
 
 
 class Bert(nn.Module):

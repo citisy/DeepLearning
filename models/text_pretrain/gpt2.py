@@ -171,26 +171,26 @@ class Model(nn.Module):
         if self.training:
             # note, shift one token to predict the future word
             trues = torch.cat([x[:, 1:], torch.full((len(x), 1), self.pad_id)], dim=1)
-            preds = self.decode(x)
-            loss = self.loss(preds, trues)
+            logits = self.decode(x)
+            loss = self.loss(logits, trues)
             return {'loss': loss}
         else:
             return {'preds': self.post_process(x, **kwargs)}
 
-    def loss(self, preds, trues):
-        preds = preds.transpose(1, 2)  # seq first -> class first
-        return F.cross_entropy(preds, trues)
+    def loss(self, logits, trues):
+        logits = logits.transpose(1, 2)  # seq first -> class first
+        return F.cross_entropy(logits, trues)
 
     def post_process(self, x, seq_lens=None, max_gen_len=100, top_k=1):
         assert seq_lens is not None
         batch_size = len(x)
         for i in range(max_gen_len):
-            output_data = self.decode(x)
+            logits = self.decode(x)
             # add next preds
             x = torch.cat([x, torch.zeros((batch_size, 1)).to(x)], dim=-1)
             for index in range(batch_size):
                 j = seq_lens[index] + i - 1
-                preds = output_data[index, j]
+                preds = logits[index, j]
                 arg = torch.argsort(preds, descending=True)
                 keep = arg[:top_k]
                 preds = preds[keep]
@@ -206,8 +206,8 @@ class Model(nn.Module):
         mask = make_causal_attention_mask(x)
         x = self.encoder(x, attention_mask=mask)
         x = self.norm(x)
-        preds = self.embedding_sim(x)
-        return preds
+        x = self.embedding_sim(x)
+        return x
 
 
 
