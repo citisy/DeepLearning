@@ -200,6 +200,18 @@ class ModuleManager:
             module.train = lambda self, mode=True: self
 
     @staticmethod
+    def convert_to_quantized_module(module: nn.Module, trace_func=None, backend='fbgemm'):
+        """note, can not convert Embedding layer"""
+        module.eval()
+        module.qconfig = torch.quantization.get_default_qconfig(backend)
+        torch.quantization.prepare(module, inplace=True)
+        if trace_func is not None:
+            with torch.no_grad():
+                # help to collect the running info for quantization
+                trace_func(module)
+        torch.quantization.convert(module, inplace=True)
+
+    @staticmethod
     def low_memory_run(module: nn.Module, device, *args, **kwargs):
         """only send the module to gpu when the module need to be run,
         and the gpu will be released after running"""

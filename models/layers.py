@@ -1,3 +1,4 @@
+import warnings
 import torch
 from torch import nn
 import torch.nn.functional as F
@@ -74,6 +75,7 @@ class Conv(nn.Sequential):
         self.kernel_size = k
         self.stride = s
         self.padding = p
+        self.mode = mode
 
         layers = OrderedDict()
 
@@ -107,6 +109,60 @@ class Conv(nn.Sequential):
             input_size=224, k=3, s=2 if output_size=224/s=112, p=(k-s)/2=0.5 -> 1
         """
         return int(np.ceil((k - s) / 2)) if k > s else 0
+
+    def fuse(self):
+        """only run on the inference node
+
+        Usages:
+            .. code-block:: python
+
+                layer = Conv(...)
+                layer.fuse()
+                with torch.no_grad():
+                    layer(...)
+
+        """
+        if 'cn' not in self.mode:
+            warnings.warn('can not find the support mode to fuse the layer')
+            return
+
+        c_idx = self.mode.index('c')
+        n_idx = self.mode.index('n')
+
+        conv = self[c_idx]
+        bn = self[n_idx]
+        if isinstance(conv, nn.Conv2d) and isinstance(bn, nn.BatchNorm2d):
+            new = self.fuse_conv_and_bn(conv, bn)
+            self[c_idx] = new
+            del self[n_idx]
+        else:
+            warnings.warn('only support fusing `nn.Conv2d` and `nn.BatchNorm2d` layer')
+            return
+
+    @staticmethod
+    def fuse_conv_and_bn(conv, bn):
+        """Fuses Conv2d and BatchNorm2d layers into a single Conv2d layer."""
+        fusedconv = nn.Conv2d(
+            conv.in_channels,
+            conv.out_channels,
+            kernel_size=conv.kernel_size,
+            stride=conv.stride,
+            padding=conv.padding,
+            dilation=conv.dilation,
+            groups=conv.groups,
+            bias=True,
+        ).requires_grad_(False).to(conv.weight.device)
+
+        # Prepare filters
+        w_conv = conv.weight.clone().view(conv.out_channels, -1)
+        w_bn = torch.diag(bn.weight.div(torch.sqrt(bn.eps + bn.running_var)))
+        fusedconv.weight.copy_(torch.mm(w_bn, w_conv).view(fusedconv.weight.shape))
+
+        # Prepare spatial bias
+        b_conv = torch.zeros(conv.weight.size(0), device=conv.weight.device) if conv.bias is None else conv.bias
+        b_bn = bn.bias - bn.weight.mul(bn.running_mean).div(torch.sqrt(bn.running_var + bn.eps))
+        fusedconv.bias.copy_(torch.mm(w_bn, b_conv.reshape(-1, 1)).reshape(-1) + b_bn)
+        return fusedconv
 
 
 class ConvT(nn.Sequential):
