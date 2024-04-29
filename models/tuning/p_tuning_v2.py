@@ -86,16 +86,21 @@ class ModelWarp:
         self.layers = []
         for current_m, name, full_name in layers:
             new = attentions.LearnedMemoryScaleAttend(getattr(current_m, name), is_repeat=False)
+            device = torch_utils.ModuleInfo.possible_device(current_m)
+            new.to(device)
             setattr(current_m, name, new)
             self.layers.append(new)
 
         # add prefix_encoder layer
-        model.prefix_encoder = PrefixEncoder(
+        prefix_encoder = PrefixEncoder(
             self.n_heads,
             self.head_dim,
             len(self.layers),
             **self.prefix_encoder_kwargs
         )
+        prefix_encoder.to(torch_utils.ModuleInfo.possible_device(model))
+
+        model.prefix_encoder = prefix_encoder
         self.pre_seq_len = model.prefix_encoder.pre_seq_len
         model.forward = partial(self.model_forward, model, model.forward)
         return model

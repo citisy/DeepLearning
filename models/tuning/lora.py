@@ -89,6 +89,7 @@ class ModelWarp:
         for current_m, name, full_name in layers:
             new = self.get_new_module(getattr(current_m, name))
             if new:
+                new.to(torch_utils.ModuleInfo.possible_device(current_m))
                 setattr(current_m, name, new)
             else:
                 warnings.warn(f'not support lora layer type for {full_name}')
@@ -96,6 +97,6 @@ class ModelWarp:
         return model
 
     def get_new_module(self, module: nn.Module):
-        for out, new in self.layer_mapping.items():
-            if isinstance(module, out):
+        for old, new in self.layer_mapping.items():
+            if isinstance(module, old):
                 return new(module, r=self.r)

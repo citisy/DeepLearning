@@ -57,7 +57,9 @@ class ModelWarpForPT:
         assert len(objs), f'can not find embedding layer by input name {self.layer_name}'
         current_m, name, full_name = objs[0]
         emb_layer = getattr(current_m, name)
-        emb_layer.register_module('prompt_encoder', PromptEncoder(self.spell_length, emb_layer.embedding_dim))
+        prompt_encoder = PromptEncoder(self.spell_length, emb_layer.embedding_dim)
+        prompt_encoder.to(torch_utils.ModuleInfo.possible_device(emb_layer))
+        emb_layer.register_module('prompt_encoder', prompt_encoder)
         emb_layer.forward = partial(self.emb_forward, emb_layer, emb_layer.forward)
 
         return model
