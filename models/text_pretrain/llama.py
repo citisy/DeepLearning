@@ -91,7 +91,7 @@ class Model(nn.Module):
         if self.training:
             # note, shift one token to predict the future word
             trues = torch.cat([x[:, 1:], torch.full((len(x), 1), self.pad_id)], dim=1)
-            logits = self.decode(x)
+            logits = self.decode(x, **kwargs)
             loss = self.loss(logits, trues)
             return {'loss': loss}
         else:
@@ -101,14 +101,14 @@ class Model(nn.Module):
         logits = logits.transpose(1, 2)  # seq first -> class first
         return F.cross_entropy(logits, trues)
 
-    def post_process(self, x, seq_lens=None, max_gen_len=100, top_k=1, **kwargs):
+    def post_process(self, x, seq_lens=None, max_gen_len=100, top_k=1, **decode_kwargs):
         assert seq_lens is not None
         batch_size = len(x)
         prev_pos = 0
         min_pos = min(seq_lens)
         eos_flag = [False] * batch_size
         for cur_pos in range(min_pos, max_gen_len):
-            logits = self.decode(x[:, prev_pos: cur_pos], start_pos=prev_pos, **kwargs)
+            logits = self.decode(x[:, prev_pos: cur_pos], start_pos=prev_pos, **decode_kwargs)
             # add next preds
             x = torch.cat([x, torch.zeros((batch_size, 1)).to(x)], dim=-1)
             for index in range(batch_size):
@@ -138,10 +138,10 @@ class Model(nn.Module):
             prev_pos = cur_pos
         return x
 
-    def decode(self, sequence, start_pos=0, **kwargs):
+    def decode(self, sequence, start_pos=0, **encoder_kwargs):
         x = self.embedding(sequence)
         attention_mask = make_causal_attention_mask(x, start_pos=start_pos)
-        x = self.encoder(x, attention_mask=attention_mask, start_pos=start_pos, **kwargs)
+        x = self.encoder(x, attention_mask=attention_mask, start_pos=start_pos, **encoder_kwargs)
         x = self.norm(x)
         x = self.head(x)
         return x

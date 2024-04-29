@@ -57,7 +57,6 @@ class ModelWarp:
             # model having an attention layer with name of 'attend'
             model = ...
             model = ModelWarp(n_heads, head_dim, include=['attend']).warp(model)
-            model.to(device)
 
             # your train step
             ...
@@ -85,9 +84,8 @@ class ModelWarp:
 
         self.layers = []
         for current_m, name, full_name in layers:
-            new = attentions.LearnedMemoryScaleAttend(getattr(current_m, name), is_repeat=False)
-            device = torch_utils.ModuleInfo.possible_device(current_m)
-            new.to(device)
+            new = attentions.LearnedMemoryAttend(getattr(current_m, name))
+            new.to(torch_utils.ModuleInfo.possible_device(current_m))
             setattr(current_m, name, new)
             self.layers.append(new)
 
@@ -115,8 +113,11 @@ class ModelWarp:
         prefix_tokens = prefix_tokens.unsqueeze(0).expand(b, -1)
         past_key_values = base_layer.prefix_encoder(prefix_tokens)
 
+        per_block_kwargs = []
         for i, layer in enumerate(self.layers):
-            layer.mem_kv = past_key_values[i].squeeze(1)
+            per_block_kwargs.append(dict(
+                mem_kv=past_key_values[i]
+            ))
 
         if attention_mask is not None:
             attention_mask = torch.cat((
@@ -127,5 +128,6 @@ class ModelWarp:
         return base_forward(
             x, *args,
             attention_mask=attention_mask,
+            per_block_kwargs=per_block_kwargs,
             **kwargs
         )

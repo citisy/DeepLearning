@@ -179,7 +179,7 @@ class Model(nn.Module):
         if self.training:
             # note, shift one token to predict the future word
             trues = torch.cat([x[:, 1:], torch.full((len(x), 1), self.pad_id)], dim=1)
-            logits = self.decode(x, context=context, context_mask=attention_mask)
+            logits = self.decode(x, context=context, context_mask=attention_mask, **kwargs)
             loss = self.loss(logits, trues)
             return {'loss': loss}
         else:
@@ -193,28 +193,28 @@ class Model(nn.Module):
         logits = logits.transpose(1, 2)  # seq first -> class first
         return F.cross_entropy(logits, trues)
 
-    def encode(self, x, attention_mask=None):
+    def encode(self, x, attention_mask=None, **encoder_kwargs):
         x = self.embedding(x)
-        x = self.encoder(x, attention_mask=attention_mask)
+        x = self.encoder(x, attention_mask=attention_mask, **encoder_kwargs)
         x = self.encoder_norm(x)
         return x
 
-    def decode(self, x, context=None, context_mask=None):
+    def decode(self, x, **decoder_kwargs):
         attention_mask = make_causal_attention_mask(x)
         x = self.embedding(x)
-        x = self.decoder(x, context=context, attention_mask=attention_mask, context_mask=context_mask)
+        x = self.decoder(x, attention_mask=attention_mask, **decoder_kwargs)
         x = self.decoder_norm(x)
         # note, don't scale in attention but here
         x = x * (self.hidden_size ** -0.5)
         x = self.head(x)
         return x
 
-    def post_process(self, x, context=None, context_mask=None, seq_lens=None, max_gen_len=100, top_k=1):
+    def post_process(self, x, seq_lens=None, max_gen_len=100, top_k=1, **decode_kwargs):
         assert seq_lens is not None
         batch_size = len(x)
         eos_flag = [False] * batch_size
         for i in range(max_gen_len):
-            logits = self.decode(x, context=context, context_mask=context_mask)
+            logits = self.decode(x, **decode_kwargs)
             x = torch.cat([x, torch.zeros((batch_size, 1)).to(x)], dim=-1)
 
             for index in range(batch_size):

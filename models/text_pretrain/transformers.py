@@ -65,9 +65,11 @@ class TransformerSequential(nn.ModuleList):
             [TransformerBlock(*args, **kwargs) for _ in range(num_blocks)]
         )
 
-    def forward(self, x, attention_mask=None, callback_fn=None, **kwargs):
+    def forward(self, x, attention_mask=None, callback_fn=None, per_block_kwargs=(), **block_kwargs):
         for i, m in enumerate(self):
-            x = m(x, attention_mask=attention_mask, **kwargs)
+            if per_block_kwargs:
+                block_kwargs.update(per_block_kwargs[i])
+            x = m(x, attention_mask=attention_mask, **block_kwargs)
             if callback_fn:
                 callback_fn(i, x)
         return x
@@ -114,11 +116,11 @@ class TransformerBlock(nn.Module):
             norm_first=norm_first
         )
 
-    def forward(self, x, context=None, attention_mask=None, context_mask=None, **kwargs):
+    def forward(self, x, context=None, attention_mask=None, context_mask=None, **attn_kwargs):
         """(b, s, h) -> (b, s, h)"""
-        x = self.attn_res(x, attention_mask=attention_mask, **kwargs)
+        x = self.attn_res(x, attention_mask=attention_mask, **attn_kwargs)
         if self.is_decode:
-            x = self.de_attn_res(x, k=context, v=context, attention_mask=context_mask, **kwargs)
+            x = self.de_attn_res(x, k=context, v=context, attention_mask=context_mask, **attn_kwargs)
         x = self.ff_res(x)
         return x
 

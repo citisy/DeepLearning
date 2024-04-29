@@ -103,7 +103,7 @@ class CrossAttention2D(nn.Module):
 
         self.attend = ScaleAttend(drop_prob=drop_prob) if attend is None else attend
 
-    def forward(self, q, k=None, v=None, attention_mask=None, **kwargs):
+    def forward(self, q, k=None, v=None, attention_mask=None, **attend_kwargs):
         if self.separate:
             q, k, v = get_qkv(q, k, v)
             q, k, v = [m(x) for m, x in zip(self.to_qkv, (q, k, v))]
@@ -113,7 +113,7 @@ class CrossAttention2D(nn.Module):
 
         q, k, v = [self.view_in(x).contiguous() for x in (q, k, v)]
 
-        x = self.attend(q, k, v, attention_mask=attention_mask, **kwargs)
+        x = self.attend(q, k, v, attention_mask=attention_mask, **attend_kwargs)
         x = self.view_out(x)
 
         x = self.to_out(x)
@@ -148,7 +148,7 @@ class CrossAttention3D(nn.Module):
         self.view_out = partial(rearrange, pattern='b 1 (h w) c -> b c h w')  # view_out)
         self.to_out = nn.Conv2d(model_dim, query_dim, 1) if out_fn is None else out_fn
 
-    def forward(self, q, k=None, v=None):
+    def forward(self, q, k=None, v=None, **attend_kwargs):
         b, c, h, w = q.shape
         if self.separate:
             q, k, v = get_qkv(q, k, v)
@@ -158,7 +158,7 @@ class CrossAttention3D(nn.Module):
 
         q, k, v = [self.view_in(x).contiguous() for x in (q, k, v)]
 
-        x = self.attend(q, k, v)
+        x = self.attend(q, k, v, **attend_kwargs)
         x = self.view_out(x, h=h, w=w)
         return self.to_out(x)
 
@@ -191,7 +191,7 @@ class LinearAttention3D(nn.Module):
         self.view_out = partial(rearrange, pattern='b n d (h w) -> b (n d) h w')
         self.to_out = nn.Conv2d(model_dim, query_dim, 1) if out_fn is None else out_fn
 
-    def forward(self, q, k=None, v=None):
+    def forward(self, q, k=None, v=None, **attend_kwargs):
         b, c, h, w = q.shape
         if self.separate:
             q, k, v = get_qkv(q, k, v)
@@ -200,7 +200,7 @@ class LinearAttention3D(nn.Module):
             q, k, v = self.to_qkv(q).chunk(3, dim=1)
 
         q, k, v = [self.view_in(x) for x in (q, k, v)]
-        x = self.attend(q, k, v)
+        x = self.attend(q, k, v, **attend_kwargs)
         x = self.view_out(x, n=self.n_heads, h=h, w=w)
         return self.to_out(x)
 
@@ -262,7 +262,7 @@ class LinearAttend(nn.Module):
     def __init__(self, *args, **kwargs):
         super().__init__()
 
-    def attend(self, q, k, v):
+    def attend(self, q, k, v, **kwargs):
         """
         in(q|k|v): (b n d s)
         out(attn): (b n d s)
@@ -315,7 +315,7 @@ class FlashAttend(nn.Module):
                 enable_mem_efficient=True
             )
 
-    def forward(self, q, k, v):
+    def forward(self, q, k, v, **kwargs):
         """
         in(q|k|v): (b n s d)
         out(attn): (b n s d)
@@ -337,16 +337,17 @@ class FlashAttend(nn.Module):
         return out
 
 
-class MemoryScaleAttend2D(ScaleAttend):
-    def __init__(self, n_heads, n_mem_size, head_dim, max_batch_size, drop_prob=0., **kwargs):
-        super().__init__(drop_prob=drop_prob)
-        self.mem_kv = torch.zeros(2, max_batch_size, n_heads, n_mem_size, head_dim)
+class MemoryAttend(nn.Module):
+    def __init__(self, base_layer=None, mem_kv=None, **kwargs):
+        super().__init__()
+        self.base_layer = base_layer
+        self.mem_kv = mem_kv
 
     def forward(self, q, k, v, attention_mask=None, start_pos=0, **kwargs):
         """q,k,v: (b,n,s,d)"""
         k = self.cache(self.mem_kv[0], k, start_pos=start_pos)
         v = self.cache(self.mem_kv[1], v, start_pos=start_pos)
-        return super().forward(q, k, v, attention_mask=attention_mask)
+        return self.base_layer(q, k, v, attention_mask=attention_mask, **kwargs)
 
     @staticmethod
     def cache(mem_x, x, start_pos):
@@ -355,7 +356,13 @@ class MemoryScaleAttend2D(ScaleAttend):
         return mem_x[:b, :, :start_pos + s, :]
 
 
-class LearnedMemoryScaleAttend(nn.Module):
+class MemoryScaleAttend2D(MemoryAttend):
+    def __init__(self, n_heads, n_mem_size, head_dim, max_batch_size, **kwargs):
+        mem_kv = torch.zeros(2, max_batch_size, n_heads, n_mem_size, head_dim)
+        super().__init__(ScaleAttend(**kwargs), mem_kv)
+
+
+class LearnedMemoryAttend(nn.Module):
     """apply learned kv cache"""
 
     def __init__(self, base_layer=None, mem_kv=None, is_repeat=True, **kwargs):
@@ -372,14 +379,14 @@ class LearnedMemoryScaleAttend(nn.Module):
             mem_kv = mem_kv[:, None].repeat(1, b, *[1] * len(a))
         return mem_kv
 
-    def forward(self, q, k, v, **kwargs):
-        mem_kv = self.get_mem_kv(k, v)
+    def forward(self, q, k, v, mem_kv=None, **kwargs):
+        mem_kv = self.get_mem_kv(k, v) if mem_kv is None else mem_kv
         k, v = map(partial(torch.cat, dim=-2), ((mem_kv[0], k), (mem_kv[1], v)))
 
         return self.base_layer(q, k, v, **kwargs)
 
 
-class LearnedMemoryScaleAttend2D(LearnedMemoryScaleAttend):
+class LearnedMemoryScaleAttend2D(LearnedMemoryAttend):
     """apply learned kv cache for 2D scale attend
     in(q|k|v): (b n s d)
     out(attn): (b n s d)
@@ -390,21 +397,23 @@ class LearnedMemoryScaleAttend2D(LearnedMemoryScaleAttend):
         super().__init__(ScaleAttend(**kwargs), mem_kv)
 
 
-class LearnedMemoryScaleAttend3D(LearnedMemoryScaleAttend):
+class LearnedMemoryScaleAttend3D(LearnedMemoryAttend):
     """apply learned kv cache for 3D scale attend
     in(q|k|v): (b n s d)
     out(attn): (b n s d)
     """
+
     def __init__(self, n_heads, n_mem_size, head_dim, **kwargs):
         mem_kv = nn.Parameter(torch.randn(2, 1, n_mem_size, n_heads * head_dim))
         super().__init__(ScaleAttend(**kwargs), mem_kv)
 
 
-class LearnedMemoryLinearAttend(LinearAttend):
+class LearnedMemoryLinearAttend(LearnedMemoryAttend):
     """apply learned kv cache for linear attend
     in(q|k|v): (b n d s)
     out(attn): (b n d s)
     """
+
     def __init__(self, n_heads, n_mem_size, head_dim, **kwargs):
         mem_kv = nn.Parameter(torch.randn(2, n_heads, n_mem_size, head_dim))
         super().__init__(LinearAttend(**kwargs), mem_kv)
@@ -429,7 +438,7 @@ class RotaryAttend(ScaleAttend):
         q, k, v = [self.view_in(x).contiguous() for x in (q, k, v)]
         q, k = map(self.embedding, (q, k))
         q, k, v = [self.view_out(x).contiguous() for x in (q, k, v)]
-        attn = super().forward(q, k, v, attention_mask=attention_mask)
+        attn = super().forward(q, k, v, attention_mask=attention_mask, **kwargs)
         return attn
 
 
