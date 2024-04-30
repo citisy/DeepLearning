@@ -77,6 +77,8 @@ class ModelWarp:
 
             # load the additional weight
             model_warp.load_state_dict(state_dict)
+            # or load directly by model with warped
+            model.load_state_dict(state_dict, strict=False)
     """
 
     layer_mapping = {

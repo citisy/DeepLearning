@@ -120,13 +120,19 @@ class ModelWarpForPT:
     def state_dict(self, **kwargs):
         state_dict = OrderedDict()
         for full_name, layer in self.layers.items():
-            state_dict[full_name] = layer.state_dict()
+            add_state_dict = layer.state_dict()
+            for name, tensors in add_state_dict.items():
+                state_dict[full_name + '.' + name] = tensors
 
         return state_dict
 
     def load_state_dict(self, state_dict, **kwargs):
         for full_name, layer in self.layers.items():
-            layer.load_state_dict(state_dict[full_name])
+            add_state_dict = OrderedDict()
+            for name, tensors in state_dict.items():
+                if name.startswith(full_name):
+                    add_state_dict[name.replace(full_name + '.', '')] = tensors
+            layer.load_state_dict(add_state_dict)
 
 
 class ModelWarpForBert(ModelWarpForPT):
@@ -150,6 +156,8 @@ class ModelWarpForBert(ModelWarpForPT):
 
             # load the additional weight
             model_warp.load_state_dict(state_dict)
+            # or load directly by model with warped
+            model.load_state_dict(state_dict, strict=False)
     """
 
     def __init__(self, sp_id_dict, template=(3, 3, 3), layer_name='token'):
@@ -211,6 +219,8 @@ class ModelWarpForGpt(ModelWarpForPT):
 
             # load the additional weight
             model_warp.load_state_dict(state_dict)
+            # or load directly by model with warped
+            model.load_state_dict(state_dict, strict=False)
     """
 
     def __init__(self, sp_id_dict, template=(3, 3), layer_name='token'):
