@@ -4,6 +4,7 @@ from torch import nn
 from utils import torch_utils
 from functools import partial
 from .. import attentions
+from collections import OrderedDict
 
 
 class PrefixEncoder(nn.Module):
@@ -56,10 +57,20 @@ class ModelWarp:
 
             # model having an attention layer with name of 'attend'
             model = ...
-            model = ModelWarp(n_heads, head_dim, include=['attend']).warp(model)
+            model_warp = ModelWarp(n_heads, head_dim, include=['attend'])
+            model_warp.warp(model)
 
-            # your train step
+            # define your train step
+            opti = ...
+            model(data)
             ...
+
+            # save the additional weight
+            state_dict = model_warp.state_dict()
+            torch.save(state_dict, save_path)
+
+            # load the additional weight
+            model_warp.load_state_dict(state_dict)
     """
 
     def __init__(
@@ -71,7 +82,8 @@ class ModelWarp:
         self.head_dim = head_dim
         self.include = include
         self.exclude = exclude
-        self.layers = []
+        self.layers = OrderedDict()
+        self.attn_layers = OrderedDict()
         self.prefix_encoder_kwargs = prefix_encoder_kwargs
         self.pre_seq_len = -1
 
@@ -82,12 +94,11 @@ class ModelWarp:
         if len(layers) == 0:
             warnings.warn(f'can not find any layer by include={self.include} and exclude={self.exclude}')
 
-        self.layers = []
         for current_m, name, full_name in layers:
             new = attentions.LearnedMemoryAttend(getattr(current_m, name))
             new.to(torch_utils.ModuleInfo.possible_device(current_m))
             setattr(current_m, name, new)
-            self.layers.append(new)
+            self.attn_layers[full_name] = new
 
         # add prefix_encoder layer
         prefix_encoder = PrefixEncoder(
@@ -97,6 +108,7 @@ class ModelWarp:
             **self.prefix_encoder_kwargs
         )
         prefix_encoder.to(torch_utils.ModuleInfo.possible_device(model))
+        self.layers['prefix_encoder'] = prefix_encoder
 
         model.prefix_encoder = prefix_encoder
         self.pre_seq_len = model.prefix_encoder.pre_seq_len
@@ -114,7 +126,7 @@ class ModelWarp:
         past_key_values = base_layer.prefix_encoder(prefix_tokens)
 
         per_block_kwargs = []
-        for i, layer in enumerate(self.layers):
+        for i in range(len(self.attn_layers)):
             per_block_kwargs.append(dict(
                 mem_kv=past_key_values[i]
             ))
@@ -131,3 +143,14 @@ class ModelWarp:
             per_block_kwargs=per_block_kwargs,
             **kwargs
         )
+
+    def state_dict(self, **kwargs):
+        state_dict = OrderedDict()
+        for full_name, layer in self.layers.items():
+            state_dict[full_name] = layer.state_dict()
+
+        return state_dict
+
+    def load_state_dict(self, state_dict, **kwargs):
+        for full_name, layer in self.layers.items():
+            layer.load_state_dict(state_dict[full_name])

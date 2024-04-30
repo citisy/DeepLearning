@@ -3,6 +3,7 @@ import torch
 from torch import nn
 from utils import torch_utils
 from functools import partial
+from collections import OrderedDict
 
 
 class PromptEncoder(nn.Module):
@@ -48,6 +49,7 @@ class ModelWarpForPT:
         self.template = template
         self.cum_template = np.cumsum(template)
         self.spell_length = self.cum_template[-1]  # prompt length
+        self.layers = OrderedDict()
 
     def warp(self, model):
         torch_utils.ModuleManager.freeze_module(model, allow_train=True)
@@ -61,6 +63,7 @@ class ModelWarpForPT:
         prompt_encoder.to(torch_utils.ModuleInfo.possible_device(emb_layer))
         emb_layer.register_module('prompt_encoder', prompt_encoder)
         emb_layer.forward = partial(self.emb_forward, emb_layer, emb_layer.forward)
+        self.layers[full_name] = prompt_encoder
 
         return model
 
@@ -114,6 +117,17 @@ class ModelWarpForPT:
 
         return raw_embeds
 
+    def state_dict(self, **kwargs):
+        state_dict = OrderedDict()
+        for full_name, layer in self.layers.items():
+            state_dict[full_name] = layer.state_dict()
+
+        return state_dict
+
+    def load_state_dict(self, state_dict, **kwargs):
+        for full_name, layer in self.layers.items():
+            layer.load_state_dict(state_dict[full_name])
+
 
 class ModelWarpForBert(ModelWarpForPT):
     """
@@ -122,11 +136,20 @@ class ModelWarpForBert(ModelWarpForPT):
 
             # model having an embedding layer with name of 'token'
             model = ...
-            model = ModelWarpForBert(sp_id_dict, layer_name='token').warp(model)
-            model.to(device)
+            model_warp = ModelWarpForBert(sp_id_dict, layer_name='token')
+            model_warp.warp(model)
 
-            # your train step
+            # define your train step
+            opti = ...
+            model(data)
             ...
+
+            # save the additional weight
+            state_dict = model_warp.state_dict()
+            torch.save(state_dict, save_path)
+
+            # load the additional weight
+            model_warp.load_state_dict(state_dict)
     """
 
     def __init__(self, sp_id_dict, template=(3, 3, 3), layer_name='token'):
@@ -174,11 +197,20 @@ class ModelWarpForGpt(ModelWarpForPT):
 
             # model having an embedding layer with name of 'token'
             model = ...
-            model = ModelWarpForGpt(sp_id_dict, layer_name='token').warp(model)
-            model.to(device)
+            model_warp = ModelWarpForGpt(sp_id_dict, layer_name='token')
+            model_warp.warp(model)
 
-            # your train step
+            # define your train step
+            opti = ...
+            model(data)
             ...
+
+            # save the additional weight
+            state_dict = model_warp.state_dict()
+            torch.save(state_dict, save_path)
+
+            # load the additional weight
+            model_warp.load_state_dict(state_dict)
     """
 
     def __init__(self, sp_id_dict, template=(3, 3), layer_name='token'):
@@ -215,7 +247,7 @@ class ModelWarpForGpt(ModelWarpForPT):
                 torch.full((b - self.spell_length - c,), self.sp_id_dict['pad']).to(x_h),  # add token of ' '
             ])
 
-            flag = torch.zeros((q.shape[1], ), device=q.device, dtype=torch.bool)
+            flag = torch.zeros((q.shape[1],), device=q.device, dtype=torch.bool)
             flag[:self.cum_template[0] + 1] = True
             flag[self.cum_template[0] + 1 + len(x_h[i]): self.cum_template[1] + 1 + len(x_h[i])] = True
             if x_t is not None:

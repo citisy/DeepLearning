@@ -2,6 +2,7 @@ import torch
 from torch import nn
 import warnings
 from utils import torch_utils
+from collections import OrderedDict
 
 
 class LoraModule(nn.Module):
@@ -62,11 +63,20 @@ class ModelWarp:
         .. code-block:: python
 
             model = ...
-            model = ModelWarp(include=['to_qkv']).warp(model)
-            model.to(device)
+            model_warp = ModelWarp(include=['to_qkv'])
+            model_warp.warp(model)
 
-            # your train step
+            # define your train step
+            opti = ...
+            model(data)
             ...
+
+            # save the additional weight
+            state_dict = model_warp.state_dict()
+            torch.save(state_dict, save_path)
+
+            # load the additional weight
+            model_warp.load_state_dict(state_dict)
     """
 
     layer_mapping = {
@@ -79,6 +89,7 @@ class ModelWarp:
         self.include = include
         self.exclude = exclude
         self.r = r
+        self.layers = OrderedDict()
 
     def warp(self, model: nn.Module):
         torch_utils.ModuleManager.freeze_module(model, allow_train=True)
@@ -91,6 +102,7 @@ class ModelWarp:
             if new:
                 new.to(torch_utils.ModuleInfo.possible_device(current_m))
                 setattr(current_m, name, new)
+                self.layers[full_name] = new
             else:
                 warnings.warn(f'not support lora layer type for {full_name}')
 
@@ -100,3 +112,17 @@ class ModelWarp:
         for old, new in self.layer_mapping.items():
             if isinstance(module, old):
                 return new(module, r=self.r)
+
+    def state_dict(self, **kwargs):
+        state_dict = OrderedDict()
+        for full_name, layer in self.layers.items():
+            state_dict[full_name + '.A'] = layer.A
+            state_dict[full_name + '.B'] = layer.B
+
+        return state_dict
+
+    def load_state_dict(self, state_dict, **kwargs):
+        for full_name, layer in self.layers.items():
+            layer.A = state_dict[full_name + '.A']
+            layer.B = state_dict[full_name + '.B']
+
