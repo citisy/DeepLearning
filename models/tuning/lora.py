@@ -1,5 +1,6 @@
 import torch
 from torch import nn
+from torch.nn import functional as F
 import warnings
 from utils import torch_utils
 from collections import OrderedDict
@@ -7,7 +8,6 @@ from collections import OrderedDict
 
 class LoraModule(nn.Module):
     def __init__(self, base_layer: nn.Module, r=8):
-        super().__init__()
         self.r = r
         self.__dict__.update(base_layer.__dict__)
         self.ori_forward = base_layer.forward
@@ -16,8 +16,10 @@ class LoraModule(nn.Module):
         with torch.no_grad():
             y = self.ori_forward(x)
 
-        x = x.view(-1, self.A.shape[0])
-        return y + torch.mm(torch.mm(x, self.A), self.B).view(*y.shape)
+        return self.lora_forward(x, y)
+
+    def lora_forward(self, x, y):
+        raise NotImplementedError
 
 
 class Linear(LoraModule):
@@ -26,12 +28,13 @@ class Linear(LoraModule):
         self.A = nn.Parameter(torch.randn(self.in_features, r))
         self.B = nn.Parameter(torch.zeros(r, self.out_features))
 
+    def lora_forward(self, x, y):
+        x = x.view(-1, self.A.shape[0])
+        return y + torch.mm(torch.mm(x, self.A), self.B).view(*y.shape)
 
-class Conv1D(LoraModule, nn.Conv1d):
-    def __init__(self, base_layer: nn.Conv1d, r=8):
-        super().__init__(base_layer, r)
-        self.A = nn.Parameter(torch.randn(self.in_channels, r))
-        self.B = nn.Parameter(torch.zeros(r, self.out_channels))
+    def fuse(self):
+        self.weight.data += torch.mm(self.A, self.B).T
+        self.forward = self.ori_forward
 
 
 class Embedding(LoraModule, nn.Embedding):
@@ -39,6 +42,17 @@ class Embedding(LoraModule, nn.Embedding):
         super().__init__(base_layer, r)
         self.A = nn.Parameter(torch.randn(self.num_embeddings, r))
         self.B = nn.Parameter(torch.zeros(r, self.embedding_dim))
+
+    def lora_forward(self, x, y):
+        emb = torch.mm(self.A, self.B)
+        return y + F.embedding(
+            x, emb, self.padding_idx, self.max_norm,
+            self.norm_type, self.scale_grad_by_freq, self.sparse
+        )
+
+    def fuse(self):
+        self.weight.data += torch.mm(self.A, self.B)
+        self.forward = self.ori_forward
 
 
 class ModelWarp:
@@ -67,7 +81,6 @@ class ModelWarp:
 
     layer_mapping = {
         nn.Linear: Linear,
-        nn.Conv1d: Conv1D,
         nn.Embedding: Embedding,
     }
 
@@ -112,3 +125,7 @@ class ModelWarp:
             layer.A = state_dict[full_name + '.A']
             layer.B = state_dict[full_name + '.B']
 
+    def fuse(self):
+        for layer in self.layers.values():
+            if hasattr(layer, 'fuse'):
+                layer.fuse()
