@@ -35,6 +35,8 @@ class Linear(LoraModule):
     def fuse(self):
         self.weight.data += torch.mm(self.A, self.B).T
         self.forward = self.ori_forward
+        del self.A
+        del self.B
 
 
 class Embedding(LoraModule, nn.Embedding):
@@ -53,6 +55,8 @@ class Embedding(LoraModule, nn.Embedding):
     def fuse(self):
         self.weight.data += torch.mm(self.A, self.B)
         self.forward = self.ori_forward
+        del self.A
+        del self.B
 
 
 class ModelWarp:

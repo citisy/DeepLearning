@@ -135,6 +135,7 @@ class Conv(nn.Sequential):
             new = self.fuse_conv_and_bn(conv, bn)
             self[c_idx] = new
             del self[n_idx]
+            self.mode = self.mode[:c_idx + 1] + self.mode[n_idx + 1:]
         else:
             warnings.warn('only support fusing `nn.Conv2d` and `nn.BatchNorm2d` layer')
             return
