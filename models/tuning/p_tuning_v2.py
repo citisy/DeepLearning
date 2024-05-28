@@ -84,15 +84,17 @@ class ModelWarp:
         self.head_dim = head_dim
         self.include = include
         self.exclude = exclude
-        self.layers = OrderedDict()
-        self.attn_layers = OrderedDict()
         self.prefix_encoder_kwargs = prefix_encoder_kwargs
         self.pre_seq_len = -1
+
+        self.layers = []
+        self.attn_layers = []
+        self.model = None
 
     def warp(self, model: nn.Module):
         torch_utils.ModuleManager.freeze_module(model, allow_train=True)
         # add prefix layers
-        layers = torch_utils.ModuleManager.get_module_by_name(model, include=self.include, exclude=self.exclude, is_last=True)
+        layers = torch_utils.ModuleManager.get_module_by_key(model, include=self.include, exclude=self.exclude, is_last_module=True)
         if len(layers) == 0:
             warnings.warn(f'can not find any layer by include={self.include} and exclude={self.exclude}')
 
@@ -100,21 +102,22 @@ class ModelWarp:
             new = attentions.LearnedMemoryAttend(getattr(current_m, name))
             new.to(torch_utils.ModuleInfo.possible_device(current_m))
             setattr(current_m, name, new)
-            self.attn_layers[full_name] = new
+            self.attn_layers.append(full_name)
 
         # add prefix_encoder layer
         prefix_encoder = PrefixEncoder(
             self.n_heads,
             self.head_dim,
-            len(self.layers),
+            len(layers),
             **self.prefix_encoder_kwargs
         )
         prefix_encoder.to(torch_utils.ModuleInfo.possible_device(model))
-        self.layers['prefix_encoder'] = prefix_encoder
+        self.layers.append('prefix_encoder')
 
         model.prefix_encoder = prefix_encoder
         self.pre_seq_len = model.prefix_encoder.pre_seq_len
         model.forward = partial(self.model_forward, model, model.forward)
+        self.model = model
         return model
 
     def model_forward(
@@ -148,7 +151,9 @@ class ModelWarp:
 
     def state_dict(self, **kwargs):
         state_dict = OrderedDict()
-        for full_name, layer in self.layers.items():
+        for full_name in self.layers:
+            # note, to avoid the layer is changed
+            layer = torch_utils.ModuleManager.get_module_by_name(self.model, full_name)
             add_state_dict = layer.state_dict()
             for name, tensors in add_state_dict.items():
                 state_dict[full_name + '.' + name] = tensors
@@ -156,7 +161,8 @@ class ModelWarp:
         return state_dict
 
     def load_state_dict(self, state_dict, **kwargs):
-        for full_name, layer in self.layers.items():
+        for full_name in self.layers:
+            layer = torch_utils.ModuleManager.get_module_by_name(self.model, full_name)
             add_state_dict = OrderedDict()
             for name, tensors in state_dict.items():
                 if name.startswith(full_name):

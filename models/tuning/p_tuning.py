@@ -49,13 +49,14 @@ class ModelWarpForPT:
         self.template = template
         self.cum_template = np.cumsum(template)
         self.spell_length = self.cum_template[-1]  # prompt length
-        self.layers = OrderedDict()
+        self.layers = []
+        self.model = None
 
     def warp(self, model):
         torch_utils.ModuleManager.freeze_module(model, allow_train=True)
         model.forward = partial(self.model_forward, model, model.forward)
 
-        objs = torch_utils.ModuleManager.get_module_by_name(model, self.layer_name)
+        objs = torch_utils.ModuleManager.get_module_by_key(model, self.layer_name)
         assert len(objs), f'can not find embedding layer by input name {self.layer_name}'
         current_m, name, full_name = objs[0]
         emb_layer = getattr(current_m, name)
@@ -63,8 +64,8 @@ class ModelWarpForPT:
         prompt_encoder.to(torch_utils.ModuleInfo.possible_device(emb_layer))
         emb_layer.register_module('prompt_encoder', prompt_encoder)
         emb_layer.forward = partial(self.emb_forward, emb_layer, emb_layer.forward)
-        self.layers[full_name] = prompt_encoder
-
+        self.layers.append(full_name)
+        self.model = model
         return model
 
     def model_forward(
@@ -119,7 +120,9 @@ class ModelWarpForPT:
 
     def state_dict(self, **kwargs):
         state_dict = OrderedDict()
-        for full_name, layer in self.layers.items():
+        for full_name in self.layers:
+            # note, to avoid the layer is changed
+            layer = torch_utils.ModuleManager.get_module_by_name(self.model, full_name)
             add_state_dict = layer.state_dict()
             for name, tensors in add_state_dict.items():
                 state_dict[full_name + '.' + name] = tensors
@@ -127,7 +130,8 @@ class ModelWarpForPT:
         return state_dict
 
     def load_state_dict(self, state_dict, **kwargs):
-        for full_name, layer in self.layers.items():
+        for full_name in self.layers:
+            layer = torch_utils.ModuleManager.get_module_by_name(self.model, full_name)
             add_state_dict = OrderedDict()
             for name, tensors in state_dict.items():
                 if name.startswith(full_name):

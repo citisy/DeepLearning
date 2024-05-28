@@ -92,11 +92,12 @@ class ModelWarp:
         self.include = include
         self.exclude = exclude
         self.r = r
-        self.layers = OrderedDict()
+        self.layers = []
+        self.model = None
 
     def warp(self, model: nn.Module):
         model.requires_grad_(False)
-        layers = torch_utils.ModuleManager.get_module_by_name(model, include=self.include, exclude=self.exclude)
+        layers = torch_utils.ModuleManager.get_module_by_key(model, include=self.include, exclude=self.exclude)
         if len(layers) == 0:
             warnings.warn(f'can not find any layer by include={self.include} and exclude={self.exclude}')
 
@@ -105,10 +106,11 @@ class ModelWarp:
             if new:
                 new.to(torch_utils.ModuleInfo.possible_device(current_m))
                 setattr(current_m, name, new)
-                self.layers[full_name] = new
+                self.layers.append(full_name)
             else:
                 warnings.warn(f'not support lora layer type for {full_name}')
 
+        self.model = model
         return model
 
     def get_new_module(self, module: nn.Module):
@@ -118,18 +120,22 @@ class ModelWarp:
 
     def state_dict(self, **kwargs):
         state_dict = OrderedDict()
-        for full_name, layer in self.layers.items():
+        for full_name in self.layers:
+            # note, to avoid the layer is changed
+            layer = torch_utils.ModuleManager.get_module_by_name(self.model, full_name)
             state_dict[full_name + '.A'] = layer.A
             state_dict[full_name + '.B'] = layer.B
 
         return state_dict
 
     def load_state_dict(self, state_dict, **kwargs):
-        for full_name, layer in self.layers.items():
+        for full_name in self.layers:
+            layer = torch_utils.ModuleManager.get_module_by_name(self.model, full_name)
             layer.A = state_dict[full_name + '.A']
             layer.B = state_dict[full_name + '.B']
 
     def fuse(self):
-        for layer in self.layers.values():
+        for full_name in self.layers:
+            layer = torch_utils.ModuleManager.get_module_by_name(self.model, full_name)
             if hasattr(layer, 'fuse'):
                 layer.fuse()

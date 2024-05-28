@@ -304,13 +304,25 @@ class ModuleManager:
         return weight
 
     @staticmethod
-    def get_module_by_name(module, key=None, include=(), exclude=(), is_last=False):
+    def get_module_by_name(module, tensor_name: str):
+        if "." in tensor_name:
+            splits = tensor_name.split(".")
+            for split in splits:
+                new_module = getattr(module, split)
+                if new_module is None:
+                    raise ValueError(f"{module} has no attribute {split}.")
+                module = new_module
+        return module
+
+    @staticmethod
+    def get_module_by_key(module, key=None, include=(), exclude=(), is_last_module=False, is_return_last_module=False):
         """return: [[finded_module, name, full_name]]
 
         >>> module = ...
-        >>> ModuleManager.get_module_by_name(module, key='q')
-        >>> ModuleManager.get_module_by_name(module, include=('q', 'k', 'v'), exclude=('l0.q', 'l0.k', 'l0.v'))
+        >>> ModuleManager.get_module_by_key(module, key='q')
+        >>> ModuleManager.get_module_by_key(module, include=('q', 'k', 'v'), exclude=('l0.q', 'l0.k', 'l0.v'))
         """
+
         def cur(current_m: nn.Module, prev_name=''):
             for name, m in current_m._modules.items():
                 if m is None:
@@ -318,17 +330,23 @@ class ModuleManager:
 
                 full_name = f'{prev_name}.{name}'[1:]
 
-                if is_last:
+                if is_last_module:
                     for k in include:
                         if full_name.endswith(k):
-                            r.append((current_m, name, full_name))
+                            r.append((return_module(current_m, name), name, full_name))
 
                 elif len(m._modules) == 0:
                     if is_find(full_name):
-                        r.append((current_m, name, full_name))
+                        r.append((return_module(current_m, name), name, full_name))
 
                 if len(m._modules) > 0:
                     cur(m, f'{prev_name}.{name}')
+
+        def return_module(m, name=None):
+            if is_return_last_module:
+                return getattr(m, name)
+            else:
+                return m
 
         def is_find(name):
             flag = False
@@ -344,7 +362,7 @@ class ModuleManager:
 
         r = []
         if key is not None:
-            include += (key, )
+            include += (key,)
         cur(module)
         return r
 
@@ -354,22 +372,10 @@ class ModuleManager:
         # freeze encoder and decoder layer, train the head layer
         >>> ModuleManager.apply(nn.Module(), ModuleManager.freeze_module, include=('encoder', 'decoder'), exclude=('head', ), is_last=True)
         """
-        objs = cls.get_module_by_name(module, key=key, include=include, exclude=exclude, is_last=is_last)
+        objs = cls.get_module_by_key(module, key=key, include=include, exclude=exclude, is_last_module=is_last)
 
         for current_m, name, full_name in objs:
             func(current_m, **func_kwargs)
-
-    @staticmethod
-    def get_module_from_name(module, tensor_name: str):
-        if "." in tensor_name:
-            splits = tensor_name.split(".")
-            for split in splits[:-1]:
-                new_module = getattr(module, split)
-                if new_module is None:
-                    raise ValueError(f"{module} has no attribute {split}.")
-                module = new_module
-            tensor_name = splits[-1]
-        return module, tensor_name
 
 
 class WeightsFormats:
@@ -421,7 +427,7 @@ class Export:
 
     @staticmethod
     def to_state_dict_by_name(model, key=None, include=(), exclude=(), is_last=False):
-        objs = ModuleManager.get_module_by_name(model, key=key, include=include, exclude=exclude, is_last=is_last)
+        objs = ModuleManager.get_module_by_key(model, key=key, include=include, exclude=exclude, is_last_module=is_last)
 
         state_dict = OrderedDict()
         for current_m, _, full_name in objs:
