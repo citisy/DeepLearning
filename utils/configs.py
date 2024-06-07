@@ -195,6 +195,7 @@ def parse_params_example(path, parser) -> dict:
 
 
 def parse_pydantic(model: 'pydantic.BaseModel', return_example=False) -> dict:
+    # todo: the latest version of pydantic is not applied
     schema = model.schema()
     ret = parse_pydantic_schema(schema, schema.get('definitions', {}))
     if return_example:
