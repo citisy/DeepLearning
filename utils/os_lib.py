@@ -142,12 +142,12 @@ class Saver:
     def save_img(self, obj: np.ndarray, path, **kwargs):
         # it will error with chinese path in low version of cv2
         # it has fixed in high version already
-        flag = cv2.imencode('.png', obj)[1].tofile(path)
+        cv2.imencode('.png', obj)[1].tofile(path)
         # flag = cv2.imwrite(path, obj)
-        if flag:
-            self.stdout(path)
-        else:
-            self.stderr(path)
+        # if flag:
+        #     self.stdout(path)
+        # else:
+        #     self.stderr(path)
 
     def save_np_array(self, obj: np.ndarray, path, **kwargs):
         np.savetxt(path, obj, **kwargs)
