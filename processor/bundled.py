@@ -25,6 +25,7 @@ class LogHooks:
         process.register_logger('loguru', lambda item, level='INFO', **kwargs: logger.opt(depth=2).log(level, item))
 
     """
+
     def __init__(self):
         super().__init__()
         self.loggers = set()
@@ -41,11 +42,17 @@ class LogHooks:
     def init_log_base(self, log_dir=None, logger=None):
         log_utils.logger_init(log_dir)
         logger = log_utils.get_logger(logger)
-        self.logger = logger
         self.register_logger(LOGGING, lambda item, level=logging.INFO, **kwargs: logger.log(level, item, stacklevel=3))
 
     use_wandb = False
     wandb: Optional
+
+    model_version: str
+    dataset_version: str
+    work_dir: str
+    wandb_id: str
+    register_train_start: 'model_process.ModelHooks.register_train_start'
+    register_train_end: 'model_process.ModelHooks.register_train_end'
 
     def init_wandb(self):
         if self.use_wandb:
@@ -53,15 +60,30 @@ class LogHooks:
                 import wandb
             except ImportError:
                 wandb = log_utils.FakeWandb()
-                self.logger.warning('wandb import error, wandb init fail, please check install')
+                self.log('wandb import error, wandb init fail, please check install', level=logging.WARNING)
 
         else:
             wandb = log_utils.FakeWandb()
 
         self.wandb = wandb
         self.register_logger(WANDB, lambda item, **kwargs: wandb.log(item))
+        self.register_train_start(self._wandb_init)
+        self.register_train_end(wandb.finish)
+
+    def _wandb_init(self):
+        # only init wandb runner before training
+        wandb_run = self.wandb.init(
+            project=self.model_version,
+            name=self.dataset_version,
+            dir=f'{self.work_dir}',
+            id=self.__dict__.get('wandb_id'),
+            reinit=True
+        )
+        # for retraining
+        self.wandb_id = wandb_run.id
 
     def trace(self, item: dict, loggers=LOGGING):
+        """only cache the log items to `trace_log_items`, and output when calling `log_trace()`"""
         if not isinstance(loggers, (list, tuple, set)):
             loggers = [loggers]
 
@@ -69,9 +91,11 @@ class LogHooks:
             self.trace_log_items[logger].update(item)
 
     def get_log_trace(self, logger=LOGGING):
+        """get the items is cached before"""
         return self.trace_log_items[logger]
 
     def log_trace(self, loggers=LOGGING, **kwargs):
+        """output the log items which is cached before"""
         if not isinstance(loggers, (list, tuple, set)):
             loggers = [loggers]
 
@@ -86,3 +110,7 @@ class LogHooks:
 
         for logger in loggers:
             self.log_methods.get(logger, empty_logger)(item, **kwargs)
+
+
+class ApiHooks:
+    pass

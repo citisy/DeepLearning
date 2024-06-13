@@ -1,3 +1,4 @@
+import logging
 import time
 import numpy as np
 import math
@@ -7,6 +8,7 @@ from pathlib import Path
 from datetime import datetime
 from typing import List, Optional, Callable, Dict, Tuple, Union
 from tqdm import tqdm
+from functools import partial
 from . import bundled, data_process
 from utils import os_lib, configs, visualize, log_utils, torch_utils
 
@@ -22,7 +24,7 @@ EPOCH = 'epoch'
 
 
 class CheckpointHooks:
-    logger: Optional
+    log: 'bundled.LogHooks.log'
 
     def save(self, save_path, save_type=WEIGHT, verbose=True, **kwargs):
         os_lib.mk_parent_dir(save_path)
@@ -31,7 +33,7 @@ class CheckpointHooks:
 
         func(self, save_path, **kwargs)
         if verbose:
-            self.logger.info(f'Successfully saved to {save_path} !')
+            self.log(f'Successfully saved to {save_path} !')
 
     def save_model(self, save_path, additional_items: dict = {}, **kwargs):
         """
@@ -99,7 +101,7 @@ class CheckpointHooks:
 
         func(self, save_path, **kwargs)
         if verbose:
-            self.logger.info(f'Successfully load {save_path} !')
+            self.log(f'Successfully load {save_path} !')
 
     model: nn.Module
     model_name: str
@@ -147,9 +149,12 @@ class CheckpointHooks:
                 if name in self.__dict__ and hasattr(self.__dict__[name], 'load_state_dict'):
                     self.__dict__[name].load_state_dict(item)
                 else:
-                    self.logger.warning(f'It found that `{name}` in weight file but not in processor, '
-                                        f'creating the new var by the name, and making sure it is not harmful, '
-                                        f'or using `exclude` instead')
+                    self.log(
+                        f'It found that `{name}` in weight file but not in processor, '
+                        f'creating the new var by the name, and making sure it is not harmful, '
+                        f'or using `exclude` instead',
+                        level=logging.WARNING
+                    )
                     self.__dict__[name] = item
 
     def load_jit(self, save_path, **kwargs):
@@ -305,22 +310,27 @@ class ModelHooks:
         self.on_train_end(**kwargs)
 
     init_wandb: 'bundled.LogHooks.init_wandb'
-    wandb: Optional
-    wandb_id: str
-    model_version: str
-    dataset_version: str
     work_dir: str
     model_name: str
     get_train_dataloader: 'data_process.DataHooks.get_train_dataloader'
     get_val_dataloader: 'data_process.DataHooks.get_val_dataloader'
     save: 'CheckpointHooks.save'
     counters: dict
+    train_start_container: dict = {}
+    train_end_container: dict = {}
+
+    def register_train_start(self, func, **kwargs):
+        self.train_start_container.update({func: kwargs})
+
+    def register_train_end(self, func, **kwargs):
+        self.train_end_container.update({func: kwargs})
 
     def on_train_start(
             self, batch_size=None, max_epoch=None,
             train_dataloader=None, val_dataloader=None, check_period=None,
             metric_kwargs=dict(), data_get_kwargs=dict(), dataloader_kwargs=dict(), **kwargs):
-        assert batch_size
+        assert batch_size, 'please set batch_size'
+        assert max_epoch, 'please set max_epoch'
         self.log(f'{batch_size = }')
 
         self.train_container = dict()
@@ -328,16 +338,6 @@ class ModelHooks:
         metric_kwargs.setdefault('batch_size', batch_size)
         metric_kwargs.setdefault('dataloader_kwargs', {})
         metric_kwargs['dataloader_kwargs'] = configs.merge_dict(dataloader_kwargs, metric_kwargs['dataloader_kwargs'])
-
-        # only init wandb runner before training
-        wandb_run = self.wandb.init(
-            project=self.model_version,
-            name=self.dataset_version,
-            dir=f'{self.work_dir}',
-            id=self.__dict__.get('wandb_id'),
-            reinit=True
-        )
-        self.wandb_id = wandb_run.id
 
         _counters = ['epoch', 'total_nums', 'total_steps', 'check_nums']
         for c in _counters:
@@ -361,6 +361,9 @@ class ModelHooks:
 
         self.set_mode(train=True)
         self.set_scheduler(max_epoch=max_epoch)
+
+        for func, params in self.train_start_container.items():
+            func(params)
 
     register_logger: 'bundled.LogHooks.register_logger'
     log_methods: dict
@@ -557,7 +560,8 @@ class ModelHooks:
         return state_dict
 
     def on_train_end(self, **kwargs):
-        self.wandb.finish()
+        for func, params in self.train_start_container.items():
+            func(params)
 
     def metric(self, *args, **kwargs) -> dict:
         """call the `predict()` function to get model output, then count the score, expected to return a dict of model score"""
@@ -605,8 +609,17 @@ class ModelHooks:
         self.on_val_end(**kwargs)
         return self.val_container
 
+    val_start_container: dict = {}
+    val_end_container: dict = {}
+
+    def register_val_start(self, func, **kwargs):
+        self.val_start_container.update({func: kwargs})
+
+    def register_end_start(self, func, **kwargs):
+        self.val_end_container.update({func: kwargs})
+
     def on_val_start(self, val_dataloader=None, batch_size=None, data_get_kwargs=dict(), dataloader_kwargs=dict(), **kwargs):
-        assert batch_size
+        assert batch_size, 'please set batch_size'
         self.val_container = {}
         dataloader_kwargs.setdefault('batch_size', batch_size)
         if val_dataloader is None:
@@ -617,6 +630,9 @@ class ModelHooks:
         self.counters['vis_num'] = 0
         self.counters.setdefault('epoch', -1)
         self.val_container['model_results'] = dict()
+
+        for func, params in self.val_start_container.items():
+            func(params)
 
     def on_val_step_start(self, rets, **kwargs):
         pass
@@ -649,6 +665,8 @@ class ModelHooks:
 
     def on_val_end(self, **kwargs):
         """save the results usually"""
+        for func, params in self.val_end_container.items():
+            func(params)
 
     model_input_template: 'namedtuple'
     predict_container: dict
