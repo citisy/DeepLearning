@@ -1,7 +1,6 @@
 from .bundled import *
 from .data_process import *
 from .model_process import *
-from .configs import *
 from utils import converter
 import os
 
