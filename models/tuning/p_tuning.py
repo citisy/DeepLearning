@@ -138,6 +138,12 @@ class ModelWarpForPT:
                     add_state_dict[name.replace(full_name + '.', '')] = tensors
             layer.load_state_dict(add_state_dict)
 
+    def fuse(self):
+        raise NotImplementedError
+
+    def dewarp(self):
+        raise NotImplementedError
+
 
 class ModelWarpForBert(ModelWarpForPT):
     """

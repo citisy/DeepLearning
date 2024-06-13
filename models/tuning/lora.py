@@ -1,3 +1,4 @@
+import math
 import torch
 from torch import nn
 from torch.nn import functional as F
@@ -7,56 +8,86 @@ from collections import OrderedDict
 
 
 class LoraModule(nn.Module):
-    def __init__(self, base_layer: nn.Module, r=8):
+    def __init__(self, base_layer: nn.Module, r=8, multiplier=1.0, alpha=1, drop_prob=0.):
         self.r = r
+        self.scale = multiplier * alpha / r
+
         self.__dict__.update(base_layer.__dict__)
         self.ori_forward = base_layer.forward
+        self.dropout = nn.Dropout(drop_prob)
+
+    def initialize_layers(self):
+        nn.init.kaiming_uniform_(self.down.weight, a=math.sqrt(5))
+        nn.init.zeros_(self.up.weight)
 
     def forward(self, x):
         with torch.no_grad():
             y = self.ori_forward(x)
 
-        return self.lora_forward(x, y)
+        h = self.lora_call(x)
+        h = self.dropout(h) * self.scale
+        return y + h
 
-    def lora_forward(self, x, y):
+    def lora_call(self, x):
         raise NotImplementedError
+
+    def dewarp(self):
+        del self.down
+        del self.up
+        torch.cuda.empty_cache()
 
 
 class Linear(LoraModule):
-    def __init__(self, base_layer: nn.Linear, r=8):
-        super().__init__(base_layer, r)
-        self.A = nn.Parameter(torch.randn(self.in_features, r))
-        self.B = nn.Parameter(torch.zeros(r, self.out_features))
+    def __init__(self, base_layer: nn.Linear, r=8, **kwargs):
+        super().__init__(base_layer, r, **kwargs)
+        self.down = torch.nn.Linear(self.in_features, r, bias=False)
+        self.up = torch.nn.Linear(r, self.out_features, bias=False)
 
-    def lora_forward(self, x, y):
-        x = x.view(-1, self.A.shape[0])
-        return y + torch.mm(torch.mm(x, self.A), self.B).view(*y.shape)
+        self.initialize_layers()
+
+    def lora_call(self, x):
+        return self.up(self.down(x))
 
     def fuse(self):
-        self.weight.data += torch.mm(self.A, self.B).T
+        self.weight.data += self.up.weight @ self.down.weight * self.scale
         self.forward = self.ori_forward
-        del self.A
-        del self.B
+        self.dewarp()
 
 
-class Embedding(LoraModule, nn.Embedding):
-    def __init__(self, base_layer: nn.Embedding, r=8):
-        super().__init__(base_layer, r)
-        self.A = nn.Parameter(torch.randn(self.num_embeddings, r))
-        self.B = nn.Parameter(torch.zeros(r, self.embedding_dim))
+class Embedding(LoraModule):
+    def __init__(self, base_layer: nn.Embedding, r=8, **kwargs):
+        super().__init__(base_layer, r, **kwargs)
+        self.down = torch.nn.Linear(self.num_embeddings, r, bias=False)
+        self.up = torch.nn.Linear(r, self.embedding_dim, bias=False)
 
-    def lora_forward(self, x, y):
-        emb = torch.mm(self.A, self.B)
-        return y + F.embedding(
+        self.initialize_layers()
+
+    def lora_call(self, x):
+        emb = (self.up.weight @ self.down.weight).T
+        return F.embedding(
             x, emb, self.padding_idx, self.max_norm,
             self.norm_type, self.scale_grad_by_freq, self.sparse
         )
 
     def fuse(self):
-        self.weight.data += torch.mm(self.A, self.B)
+        self.weight.data += (self.up.weight @ self.down.weight).T * self.scale
         self.forward = self.ori_forward
-        del self.A
-        del self.B
+        self.dewarp()
+
+
+class Conv2d(LoraModule):
+    def __init__(self, base_layer: nn.Conv2d, r=8, **kwargs):
+        super().__init__(base_layer, r, **kwargs)
+        self.down = nn.Conv2d(base_layer.in_channels, r, base_layer.kernel_size, base_layer.stride, base_layer.padding, bias=False)
+        self.up = nn.Conv2d(r, base_layer.out_channels, 1, bias=False)
+
+        self.initialize_layers()
+
+    def lora_call(self, x):
+        return self.up(self.down(x))
+
+    def fuse(self):
+        raise "conv layer can not fuse"
 
 
 class ModelWarp:
@@ -86,6 +117,7 @@ class ModelWarp:
     layer_mapping = {
         nn.Linear: Linear,
         nn.Embedding: Embedding,
+        nn.Conv2d: Conv2d
     }
 
     def __init__(self, include=(), exclude=(), r=8):
@@ -139,3 +171,9 @@ class ModelWarp:
             layer = torch_utils.ModuleManager.get_module_by_name(self.model, full_name)
             if hasattr(layer, 'fuse'):
                 layer.fuse()
+
+    def dewarp(self):
+        for full_name in self.layers:
+            layer = torch_utils.ModuleManager.get_module_by_name(self.model, full_name)
+            if hasattr(layer, 'fuse'):
+                layer.dewarp()
