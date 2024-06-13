@@ -4,6 +4,8 @@ import numpy as np
 import numbers
 from metrics.object_detection import Overlap
 
+LEFT, RIGHT, TOP, DOWN = 0, 1, 0, 1
+
 interpolation_mode = [
     cv2.INTER_LINEAR,
     cv2.INTER_NEAREST,
@@ -373,12 +375,13 @@ class RandomRotate(Rotate):
 class Affine:
     """rotate, scale and shift the image"""
 
-    def __init__(self, angle=45, translate=(0., 0.), interpolation=0, fill_type=0, scale=1., shear=0.):
+    def __init__(self, angle=45, translate=(0., 0.), interpolation=0, fill_type=0, fill=(114, 114, 114), scale=1., shear=0.):
         self.name = __name__.split('.')[-1] + '.' + self.__class__.__name__
         self.angle = angle
         self.translate = translate
         self.interpolation = interpolation_mode[interpolation]
         self.fill_type = fill_mode[fill_type]
+        self.fill = fill
         self.scale = scale
         self.shear = shear
 
@@ -465,7 +468,7 @@ class Affine:
             M, (dst_w, dst_h),
             flags=self.interpolation,
             borderMode=self.fill_type,
-            borderValue=(114, 114, 114)
+            borderValue=self.fill
         )
 
     def apply_bboxes(self, bboxes, ret):
@@ -511,11 +514,15 @@ class RandomAffine(Affine):
 
 
 class Perspective:
-    def __init__(self, distortion=0.25, interpolation=0, fill_type=0, keep_shape=True):
+    def __init__(self, distortion=0.25, pos=(LEFT, TOP), end_points=None,
+                 interpolation=0, fill_type=0, fill=(114, 114, 114), keep_shape=True):
         self.name = __name__.split('.')[-1] + '.' + self.__class__.__name__
         self.distortion = distortion
+        self.pos = [pos] if isinstance(pos[0], int) else pos
+        self.end_points = end_points
         self.interpolation = interpolation_mode[interpolation]
         self.fill_type = fill_mode[fill_type]
+        self.fill = fill
         self.keep_shape = keep_shape
 
     def get_add_params(self, h, w):
@@ -527,16 +534,28 @@ class Perspective:
         return info['end_points'], info['M'], info['h'], info['w']
 
     def get_params(self, h, w):
-        offset_h = self.distortion * h
-        offset_w = self.distortion * w
+        start_points = np.array([(0, 0), (w, 0), (w, h), (0, h)], dtype=np.float32)
 
-        start_points = np.array([(0, 0), (w - 1, 0), (w - 1, h - 1), (0, h - 1)], dtype=np.float32)
-        end_points = np.array([
-            (0, 0),
-            (w - 1, 0),
-            (w - 1 - offset_w, h - 1 - offset_h),
-            (offset_w, h - 1 - offset_h)
-        ], dtype=np.float32)
+        if self.end_points is None:
+            offset_h = self.distortion * h
+            offset_w = self.distortion * w
+
+            lt, rt, rd, ld = start_points
+
+            for pos in self.pos:
+                if pos == (LEFT, TOP):
+                    lt = (offset_w, offset_h)
+                elif pos == (RIGHT, TOP):
+                    rt = (w - offset_w, offset_h)
+                elif pos == (RIGHT, DOWN):
+                    rd = (w - offset_w, h - offset_h)
+                elif pos == (LEFT, DOWN):
+                    ld = (offset_w, h - offset_h)
+
+            end_points = np.array([lt, rt, rd, ld], dtype=np.float32)
+        else:
+            end_points = self.end_points
+
         M = cv2.getPerspectiveTransform(start_points, end_points)
 
         return end_points, M
@@ -558,7 +577,7 @@ class Perspective:
             M, (w, h),
             flags=self.interpolation,
             borderMode=self.fill_type,
-            borderValue=(114, 114, 114)
+            borderValue=self.fill
         )
 
         if not self.keep_shape:
@@ -608,12 +627,12 @@ class RandomPerspective(Perspective):
         offset_h = np.random.uniform(*_offset_h, size=4)
         offset_w = np.random.uniform(*_offset_w, size=4)
 
-        start_points = np.array([(0, 0), (w - 1, 0), (w - 1, h - 1), (0, h - 1)], dtype=np.float32)
+        start_points = np.array([(0, 0), (w, 0), (w, h), (0, h)], dtype=np.float32)
         end_points = np.array([
             (offset_w[0], offset_h[0]),
-            (w - 1 - offset_w[1], offset_h[1]),
-            (w - 1 - offset_w[2], h - 1 - offset_h[2]),
-            (offset_w[3], h - 1 - offset_h[3])
+            (w - offset_w[1], offset_h[1]),
+            (w - offset_w[2], h - offset_h[2]),
+            (offset_w[3], h - offset_h[3])
         ], dtype=np.float32)
         M = cv2.getPerspectiveTransform(start_points, end_points)
 
