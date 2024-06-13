@@ -249,13 +249,13 @@ class PixBox:
         return cv2.morphologyEx(image, cv2.MORPH_OPEN, k)
 
     @staticmethod
-    def pixel_to_box(pix_image, min_area=400, ignore_class=None, convert_func=None):
+    def pixel_to_box(pix_image, ignore_class, min_area=400, convert_func=None):
         """generate detection bboxes from pixel image
 
         Args:
             pix_image: 2-d array
             min_area:
-            ignore_class:
+            ignore_class (list): usually background class
             convert_func: function to convert the mask
 
         Returns:
@@ -291,7 +291,7 @@ class PixBox:
         """generate detection bboxes from pixel images
 
         Args:
-            pix_images: 3-d array, (c, h, w), c gives the classes
+            pix_images: 3-d array, (h, w, c), c gives the classes
             thres:
             min_area:
             ignore_class:

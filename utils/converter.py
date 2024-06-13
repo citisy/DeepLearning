@@ -200,6 +200,17 @@ class DataConvert:
         with open(obj, 'rb') as f:
             return cls.bytes_to_md5(f.read())
 
+    @staticmethod
+    def file_to_sha256(obj: str or Path, chunk_size=1024 * 1024):
+        hash_sha256 = hashlib.sha256()
+
+        with open(obj, "rb") as f:
+            # avoid to read big file
+            for chunk in iter(lambda: f.read(chunk_size), b""):
+                hash_sha256.update(chunk)
+
+        return hash_sha256.hexdigest()
+
 
 class InsConvert:
     @staticmethod

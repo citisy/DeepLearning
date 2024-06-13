@@ -787,3 +787,37 @@ class Converter:
             d[k] = v
 
         return d
+
+
+def make_optimizer_cls(optimizer_type: str):
+    if optimizer_type in {"Lion"}:
+        import lion_pytorch
+        return getattr(lion_pytorch, optimizer_type)
+
+    elif optimizer_type in {
+        'AdamW8bit', 'SGDNesterov8bit', 'Lion8bit', 'PagedAdamW8bit', 'PagedLion8bit',
+        'PagedAdamW', 'PagedAdamW32bit', ''
+    }:
+        import bitsandbytes as bnb
+        return getattr(bnb, optimizer_type)
+
+    elif optimizer_type in {'DAdaptAdaGrad', 'DAdaptAdam', 'DAdaptAdan', 'DAdaptLion', 'DAdaptSGD'}:
+        import dadaptation
+        return getattr(dadaptation, optimizer_type)
+
+    elif optimizer_type in {'DAdaptAdamPreprint', 'DAdaptAdanIP'}:
+        from dadaptation import experimental
+        return getattr(experimental, optimizer_type)
+
+    elif optimizer_type in {'Prodigy'}:
+        import prodigyopt
+        return getattr(prodigyopt, optimizer_type)
+
+    elif optimizer_type in {'SGD', 'AdamW', }:
+        return getattr(torch.optim, optimizer_type)
+
+    elif optimizer_type in {'Adafactor'}:
+        from transformers import optimization
+        return getattr(optimization, optimizer_type)
+
+
