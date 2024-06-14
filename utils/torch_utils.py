@@ -221,11 +221,11 @@ class ModuleManager:
                 m.freeze()
 
     @staticmethod
-    def low_memory_run(module: nn.Module, device, *args, **kwargs):
+    def low_memory_run(module: nn.Module, call_func, device, *args, **kwargs):
         """only send the module to gpu when the module need to be run,
         and the gpu will be released after running"""
         module.to(device)
-        obj = module(*args, **kwargs)
+        obj = call_func(*args, **kwargs)
         module.cpu()
         torch.cuda.empty_cache()
         return obj

@@ -321,8 +321,6 @@ class Model(ldm.Model):
         return c_skip, c_out, c_in, c_noise
 
     def make_txt_cond(self, text, neg_text=None, **kwargs) -> dict:
-        assert neg_text is not None
-
         default_value = {
             Config.ORIGINAL_SIZE_AS_TUPLE: self.image_size,
             Config.CROP_COORDS_TOP_LEFT: (0, 0),
@@ -330,7 +328,8 @@ class Model(ldm.Model):
         }
 
         value_dicts = []
-        for prompt, negative_prompt in zip(text, neg_text):
+        _neg_text = neg_text if neg_text is not None else [''] * len(text)
+        for prompt, negative_prompt in zip(text, _neg_text):
             value_dict = {}
             for k in self.cond.input_keys:
                 if k == Config.TXT:
@@ -343,7 +342,7 @@ class Model(ldm.Model):
 
             value_dicts.append(value_dict)
 
-        c_values, uc_values = self.cond(value_dicts, self.scale > 1)
+        c_values, uc_values = self.cond(value_dicts, return_uc=self.scale > 1 and neg_text is not None)
 
         return dict(
             c_values=c_values,
@@ -361,9 +360,7 @@ class Model(ldm.Model):
             y = c_values[self.cond.VECTOR]
 
         z = self.backbone(x, timesteps=time, context=cond, y=y)
-        if uc_values is None:
-            e_t = z
-        else:
+        if uc_values is not None:
             e_t_uncond, e_t = z.chunk(2)
 
             if isinstance(self.scale, list):
@@ -375,6 +372,9 @@ class Model(ldm.Model):
                 e_t = rearrange(e_t_uncond + scale * (e_t - e_t_uncond), "b t ... -> (b t) ...")
             else:
                 e_t = e_t_uncond + self.scale * (e_t - e_t_uncond)
+
+        else:
+            e_t = z
 
         return e_t
 

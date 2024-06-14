@@ -6,7 +6,7 @@ from torch.utils.checkpoint import checkpoint
 from torch import nn, einsum
 from einops import rearrange, repeat, reduce
 from utils import torch_utils
-from .ddpm import RandomOrLearnedSinusoidalPosEmb, SinusoidalPosEmb, ResnetBlock, make_norm
+from .ddpm import RandomOrLearnedSinusoidalPosEmb, SinusoidalPosEmb, ResnetBlock, make_norm, extract
 from . import VAE, ddim
 from ..layers import Linear, Conv, Upsample, Downsample
 from ..attentions import CrossAttention2D, get_attention_input
@@ -147,6 +147,70 @@ class WeightConverter:
 
         return state_dict
 
+    @classmethod
+    def to_official(cls, state_dict):
+        pass
+
+    @classmethod
+    def from_official_lora(cls, state_dict):
+        """see https://github.com/kohya-ss/sd-scripts"""
+        cond_convert_dict = {}
+        for k, v in cls.cond_convert_dict.items():
+            k = '.'.join(k.split('.')[2:])
+            k = ('lora_te.' + k).replace('.', '_')
+            cond_convert_dict[k] = v
+
+        backbone_convert_dict = {}
+        for k, v in cls.backbone_convert_dict.items():
+            k = k.replace('model.diffusion_model.', '')
+
+            # note, usually value
+            num_layers = 12
+
+            if '{0}.1' in k:
+                _k = k.replace('{0}.1', f"mid_block.attentions.0")
+                _k = ('lora_unet.' + _k).replace('.', '_')
+                backbone_convert_dict[_k] = v.replace('{0}', 'middle_block')
+
+                for i in range(num_layers):
+                    if i > 0:
+                        # from https://github.com/kohya-ss/sd-scripts/blob/main/library/model_util.py#L299
+                        block_id = (i - 1) // (2 + 1)
+                        layer_in_block_id = (i - 1) % (2 + 1)
+                        _k = k.replace('{0}.1', f"down_blocks.{block_id}.attentions.{layer_in_block_id}")
+                        _k = ('lora_unet.' + _k).replace('.', '_')
+                        backbone_convert_dict[_k] = v.replace('{0}', f"input_blocks.{i}")
+
+                    # from https://github.com/kohya-ss/sd-scripts/blob/main/library/model_util.py#L335
+                    block_id = i // (2 + 1)
+                    layer_in_block_id = i % (2 + 1)
+                    _k = k.replace('{0}.1', f"up_blocks.{block_id}.attentions.{layer_in_block_id}")
+                    _k = ('lora_unet.' + _k).replace('.', '_')
+                    backbone_convert_dict[_k] = v.replace('{0}', f"output_blocks.{i}")
+
+            else:
+                k = ('lora_unet.' + k).replace('.', '_')
+                backbone_convert_dict[k] = v
+
+        convert_dict = {
+            **cond_convert_dict,
+            **backbone_convert_dict,
+        }
+
+        state_dict = torch_utils.Converter.convert_keys(state_dict, convert_dict)
+
+        convert_dict = {
+            '{0}.lora_down': '{0}.down',
+            '{0}.lora_up': '{0}.up',
+        }
+        state_dict = torch_utils.Converter.convert_keys(state_dict, convert_dict)
+
+        return state_dict
+
+    @classmethod
+    def to_official_lora(cls):
+        pass
+
 
 class Model(ddim.Model):
     """refer to:
@@ -214,8 +278,7 @@ class Model(ddim.Model):
     def make_txt_cond(self, text, neg_text=None, **kwargs) -> dict:
         c = self.cond.encode(text)
         uc = None
-        if self.scale > 1.0:
-            assert neg_text is not None
+        if self.scale > 1.0 and neg_text is not None:
             uc = self.cond.encode(neg_text)
 
         return dict(
@@ -223,14 +286,15 @@ class Model(ddim.Model):
             un_cond=uc
         )
 
-    def make_image_cond(self, image):
+    def make_image_cond(self, image, t0=None, noise=None):
         z, _, _ = self.vae.encode(image)
         x0 = self.scale_factor * z
 
         timestep_seq = self.make_timesteps()
-        t0 = int(self.strength * self.num_steps)
+        if t0 is None:
+            t0 = int(self.strength * self.num_steps)
         t = torch.full((x0.shape[0],), timestep_seq[t0], device=x0.device, dtype=torch.long)
-        xt = self.q_sample(x0, t)
+        xt = self.q_sample(x0, t, noise=noise)
         return xt, t0
 
     def diffuse(self, x, time, cond=None, un_cond=None, **kwargs):
@@ -240,13 +304,37 @@ class Model(ddim.Model):
             cond = torch.cat([un_cond, cond])
 
         z = self.backbone(x, timesteps=time, context=cond)
-        if un_cond is None:
-            e_t = z
-        else:
+        if un_cond is not None:
             e_t_uncond, e_t = z.chunk(2)
             e_t = e_t_uncond + self.scale * (e_t - e_t_uncond)
+        else:
+            e_t = z
 
         return e_t
+
+    def loss(self, x_0, t, text=None, noise=None, offset_noise_strength=None, **kwargs):
+        if noise is None:
+            noise = torch.randn_like(x_0)
+
+        txt_cond = self.make_txt_cond(text, **kwargs)
+        x_t, t0 = self.make_image_cond(x_0, t, noise=noise)
+
+        pred = self.diffuse(x_t, t0, **txt_cond)
+
+        if self.objective == Config.PRED_Z:
+            real = noise
+        elif self.objective == Config.PRED_X0:
+            real = x_0
+        elif self.objective == Config.PRED_V:
+            real = self.predict_v(x_0, t, noise)
+        else:
+            raise ValueError(f'unknown objective {self.objective}')
+
+        loss = F.mse_loss(pred, real, reduction='none')
+        loss = reduce(loss, 'b ... -> b', 'mean')
+
+        loss = loss * extract(self.loss_weight, t, loss.shape)
+        return loss.mean()
 
 
 class Txt2ImgModel4Triton(nn.Module):

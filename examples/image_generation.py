@@ -781,14 +781,114 @@ class Ddim_CelebAHQ(Dpim, CelebAHQ):
     """
 
 
-class Ldm(DiProcess):
-    model_version = 'ldm'
+class SD(DiProcess):
+    """no training, only for prediction
+
+    Usage:
+        .. code-block:: python
+
+            from examples.image_generation import SD as Process
+
+            process = Process(pretrain_model='...', encoder_fn='...', vocab_fn='...', config_version='...')
+            process.init()
+
+            # txt2img
+            prompt = 'a painting of a virus monster playing guitar'
+            neg_prompt = ''
+            prompts = ['a painting of a virus monster playing guitar', 'a painting of two virus monster playing guitar']
+            neg_prompts = ['', '']
+
+            # predict one
+            image = process.single_predict(prompt, neg_prompt, is_visualize=True)
+
+            # predict batch
+            images = process.batch_predict(prompts, neg_prompts, batch_size=2, is_visualize=True)
+
+            # img2img
+            image = 'test.jpg'
+            images = ['test1.jpg', 'test2.jpg']
+
+            # predict one
+            image = process.single_predict(prompt, images=image, is_visualize=True)
+
+            # predict batch
+            images = process.batch_predict(prompts, neg_prompts, images=image, batch_size=2, is_visualize=True)     # base on same image
+            images = process.batch_predict(prompts, neg_prompts, images=images, batch_size=2, is_visualize=True)    # base on different image
+    """
+
+    model_version = 'sd'
+    config_version = 'v1'  # for config choose
     in_ch = 3
     input_size = 512
 
     encoder_fn: str
     vocab_fn: str
     tokenizer: 'CLIPTokenizer'
+    low_memory_run = False
+
+    def set_model(self):
+        if 'v1' in self.config_version:
+            from models.image_generation.sdv1 import Model, Config
+
+            if not hasattr(self, 'encoder_fn'):
+                self.encoder_fn = 'openai/clip-vit-large-patch14/vocab.json'
+            if not hasattr(self, 'vocab_fn'):
+                self.vocab_fn = 'openai/clip-vit-large-patch14/merges.txt'
+
+        elif 'v2' in self.config_version:
+            from models.image_generation.sdv2 import Model, Config
+
+            if not hasattr(self, 'encoder_fn'):
+                self.encoder_fn = 'laion/CLIP-ViT-H-14-laion2B-s32B-b79K/vocab.json'
+            if not hasattr(self, 'vocab_fn'):
+                self.vocab_fn = 'laion/CLIP-ViT-H-14-laion2B-s32B-b79K/merges.txt'
+
+        elif 'xl' in self.config_version:
+            from models.image_generation.sdxl import Model, Config
+
+            if not hasattr(self, 'encoder_fn'):
+                self.encoder_fn = 'openai/clip-vit-large-patch14/vocab.json'
+            if not hasattr(self, 'vocab_fn'):
+                self.vocab_fn = 'openai/clip-vit-large-patch14/merges.txt'
+
+        else:
+            raise
+
+        self.get_vocab()
+
+        if 'v2' in self.config_version:
+            # note, special pad_id for laion clip model
+            self.tokenizer.pad_id = 0
+        elif 'xl' in self.config_version:
+            # todo: different pad_id from sdv1 adn sdv2
+            pass
+
+        self.model = Model(
+            img_ch=self.in_ch,
+            image_size=self.input_size,
+            **Config.get(self.config_version)
+        )
+
+        if self.low_memory_run:
+            from functools import partial
+
+            for module in [self.model.cond, self.model.backbone, self.model.vae]:
+                module.__call__ = partial(torch_utils.ModuleManager.low_memory_run, module, module.__call__, self.device)
+
+    def load_pretrain(self):
+        if hasattr(self, 'pretrain_model'):
+            if 'v1' in self.config_version:
+                from models.image_generation.sdv1 import WeightLoader, WeightConverter
+            elif 'v2' in self.config_version:
+                from models.image_generation.sdv2 import WeightLoader, WeightConverter
+            elif 'xl' in self.config_version:
+                from models.image_generation.sdxl import WeightLoader, WeightConverter
+            else:
+                raise
+
+            state_dict = WeightLoader.auto_load(self.pretrain_model)
+            state_dict = WeightConverter.from_official(state_dict)
+            self.model.load_state_dict(state_dict, strict=False)
 
     def get_vocab(self):
         from data_parse.nlp_data_parse.pre_process.bundled import CLIPTokenizer
@@ -898,167 +998,3 @@ class Ldm(DiProcess):
 
         images = [wm_encoder.encode(image, 'dwtDct') for image in images]
         return images
-
-
-class SDFromPretrain(CheckpointHooks):
-    def load_pretrain(self):
-        if hasattr(self, 'pretrain_model'):
-            from models.image_generation.ldm import WeightLoader, WeightConverter
-
-            state_dict = WeightLoader.auto_load(self.pretrain_model)
-            state_dict = WeightConverter.from_official(state_dict)
-            self.model.load_state_dict(state_dict, strict=False)
-
-
-class SDv1(Ldm):
-    model_version = 'sd'
-    model_sub_version = 'v1'  # for config choose
-    dataset_version = model_sub_version
-    encoder_fn = 'openai/clip-vit-large-patch14/vocab.json'
-    vocab_fn = 'openai/clip-vit-large-patch14/merges.txt'
-
-    def set_model(self):
-        from models.image_generation.sdv1 import Model, Config
-        self.get_vocab()
-        self.model = Model(
-            img_ch=self.in_ch,
-            image_size=self.input_size,
-            **Config.get(self.model_sub_version)
-        )
-
-
-class SDv1FromPretrain(CheckpointHooks):
-    def load_pretrain(self):
-        if hasattr(self, 'pretrain_model'):
-            from models.image_generation.sdv1 import WeightLoader, WeightConverter
-
-            state_dict = WeightLoader.auto_load(self.pretrain_model)
-            state_dict = WeightConverter.from_official(state_dict)
-            self.model.load_state_dict(state_dict, strict=False)
-
-
-class SDv1Pretrained(SDv1, SDv1FromPretrain):
-    """no training, only for prediction
-
-    Usage:
-        .. code-block:: python
-
-            from examples.image_generation import SDv1Pretrained as Process
-
-            process = Process(pretrain_model='...', encoder_fn='...', vocab_fn='...', model_sub_version='...')
-            process.init()
-
-            # txt2img
-            prompt = 'a painting of a virus monster playing guitar'
-            neg_prompt = ''
-            prompts = ['a painting of a virus monster playing guitar', 'a painting of two virus monster playing guitar']
-            neg_prompts = ['', '']
-
-            # predict one
-            image = process.single_predict(prompt, neg_prompt, is_visualize=True)
-
-            # predict batch
-            images = process.batch_predict(prompts, neg_prompts, batch_size=2, is_visualize=True)
-
-            # img2img
-            image = 'test.jpg'
-            images = ['test1.jpg', 'test2.jpg']
-
-            # predict one
-            image = process.single_predict(prompt, images=image, is_visualize=True)
-
-            # predict batch
-            images = process.batch_predict(prompts, neg_prompts, images=image, batch_size=2, is_visualize=True)     # base on same image
-            images = process.batch_predict(prompts, neg_prompts, images=images, batch_size=2, is_visualize=True)    # base on different image
-    """
-
-
-class SDv2(Ldm):
-    model_version = 'sd'
-    model_sub_version = 'v2'  # for config choose
-    dataset_version = model_sub_version
-    input_size = 768
-    encoder_fn = 'laion/CLIP-ViT-H-14-laion2B-s32B-b79K/vocab.json'
-    vocab_fn = 'laion/CLIP-ViT-H-14-laion2B-s32B-b79K/merges.txt'
-
-    def set_model(self):
-        from models.image_generation.sdv2 import Model, Config
-        self.get_vocab()
-        # note, special pad_id for laion clip model
-        self.tokenizer.pad_id = 0
-        self.model = Model(
-            img_ch=self.in_ch,
-            image_size=self.input_size,
-            **Config.get(self.model_sub_version)
-        )
-
-
-class SDv2FromPretrain(CheckpointHooks):
-    def load_pretrain(self):
-        if hasattr(self, 'pretrain_model'):
-            from models.image_generation.sdv2 import WeightLoader, WeightConverter
-
-            state_dict = WeightLoader.auto_load(self.pretrain_model)
-            state_dict = WeightConverter.from_official(state_dict)
-            self.model.load_state_dict(state_dict, strict=False)
-
-
-class SDv2Pretrained(SDv2, SDv2FromPretrain):
-    """no training, only for prediction
-
-    Usage:
-        .. code-block:: python
-
-            from examples.image_generation import SDv2Pretrained as Process
-
-            # same to `SDv1Pretrained`
-            ...
-    """
-
-
-class SDXL(Ldm):
-    model_version = 'sd'
-    model_sub_version = 'xl_base'  # for config choose
-    dataset_version = model_sub_version
-    cond_pretrain_model = None
-    input_size = 1024
-    low_memory_run = False
-
-    def set_model(self):
-        from models.image_generation.sdxl import Model, Config
-        # todo: different pad_id from sdv1 adn sdv2
-        self.get_vocab()
-        self.model = Model(
-            img_ch=self.in_ch,
-            image_size=self.input_size,
-            **Config.get(self.model_sub_version)
-        )
-
-        if self.low_memory_run:
-            from functools import partial
-
-            for module in [self.model.cond, self.model.backbone, self.model.vae]:
-                module.__call__ = partial(torch_utils.ModuleManager.low_memory_run, module, self.device)
-
-
-class SDXLFromPretrain(CheckpointHooks):
-    def load_pretrain(self):
-        if hasattr(self, 'pretrain_model'):
-            from models.image_generation.sdxl import WeightLoader, WeightConverter
-
-            state_dict = WeightLoader.auto_load(self.pretrain_model)
-            state_dict = WeightConverter.from_official(state_dict)
-            self.model.load_state_dict(state_dict, strict=False)
-
-
-class SDXLPretrained(SDXL, SDXLFromPretrain):
-    """no training, only for prediction
-
-    Usage:
-        .. code-block:: python
-
-            from examples.image_generation import SDXLPretrained as Process
-
-            # same to `SDv1Pretrained`
-            ...
-    """

@@ -238,7 +238,7 @@ class MixDataset(BaseDataset):
 class DataHooks:
     train_dataset_ins = BaseImgDataset
     val_dataset_ins = BaseImgDataset
-    dataset_version: str
+    dataset_version: str = ''
     data_dir: str
 
     def get_train_dataloader(self, data_get_kwargs=dict(), dataloader_kwargs=dict()):

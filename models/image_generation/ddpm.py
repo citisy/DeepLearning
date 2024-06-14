@@ -202,7 +202,7 @@ class Model(nn.ModuleList):
             # if training, x is x0, the real image
             b, c, h, w = x.shape
             t = torch.randint(0, self.timesteps, (b,), device=x.device).long()
-            return {'loss': self.loss(x, t)}
+            return {'loss': self.loss(x, t, **kwargs)}
         else:
             # if predicting, x is xt, the noise
             images = self.post_process(x, **kwargs)
@@ -268,7 +268,7 @@ class Model(nn.ModuleList):
         # x_t = x_0 * \sqrt ca_t + z_t * \sqrt (1 - ca_t)
         return extract(self.sqrt_alphas_cumprod, t, x_0.shape) * x_0 + extract(self.sqrt_one_minus_alphas_cumprod, t, x_0.shape) * noise
 
-    def loss(self, x_0, t, noise=None, offset_noise_strength=None):
+    def loss(self, x_0, t, noise=None, offset_noise_strength=None, **kwargs):
         if noise is None:
             noise = torch.randn_like(x_0)
 
@@ -364,6 +364,14 @@ class Model(nn.ModuleList):
         # where, exp((0.5 * 2 * \log s(x_t, t))) = s(x_t, t), z~N(0, 1)
         x_t_1 = model_mean + (0.5 * model_log_variance).exp() * noise
         return x_t_1, x_0
+
+
+class Sampler(nn.Module):
+    pass
+
+
+class Schedule(nn.Module):
+    pass
 
 
 class InModule(nn.Module):
