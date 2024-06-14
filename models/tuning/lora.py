@@ -120,10 +120,11 @@ class ModelWarp:
         nn.Conv2d: Conv2d
     }
 
-    def __init__(self, include=(), exclude=(), r=8):
+    def __init__(self, include=(), exclude=(), r=8, **lora_kwargs):
         self.include = include
         self.exclude = exclude
         self.r = r
+        self.lora_kwargs = lora_kwargs
         self.layers = []
         self.model = None
 
@@ -134,13 +135,14 @@ class ModelWarp:
             warnings.warn(f'can not find any layer by include={self.include} and exclude={self.exclude}')
 
         for current_m, name, full_name in layers:
-            new = self.get_new_module(getattr(current_m, name))
+            old = getattr(current_m, name)
+            new = self.get_new_module(old)
             if new:
                 new.to(torch_utils.ModuleInfo.possible_device(current_m))
                 setattr(current_m, name, new)
                 self.layers.append(full_name)
             else:
-                warnings.warn(f'not support lora layer type for {full_name}')
+                warnings.warn(f'not support lora layer type for {full_name}, it looks like a layer of {old}')
 
         self.model = model
         return model
@@ -148,23 +150,37 @@ class ModelWarp:
     def get_new_module(self, module: nn.Module):
         for old, new in self.layer_mapping.items():
             if isinstance(module, old):
-                return new(module, r=self.r)
+                return new(module, r=self.r, **self.lora_kwargs)
 
     def state_dict(self, **kwargs):
         state_dict = OrderedDict()
         for full_name in self.layers:
             # note, to avoid the layer is changed
             layer = torch_utils.ModuleManager.get_module_by_name(self.model, full_name)
-            state_dict[full_name + '.A'] = layer.A
-            state_dict[full_name + '.B'] = layer.B
+            for k, v in layer.state_dict().items():
+                state_dict[full_name + '.' + k] = v
 
         return state_dict
 
-    def load_state_dict(self, state_dict, **kwargs):
+    def load_state_dict(self, state_dict, strict=True, **kwargs):
+        missing_keys = []
+        expected_keys = []
         for full_name in self.layers:
             layer = torch_utils.ModuleManager.get_module_by_name(self.model, full_name)
-            layer.A = state_dict[full_name + '.A']
-            layer.B = state_dict[full_name + '.B']
+            _state_dict = OrderedDict()
+            for k, v in state_dict.items():
+                if k.startswith(full_name):
+                    _state_dict[k.replace(full_name + '.', '')] = v
+                    expected_keys.append(k)
+
+            if _state_dict:
+                layer.load_state_dict(_state_dict, strict=False)
+            else:
+                missing_keys.append(full_name)
+
+        unexpected_keys = list(set(state_dict.keys()) - set(expected_keys))
+        if strict and (missing_keys or unexpected_keys):
+            raise RuntimeError(f'Missing key(s) in state_dict: {missing_keys}. \nUnexpected key(s) in state_dict: {unexpected_keys}. ')
 
     def fuse(self):
         for full_name in self.layers:
