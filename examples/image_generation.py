@@ -3,9 +3,10 @@ import numpy as np
 import torch
 from torch import optim, nn
 from pathlib import Path
+from functools import partial
 from datetime import datetime
 from collections import namedtuple
-from utils import os_lib, torch_utils
+from utils import os_lib, torch_utils, configs
 from data_parse.cv_data_parse.data_augmentation import crop, scale, geometry, channel, RandomApply, Apply, complex, pixel_perturbation
 from data_parse import DataRegister
 from data_parse.cv_data_parse.base import DataVisualizer
@@ -825,6 +826,9 @@ class SD(DiProcess):
     vocab_fn: str
     tokenizer: 'CLIPTokenizer'
     low_memory_run = False
+    use_fp16 = False
+
+    model_config: dict = {}
 
     def set_model(self):
         if 'v1' in self.config_version:
@@ -863,17 +867,32 @@ class SD(DiProcess):
             # todo: different pad_id from sdv1 adn sdv2
             pass
 
+        model_config = configs.merge_dict(self.model_config, Config.get(self.config_version))
         self.model = Model(
             img_ch=self.in_ch,
             image_size=self.input_size,
-            **Config.get(self.config_version)
+            **model_config
         )
 
         if self.low_memory_run:
-            from functools import partial
-
             for module in [self.model.cond, self.model.backbone, self.model.vae]:
-                module.__call__ = partial(torch_utils.ModuleManager.low_memory_run, module, module.__call__, self.device)
+                module.forward = partial(torch_utils.ModuleManager.low_memory_run, module, module.forward, self.device)
+
+        if self.use_fp16:
+            from models.activations import GroupNorm32
+
+            torch_utils.ModuleManager.apply(
+                self.model,
+                lambda module: module.half(),
+                include=['cond', 'backbone'],
+                exclude=[GroupNorm32]
+            )
+
+            for name, tensor in self.model.named_buffers():
+                setattr(self.model, name, tensor.half())
+
+            # note, vae can not convert to fp32
+            self.model.vae.decode = partial(torch_utils.ModuleManager.assign_dtype_run, self.model.vae, self.model.vae.decode, torch.float32)
 
     def load_pretrain(self):
         if hasattr(self, 'pretrain_model'):

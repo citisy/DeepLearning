@@ -4,6 +4,7 @@ import torch.nn.functional as F
 from functools import partial
 from ..layers import Linear, Conv, Residual
 from ..attentions import CrossAttention3D, LinearAttention3D, ScaleAttendWithXformers
+from ..activations import GroupNorm32
 from ..image_translation.pix2pix import NetD as NLayerDiscriminator
 from utils import torch_utils
 
@@ -102,13 +103,6 @@ def make_attn(in_channels, attn_type=Config.VANILLA, groups=32):
         Config.LINEAR: lambda in_ch: LinearAttention3D(n_heads=1, head_dim=in_ch, separate=True),
     }
     return attn_dict.get(attn_type, nn.Identity)(in_channels)
-
-
-class GroupNorm32(nn.GroupNorm):
-    """forced to use fp32"""
-
-    def forward(self, x):
-        return super().forward(x.float()).type(x.dtype)
 
 
 make_norm = partial(GroupNorm32, eps=1e-6, affine=True)

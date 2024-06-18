@@ -389,7 +389,7 @@ class UNetModel(nn.Module):
             self,
             in_ch, context_dim,
             out_ch=4, unit_dim=320, ch_mult=(1, 2, 4, 4),  # for model
-            use_fp16=False, use_checkpoint=False,  # for resnet and transformers
+            use_checkpoint=False,  # for resnet and transformers
             sinusoidal_pos_emb_theta=10000, learned_sinusoidal_cond=False, random_fourier_features=False, learned_sinusoidal_dim=16,  # for time embed
             num_classes=None, adm_in_channels=None,  # for label_emb
             groups=32, num_res_blocks=2,  # for resnet
@@ -400,7 +400,6 @@ class UNetModel(nn.Module):
         self.in_channels = in_ch
         self.out_channels = out_ch
         self.num_classes = num_classes
-        self.dtype = torch.float16 if use_fp16 else torch.float32
 
         time_emb_dim = unit_dim * 4
 
@@ -517,7 +516,7 @@ class UNetModel(nn.Module):
             assert y.shape[0] == x.shape[0], f'Expect {y.shape[0]}, but got {x.shape[0]}'
             emb = emb + self.label_emb(y)
 
-        h = x.type(self.dtype)
+        h = x
         hs = []
         for module in self.input_blocks:
             h = module(h, emb, context)
@@ -528,7 +527,6 @@ class UNetModel(nn.Module):
             h = torch.cat([h, hs.pop()], dim=1)
             h = module(h, emb, context)
 
-        h = h.type(x.dtype)
         return self.out(h)
 
 

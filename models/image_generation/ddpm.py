@@ -9,6 +9,7 @@ from functools import partial
 from utils import torch_utils
 from ..layers import Linear, Conv, Upsample, Downsample
 from ..attentions import CrossAttention3D, LinearAttention3D, LearnedMemoryLinearAttend
+from ..activations import GroupNorm32
 from .. import bundles
 
 
@@ -123,6 +124,10 @@ class Model(nn.ModuleList):
     @property
     def device(self):
         return torch_utils.ModuleInfo.possible_device(self)
+
+    @property
+    def dtype(self):
+        return torch_utils.ModuleInfo.possible_dtype(self)
 
     # pred_z -> model(x_t, t) = z_t
     # pred_x0 -> model(x_t, t) = x_0
@@ -316,7 +321,7 @@ class Model(nn.ModuleList):
         return self.predict_x_t(x0, t, noise)
 
     def gen_x_t(self, batch_size):
-        return torch.randn((batch_size, self.diffuse_in_ch, *self.diffuse_in_size), device=self.device)
+        return torch.randn((batch_size, self.diffuse_in_ch, *self.diffuse_in_size), device=self.device, dtype=self.dtype)
 
     def post_process(self, x_t, **kwargs):
         return self.p_sample_loop(x_t, **kwargs)
@@ -548,13 +553,6 @@ def make_attn(in_ch, n_heads, head_dim, is_bottom, n_mem_size=4):
         out_fn=Conv(n_heads * head_dim, n_heads * head_dim, 1, mode='cn', norm=RMSNorm(in_ch)),
     )
     return attn(in_ch, head_dim=head_dim, n_heads=n_heads)
-
-
-class GroupNorm32(nn.GroupNorm):
-    """forced to use fp32"""
-
-    def forward(self, x):
-        return super().forward(x.float()).type(x.dtype)
 
 
 make_norm = partial(GroupNorm32, eps=1e-5, affine=True)

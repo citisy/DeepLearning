@@ -261,14 +261,14 @@ class Model(ldm.Model):
         next_sigma = extract(self.sigmas, prev_t, x_t.shape) * s_in
 
         gamma = torch.where(
-            self.s_tmin <= sigma <= self.s_tmax,
+            torch.logical_and(self.s_tmin <= sigma, sigma <= self.s_tmax),
             min(self.s_churn / (self.num_steps - 1), 2 ** 0.5 - 1),
             0.
-        )
+        ).to(sigma)
 
         sigma_hat = sigma * (gamma + 1.0)
 
-        if gamma > 0:
+        if torch.any(gamma > 0):
             eps = torch.randn_like(x_t) * self.s_noise
             x_t = x_t + eps * (sigma_hat ** 2 - sigma ** 2) ** 0.5
 
@@ -276,6 +276,7 @@ class Model(ldm.Model):
         c_skip, c_out, c_in, c_noise = self.make_scaling(possible_sigma)
         possible_t = self.sigma_to_idx(c_noise)
         possible_t = possible_t - 1
+        c_skip, c_out, c_in, c_noise = c_skip[:, None, None, None], c_out[:, None, None, None], c_in[:, None, None, None], c_noise[:, None, None, None]
 
         d = self.diffuse(c_in * x_t, possible_t, **kwargs) * c_out + x_t * c_skip
 
