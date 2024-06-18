@@ -194,12 +194,41 @@ def parse_params_example(path, parser) -> dict:
     return config
 
 
-def parse_pydantic(model: 'pydantic.BaseModel', return_example=False) -> dict:
-    # todo: the latest version of pydantic is not applied
+def parse_pydantic(model: 'pydantic.BaseModel', return_example=False, return_default_value=False) -> dict:
+    """
+    Usage:
+        .. code-block:: python
+
+            class F1(pydantic.BaseModel):
+                aa: str
+
+            class F2(pydantic.BaseModel):
+                a: str
+                b: str = 'b'
+                c: F1 = {}
+
+            parse_pydantic(F2)
+            # {'a': {'types': ['string'], 'is_required': True}, 'b': {'types': ['string'], 'is_required': False, 'default': 'b'}, 'c': {'types': [{'aa': {'types': ['string'], 'is_required': True}}], 'is_required': False, 'default': {}}}
+
+            parse_pydantic(F2, return_example=True)
+            # {'a': 'string', 'b': 'string', 'c': {'aa': 'string'}}
+
+            parse_pydantic(F2, return_example=True, return_default_value=True)
+            # {'a': 'string', 'b': 'b', 'c': {'aa': 'string'}}
+
+    """
+
+    import pydantic
     schema = model.schema()
-    ret = parse_pydantic_schema(schema, schema.get('definitions', {}))
+
+    if pydantic.__version__ < '2':
+        definitions = schema.get('definitions', {})
+    else:
+        definitions = schema.get('$defs', {})
+
+    ret = parse_pydantic_schema(schema, definitions)
     if return_example:
-        ret = parse_pydantic_dict(ret)
+        ret = parse_pydantic_dict(ret, return_default_value)
 
     return ret
 
@@ -223,6 +252,13 @@ def parse_pydantic_schema(schema: dict, definitions={}) -> dict:
             types=types,
             is_required=name in required,
         )
+
+        if 'default' in attr:
+            # support for pydantic.__version__ > '2'
+            ret[name]['default'] = attr['default']
+
+        elif name not in required:
+            ret[name]['default'] = None
 
     return ret
 
@@ -265,20 +301,32 @@ def parse_pydantic_attr(attr: dict) -> list:
     return types
 
 
-def parse_pydantic_dict(ret: dict) -> dict:
+def parse_pydantic_dict(ret: dict, return_default_value=False) -> dict:
+    """
+    >>> ret = {'a': {'types': ['string'], 'is_required': True}, 'b': {'types': ['string'], 'is_required': False, 'default': 'b'}, 'c': {'types': [{'aa': {'types': ['string'], 'is_required': True}}], 'is_required': False, 'default': {}}}
+    >>> parse_pydantic_dict(ret)
+    {'a': 'string', 'b': 'string', 'c': {'aa': 'string'}}
+    """
     d = {}
     for k, v in ret.items():
         a = []
         b = a
         for _type in v['types']:
             if isinstance(_type, dict):
-                b.append(parse_pydantic_dict(_type))
+                b.append(parse_pydantic_dict(_type, return_default_value=return_default_value))
             elif _type == 'array':
-                c = []
-                b.append(c)
-                b = c
+                if 'default' in v:
+                    b.append(v['default'])
+                    break
+                else:
+                    c = []
+                    b.append(c)
+                    b = c
+            elif return_default_value and 'default' in v:
+                b.append(v['default'])
             else:
                 b.append(_type)
+
         d[k] = a[0]
 
     return d
