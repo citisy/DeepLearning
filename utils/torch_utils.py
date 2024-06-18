@@ -231,13 +231,23 @@ class ModuleManager:
         return obj
 
     @staticmethod
-    def assign_device_run(module: nn.Module, device, *args, **kwargs):
+    def assign_device_run(module: nn.Module, call_func, device, *args, **kwargs):
         """let module run in the assigned device"""
         module.to(device)
         args = [obj.to(device) if isinstance(obj, torch.Tensor) else obj for obj in args]
         kwargs = {k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in kwargs.items()}
 
-        return module(*args, **kwargs)
+        return call_func(*args, **kwargs)
+
+    @staticmethod
+    def assign_dtype_run(module: nn.Module, call_func, dtype, *args, **kwargs):
+        """let module run in the assigned dtype"""
+        check = lambda obj: isinstance(obj, torch.Tensor) and obj.dtype.is_floating_point == dtype.is_floating_point
+        module.to(dtype)
+        args = [obj.to(dtype) if check(obj) else obj for obj in args]
+        kwargs = {k: v.to(dtype) if check(v) else v for k, v in kwargs.items()}
+
+        return call_func(*args, **kwargs)
 
     @classmethod
     def initialize_layers(cls, module, init_gain=0.02, init_type='normal'):
@@ -316,11 +326,23 @@ class ModuleManager:
 
     @staticmethod
     def get_module_by_key(module, key=None, include=(), exclude=(), is_last_module=False, is_return_last_module=False):
-        """return: [[finded_module, name, full_name]]
+        """
 
-        >>> module = ...
-        >>> ModuleManager.get_module_by_key(module, key='q')
-        >>> ModuleManager.get_module_by_key(module, include=('q', 'k', 'v'), exclude=('l0.q', 'l0.k', 'l0.v'))
+        Args:
+            module:
+            key (str or nn.Module):
+            include (List[str or nn.Module]):
+            exclude (List[str or nn.Module]):
+            is_last_module:
+            is_return_last_module:
+
+        Returns:
+            [[finded_module, name, full_name]]
+
+        Examples:
+            >>> ModuleManager.get_module_by_key(module, key='q')
+            >>> ModuleManager.get_module_by_key(module, include=('q', 'k', 'v'), exclude=('l0.q', 'l0.k', 'l0.v'))
+
         """
 
         def cur(current_m: nn.Module, prev_name=''):
@@ -331,12 +353,11 @@ class ModuleManager:
                 full_name = f'{prev_name}.{name}'[1:]
 
                 if is_last_module:
-                    for k in include:
-                        if full_name.endswith(k):
-                            r.append((return_module(current_m, name), name, full_name))
+                    if is_find(full_name, m):
+                        r.append((return_module(current_m, name), name, full_name))
 
                 elif len(m._modules) == 0:
-                    if is_find(full_name):
+                    if is_find(full_name, m):
                         r.append((return_module(current_m, name), name, full_name))
 
                 if len(m._modules) > 0:
@@ -348,14 +369,19 @@ class ModuleManager:
             else:
                 return m
 
-        def is_find(name):
+        def is_find(name, m):
             flag = False
             for k in include:
-                if k in name:
-                    flag = True
+                if is_last_module:
+                    if (isinstance(k, str) and name.endswith(k)) or (not isinstance(k, str) and isinstance(m, k)):
+                        flag = True
+
+                else:
+                    if (isinstance(k, str) and k in name) or (not isinstance(k, str) and isinstance(m, k)):
+                        flag = True
 
             for k in exclude:
-                if k in name:
+                if (isinstance(k, str) and k in name) or (not isinstance(k, str) and isinstance(m, k)):
                     flag = False
 
             return flag
@@ -372,7 +398,7 @@ class ModuleManager:
         # freeze encoder and decoder layer, train the head layer
         >>> ModuleManager.apply(nn.Module(), ModuleManager.freeze_module, include=('encoder', 'decoder'), exclude=('head', ), is_last=True)
         """
-        objs = cls.get_module_by_key(module, key=key, include=include, exclude=exclude, is_last_module=is_last)
+        objs = cls.get_module_by_key(module, key=key, include=include, exclude=exclude, is_last_module=is_last, is_return_last_module=True)
 
         for current_m, name, full_name in objs:
             func(current_m, **func_kwargs)
@@ -819,5 +845,3 @@ def make_optimizer_cls(optimizer_type: str):
     elif optimizer_type in {'Adafactor'}:
         from transformers import optimization
         return getattr(optimization, optimizer_type)
-
-
