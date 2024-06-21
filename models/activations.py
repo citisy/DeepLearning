@@ -86,4 +86,8 @@ class GroupNorm32(nn.GroupNorm):
     """forced to use fp32"""
 
     def forward(self, x):
-        return super().forward(x.float()).type(x.dtype)
+        if self.weight.dtype is not torch.float32:
+            # check the weight
+            return super().forward(x)
+        else:
+            return super().forward(x.float()).type(x.dtype)

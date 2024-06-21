@@ -121,13 +121,16 @@ class Model(nn.ModuleList):
         self.make_schedule()
         self.make_diffuse(**configs)
 
+    _device = None
+    _dtype = None
+
     @property
     def device(self):
-        return torch_utils.ModuleInfo.possible_device(self)
+        return torch_utils.ModuleInfo.possible_device(self) if self._device is None else self._device
 
     @property
     def dtype(self):
-        return torch_utils.ModuleInfo.possible_dtype(self)
+        return torch_utils.ModuleInfo.possible_dtype(self) if self._dtype is None else self._dtype
 
     # pred_z -> model(x_t, t) = z_t
     # pred_x0 -> model(x_t, t) = x_0

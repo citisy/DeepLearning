@@ -279,7 +279,7 @@ class Decoder(nn.Module):
                  ch_mult=(1, 1, 2, 2, 4, 4), num_res_blocks=2, attn_layers=(-1, -2),
                  drop_prob=0.0, resample_with_conv=True,
                  give_pre_end=False, tanh_out=False, groups=32,
-                 attn_type=Config.VANILLA, **ignorekwargs):
+                 attn_type=Config.VANILLA, **ignore_kwargs):
         super().__init__()
         time_emb_ch = 0
         self.in_channels = in_ch

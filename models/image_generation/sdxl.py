@@ -183,6 +183,46 @@ class WeightConverter(ldm.WeightConverter):
 
     transpose_keys = ('cond.embedders.1.transformer.text_model.proj.weight',)
 
+    @classmethod
+    def from_official_lora(cls, state_dict):
+        cond_convert_dict = {}
+        for k, v in cls.cond0.items():
+            k = '.'.join(k.split('.')[4:])
+            k = ('lora_te1.' + k).replace('.', '_')
+            cond_convert_dict[k] = v.replace('{5}', '0')
+
+        for k, v in cls.cond0.items():
+            k = '.'.join(k.split('.')[4:])
+            k = ('lora_te2.' + k).replace('.', '_')
+            cond_convert_dict[k] = v.replace('{5}', '1')
+
+        backbone_convert_dict = {}
+        for k, v in cls.backbone_convert_dict.items():
+            k = '.'.join(k.split('.')[2:])
+            k = ('lora_unet.' + k).replace('.', '_')
+            cond_convert_dict[k] = v
+
+        convert_dict = {
+            **cond_convert_dict,
+            **backbone_convert_dict,
+        }
+
+        state_dict = torch_utils.Converter.convert_keys(state_dict, convert_dict)
+
+        convert_dict = {
+            '{0}.lora_down': '{0}.down',
+            '{0}.lora_up': '{0}.up',
+        }
+        state_dict = torch_utils.Converter.convert_keys(state_dict, convert_dict)
+
+        convert_dict = {
+            '{0}.input_blocks_{1}.': '{0}.input_blocks.{1}.',
+            '{0}.output_blocks_{1}.': '{0}.output_blocks.{1}.',
+        }
+        state_dict = torch_utils.Converter.convert_keys(state_dict, convert_dict)
+
+        return state_dict
+
 
 def make_emb(name):
     d = dict(

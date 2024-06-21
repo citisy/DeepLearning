@@ -867,16 +867,12 @@ class SD(DiProcess):
             # todo: different pad_id from sdv1 adn sdv2
             pass
 
-        model_config = configs.merge_dict(self.model_config, Config.get(self.config_version))
+        model_config = configs.merge_dict(Config.get(self.config_version), self.model_config)
         self.model = Model(
             img_ch=self.in_ch,
             image_size=self.input_size,
             **model_config
         )
-
-        if self.low_memory_run:
-            for module in [self.model.cond, self.model.backbone, self.model.vae]:
-                module.forward = partial(torch_utils.ModuleManager.low_memory_run, module, module.forward, self.device)
 
         if self.use_fp16:
             from models.activations import GroupNorm32
@@ -891,23 +887,72 @@ class SD(DiProcess):
             for name, tensor in self.model.named_buffers():
                 setattr(self.model, name, tensor.half())
 
-            # note, vae can not convert to fp32
-            self.model.vae.decode = partial(torch_utils.ModuleManager.assign_dtype_run, self.model.vae, self.model.vae.decode, torch.float32)
+            # note, vanilla sdxl vae can not convert to fp32, but bf16
+            # or use a special vae checkpoint, e.g. https://huggingface.co/madebyollin/sdxl-vae-fp16-fix
+            self.model.vae.decode = partial(torch_utils.ModuleManager.assign_dtype_run, self.model.vae, self.model.vae.decode, torch.bfloat16)
+
+        if self.low_memory_run:
+            self.model._device = self.device
+            self.model.make_txt_cond = partial(torch_utils.ModuleManager.low_memory_run, self.model.cond, self.model.make_txt_cond, self.device)
+            self.model.p_sample_loop = partial(torch_utils.ModuleManager.low_memory_run, self.model.backbone, self.model.p_sample_loop, self.device)
+            self.model.vae.decode = partial(torch_utils.ModuleManager.low_memory_run, self.model.vae, self.model.vae.decode, self.device)
+
+        self.set_lora()
+
+    lora_warp: 'models.tuning.lora.ModelWarp'
+    lora_pretrain_model: str
+    lora_config = {}
+
+    def set_lora(self):
+        from models.tuning import lora
+
+        self.lora_warp = lora.ModelWarp(
+            include=(
+                'attn_res.fn.to_qkv',
+                'ff_res.fn',
+                'transformer_blocks',
+                'proj_in',
+                'proj_out',
+                'to_out.linear'
+            ),
+            exclude=(
+                'drop',
+                'act',
+                'norm',
+                'view',
+                'ff.1',
+            ),
+            **self.lora_config
+        )
+        self.lora_warp.warp(self.model)
+
+        if self.use_fp16:
+            for full_name in self.lora_warp.layers:
+                layer = torch_utils.ModuleManager.get_module_by_name(self.model, full_name)
+                layer.half()
+
+    def unset_lora(self):
+        self.lora_warp.dewarp()
 
     def load_pretrain(self):
-        if hasattr(self, 'pretrain_model'):
-            if 'v1' in self.config_version:
-                from models.image_generation.sdv1 import WeightLoader, WeightConverter
-            elif 'v2' in self.config_version:
-                from models.image_generation.sdv2 import WeightLoader, WeightConverter
-            elif 'xl' in self.config_version:
-                from models.image_generation.sdxl import WeightLoader, WeightConverter
-            else:
-                raise
+        if 'v1' in self.config_version:
+            from models.image_generation.sdv1 import WeightLoader, WeightConverter
+        elif 'v2' in self.config_version:
+            from models.image_generation.sdv2 import WeightLoader, WeightConverter
+        elif 'xl' in self.config_version:
+            from models.image_generation.sdxl import WeightLoader, WeightConverter
+        else:
+            raise
 
+        if hasattr(self, 'pretrain_model'):
             state_dict = WeightLoader.auto_load(self.pretrain_model)
             state_dict = WeightConverter.from_official(state_dict)
             self.model.load_state_dict(state_dict, strict=False)
+
+        if hasattr(self, 'lora_pretrain_model'):
+            state_dict = WeightLoader.auto_load(self.lora_pretrain_model)
+            state_dict = WeightConverter.from_official_lora(state_dict)
+            self.lora_warp.load_state_dict(state_dict)
 
     def get_vocab(self):
         from data_parse.nlp_data_parse.pre_process.bundled import CLIPTokenizer

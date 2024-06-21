@@ -192,6 +192,11 @@ class ModuleManager:
         return module.module if cls.is_parallel(module) else module
 
     @staticmethod
+    def torch_gc():
+        torch.cuda.empty_cache()
+        torch.cuda.ipc_collect()
+
+    @staticmethod
     def freeze_module(module: nn.Module, allow_train=False):
         module.requires_grad_(False)
         if not allow_train:
@@ -220,14 +225,14 @@ class ModuleManager:
             if hasattr(m, 'freeze'):
                 m.freeze()
 
-    @staticmethod
-    def low_memory_run(module: nn.Module, call_func, device, *args, **kwargs):
+    @classmethod
+    def low_memory_run(cls, module: nn.Module, call_func, device, *args, **kwargs):
         """only send the module to gpu when the module need to be run,
         and the gpu will be released after running"""
         module.to(device)
         obj = call_func(*args, **kwargs)
         module.cpu()
-        torch.cuda.empty_cache()
+        cls.torch_gc()
         return obj
 
     @staticmethod

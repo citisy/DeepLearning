@@ -34,7 +34,7 @@ class LoraModule(nn.Module):
     def dewarp(self):
         del self.down
         del self.up
-        torch.cuda.empty_cache()
+        torch_utils.ModuleManager.torch_gc()
 
 
 class Linear(LoraModule):
