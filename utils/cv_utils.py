@@ -356,9 +356,10 @@ class PixBox:
 def fragment_image(image: np.ndarray,
                    size=None, grid=None,
                    overlap_size=None, overlap_ratio=None,
-                   over_size=None, over_ratio=None
+                   ignore_size=None, ignore_ratio=None
                    ):
     """fragment a large image to small pieces images
+    see also `PIL.Image.split_grid()`
 
     Args:
         image:
@@ -373,15 +374,15 @@ def fragment_image(image: np.ndarray,
         overlap_ratio:
             e.g. `(0.4, 0.5)` means one piece has (0.4 * size) pixels in width overlapping with other pieces
             and (0.5 * size) pixels in height overlapping with other pieces
-        over_size:
-            the size of last image is less than over_size will not be fragmented
-        over_ratio:
-            the size of last image is less than (over_ratio * size) will not be fragmented
+        ignore_size:
+            the size of last image is less than ignore_size will not be fragmented
+        ignore_ratio:
+            the size of last image is less than (ignore_ratio * size) will not be fragmented
 
     Usage:
 
         >>> image = np.zeros((2000, 3000, 3))
-        >>> images, coors = fragment_image(image, size=1000, overlap_size=100, over_ratio=0.5)
+        >>> images, coors = fragment_image(image, size=1000, overlap_size=100, ignore_ratio=0.5)
         >>> coors
         [(0, 0, 1000, 1000), (0, 900, 1000, 2000), (900, 0, 1900, 1000), (900, 900, 1900, 2000), (1800, 0, 3000, 1000), (1800, 900, 3000, 2000)]
         >>> [img.shape for img in images]
@@ -404,28 +405,28 @@ def fragment_image(image: np.ndarray,
     else:
         overlap_size = (0, 0)
 
-    if over_size:
-        over_size = (over_size, over_size) if isinstance(over_size, int) else over_size
-    elif over_ratio:
-        over_ratio = (over_ratio, over_ratio) if isinstance(over_ratio, float) else over_ratio
-        over_size = (int(size[0] * over_ratio[0]), int(size[1] * over_ratio[1]))
+    if ignore_size:
+        ignore_size = (ignore_size, ignore_size) if isinstance(ignore_size, int) else ignore_size
+    elif ignore_ratio:
+        ignore_ratio = (ignore_ratio, ignore_ratio) if isinstance(ignore_ratio, float) else ignore_ratio
+        ignore_size = (int(size[0] * ignore_ratio[0]), int(size[1] * ignore_ratio[1]))
     else:
-        over_size = (0, 0)
+        ignore_size = (0, 0)
 
     images = []
     coors = []
     if size:
-        for i in range(0, w, size[0] - overlap_size[0]):
-            for j in range(0, h, size[1] - overlap_size[1]):
+        for j in range(0, h, size[1] - overlap_size[1]):
+            for i in range(0, w, size[0] - overlap_size[0]):
                 x1, y1, x2, y2 = i, j, min(i + size[0], w), min(j + size[1], h)
 
-                if w - x1 < over_size[0] or h - y1 < over_size[1]:
+                if w - x1 < ignore_size[0] or h - y1 < ignore_size[1]:
                     continue
 
                 remain = (w - x2, h - y2)
-                if remain[0] < over_size[0]:
+                if remain[0] < ignore_size[0]:
                     x2 = w
-                if remain[1] < over_size[1]:
+                if remain[1] < ignore_size[1]:
                     y2 = h
 
                 coors.append((x1, y1, x2, y2))
@@ -434,8 +435,11 @@ def fragment_image(image: np.ndarray,
     return images, coors
 
 
-def splice_image(images, grid=None, pad_values=None):
-    """Splicing small pieces images into a large image"""
+def splice_image(images, grid=None, overlap_size=None, pad_values=None):
+    """Splicing small pieces images into a large image
+    see also `PIL.Image.combine_grid()`
+
+    """
 
     n = len(images)
 
@@ -447,16 +451,49 @@ def splice_image(images, grid=None, pad_values=None):
     else:
         if n < 4:
             n_col, n_row = n, 1
-        else:    # reshape to square possibly
+        else:  # reshape to square possibly
             n_col = int(np.ceil(np.sqrt(n)))
             n_row = int(np.ceil(n / n_col))
 
-    pad_values = pad_values if pad_values is not None else 0
-    pad_image = np.full_like(images[0], pad_values)
+    if overlap_size:
+        overlap_size = (overlap_size, overlap_size) if isinstance(overlap_size, int) else overlap_size
+        lr, td = overlap_size
+        l, t = lr // 2, td // 2
+        r, d = lr - l, td - t
+    else:
+        l, t, r, d = 0, 0, 0, 0
 
+    # Fill to form a complete (n_col * n_row) rectangle
+    pad_values = pad_values if pad_values is not None else 0
+    pad_image = np.full_like(images[-1], pad_values)
     images += [pad_image] * (n_col * n_row - n)
-    images = [np.concatenate(images[i: i + n_col], 1) for i in range(0, len(images), n_col)]
-    return np.concatenate(images, 0)
+
+    rows = []
+    for i in range(n_row):
+        cols = []
+        for j in range(n_col):
+            image = images[i * n_col + j]
+            h, w = image.shape[:2]
+
+            if j == 0:
+                image = image[:, :w - r]
+            elif j == n_col - 1:
+                image = image[:, l:]
+            else:
+                image = image[:, l:w - r]
+
+            if i == 0:
+                image = image[:h - d]
+            elif i == n_row - 1:
+                image = image[t:]
+            else:
+                image = image[t:h - d]
+
+            cols.append(image)
+
+        rows.append(np.concatenate(cols, 1))
+    image = np.concatenate(rows, 0)
+    return image
 
 
 def non_max_suppression(boxes, conf, iou_method, threshold=0.6):

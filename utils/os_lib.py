@@ -143,6 +143,7 @@ class Saver:
         # it will error with chinese path in low version of cv2
         # it has fixed in high version already
         cv2.imencode('.png', obj)[1].tofile(path)
+        self.stdout(path)
         # flag = cv2.imwrite(path, obj)
         # if flag:
         #     self.stdout(path)
@@ -290,6 +291,12 @@ class Loader:
 
         self.stdout(path)
         return obj
+
+    def load_txt_dir(self, dirt: str or Path, fmt='*.txt'):
+        txts = []
+        for fp in Path(dirt).glob(fmt):
+            txts.append(self.load_txt(fp))
+        return txts
 
     def load_pkl(self, path):
         with open(path, 'rb') as f:

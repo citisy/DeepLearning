@@ -38,6 +38,10 @@ class CHW2HWC:
 
 
 class BGR2RGB:
+    """
+    cv2 -> bgr
+    PIL.Image -> rbg
+    """
     def __init__(self, axis=-1):
         self.axis = axis
 
