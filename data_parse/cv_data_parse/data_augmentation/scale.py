@@ -28,15 +28,15 @@ class Proportion:
         self.max_ratio = max_ratio
 
     def get_params(self, dst_w, dst_h, w, h):
-        if self.choice_type == MIN:     # choice the most min scale factor
+        if self.choice_type == MIN:  # choice the most min scale factor
             p = min(dst_w / w, dst_h / h)
-        elif self.choice_type == MAX:   # choice the most max scale factor
+        elif self.choice_type == MAX:  # choice the most max scale factor
             p = max(dst_w / w, dst_h / h)
-        elif self.choice_type == SHORTEST:  # choice the shortest edge
+        elif self.choice_type == SHORTEST:  # scale to be the same length as the shortest edge
             p = min((w, dst_w / w), (h, dst_h / h), key=lambda x: x[0])[1]
-        elif self.choice_type == LONGEST:   # choice the longest edge
+        elif self.choice_type == LONGEST:  # scale to be the same length as the longest edge
             p = max((w, dst_w / w), (h, dst_h / h), key=lambda x: x[0])[1]
-        elif self.choice_type == AUTO:  # choice the most min scale factor
+        elif self.choice_type == AUTO:  # choice the most abs min scale factor
             p1 = abs(dst_w - w) / w
             p2 = abs(dst_h - h) / h
             p = dst_w / w if p1 < p2 else dst_h / h
@@ -100,6 +100,17 @@ class Proportion:
         return ret
 
 
+class RandomProportion(Proportion):
+    def __init__(self, size_range=None, **kwargs):
+        super().__init__(**kwargs)
+        self.size_range = size_range
+
+    def get_params(self, dst_w, dst_h, w, h):
+        size_range = self.size_range if self.size_range else (int(dst_w * 1.14), int(dst_h * 1.71))
+        dst_w, dst_h = np.random.randint(*size_range)
+        return super().get_params(dst_w, dst_h, w, h)
+
+
 class Rectangle:
     """scale h * w to dst_h * dst_w
     See Also `torchvision.transforms.Resize` or `albumentations.Resize`"""
@@ -159,6 +170,17 @@ class Rectangle:
             ret['bboxes'] = bboxes
 
         return ret
+
+
+class RandomRectangle(Proportion):
+    def __init__(self, size_range=None, **kwargs):
+        super().__init__(**kwargs)
+        self.size_range = size_range
+
+    def get_params(self, dst_w, dst_h, w, h):
+        size_range = self.size_range if self.size_range else (int(dst_w * 1.14), int(dst_h * 1.71))
+        dst_w, dst_h = np.random.randint(*size_range)
+        return super().get_params(dst_w, dst_h, w, h)
 
 
 class LetterBox:
