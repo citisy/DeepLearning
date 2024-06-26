@@ -1,3 +1,6 @@
 [submodule "utils"]
 	path = utils
 	url = https://github.com/citisy/utils.git
+[submodule "data_parse"]
+	path = data_parse
+	url = https://github.com/citisy/data_parse.git
