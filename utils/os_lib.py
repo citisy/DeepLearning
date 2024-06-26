@@ -398,6 +398,10 @@ class Loader:
         return images
 
 
+saver = Saver()
+loader = Loader()
+
+
 class Cacher:
     def __init__(self, saver=None, loader=None, deleter=None, max_size=None):
         self.saver = saver
@@ -408,12 +412,13 @@ class Cacher:
     def __call__(self, *args, **kwargs):
         return self.cache_one(*args, **kwargs)
 
-    def cache_one(self, obj):
+    def cache_one(self, obj, _id=None):
         self.delete_over_range()
-        return self.saver(obj)
+        return self.saver(obj, _id=_id)
 
-    def cache_batch(self, objs):
-        return [self.cache_one(obj) for obj in objs]
+    def cache_batch(self, objs, _ids=None):
+        _ids = _ids or [None] * len(objs)
+        return [self.cache_one(obj, _id=_id) for obj, _id in zip(objs, _ids)]
 
     def delete_over_range(self):
         if not self.max_size:
@@ -442,21 +447,23 @@ class MemoryCacher:
     def __call__(self, *args, **kwargs):
         return self.cache_one(*args, **kwargs)
 
-    def cache_one(self, obj, stdout_fmt='Save (%s, %s) successful!'):
+    def cache_one(self, obj, _id=None, stdout_fmt='Save (%s, %s) successful!'):
         time_str = time.time()
         uid = str(uuid.uuid4())
-        _id = (uid, time_str)
+        if _id is None:
+            _id = (uid, time_str)
         self.delete_over_range(stdout_fmt.replace('Save', 'Delete'))
         self.cache[_id] = obj
         self.stdout_method(stdout_fmt % _id)
         return _id
 
-    def cache_batch(self, objs, stdout_fmt='Save (%s, %s) successful!'):
-        _ids = []
-        for obj in objs:
+    def cache_batch(self, objs, _ids=None, stdout_fmt='Save (%s, %s) successful!'):
+        _ids = _ids or [None] * len(objs)
+        ids = []
+        for i, obj in enumerate(objs):
             _id = self.cache_one(obj, stdout_fmt=stdout_fmt)
-            _ids.append(_id)
-        return _ids
+            ids.append(_id)
+        return ids
 
     def delete_over_range(self, stdout_fmt='Delete (%s, %s) successful!'):
         if not self.max_size:
@@ -499,32 +506,36 @@ class FileCacher:
     def __call__(self, *args, **kwargs):
         return self.cache_one(*args, **kwargs)
 
-    def get_fn(self, obj, file_name=None, file_stem=None):
-        if file_name:
+    def get_fn(self, obj=None, _id=None, file_name=None, file_stem=None):
+        if _id is not None:
+            file_name = _id
+        elif file_name is not None:
             file_name = file_name
-        elif file_stem:
+        elif file_stem is not None:
             file_name = file_stem + auto_suffix(obj)
         else:
             file_name = str(uuid.uuid4()) + auto_suffix(obj)
 
         return file_name
 
-    def cache_one(self, obj, file_name=None, file_stem=None):
-        file_name = self.get_fn(obj, file_name, file_stem)
+    def cache_one(self, obj, _id=None, file_name=None, file_stem=None):
+        file_name = self.get_fn(obj, _id, file_name, file_stem)
         path = f'{self.cache_dir}/{file_name}'
         self.delete_over_range(suffix=Path(path).suffix)
         self.saver.auto_save(obj, path)
         return file_name
 
-    def cache_batch(self, objs, file_names=None, file_stems=None):
+    def cache_batch(self, objs, _ids=None, file_names=None, file_stems=None):
+        _ids = _ids or [None] * len(objs)
         file_names = file_names or [None] * len(objs)
         file_stems = file_stems or [None] * len(objs)
         _fns = []
-        for obj, file_name, file_stem in zip(objs, file_names, file_stems):
-            file_name = self.get_fn(obj, file_name, file_stem)
+        for obj, _id, file_name, file_stem in zip(objs, _ids, file_names, file_stems):
+            file_name = self.get_fn(obj, _id, file_name, file_stem)
             path = f'{self.cache_dir}/{file_name}'
             self.delete_over_range(suffix=Path(path).suffix)
             self.saver.auto_save(obj, path)
+            _fns.append(file_name)
         return _fns
 
     def delete_over_range(self, suffix=''):
@@ -547,7 +558,9 @@ class FileCacher:
                 self.stdout_method('Two process thread were crashed while deleting file possibly')
                 return
 
-    def get_one(self, file_name=None):
+    def get_one(self, _id=None, file_name=None):
+        file_name = _id or file_name
+
         if file_name is None:
             caches = [str(_) for _ in self.cache_dir.glob(f'*')]
             path = random.choice(caches)
@@ -556,11 +569,12 @@ class FileCacher:
 
         return self.loader.auto_load(path)
 
-    def get_batch(self, file_names=None, size=None):
-        if file_names is None:
+    def get_batch(self, _ids=None, file_names=None, size=None):
+        if _ids is None and file_names is None:
             caches = [str(_) for _ in self.cache_dir.glob(f'*')]
             paths = np.random.choice(caches, size, replace=False)
         else:
+            file_names = _ids or file_names
             paths = [f'{self.cache_dir}/{file_name}' for file_name in file_names]
 
         return [self.loader.auto_load(path) for path in paths]
@@ -632,6 +646,18 @@ class MongoDBCacher:
             return [self.collection.find_one({'_id': _id}) for _id in _ids]
 
 
+class RedisCacher:
+    """todo"""
+
+
+class ESCacher:
+    """todo"""
+
+
+class PGSQLCacher:
+    """todo"""
+
+
 class FakeIo:
     """a placeholder, empty io method to cheat some functions which must use an io method,
     it means that the method do nothing in fact,
@@ -686,7 +712,3 @@ class FakeApp:
 
     def get(self, *args, **kwargs):
         return nullcontext
-
-
-saver = Saver()
-loader = Loader()
