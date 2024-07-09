@@ -1,4 +1,5 @@
 import logging
+import os
 import time
 import numpy as np
 import math
@@ -24,6 +25,24 @@ EPOCH = 'epoch'
 
 
 class CheckpointHooks:
+    def __init__(self):
+        super().__init__()
+        self.state_dict_cache = {}
+
+        self.save_funcs = {
+            MODEL: self.save_model,
+            WEIGHT: self.save_weight,
+            JIT: self.save_torchscript,
+            TRITON: self.save_triton,
+        }
+
+        self.load_funcs = {
+            MODEL: self.load_model,
+            WEIGHT: self.load_weight,
+            SAFETENSORS: self.load_safetensors,
+            JIT: self.load_jit
+        }
+
     log: 'bundled.LogHooks.log'
 
     def save(self, save_path, save_type=WEIGHT, verbose=True, **kwargs):
@@ -49,7 +68,7 @@ class CheckpointHooks:
         for path, item in additional_items.items():
             torch.save(item, path, **kwargs)
 
-    def save_weight(self, save_path, additional_items: dict = {}, **kwargs):
+    def save_weight(self, save_path, additional_items: dict = {}, additional_path=None, **kwargs):
         """
 
         Args:
@@ -57,12 +76,18 @@ class CheckpointHooks:
             additional_items: {name: item}
                 name, which key of the item;
                 item, which obj wanted to save
+            additional_path:
+                if provided, additional_items are saved with the path
         """
-        ckpt = {
-            self.model_name: self.model.state_dict(),
-            **additional_items
-        }
-        torch.save(ckpt, save_path, **kwargs)
+        if additional_path:
+            torch.save(self.model.state_dict(), save_path, **kwargs)
+            torch.save(additional_items, additional_path, **kwargs)
+        else:
+            ckpt = {
+                self.model_name: self.model.state_dict(),
+                **additional_items
+            }
+            torch.save(ckpt, save_path, **kwargs)
 
     device: Union[str, int, torch.device] = None
 
@@ -87,13 +112,6 @@ class CheckpointHooks:
 
     def save_triton(self, save_path, **kwargs):
         raise NotImplementedError
-
-    save_funcs = {
-        MODEL: save_model,
-        WEIGHT: save_weight,
-        JIT: save_torchscript,
-        TRITON: save_triton,
-    }
 
     def load(self, save_path, save_type=WEIGHT, verbose=True, **kwargs):
         func = self.load_funcs.get(save_type)
@@ -120,7 +138,7 @@ class CheckpointHooks:
         for path, name in additional_items.items():
             self.__dict__.update({name: torch.load(path, map_location=self.device)})
 
-    def load_weight(self, save_path, include=None, exclude=None, **kwargs):
+    def load_weight(self, save_path, include=None, exclude=None, cache=False, additional_path=None, **kwargs):
         """
 
         Args:
@@ -129,25 +147,36 @@ class CheckpointHooks:
                 name, which key of the item
                 if None, load all the items
             exclude: None or [name]
+            cache: cache the obj which not load for var, else create a new var to load
+            additional_path:
         Returns:
 
         """
-        state_dict = torch_utils.Load.from_ckpt(save_path, map_location=self.device, **kwargs)
-        self.load_state_dict(state_dict, include, exclude)
+        if additional_path:
+            state_dict = {
+                self.model_name: torch_utils.Load.from_ckpt(save_path, map_location=self.device, **kwargs),
+                **torch_utils.Load.from_ckpt(additional_path, map_location=self.device, **kwargs)
+            }
+        else:
+            state_dict = torch_utils.Load.from_ckpt(save_path, map_location=self.device, **kwargs)
+        self.load_state_dict(state_dict, include, exclude, cache)
 
-    def load_safetensors(self, save_path, include=None, exclude=None, **kwargs):
+    def load_safetensors(self, save_path, include=None, exclude=None, cache=False, **kwargs):
         state_dict = torch_utils.Load.from_save_tensor(save_path, **kwargs)
-        self.load_state_dict(state_dict, include, exclude)
+        self.load_state_dict(state_dict, include, exclude, cache)
 
-    def load_state_dict(self, state_dict: dict, include=None, exclude=None, **kwargs):
-        self.model.load_state_dict(state_dict.pop(self.model_name), strict=False)
-        self._load_state_dict(state_dict, include, exclude)
+    def load_state_dict(self, state_dict: dict, include=None, exclude=None, cache=False, **kwargs):
+        if self.model_name in state_dict:
+            self.model.load_state_dict(state_dict.pop(self.model_name), strict=False)
+        self._load_state_dict(state_dict, include, exclude, cache)
 
-    def _load_state_dict(self, state_dict: dict, include=None, exclude=None):
+    def _load_state_dict(self, state_dict: dict, include=None, exclude=None, cache=False):
         for name, item in state_dict.items():
             if (include is None or name in include) and (exclude is None or name not in exclude):
                 if name in self.__dict__ and hasattr(self.__dict__[name], 'load_state_dict'):
                     self.__dict__[name].load_state_dict(item)
+                elif cache:
+                    self.state_dict_cache[name] = item
                 else:
                     self.log(
                         f'It found that `{name}` in weight file but not in processor, '
@@ -160,46 +189,53 @@ class CheckpointHooks:
     def load_jit(self, save_path, **kwargs):
         self.model = torch.jit.load(save_path, map_location=self.device, **kwargs)
 
-    load_funcs = {
-        MODEL: load_model,
-        WEIGHT: load_weight,
-        SAFETENSORS: load_safetensors,
-        JIT: load_jit
-    }
-
     pretrain_model: str
 
     def load_pretrain(self):
         if hasattr(self, 'pretrain_model'):
             self.load(self.pretrain_model, save_type=WEIGHT, include=())
 
+    pretrain_checkpoint: str
+
+    def load_pretrain_checkpoint(self):
+        if hasattr(self, 'train_checkpoint'):
+            self.load(self.pretrain_checkpoint, save_type=WEIGHT)
+
 
 class ModelHooks:
-    model: nn.Module
-    optimizer: Optional
-    scaler: Optional
-    device: Optional[str]
     trace: 'bundled.LogHooks.trace'
     log: 'bundled.LogHooks.log'
     log_trace: 'bundled.LogHooks.log_trace'
+    device: Optional[str]
+
+    def __init__(self):
+        super().__init__()
+
+        # all models will be run while on predict
+        self.models: Dict[str, nn.Module] = dict()
+
+        # todo: perhaps, for convenient management, move all the modules like optimizer, ema, stopper, ect. to aux_modules?
+        # self.aux_modules = {}
+
+    model: nn.Module
 
     def set_model(self):
         raise NotImplementedError
 
     use_ema = False
     ema: Optional
-    aux_modules: Optional  # all modules in aux_modules must have `step()` function
-    models: Dict[str, nn.Module]  # all module in models would be val
 
-    def set_aux_model(self):
+    def set_ema(self):
         if self.use_ema:
             self.ema = torch_utils.EMA(self.model)
-            self.aux_modules['ema'] = self.ema
+            # self.aux_modules['ema'] = self.ema
             self.models['ema'] = self.ema.ema_model
 
     def set_mode(self, train=True):
         for v in self.models.values():
             v.train(train)
+
+    optimizer: Optional
 
     def set_optimizer(self):
         self.optimizer = optim.Adam(self.model.parameters())
@@ -243,6 +279,7 @@ class ModelHooks:
                 )
 
     use_scaler = False
+    scaler: Optional
 
     def set_scaler(self):
         if self.use_scaler:
@@ -315,6 +352,8 @@ class ModelHooks:
     get_train_dataloader: 'data_process.DataHooks.get_train_dataloader'
     get_val_dataloader: 'data_process.DataHooks.get_val_dataloader'
     save: 'CheckpointHooks.save'
+    load: 'CheckpointHooks.load'
+    load_pretrain_checkpoint: 'CheckpointHooks.load_pretrain_checkpoint'
     counters: dict
     train_start_container: dict = {}
     train_end_container: dict = {}
@@ -359,11 +398,18 @@ class ModelHooks:
         self.train_container['end_flag'] = False
         self.train_container['last_check_time'] = time.time()
 
-        self.set_mode(train=True)
+        for item in ('optimizer', 'stopper', 'scaler'):
+            if not hasattr(self, item) or getattr(self, item) is None:
+                getattr(self, f'set_{item}')()
+
         self.set_scheduler(max_epoch=max_epoch)
+
+        self.set_mode(train=True)
 
         for func, params in self.train_start_container.items():
             func(params)
+
+        self.load_pretrain_checkpoint()
 
     register_logger: 'bundled.LogHooks.register_logger'
     log_methods: dict
@@ -413,7 +459,7 @@ class ModelHooks:
         else:
             self._backward()
 
-        if hasattr(self, 'ema'):
+        if self.use_ema:
             self.ema.step()
 
     def _backward(self):
@@ -517,10 +563,21 @@ class ModelHooks:
         state_dict = self.state_dict()
 
         if not isinstance(max_save_weight_num, int):  # None
-            self.save(f'{self.work_dir}/last.pth', save_type=WEIGHT, additional_items=state_dict)
+            self.save(
+                f'{self.work_dir}/last.pth',
+                additional_path=f'{self.work_dir}/last.additional.pth',
+                additional_items=state_dict,
+                save_type=WEIGHT,
+            )
+
         elif max_save_weight_num > 0:
-            self.save(f'{self.work_dir}/{check_num}.pth', save_type=WEIGHT, additional_items=state_dict)
-            os_lib.FileCacher(f'{self.work_dir}/', max_size=max_save_weight_num, stdout_method=self.log).delete_over_range(suffix='pth')
+            self.save(
+                f'{self.work_dir}/{check_num}.pth',
+                additional_path=f'{self.work_dir}/{check_num}.additional.pth',
+                additional_items=state_dict,
+                save_type=WEIGHT,
+            )
+            os_lib.FileCacher(self.work_dir, max_size=max_save_weight_num, stdout_method=self.log).delete_over_range(suffix='pth')
 
         return state_dict
 
@@ -540,7 +597,12 @@ class ModelHooks:
             score = results[self.model_name]['score']
             if score > self.stopper.best_score:
                 if not isinstance(max_save_weight_num, int) or max_save_weight_num > 0:
-                    self.save(f'{self.work_dir}/best.pth', save_type=WEIGHT, additional_items=state_dict)
+                    self.save(
+                        f'{self.work_dir}/best.pth',
+                        additional_path=f'{self.work_dir}/best.additional.pth',
+                        additional_items=state_dict,
+                        save_type=WEIGHT,
+                    )
 
             self.train_container['end_flag'] = self.train_container['end_flag'] or self.stopper(check_num, score)
 

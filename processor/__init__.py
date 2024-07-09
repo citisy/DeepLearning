@@ -145,7 +145,6 @@ class Process(
     default_model_path: str
     cache_dir: str
     model_name = 'model'
-    models = dict()
 
     @staticmethod
     def setup_seed(seed=42):
@@ -202,27 +201,16 @@ class Process(
 
         self.load_pretrain()
 
-        if not hasattr(self, 'optimizer') or self.optimizer is None:
-            self.set_optimizer()
+        # todo: multi device
+        # if isinstance(self.device, list):
+        #     assert torch.cuda.device_count() >= len(self.device)
+        #     device_ids = self.device
+        #     self.device = torch.device(f"cuda:{self.device[0]}")
+        #     self.model.to(self.device)
+        #     self.model = nn.DataParallel(self.model, device_ids=device_ids)
+        #     self.optimizer = nn.DataParallel(self.optimizer, device_ids=device_ids)
 
-        if not hasattr(self, 'stopper') or self.stopper is None:
-            self.set_stopper()
-
-        if not hasattr(self, 'scaler') or self.scaler is None:
-            self.set_scaler()
-
-        if isinstance(self.device, list):
-            assert torch.cuda.device_count() >= len(self.device)
-            device_ids = self.device
-            self.device = torch.device(f"cuda:{self.device[0]}")
-            self.model.to(self.device)
-            self.model = nn.DataParallel(self.model, device_ids=device_ids)
-            self.optimizer = nn.DataParallel(self.optimizer, device_ids=device_ids)
-
-        self.models = {self.model_name: self.model}
-        self.aux_modules = {}
-
-        try_init_components = [self.set_aux_model]
+        try_init_components = [self.set_ema]
         for components in try_init_components:
             try:
                 components()
