@@ -50,7 +50,7 @@ class CheckpointHooks:
         func = self.save_funcs.get(save_type)
         assert func, ValueError(f'dont support {save_type = }')
 
-        func(self, save_path, **kwargs)
+        func(save_path, **kwargs)
         if verbose:
             self.log(f'Successfully saved to {save_path} !')
 
@@ -68,7 +68,7 @@ class CheckpointHooks:
         for path, item in additional_items.items():
             torch.save(item, path, **kwargs)
 
-    def save_weight(self, save_path, additional_items: dict = {}, additional_path=None, **kwargs):
+    def save_weight(self, save_path, additional_items: dict = {}, additional_path=None, raw_tensors=True, **kwargs):
         """
 
         Args:
@@ -78,10 +78,15 @@ class CheckpointHooks:
                 item, which obj wanted to save
             additional_path:
                 if provided, additional_items are saved with the path
+            raw_tensors:
         """
         if additional_path:
-            torch.save(self.model.state_dict(), save_path, **kwargs)
+            state_dict = self.model.state_dict()
+            if not raw_tensors:
+                state_dict = {self.model_name: state_dict}
+            torch.save(state_dict, save_path, **kwargs)
             torch.save(additional_items, additional_path, **kwargs)
+
         else:
             ckpt = {
                 self.model_name: self.model.state_dict(),
@@ -117,7 +122,7 @@ class CheckpointHooks:
         func = self.load_funcs.get(save_type)
         assert func, ValueError(f'dont support {save_type = }')
 
-        func(self, save_path, **kwargs)
+        func(save_path, **kwargs)
         if verbose:
             self.log(f'Successfully load {save_path} !')
 
@@ -138,7 +143,7 @@ class CheckpointHooks:
         for path, name in additional_items.items():
             self.__dict__.update({name: torch.load(path, map_location=self.device)})
 
-    def load_weight(self, save_path, include=None, exclude=None, cache=False, additional_path=None, **kwargs):
+    def load_weight(self, save_path, include=None, exclude=None, cache=False, additional_path=None, raw_tensors=True, **kwargs):
         """
 
         Args:
@@ -149,16 +154,24 @@ class CheckpointHooks:
             exclude: None or [name]
             cache: cache the obj which not load for var, else create a new var to load
             additional_path:
+            raw_tensors:
         Returns:
 
         """
         if additional_path:
+            state_dict = torch_utils.Load.from_ckpt(save_path, map_location=self.device, **kwargs)
+            if raw_tensors:
+                state_dict = {self.model_name: state_dict}
             state_dict = {
-                self.model_name: torch_utils.Load.from_ckpt(save_path, map_location=self.device, **kwargs),
+                **state_dict,
                 **torch_utils.Load.from_ckpt(additional_path, map_location=self.device, **kwargs)
             }
+
         else:
             state_dict = torch_utils.Load.from_ckpt(save_path, map_location=self.device, **kwargs)
+            if raw_tensors:
+                state_dict = {self.model_name: state_dict}
+
         self.load_state_dict(state_dict, include, exclude, cache)
 
     def load_safetensors(self, save_path, include=None, exclude=None, cache=False, **kwargs):
@@ -179,9 +192,9 @@ class CheckpointHooks:
                     self.state_dict_cache[name] = item
                 else:
                     self.log(
-                        f'It found that `{name}` in weight file but not in processor, '
-                        f'creating the new var by the name, and making sure it is not harmful, '
-                        f'or using `exclude` instead',
+                        f'Found that `{name}` in weight file but not in processor, '
+                        f'creating the new var by the name `{name}`, and making sure it is not harmful, '
+                        f'or using `exclude` kwargs instead',
                         level=logging.WARNING
                     )
                     self.__dict__[name] = item
@@ -198,8 +211,8 @@ class CheckpointHooks:
     pretrain_checkpoint: str
 
     def load_pretrain_checkpoint(self):
-        if hasattr(self, 'train_checkpoint'):
-            self.load(self.pretrain_checkpoint, save_type=WEIGHT)
+        if hasattr(self, 'pretrain_checkpoint'):
+            self.load(self.pretrain_checkpoint, save_type=WEIGHT, raw_tensors=False)
 
 
 class ModelHooks:
@@ -392,7 +405,7 @@ class ModelHooks:
                 val_dataloader = self.get_val_dataloader(data_get_kwargs=data_get_kwargs, dataloader_kwargs=dataloader_kwargs)
             metric_kwargs.setdefault('val_dataloader', val_dataloader)
             s = 'epochs' if self.check_strategy == EPOCH else 'nums'
-            self.log(f'check_strategy is {self.check_strategy}, it will be check the training result in every {check_period} {s}')
+            self.log(f'check_strategy = `{self.check_strategy}`, it will be check the training result in every {check_period} {s}')
 
         self.train_container['metric_kwargs'] = metric_kwargs
         self.train_container['end_flag'] = False
@@ -407,7 +420,7 @@ class ModelHooks:
         self.set_mode(train=True)
 
         for func, params in self.train_start_container.items():
-            func(params)
+            func(**params)
 
         self.load_pretrain_checkpoint()
 
@@ -694,7 +707,7 @@ class ModelHooks:
         self.val_container['model_results'] = dict()
 
         for func, params in self.val_start_container.items():
-            func(params)
+            func(**params)
 
     def on_val_step_start(self, rets, **kwargs):
         pass

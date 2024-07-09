@@ -70,7 +70,7 @@ class LogHooks:
         self.register_train_start(self._wandb_init)
         self.register_train_end(wandb.finish)
 
-    def _wandb_init(self):
+    def _wandb_init(self, *args, **kwargs):
         # only init wandb runner before training
         wandb_run = self.wandb.init(
             project=self.model_version,

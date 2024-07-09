@@ -200,6 +200,7 @@ class Process(
             self.model.to(self.device)
 
         self.load_pretrain()
+        self.models[self.model_name] = self.model
 
         # todo: multi device
         # if isinstance(self.device, list):
