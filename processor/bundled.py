@@ -1,6 +1,7 @@
 import logging
-from utils import log_utils
+from utils import log_utils, web_app, converter
 from typing import Optional
+from functools import partial
 
 LOGGING = 'logging'
 WANDB = 'wandb'
@@ -113,4 +114,22 @@ class LogHooks:
 
 
 class ApiHooks:
-    pass
+    def __init__(self):
+        super().__init__()
+
+        self.api_funcs = ['single_predict', 'batch_predict']
+        self.api_config = {
+            '/': {k: {
+                'func': partial(self.api_func_wrap, func=getattr(self, k), name=k)
+            } for k in self.api_funcs
+            }
+        }
+
+        self.web_app_op = web_app.FlaskOp
+
+    def create_app(self):
+        return self.web_app_op.from_configs(self.api_config)
+
+    def api_func_wrap(self, data, func, name):
+        ret = func(*data.get('data', []), **data.get('params', {}))
+        return converter.DataConvert.custom_to_constant(ret)

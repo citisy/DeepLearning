@@ -109,6 +109,7 @@ class Process(
     DataHooks,
     CheckpointHooks,
     ModelHooks,
+    ApiHooks
 ):
     """
     for implementation, expected to override the following methods usually:
