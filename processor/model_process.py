@@ -417,12 +417,11 @@ class ModelHooks:
 
         self.set_scheduler(max_epoch=max_epoch)
 
-        self.set_mode(train=True)
-
         for func, params in self.train_start_container.items():
             func(**params)
 
         self.load_pretrain_checkpoint()
+        self.set_mode(train=True)
 
     register_logger: 'bundled.LogHooks.register_logger'
     log_methods: dict
@@ -635,8 +634,12 @@ class ModelHooks:
         return state_dict
 
     def on_train_end(self, **kwargs):
-        for func, params in self.train_start_container.items():
-            func(params)
+        for func, params in self.train_end_container.items():
+            func(**params)
+
+        for item in ('optimizer', 'stopper', 'scaler'):
+            if hasattr(self, item):
+                delattr(self, item)
 
     def metric(self, *args, **kwargs) -> dict:
         """call the `predict()` function to get model output, then count the score, expected to return a dict of model score"""
@@ -741,7 +744,7 @@ class ModelHooks:
     def on_val_end(self, **kwargs):
         """save the results usually"""
         for func, params in self.val_end_container.items():
-            func(params)
+            func(**params)
 
     model_input_template: 'namedtuple'
     predict_container: dict
