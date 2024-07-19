@@ -8,7 +8,6 @@ class Config(sdv1.Config):
 
     v2_model = dict(
         scale=9.,
-        objective=ddpm.Config.PRED_Z,
     )
 
     v2_cond = dict(
@@ -90,6 +89,7 @@ class Config(sdv1.Config):
             # support version v2
             v2=dict(
                 model_config=cls.v2_model,
+                sampler_config=cls.sampler_config,
                 cond_config=cls.v2_cond,
                 backbone_config=cls.v2_backbone,
                 vae_config=cls.vae
@@ -98,6 +98,7 @@ class Config(sdv1.Config):
             # support version v2-v, v2-768, v2.1, v2.1-768
             v2_v=dict(
                 model_config=cls.v2_v_model,
+                sampler_config=cls.sampler_config,
                 cond_config=cls.v2_cond,
                 backbone_config=cls.v2_backbone,
                 vae_config=cls.vae
@@ -105,6 +106,7 @@ class Config(sdv1.Config):
 
             v2_inpaint=dict(
                 model_config=cls.v2_inpaint_model,
+                sampler_config=cls.sampler_config,
                 cond_config=cls.v2_cond,
                 backbone_config=cls.v2_backbone,
                 vae_config=cls.v2_inpaint_vae
@@ -112,6 +114,7 @@ class Config(sdv1.Config):
 
             v2_midas=dict(
                 model_config=cls.v2_inpaint_model,  # same to inpaint
+                sampler_config=cls.sampler_config,
                 cond_config=cls.v2_cond,
                 backbone_config=cls.v2_backbone,
                 vae_config=cls.v2_midas_vae
@@ -119,6 +122,7 @@ class Config(sdv1.Config):
 
             x4=dict(
                 model_config=cls.x4_model,
+                sampler_config=cls.sampler_config,
                 cond_config=cls.v2_cond,
                 backbone_config=cls.x4_backbone,
                 vae_config=cls.x4_vae
@@ -126,6 +130,7 @@ class Config(sdv1.Config):
 
             v2_unclip_l=dict(
                 model_config=cls.v2_unclip_model,
+                sampler_config=cls.sampler_config,
                 cond_config=cls.v2_cond,
                 backbone_config=cls.v2_unclip_l_backbone,
                 vae_config=cls.vae
@@ -133,6 +138,7 @@ class Config(sdv1.Config):
 
             v2_unclip_h=dict(
                 model_config=cls.v2_unclip_model,
+                sampler_config=cls.sampler_config,
                 cond_config=cls.v2_cond,
                 backbone_config=cls.v2_unclip_h_backbone,
                 vae_config=cls.vae

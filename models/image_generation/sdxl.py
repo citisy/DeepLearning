@@ -3,14 +3,18 @@ import torch
 from torch import nn, einsum
 from einops import rearrange, repeat, reduce
 from utils import torch_utils
-from . import ldm, ddpm, ddim, sdv1, sdv2
-from .ddpm import extract
+from . import ldm, ddpm, ddim, sdv1, sdv2, k_diffusion
 from .ldm import WeightLoader
-from ..text_image_pretrain import CLIP
+from ..text_image_pretrain import CLIP as CLIPModel
 
 
 class Config(sdv2.Config):
     """only for inference"""
+
+    CLIP = 'clip'
+    TIMESTEP = 'timestep'
+
+    EULER = 'Euler'
 
     # for EmbedderWarp input_key
     TXT = 'txt'
@@ -26,71 +30,65 @@ class Config(sdv2.Config):
     COND_FRAMES = 'cond_frames'
     COND_FRAMES_WITHOUT_NOISE = 'cond_frames_without_noise'
 
-    # for sigmas schedule
-    LEGACY_DDPM = 1
-    EDM = 2
-
-    # for sampler scaling
-    Z = 2  # same to PRED_Z in ddim
-    V = 3  # same to PRED_V in ddim
-    EDM_Z = 4
-    EDM_V = 5
-
     xl_model = dict(
         scale=5,
         scale_factor=0.13025,
-        objective=Z,
+    )
+
+    xl_sampler = dict(
+        name='Euler',
+        **k_diffusion.Config.get(),
     )
 
     # for vanilla v2 model
     legacy_v2_embedder = dict(
-        name='clip',
+        name=CLIP,
         input_key=TXT,
         params=sdv2.Config.v2_cond
     )
 
     embedder_clip = dict(
-        name='clip',
+        name=CLIP,
         input_key=TXT,
         params=dict(
             is_proj=False,
-            **CLIP.Config.openai_text_large,
+            **CLIPModel.Config.openai_text_large,
             layer=sdv1.Config.RAW_HIDDEN,
-            layer_idx=CLIP.Config.openai_text_large['num_hidden_layers'] - 2,  # second to last state
+            layer_idx=CLIPModel.Config.openai_text_large['num_hidden_layers'] - 2,  # second to last state
         )
     )
 
     embedder_open_clip = dict(
-        name='clip',
+        name=CLIP,
         input_key=TXT,
         params=dict(
-            **CLIP.Config.laion_text_bigG_14,
+            **CLIPModel.Config.laion_text_bigG_14,
             layer=sdv1.Config.RAW_HIDDEN,
-            layer_idx=CLIP.Config.laion_text_bigG_14['num_hidden_layers'] - 2,  # second to last state
+            layer_idx=CLIPModel.Config.laion_text_bigG_14['num_hidden_layers'] - 2,  # second to last state
             return_pooled=True
         )
     )
 
     embedder_original_size = dict(
-        name='timestep',
+        name=TIMESTEP,
         input_key=ORIGINAL_SIZE_AS_TUPLE,
         params=dict()
     )
 
     embedder_crop_coords = dict(
-        name='timestep',
+        name=TIMESTEP,
         input_key=CROP_COORDS_TOP_LEFT,
         params=dict()
     )
 
     embedder_target_size = dict(
-        name='timestep',
+        name=TIMESTEP,
         input_key=TARGET_SIZE_AS_TUPLE,
         params=dict()
     )
 
     embedder_aesthetic_score = dict(
-        name='timestep',
+        name=TIMESTEP,
         input_key=AESTHETIC_SCORE,
         params=dict()
     )
@@ -141,6 +139,7 @@ class Config(sdv2.Config):
             # support sdxl-base-*
             xl_base=dict(
                 model_config=cls.xl_model,
+                sampler_config=cls.xl_sampler,
                 cond_config=cls.xl_base_cond,
                 vae_config=cls.vae,
                 backbone_config=cls.xl_base_backbone
@@ -149,6 +148,7 @@ class Config(sdv2.Config):
             # support sdxl-refiner-*
             xl_refiner=dict(
                 model_config=cls.xl_model,
+                sampler_config=cls.xl_sampler,
                 cond_config=cls.xl_refiner_cond,
                 vae_config=cls.vae,
                 backbone_config=cls.xl_refiner_backbone
@@ -157,6 +157,7 @@ class Config(sdv2.Config):
             # support sdxl-Turbo-*
             xl_turbo=dict(
                 model_config=cls.xl_model,
+                sampler_config=cls.xl_sampler,
                 cond_config=cls.xl_base_cond,
                 vae_config=cls.vae,
                 backbone_config=cls.xl_base_backbone
@@ -168,12 +169,12 @@ class Config(sdv2.Config):
 class WeightConverter(ldm.WeightConverter):
     cond0 = {
         'conditioner.embedders.{5}.transformer.' + k: 'cond.embedders.{5}.transformer.' + v
-        for k, v in CLIP.WeightConverter.openai_convert_dict.items()
+        for k, v in CLIPModel.WeightConverter.openai_convert_dict.items()
     }
 
     cond1 = {
         'conditioner.embedders.{5}.model.' + k: 'cond.embedders.{5}.transformer.' + v
-        for k, v in CLIP.WeightConverter.laion_convert_dict.items()
+        for k, v in CLIPModel.WeightConverter.laion_convert_dict.items()
     }
 
     cond_convert_dict = {
@@ -224,142 +225,21 @@ class WeightConverter(ldm.WeightConverter):
         return state_dict
 
 
-def make_emb(name):
-    d = dict(
-        clip=sdv1.CLIPEmbedder,
-        timestep=ConcatTimestepEmbedderND
-    )
-    return d[name]
-
-
 class Model(ldm.Model):
     """https://github.com/Stability-AI/generative-models"""
-
-    num_steps = 40
-    schedule_type = Config.LEGACY_DDPM
-
-    # for edm schedule
-    sigma_min = 0.002
-    sigma_max = 80.0
-    rho = 7.0
-
-    # for p_sample
-    s_tmin = 0.0
-    s_tmax = 999.0
-    s_churn = 0.0
-
-    # for EDM_Z
-    sigma_data = 0.5
 
     # for video
     num_frames = 14
 
-    def make_schedule(self):
-        if self.schedule_type == Config.EDM:  # edm
-            ramp = torch.linspace(0, 1, self.timesteps)
-            min_inv_rho = self.sigma_min ** (1 / self.rho)
-            max_inv_rho = self.sigma_max ** (1 / self.rho)
-            sigmas = (max_inv_rho + ramp * (min_inv_rho - max_inv_rho)) ** self.rho
+    sampler_mapping = {
+        Config.EULER: k_diffusion.EulerSampler
+    }
 
-        elif self.schedule_type == Config.LEGACY_DDPM:  # legacy ddpm
-            from .ddpm import linear_beta_schedule
-            betas = linear_beta_schedule(self.timesteps, start=0.00085 ** 0.5, end=0.0120 ** 0.5) ** 2
-            betas = betas.to(torch.float32)
-            alphas = 1.0 - betas
-            alphas_cumprod = torch.cumprod(alphas, dim=0)
-            sigmas = ((1 - alphas_cumprod) / alphas_cumprod) ** 0.5
-            sigmas = torch.cat([sigmas.new_zeros([1]), sigmas])
-
-        else:
-            raise ValueError(f'unknown objective {self.schedule_type}')
-
-        st = torch.ones(self.timesteps + 1, dtype=torch.long)
-        self.register_buffer('sigmas', sigmas)
-        self.register_buffer('st', st)
+    def make_sampler(self, sampler_config=Config.sampler_config, **kwargs):
+        self.sampler = self.sampler_mapping.get(sampler_config['name'], sampler_config['name'])(**sampler_config)
 
     def make_cond(self, cond_config=[], **kwargs):
         return EmbedderWarp(cond_config)
-
-    def p_sample_loop(self, x_t, **kwargs):
-        x_t *= torch.sqrt(1.0 + self.sigmas[-1] ** 2.0)
-        return super().p_sample_loop(x_t, **kwargs)
-
-    def make_timesteps(self, t0=None):
-        # note, must start with self.timesteps
-        timestep_seq = np.linspace(self.timesteps, 0, self.num_steps, endpoint=False).astype(int)[::-1]
-        if t0:
-            timestep_seq = timestep_seq[:t0]
-        return timestep_seq
-
-    def p_sample(self, x_t, t, prev_t=None, x_self_cond=None, **kwargs):
-        # todo: add more sample methods
-        s_in = self.st[t]
-        t = torch.full((x_t.shape[0],), t, device=x_t.device, dtype=torch.long)
-        prev_t = torch.full((x_t.shape[0],), prev_t, device=x_t.device, dtype=torch.long)
-
-        sigma = extract(self.sigmas, t, x_t.shape) * s_in
-        next_sigma = extract(self.sigmas, prev_t, x_t.shape) * s_in
-
-        gamma = torch.where(
-            torch.logical_and(self.s_tmin <= sigma, sigma <= self.s_tmax),
-            min(self.s_churn / (self.num_steps - 1), 2 ** 0.5 - 1),
-            0.
-        ).to(sigma)
-
-        sigma_hat = sigma * (gamma + 1.0)
-
-        if torch.any(gamma > 0):
-            eps = torch.randn_like(x_t) * self.s_noise
-            x_t = x_t + eps * (sigma_hat ** 2 - sigma ** 2) ** 0.5
-
-        possible_sigma = self.sigmas[self.sigma_to_idx(sigma_hat)]
-        c_skip, c_out, c_in, c_noise = self.make_scaling(possible_sigma)
-        possible_t = self.sigma_to_idx(c_noise)
-        possible_t = possible_t - 1
-        c_skip, c_out, c_in, c_noise = c_skip[:, None, None, None], c_out[:, None, None, None], c_in[:, None, None, None], c_noise[:, None, None, None]
-
-        d = self.diffuse(c_in * x_t, possible_t, **kwargs) * c_out + x_t * c_skip
-
-        d = (x_t - d) / sigma_hat
-        dt = next_sigma - sigma_hat
-
-        x_t = x_t + d * dt
-        return x_t, None
-
-    def sigma_to_idx(self, sigma: torch.Tensor) -> torch.Tensor:
-        sigma = sigma.reshape(sigma.shape[0])
-        dists = sigma - self.sigmas[:, None]
-        return dists.abs().argmin(dim=0).view(sigma.shape)
-
-    def make_scaling(self, sigma):
-        if self.objective == Config.Z:
-            c_skip = torch.ones_like(sigma, device=sigma.device)
-            c_out = -sigma
-            c_in = 1 / (sigma ** 2 + 1.0) ** 0.5
-            c_noise = sigma.clone()
-
-        elif self.objective == Config.V:
-            c_skip = 1.0 / (sigma ** 2 + 1.0)
-            c_out = -sigma / (sigma ** 2 + 1.0) ** 0.5
-            c_in = 1.0 / (sigma ** 2 + 1.0) ** 0.5
-            c_noise = sigma.clone()
-
-        elif self.objective == Config.EDM_Z:
-            c_skip = self.sigma_data ** 2 / (sigma ** 2 + self.sigma_data ** 2)
-            c_out = sigma * self.sigma_data / (sigma ** 2 + self.sigma_data ** 2) ** 0.5
-            c_in = 1 / (sigma ** 2 + self.sigma_data ** 2) ** 0.5
-            c_noise = 0.25 * sigma.log()
-
-        elif self.objective == Config.EDM_V:
-            c_skip = 1.0 / (sigma ** 2 + 1.0)
-            c_out = -sigma / (sigma ** 2 + 1.0) ** 0.5
-            c_in = 1.0 / (sigma ** 2 + 1.0) ** 0.5
-            c_noise = 0.25 * sigma.log()
-
-        else:
-            raise ValueError(f'unknown objective {self.objective}')
-
-        return c_skip, c_out, c_in, c_noise
 
     def make_txt_cond(self, text, neg_text=None, **kwargs) -> dict:
         default_value = {
@@ -420,6 +300,25 @@ class Model(ldm.Model):
         return e_t
 
 
+class ConcatTimestepEmbedderND(nn.Module):
+    """embeds each dimension independently and concatenates them"""
+
+    def __init__(self, output_size=256):
+        super().__init__()
+        self.timestep = ldm.SinusoidalPosEmb(output_size)
+        self.output_size = output_size
+
+    def forward(self, x):
+        if x.ndim == 1:
+            x = x[:, None]
+        assert len(x.shape) == 2
+        b, dims = x.shape
+        x = rearrange(x, "b d -> (b d)")
+        emb = self.timestep(x)
+        emb = rearrange(emb, "(b d) d2 -> b (d d2)", b=b, d=dims, d2=self.output_size)
+        return emb
+
+
 class EmbedderWarp(nn.Module):
     VECTOR = 'vector'
     COND = 'cond'
@@ -428,13 +327,18 @@ class EmbedderWarp(nn.Module):
     OUTPUT_DIM2KEYS = {2: VECTOR, 3: COND, 4: CONCAT, 5: CONCAT}
     KEY2CATDIM = {VECTOR: 1, COND: 2, CONCAT: 1}
 
+    embedder_mapping = {
+        Config.CLIP: sdv1.CLIPEmbedder,
+        Config.TIMESTEP: ConcatTimestepEmbedderND
+    }
+
     def __init__(self, cond_configs: list):
         super().__init__()
         embedders = []
         input_keys = []
         output_size = 0
         for cond_config in cond_configs:
-            layer = make_emb(cond_config['name'])(**cond_config['params'])
+            layer = self.embedder_mapping.get(cond_config['name'], cond_config['name'])(**cond_config['params'])
             input_key = cond_config['input_key']
             embedders.append(layer)
             input_keys.append(input_key)
@@ -503,22 +407,3 @@ class EmbedderWarp(nn.Module):
         batch_uc[Config.TXT] = torch.stack([value_dict["negative_prompt"] for value_dict in value_dicts])
 
         return batch, batch_uc
-
-
-class ConcatTimestepEmbedderND(nn.Module):
-    """embeds each dimension independently and concatenates them"""
-
-    def __init__(self, output_size=256):
-        super().__init__()
-        self.timestep = ldm.SinusoidalPosEmb(output_size)
-        self.output_size = output_size
-
-    def forward(self, x):
-        if x.ndim == 1:
-            x = x[:, None]
-        assert len(x.shape) == 2
-        b, dims = x.shape
-        x = rearrange(x, "b d -> (b d)")
-        emb = self.timestep(x)
-        emb = rearrange(emb, "(b d) d2 -> b (d d2)", b=b, d=dims, d2=self.output_size)
-        return emb

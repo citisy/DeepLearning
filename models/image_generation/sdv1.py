@@ -28,6 +28,7 @@ class Config(ldm.Config):
         config_dict = dict(
             v1=dict(
                 model_config=cls.model,
+                sampler_config=cls.sampler_config,
                 backbone_config=cls.backbone,
                 vae_config=cls.vae,
                 cond_config=cls.cond,

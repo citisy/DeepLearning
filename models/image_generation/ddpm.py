@@ -22,7 +22,13 @@ class Config(bundles.Config):
     COSINE = 2
     SIGMOID = 3
 
+    sampler_config = dict(
+        objective=PRED_V,
+        schedule_type=LINEAR
+    )
+
     in_module_config = dict(self_condition=False)
+
     backbone_config = dict(
         learned_sinusoidal_cond=False,
         random_fourier_features=False,
@@ -38,6 +44,7 @@ class Config(bundles.Config):
     def make_full_config(cls) -> dict:
         return {
             '': dict(
+                sampler_config=cls.sampler_config,
                 in_module_config=cls.in_module_config,
                 backbone_config=cls.backbone_config
             )
@@ -114,11 +121,9 @@ class Model(nn.ModuleList):
             image_size = (image_size, image_size)
         self.image_size = image_size
         self.img_ch = img_ch
-        self.diffuse_in_ch = img_ch  # channels of x_t
-        self.diffuse_in_size = image_size  # size of x_t
         self.__dict__.update(configs.get('model_config', {}))
 
-        self.make_schedule()
+        self.make_sampler(**configs)
         self.make_diffuse(**configs)
 
     _device = None
@@ -132,17 +137,66 @@ class Model(nn.ModuleList):
     def dtype(self):
         return torch_utils.ModuleInfo.possible_dtype(self) if self._dtype is None else self._dtype
 
+    min_snr_loss_weight = False
+    min_snr_gamma = 5
+    self_condition = False
+
+    def make_sampler(self, sampler_config=Config.sampler_config, **kwargs):
+        self.sapmler = Sampler(**sampler_config)
+
+    def make_diffuse(self, in_module_config=Config.in_module_config, backbone_config=Config.backbone_config, **kwargs):
+        self.in_module = InModule(self.img_ch, self.hidden_ch, **in_module_config)
+        self.backbone = UNetModel(self.hidden_ch, **backbone_config)
+        self.head = nn.Conv2d(self.hidden_ch, self.img_ch, 1)
+
+    def diffuse(self, x, time, x_self_cond=None, **kwargs):
+        x = self.in_module(x, x_self_cond)
+        x = self.backbone(x, time)
+        x = self.head(x)
+        return x
+
+    def forward(self, x=None, **kwargs):
+        if self.training:
+            # if training, x is x0, the real image
+            b, c, h, w = x.shape
+            t = torch.randint(0, self.timesteps, (b,), device=x.device).long()
+            return {'loss': self.sapmler.loss(self.diffuse, x, t, **kwargs)}
+        else:
+            # if predicting, x is xt, the noise
+            images = self.post_process(x, **kwargs)
+            return images
+
+    @property
+    def diffuse_in_ch(self):
+        """channels of x_t"""
+        return self.img_ch
+
+    @property
+    def diffuse_in_size(self):
+        """size of x_t"""
+        return self.image_size
+
+    def gen_x_t(self, batch_size):
+        return torch.randn((batch_size, self.diffuse_in_ch, *self.diffuse_in_size), device=self.device, dtype=self.dtype)
+
+    def post_process(self, x_t, **kwargs):
+        return self.sapmler(self.diffuse, x_t, **kwargs)
+
+
+class Sampler(nn.Module):
+    schedule_type = Config.LINEAR
+    timesteps = 1000
+
     # pred_z -> model(x_t, t) = z_t
     # pred_x0 -> model(x_t, t) = x_0
     # pred_v -> model(x_t, t) = v_t = z_t \sqrt ca_t - x_0 * \sqrt{1-ca_t}
     objective = Config.PRED_V
-    timesteps = 1000
-    hidden_ch = 64
-    offset_noise_strength = 0.
-    schedule_type = Config.LINEAR
-    min_snr_loss_weight = False
-    min_snr_gamma = 5
     self_condition = False
+
+    def __init__(self, **kwargs):
+        super().__init__()
+        self.__dict__.update(kwargs)
+        self.make_schedule()
 
     def make_schedule(self):
         # helper function to register buffer from float64 to float32
@@ -194,33 +248,102 @@ class Model(nn.ModuleList):
         elif self.objective == Config.PRED_V:
             register_buffer('loss_weight', maybe_clipped_snr / (snr + 1))
 
-    def make_diffuse(self, in_module_config=Config.in_module_config, backbone_config=Config.backbone_config, **kwargs):
-        self.in_module = InModule(self.img_ch, self.hidden_ch, **in_module_config)
-        self.backbone = UNetModel(self.hidden_ch, **backbone_config)
-        self.head = nn.Conv2d(self.hidden_ch, self.img_ch, 1)
+    def make_timesteps(self, t0=None):
+        timestep_seq = range(0, self.timesteps)
+        if t0:
+            timestep_seq = timestep_seq[:t0]
+        return timestep_seq
 
-    def diffuse(self, x, time, x_self_cond=None, **kwargs):
-        x = self.in_module(x, x_self_cond)
-        x = self.backbone(x, time)
-        x = self.head(x)
-        return x
+    def loss(self, diffuse_func, x_0, t, noise=None, offset_noise_strength=None, **kwargs):
+        if noise is None:
+            noise = torch.randn_like(x_0)
 
-    def forward(self, x=None, **kwargs):
-        if self.training:
-            # if training, x is x0, the real image
-            b, c, h, w = x.shape
-            t = torch.randint(0, self.timesteps, (b,), device=x.device).long()
-            return {'loss': self.loss(x, t, **kwargs)}
+        # offset noise - https://www.crosslabs.org/blog/diffusion-with-offset-noise
+        if offset_noise_strength is None:
+            offset_noise_strength = self.offset_noise_strength
+
+        if offset_noise_strength > 0.:
+            offset_noise = torch.randn(x_0.shape[:2], device=noise.device)
+            noise += offset_noise_strength * rearrange(offset_noise, 'b c -> b c 1 1')
+
+        # noise sample
+        x_t = self.q_sample(x_0, t=t, noise=noise)
+
+        # if doing self-conditioning, 50% of the time, predict x_start from current set of times
+        # and condition with unet with that
+        # this technique will slow down training by 25%, but seems to lower FID significantly
+        x_self_cond = None
+        if self.self_condition and random() < 0.5:
+            with torch.inference_mode():
+                x_self_cond, _ = self.model_predictions(diffuse_func, x_t, t)
+                x_self_cond.detach_()
+
+        pred = diffuse_func(x_t, t, x_self_cond)
+
+        if self.objective == Config.PRED_Z:
+            real = noise
+        elif self.objective == Config.PRED_X0:
+            real = x_0
+        elif self.objective == Config.PRED_V:
+            real = self.predict_v(x_0, t, noise)
         else:
-            # if predicting, x is xt, the noise
-            images = self.post_process(x, **kwargs)
-            return images
+            raise ValueError(f'unknown objective {self.objective}')
+
+        loss = F.mse_loss(pred, real, reduction='none')
+        loss = reduce(loss, 'b ... -> b', 'mean')
+
+        loss = loss * extract(self.loss_weight, t, loss.shape)
+        return loss.mean()
+
+    def q_sample(self, x0, t, noise=None):
+        if noise is None:
+            noise = torch.randn_like(x0)
+
+        return self.predict_x_t(x0, t, noise)
+
+    def forward(self, diffuse_func, x_t, t0=None, callback_fn=None, **kwargs):
+        timestep_seq = self.make_timesteps(t0)
+        x_0 = None
+        if callback_fn:
+            callback_fn(x_t, self.timesteps)
+
+        # t: T-1 -> 0
+        for t in reversed(timestep_seq):
+            self_cond = x_0 if self.self_condition else None
+            x_t, x_0 = self.p_sample(diffuse_func, x_t, t, self_cond, **kwargs)
+            if callback_fn:
+                callback_fn(x_t, t)
+
+        return x_t
+
+    def p_sample(self, diffuse_func, x_t, t: int, x_self_cond=None, clip_denoised=True, **kwargs):
+        noise = torch.randn_like(x_t) if t > 0 else 0.  # no noise if t == 0
+
+        t = torch.full((x_t.shape[0],), t, device=x_t.device, dtype=torch.long)
+        x_0, _ = self.model_predictions(diffuse_func, x_t, t, x_self_cond)
+
+        if clip_denoised:
+            x_0.clamp_(-1., 1.)
+
+        # u(x_t, x_0) = (b * \sqrt ca_{t-1} / (1-ca_t)) * x0 + ((1-ca_{t-1}) * \sqrt a_t / (1 - ca_t)) * x_t
+        model_mean = extract(self.posterior_mean_coef1, t, x_t.shape) * x_0 + extract(self.posterior_mean_coef2, t, x_t.shape) * x_t
+
+        # # s(x_t, t)^2 = b * (1-ca_{t-1}) / (1-ca_t)
+        # posterior_variance = extract(self.posterior_variance, t, x_t.shape)
+
+        # \log s(x_t, t)^2 = 2 \log s(x_t, t)
+        model_log_variance = extract(self.posterior_log_variance_clipped, t, x_t.shape)
+
+        # x_{t-1} = u(x_t, x_0) + exp(0.5 * 2 * \log s(x_t, t)) * z_t
+        # where, exp((0.5 * 2 * \log s(x_t, t))) = s(x_t, t), z~N(0, 1)
+        x_t_1 = model_mean + (0.5 * model_log_variance).exp() * noise
+        return x_t_1, x_0
 
     def model_predictions(
-            self, x_t, t, x_self_cond=None,
+            self, diffuse_func, x_t, t, x_self_cond=None,
             clip_x_start=False, return_pred_noise=False, rederive_pred_noise=False, **kwargs):
         """x_t, t -> pred_z_t, x_0"""
-        model_output = self.diffuse(x_t, t, x_self_cond=x_self_cond, **kwargs)
+        model_output = diffuse_func(x_t, t, x_self_cond=x_self_cond, **kwargs)
 
         pred_noise = None
         if self.objective == Config.PRED_Z:
@@ -275,111 +398,6 @@ class Model(nn.ModuleList):
     def predict_x_t(self, x_0, t, noise):
         # x_t = x_0 * \sqrt ca_t + z_t * \sqrt (1 - ca_t)
         return extract(self.sqrt_alphas_cumprod, t, x_0.shape) * x_0 + extract(self.sqrt_one_minus_alphas_cumprod, t, x_0.shape) * noise
-
-    def loss(self, x_0, t, noise=None, offset_noise_strength=None, **kwargs):
-        if noise is None:
-            noise = torch.randn_like(x_0)
-
-        # offset noise - https://www.crosslabs.org/blog/diffusion-with-offset-noise
-        if offset_noise_strength is None:
-            offset_noise_strength = self.offset_noise_strength
-
-        if offset_noise_strength > 0.:
-            offset_noise = torch.randn(x_0.shape[:2], device=self.device)
-            noise += offset_noise_strength * rearrange(offset_noise, 'b c -> b c 1 1')
-
-        # noise sample
-        x_t = self.q_sample(x_0, t=t, noise=noise)
-
-        # if doing self-conditioning, 50% of the time, predict x_start from current set of times
-        # and condition with unet with that
-        # this technique will slow down training by 25%, but seems to lower FID significantly
-        x_self_cond = None
-        if self.self_condition and random() < 0.5:
-            with torch.inference_mode():
-                x_self_cond, _ = self.model_predictions(x_t, t)
-                x_self_cond.detach_()
-
-        pred = self.diffuse(x_t, t, x_self_cond)
-
-        if self.objective == Config.PRED_Z:
-            real = noise
-        elif self.objective == Config.PRED_X0:
-            real = x_0
-        elif self.objective == Config.PRED_V:
-            real = self.predict_v(x_0, t, noise)
-        else:
-            raise ValueError(f'unknown objective {self.objective}')
-
-        loss = F.mse_loss(pred, real, reduction='none')
-        loss = reduce(loss, 'b ... -> b', 'mean')
-
-        loss = loss * extract(self.loss_weight, t, loss.shape)
-        return loss.mean()
-
-    def q_sample(self, x0, t, noise=None):
-        if noise is None:
-            noise = torch.randn_like(x0)
-
-        return self.predict_x_t(x0, t, noise)
-
-    def gen_x_t(self, batch_size):
-        return torch.randn((batch_size, self.diffuse_in_ch, *self.diffuse_in_size), device=self.device, dtype=self.dtype)
-
-    def post_process(self, x_t, **kwargs):
-        return self.p_sample_loop(x_t, **kwargs)
-
-    def p_sample_loop(self, x_t, t0=None, callback_fn=None, **kwargs):
-        timestep_seq = self.make_timesteps(t0)
-        x_0 = None
-        if callback_fn:
-            callback_fn(x_t, self.timesteps)
-
-        # t: T-1 -> 0
-        for t in reversed(timestep_seq):
-            self_cond = x_0 if self.self_condition else None
-            x_t, x_0 = self.p_sample(x_t, t, self_cond, **kwargs)
-            if callback_fn:
-                callback_fn(x_t, t)
-
-        return x_t
-
-    def make_timesteps(self, t0=None):
-        timestep_seq = range(0, self.timesteps)
-        if t0:
-            timestep_seq = timestep_seq[:t0]
-        return timestep_seq
-
-    def p_sample(self, x_t, t: int, x_self_cond=None, clip_denoised=True, **kwargs):
-        noise = torch.randn_like(x_t) if t > 0 else 0.  # no noise if t == 0
-
-        t = torch.full((x_t.shape[0],), t, device=x_t.device, dtype=torch.long)
-        x_0, _ = self.model_predictions(x_t, t, x_self_cond)
-
-        if clip_denoised:
-            x_0.clamp_(-1., 1.)
-
-        # u(x_t, x_0) = (b * \sqrt ca_{t-1} / (1-ca_t)) * x0 + ((1-ca_{t-1}) * \sqrt a_t / (1 - ca_t)) * x_t
-        model_mean = extract(self.posterior_mean_coef1, t, x_t.shape) * x_0 + extract(self.posterior_mean_coef2, t, x_t.shape) * x_t
-
-        # # s(x_t, t)^2 = b * (1-ca_{t-1}) / (1-ca_t)
-        # posterior_variance = extract(self.posterior_variance, t, x_t.shape)
-
-        # \log s(x_t, t)^2 = 2 \log s(x_t, t)
-        model_log_variance = extract(self.posterior_log_variance_clipped, t, x_t.shape)
-
-        # x_{t-1} = u(x_t, x_0) + exp(0.5 * 2 * \log s(x_t, t)) * z_t
-        # where, exp((0.5 * 2 * \log s(x_t, t))) = s(x_t, t), z~N(0, 1)
-        x_t_1 = model_mean + (0.5 * model_log_variance).exp() * noise
-        return x_t_1, x_0
-
-
-class Sampler(nn.Module):
-    pass
-
-
-class Schedule(nn.Module):
-    pass
 
 
 class InModule(nn.Module):

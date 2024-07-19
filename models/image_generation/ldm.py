@@ -25,9 +25,7 @@ class Config(ddim.Config):
     TIMESTEP = 'timestep'
     SEQUENTIAL = 'sequential'
 
-    model = dict(
-        objective=ddim.Config.PRED_Z
-    )
+    model = dict()
 
     backbone = dict(
         num_heads=8,
@@ -47,6 +45,7 @@ class Config(ddim.Config):
         config_dict = dict(
             vanilla=dict(
                 model_config=cls.model,
+                sampler_config=cls.sampler_config,
                 backbone_config=cls.backbone,
                 vae_config=cls.vae
             )
@@ -249,13 +248,35 @@ class Model(ddim.Model):
         self.cond = cond
         self.backbone = backbone
         self.vae = vae
-        self.diffuse_in_ch = self.vae.z_ch
-        self.diffuse_in_size = (
+
+    @property
+    def diffuse_in_ch(self):
+        return self.vae.z_ch
+
+    @property
+    def diffuse_in_size(self):
+        return (
             self.image_size[0] // self.vae.encoder.down_scale,
             self.image_size[1] // self.vae.encoder.down_scale,
         )
 
-    def post_process(self, x=None, text=None, **kwargs):
+    def post_process(self, x=None, text=None, mask_x=None, **kwargs):
+        """
+
+        Args:
+            x (torch.Tensor): (b, c, h, w)
+                original images, if given, run the img2img mode
+            text (torch.Tensor): (b, l)
+                positive prompt
+            mask_x (torch.Tensor): (b, 1, h, w)
+                mask images, if given, run the inpaint mode
+                suggest has the same (h, w) of x
+                fall in [0, 1], 0 gives masked
+            **kwargs:
+
+        Returns:
+            images
+        """
         b = len(text)
 
         txt_cond = self.make_txt_cond(text, **kwargs)
@@ -269,8 +290,14 @@ class Model(ddim.Model):
         else:  # img2img
             x, t0 = self.make_image_cond(x)
 
-        z = self.p_sample_loop(x, t0=t0, **kwargs)
+        z = self.sapmler(self.diffuse, x, t0=t0, **kwargs)
         z = z / self.scale_factor
+
+        if mask_x is not None and len(mask_x):
+            # todo: apply for different conditioning_key
+            mask_x = torch.nn.functional.interpolate(mask_x, size=z.shape[-2:])
+            z = x * mask_x + z * (1 - mask_x)
+
         images = self.vae.decode(z)
 
         return images
@@ -286,8 +313,8 @@ class Model(ddim.Model):
             un_cond=uc
         )
 
-    def make_image_cond(self, image, t0=None, noise=None):
-        z, _, _ = self.vae.encode(image)
+    def make_image_cond(self, images, t0=None, noise=None):
+        z, _, _ = self.vae.encode(images)
         x0 = self.scale_factor * z
 
         timestep_seq = self.make_timesteps()
@@ -311,30 +338,6 @@ class Model(ddim.Model):
             e_t = z
 
         return e_t
-
-    def loss(self, x_0, t, text=None, noise=None, offset_noise_strength=None, **kwargs):
-        if noise is None:
-            noise = torch.randn_like(x_0)
-
-        txt_cond = self.make_txt_cond(text, **kwargs)
-        x_t, t0 = self.make_image_cond(x_0, t, noise=noise)
-
-        pred = self.diffuse(x_t, t0, **txt_cond)
-
-        if self.objective == Config.PRED_Z:
-            real = noise
-        elif self.objective == Config.PRED_X0:
-            real = x_0
-        elif self.objective == Config.PRED_V:
-            real = self.predict_v(x_0, t, noise)
-        else:
-            raise ValueError(f'unknown objective {self.objective}')
-
-        loss = F.mse_loss(pred, real, reduction='none')
-        loss = reduce(loss, 'b ... -> b', 'mean')
-
-        loss = loss * extract(self.loss_weight, t, loss.shape)
-        return loss.mean()
 
 
 class Txt2ImgModel4Triton(nn.Module):

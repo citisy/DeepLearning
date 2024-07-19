@@ -34,6 +34,9 @@ class IgProcess(Process):
     check_strategy = model_process.STEP
     val_data_num = 64 * 8
 
+    input_size: int
+    in_ch: int
+
     def on_train_start(self, **kwargs):
         from metrics import image_generation
 
@@ -159,8 +162,8 @@ class GanProcess(IgProcess):
 
     def on_backward(self, output, **kwargs):
         """loss backward has been completed in `on_train_step()` already"""
-        if hasattr(self, 'ema'):
-            self.ema.step(self.model, self.aux_model['ema'])
+        if self.use_ema:
+            self.ema.step()
 
 
 class Mnist(DataHooks):
@@ -826,7 +829,7 @@ class SD(DiProcess):
     vocab_fn: str
     tokenizer: 'CLIPTokenizer'
     low_memory_run = False
-    use_fp16 = False
+    use_half = False
 
     model_config: dict = {}
 
@@ -874,31 +877,39 @@ class SD(DiProcess):
             **model_config
         )
 
-        if self.use_fp16:
+        if self.use_half:
             from models.activations import GroupNorm32
+            # note, vanilla sdxl vae can not convert to fp16, but bf16
+            # or use a special vae checkpoint, e.g. https://huggingface.co/madebyollin/sdxl-vae-fp16-fix
+            dtype = torch.bfloat16
 
             torch_utils.ModuleManager.apply(
                 self.model,
-                lambda module: module.half(),
-                include=['cond', 'backbone'],
+                lambda module: module.to(dtype),
+                include=['cond', 'backbone', 'vae'],
                 exclude=[GroupNorm32]
             )
 
             for name, tensor in self.model.named_buffers():
-                setattr(self.model, name, tensor.half())
+                setattr(self.model, name, tensor.to(dtype))
 
-            # note, vanilla sdxl vae can not convert to fp32, but bf16
-            # or use a special vae checkpoint, e.g. https://huggingface.co/madebyollin/sdxl-vae-fp16-fix
-            self.model.vae.decode = partial(torch_utils.ModuleManager.assign_dtype_run, self.model.vae, self.model.vae.decode, torch.bfloat16)
+            self.model.make_txt_cond = partial(torch_utils.ModuleManager.assign_dtype_run, self.model.cond, self.model.make_txt_cond, dtype, force_effect_module=False)
+            self.model.p_sample_loop = partial(torch_utils.ModuleManager.assign_dtype_run, self.model.backbone, self.model.p_sample_loop, dtype, force_effect_module=False)
+            self.model.vae.encode = partial(torch_utils.ModuleManager.assign_dtype_run, self.model.vae, self.model.vae.encode, dtype, force_effect_module=False)
+            self.model.vae.decode = partial(torch_utils.ModuleManager.assign_dtype_run, self.model.vae, self.model.vae.decode, dtype, force_effect_module=False)
 
         if self.low_memory_run:
+            # explicitly define the device for the model
             self.model._device = self.device
             self.model.make_txt_cond = partial(torch_utils.ModuleManager.low_memory_run, self.model.cond, self.model.make_txt_cond, self.device)
             self.model.p_sample_loop = partial(torch_utils.ModuleManager.low_memory_run, self.model.backbone, self.model.p_sample_loop, self.device)
+            self.model.vae.encode = partial(torch_utils.ModuleManager.low_memory_run, self.model.vae, self.model.vae.encode, self.device)
             self.model.vae.decode = partial(torch_utils.ModuleManager.low_memory_run, self.model.vae, self.model.vae.decode, self.device)
 
-        self.set_lora()
+        if self.use_lora:
+            self.set_lora()
 
+    use_lora = False
     lora_warp: 'models.tuning.lora.ModelWarp'
     lora_pretrain_model: str
     lora_config = {}
@@ -926,10 +937,10 @@ class SD(DiProcess):
         )
         self.lora_warp.warp(self.model)
 
-        if self.use_fp16:
+        if self.use_half:
             for full_name in self.lora_warp.layers:
                 layer = torch_utils.ModuleManager.get_module_by_name(self.model, full_name)
-                layer.half()
+                layer.to(torch.bfloat16)
 
     def unset_lora(self):
         self.lora_warp.dewarp()
@@ -952,7 +963,7 @@ class SD(DiProcess):
         if hasattr(self, 'lora_pretrain_model'):
             state_dict = WeightLoader.auto_load(self.lora_pretrain_model)
             state_dict = WeightConverter.from_official_lora(state_dict)
-            self.lora_warp.load_state_dict(state_dict)
+            self.lora_warp.load_state_dict(state_dict, strict=False)
 
     def get_vocab(self):
         from data_parse.nlp_data_parse.pre_process.bundled import CLIPTokenizer
@@ -963,7 +974,6 @@ class SD(DiProcess):
 
     aug = Apply([
         scale.Rectangle(),
-        channel.BGR2RGB(),
         channel.HWC2CHW(),
     ])
 
@@ -977,6 +987,7 @@ class SD(DiProcess):
         texts = []
         neg_texts = []
         images = []
+        mask_images = []
         for ret in rets:
             if 'text' in ret:
                 texts.append(ret['text'])
@@ -987,7 +998,12 @@ class SD(DiProcess):
                 neg_texts.append('')
 
             if 'image' in ret and ret['image'] is not None:
-                images.append(torch.from_numpy(ret.pop('image')).to(self.device, non_blocking=True, dtype=torch.float))
+                image = ret.pop('image')
+                if image.shape[0] == 4:
+                    image, mask_image = image[:-1], image[-1:]
+                    mask_images.append(torch.from_numpy(mask_image).to(self.device, non_blocking=True, dtype=torch.float))
+
+                images.append(torch.from_numpy(image).to(self.device, non_blocking=True, dtype=torch.float))
 
         inputs = self.tokenizer.encode_paragraphs(texts)
         texts = torch.tensor(inputs['segments_ids']).to(self.device)
@@ -999,11 +1015,15 @@ class SD(DiProcess):
             images /= 255.
             images = images * 2 - 1  # normalize, [0, 1] -> [-1, 1]
 
+        if mask_images:
+            mask_images = torch.stack(mask_images)
+            mask_images /= 255
+
         model_results = {}
         for name, model in self.models.items():
             # note, something wrong with autocast, got inf result
             # with torch.cuda.amp.autocast(True):
-            fake_x = model(x=images, text=texts, neg_text=neg_texts)
+            fake_x = model(x=images, text=texts, neg_text=neg_texts, mask_x=mask_images)
             fake_x = (fake_x + 1) * 0.5  # unnormalize, [-1, 1] -> [0, 1]
             fake_x = fake_x.data.mul(255).clamp_(0, 255).permute(0, 2, 3, 1).to("cpu", torch.uint8).numpy()
             model_results[name] = dict(
