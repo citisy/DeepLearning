@@ -137,12 +137,8 @@ class Model(nn.ModuleList):
     def dtype(self):
         return torch_utils.ModuleInfo.possible_dtype(self) if self._dtype is None else self._dtype
 
-    min_snr_loss_weight = False
-    min_snr_gamma = 5
-    self_condition = False
-
     def make_sampler(self, sampler_config=Config.sampler_config, **kwargs):
-        self.sapmler = Sampler(**sampler_config)
+        self.sampler = Sampler(**sampler_config)
 
     def make_diffuse(self, in_module_config=Config.in_module_config, backbone_config=Config.backbone_config, **kwargs):
         self.in_module = InModule(self.img_ch, self.hidden_ch, **in_module_config)
@@ -160,7 +156,7 @@ class Model(nn.ModuleList):
             # if training, x is x0, the real image
             b, c, h, w = x.shape
             t = torch.randint(0, self.timesteps, (b,), device=x.device).long()
-            return {'loss': self.sapmler.loss(self.diffuse, x, t, **kwargs)}
+            return {'loss': self.sampler.loss(self.diffuse, x, t, **kwargs)}
         else:
             # if predicting, x is xt, the noise
             images = self.post_process(x, **kwargs)
@@ -180,7 +176,7 @@ class Model(nn.ModuleList):
         return torch.randn((batch_size, self.diffuse_in_ch, *self.diffuse_in_size), device=self.device, dtype=self.dtype)
 
     def post_process(self, x_t, **kwargs):
-        return self.sapmler(self.diffuse, x_t, **kwargs)
+        return self.sampler(self.diffuse, x_t, **kwargs)
 
 
 class Sampler(nn.Module):
@@ -192,6 +188,9 @@ class Sampler(nn.Module):
     # pred_v -> model(x_t, t) = v_t = z_t \sqrt ca_t - x_0 * \sqrt{1-ca_t}
     objective = Config.PRED_V
     self_condition = False
+
+    min_snr_loss_weight = False
+    min_snr_gamma = 5
 
     def __init__(self, **kwargs):
         super().__init__()

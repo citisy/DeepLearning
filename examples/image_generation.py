@@ -890,11 +890,16 @@ class SD(DiProcess):
                 exclude=[GroupNorm32]
             )
 
-            for name, tensor in self.model.named_buffers():
-                setattr(self.model, name, tensor.to(dtype))
+            modules = [self.model.sampler]
+            if hasattr(self.model.sampler, 'schedule'):
+                modules.append(self.model.sampler.schedule)
+
+            for module in modules:
+                for name, tensor in module.named_buffers():
+                    setattr(module, name, tensor.to(dtype))
 
             self.model.make_txt_cond = partial(torch_utils.ModuleManager.assign_dtype_run, self.model.cond, self.model.make_txt_cond, dtype, force_effect_module=False)
-            self.model.p_sample_loop = partial(torch_utils.ModuleManager.assign_dtype_run, self.model.backbone, self.model.p_sample_loop, dtype, force_effect_module=False)
+            self.model.sampler.forward = partial(torch_utils.ModuleManager.assign_dtype_run, self.model.backbone, self.model.sampler.forward, dtype, force_effect_module=False)
             self.model.vae.encode = partial(torch_utils.ModuleManager.assign_dtype_run, self.model.vae, self.model.vae.encode, dtype, force_effect_module=False)
             self.model.vae.decode = partial(torch_utils.ModuleManager.assign_dtype_run, self.model.vae, self.model.vae.decode, dtype, force_effect_module=False)
 
@@ -902,7 +907,7 @@ class SD(DiProcess):
             # explicitly define the device for the model
             self.model._device = self.device
             self.model.make_txt_cond = partial(torch_utils.ModuleManager.low_memory_run, self.model.cond, self.model.make_txt_cond, self.device)
-            self.model.p_sample_loop = partial(torch_utils.ModuleManager.low_memory_run, self.model.backbone, self.model.p_sample_loop, self.device)
+            self.model.sampler.forward = partial(torch_utils.ModuleManager.low_memory_run, self.model.backbone, self.model.sampler.forward, self.device)
             self.model.vae.encode = partial(torch_utils.ModuleManager.low_memory_run, self.model.vae, self.model.vae.encode, self.device)
             self.model.vae.decode = partial(torch_utils.ModuleManager.low_memory_run, self.model.vae, self.model.vae.decode, self.device)
 

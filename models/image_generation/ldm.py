@@ -290,7 +290,7 @@ class Model(ddim.Model):
         else:  # img2img
             x, t0 = self.make_image_cond(x)
 
-        z = self.sapmler(self.diffuse, x, t0=t0, **kwargs)
+        z = self.sampler(self.diffuse, x, t0=t0, **kwargs)
         z = z / self.scale_factor
 
         if mask_x is not None and len(mask_x):

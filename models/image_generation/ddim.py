@@ -12,7 +12,7 @@ class Model(Model_):
     """
 
     def make_sampler(self, sampler_config=Config.sampler_config, **kwargs):
-        self.sapmler = DDIMSampler(**sampler_config)
+        self.sampler = DDIMSampler(**sampler_config)
 
 
 class DDIMSampler(Sampler):

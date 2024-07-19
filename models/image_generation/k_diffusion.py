@@ -186,6 +186,7 @@ class EDMVScaling(Scaling):
 
 class Sampler(nn.Module):
     schedule_mapping = {
+        Config.LEGACY_DDPM: LegacyDDPMSchedule,
         Config.EDM: EDMSchedule,
         Config.EXPONENTIAL: ExponentialSchedule,
         Config.POLY_EXPONENTIAL: PolyExponentialSchedule,
@@ -199,13 +200,15 @@ class Sampler(nn.Module):
         Config.PRED_EDM_V: EDMVScaling
     }
 
+    self_condition = False
+
     def __init__(self, schedule: Schedule | str, scaling: Scaling | str,
                  schedule_config=dict(), scaling_config=dict(),
                  **kwargs):
         super().__init__()
         self.__dict__.update(kwargs)
         self.schedule = self.schedule_mapping.get(schedule, schedule)(**schedule_config)
-        self.scaling = self.schedule_mapping.get(scaling, scaling)(**scaling_config)
+        self.scaling = self.scaling_mapping.get(scaling, scaling)(**scaling_config)
 
     def forward(self, diffuse_func, x_t, t0=None, callback_fn=None, **kwargs):
         timestep_seq = self.schedule.make_timesteps(t0)
@@ -247,7 +250,7 @@ class EulerSampler(Sampler):
 
         gamma = torch.where(
             torch.logical_and(self.s_tmin <= sigma, sigma <= self.s_tmax),
-            min(self.s_churn / (self.num_steps - 1), 2 ** 0.5 - 1),
+            min(self.s_churn / (self.schedule.num_steps - 1), 2 ** 0.5 - 1),
             0.
         ).to(sigma)
 
