@@ -35,11 +35,6 @@ class Config(sdv2.Config):
         scale_factor=0.13025,
     )
 
-    xl_sampler = dict(
-        name='Euler',
-        **k_diffusion.Config.get(),
-    )
-
     # for vanilla v2 model
     legacy_v2_embedder = dict(
         name=CLIP,
@@ -139,7 +134,7 @@ class Config(sdv2.Config):
             # support sdxl-base-*
             xl_base=dict(
                 model_config=cls.xl_model,
-                sampler_config=cls.xl_sampler,
+                sampler_config=cls.v1_5sampler,
                 cond_config=cls.xl_base_cond,
                 vae_config=cls.vae,
                 backbone_config=cls.xl_base_backbone
@@ -148,7 +143,7 @@ class Config(sdv2.Config):
             # support sdxl-refiner-*
             xl_refiner=dict(
                 model_config=cls.xl_model,
-                sampler_config=cls.xl_sampler,
+                sampler_config=cls.v1_5sampler,
                 cond_config=cls.xl_refiner_cond,
                 vae_config=cls.vae,
                 backbone_config=cls.xl_refiner_backbone
@@ -157,7 +152,7 @@ class Config(sdv2.Config):
             # support sdxl-Turbo-*
             xl_turbo=dict(
                 model_config=cls.xl_model,
-                sampler_config=cls.xl_sampler,
+                sampler_config=cls.v1_5sampler,
                 cond_config=cls.xl_base_cond,
                 vae_config=cls.vae,
                 backbone_config=cls.xl_base_backbone
@@ -230,13 +225,6 @@ class Model(ldm.Model):
 
     # for video
     num_frames = 14
-
-    sampler_mapping = {
-        Config.EULER: k_diffusion.EulerSampler
-    }
-
-    def make_sampler(self, sampler_config=Config.sampler_config, **kwargs):
-        self.sampler = self.sampler_mapping.get(sampler_config['name'], sampler_config['name'])(**sampler_config)
 
     def make_cond(self, cond_config=[], **kwargs):
         return EmbedderWarp(cond_config)

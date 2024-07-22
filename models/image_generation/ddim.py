@@ -1,6 +1,6 @@
 import torch
 import numpy as np
-from .ddpm import Model as Model_, extract, Config, Sampler
+from .ddpm import Model as Model_, extract, Config, Sampler as Sampler_
 
 
 class Model(Model_):
@@ -12,10 +12,10 @@ class Model(Model_):
     """
 
     def make_sampler(self, sampler_config=Config.sampler_config, **kwargs):
-        self.sampler = DDIMSampler(**sampler_config)
+        self.sampler = Sampler(**sampler_config)
 
 
-class DDIMSampler(Sampler):
+class Sampler(Sampler_):
     ddim_eta = 0.
     num_steps = 50
     ddim_discr_method = 'uniform'

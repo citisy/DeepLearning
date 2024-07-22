@@ -7,7 +7,7 @@ from torch import nn, einsum
 from einops import rearrange, repeat, reduce
 from utils import torch_utils
 from .ddpm import RandomOrLearnedSinusoidalPosEmb, SinusoidalPosEmb, ResnetBlock, make_norm, extract
-from . import VAE, ddim
+from . import VAE, ddpm, ddim, k_diffusion
 from ..layers import Linear, Conv, Upsample, Downsample
 from ..attentions import CrossAttention2D, get_attention_input
 from .. import bundles
@@ -25,7 +25,17 @@ class Config(ddim.Config):
     TIMESTEP = 'timestep'
     SEQUENTIAL = 'sequential'
 
+    # for sampler
+    DDPM = 'ddpm'
+    DDIM = 'ddim'
+    EULER = 'Euler'
+
     model = dict()
+
+    sampler = dict(
+        name=DDIM,
+        **ddim.Config.sampler_config,
+    )
 
     backbone = dict(
         num_heads=8,
@@ -45,7 +55,7 @@ class Config(ddim.Config):
         config_dict = dict(
             vanilla=dict(
                 model_config=cls.model,
-                sampler_config=cls.sampler_config,
+                sampler_config=cls.sampler,
                 backbone_config=cls.backbone,
                 vae_config=cls.vae
             )
@@ -226,6 +236,15 @@ class Model(ddim.Model):
     strength = 0.75
     cond_trainable = False
     vae_trainable = False
+
+    sampler_mapping = {
+        Config.DDPM: ddpm.Sampler,
+        Config.DDIM: ddim.Sampler,
+        Config.EULER: k_diffusion.EulerSampler
+    }
+
+    def make_sampler(self, sampler_config=Config.sampler_config, **kwargs):
+        self.sampler = self.sampler_mapping.get(sampler_config['name'], sampler_config['name'])(**sampler_config)
 
     def make_cond(self, **kwargs):
         raise NotImplementedError

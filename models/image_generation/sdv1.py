@@ -1,6 +1,6 @@
 import torch
 from torch import nn, einsum
-from . import ldm
+from . import ldm, k_diffusion
 from .ldm import WeightLoader
 from ..text_image_pretrain import CLIP
 
@@ -21,19 +21,32 @@ class Config(ldm.Config):
         layer=LAST,
     )
 
+    v1_5sampler = dict(
+        name=ldm.Config.EULER,
+        **k_diffusion.Config.get(),
+    )
+
     default_model = 'v1'
 
     @classmethod
     def make_full_config(cls):
-        config_dict = dict(
-            v1=dict(
+        config_dict = {
+            'v1': dict(
                 model_config=cls.model,
-                sampler_config=cls.sampler_config,
+                sampler_config=cls.sampler,
+                backbone_config=cls.backbone,
+                vae_config=cls.vae,
+                cond_config=cls.cond,
+            ),
+
+            'v1.5': dict(
+                model_config=cls.model,
+                sampler_config=cls.v1_5sampler,
                 backbone_config=cls.backbone,
                 vae_config=cls.vae,
                 cond_config=cls.cond,
             )
-        )
+        }
         return config_dict
 
 
@@ -69,7 +82,7 @@ class CLIPEmbedder(nn.Module):
         x = self.transformer.text_model.backbone(text_ids, callback_fn=self.callback)
         pooled_output = None
 
-        if self.layer == Config.RAW_HIDDEN:     # without norm
+        if self.layer == Config.RAW_HIDDEN:  # without norm
             z = self.callback.cache_hidden_state
 
         elif self.layer == Config.NORM_HIDDEN:  # with norm
