@@ -51,11 +51,18 @@ class Config(bundles.Config):
         }
 
 
+def append_dims(x, target_dims):
+    """Appends dimensions to the end of a tensor until it has target_dims dimensions."""
+    dims_to_append = target_dims - x.ndim
+    if dims_to_append < 0:
+        raise ValueError(f'input has {x.ndim} dims but target_dims is {target_dims}, which is less')
+    return x[(...,) + (None,) * dims_to_append]
+
+
 def extract(a, t, x_shape):
     """return a_t with shape of (b, 1, 1, ...)"""
-    b, *_ = t.shape
     out = a.gather(-1, t)
-    return out.reshape(b, *((1,) * (len(x_shape) - 1)))
+    return append_dims(out, len(x_shape))
 
 
 def linear_beta_schedule(timesteps, start=None, end=None):

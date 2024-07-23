@@ -229,7 +229,7 @@ class Model(ldm.Model):
     def make_cond(self, cond_config=[], **kwargs):
         return EmbedderWarp(cond_config)
 
-    def make_txt_cond(self, text, neg_text=None, **kwargs) -> dict:
+    def make_txt_cond(self, text, neg_text=None, text_weights=None, neg_text_weights=None, **kwargs) -> dict:
         default_value = {
             Config.ORIGINAL_SIZE_AS_TUPLE: self.image_size,
             Config.CROP_COORDS_TOP_LEFT: (0, 0),
@@ -252,6 +252,12 @@ class Model(ldm.Model):
             value_dicts.append(value_dict)
 
         c_values, uc_values = self.cond(value_dicts, return_uc=self.scale > 1 and neg_text is not None)
+
+        if text_weights is not None:
+            c_values[self.cond.COND] = self.cond_with_weights(c_values[self.cond.COND], text_weights)
+
+        if neg_text is not None and neg_text_weights is not None:
+            uc_values[self.cond.COND] = self.cond_with_weights(uc_values[self.cond.COND], neg_text_weights)
 
         return dict(
             c_values=c_values,

@@ -2,7 +2,7 @@ import torch
 from torch import nn, einsum
 import numpy as np
 import math
-from .ddpm import extract
+from .ddpm import extract, append_dims
 from .. import bundles
 
 
@@ -234,6 +234,13 @@ class EulerSampler(Sampler):
     s_tmin = 0.0
     s_tmax = 999.0
     s_churn = 0.0
+
+    def loss(self, diffuse_func, x_0, t, noise=None, offset_noise_strength=None, **kwargs):
+        c_skip, c_out, c_in = [utils.append_dims(x, input.ndim) for x in self.get_scalings(sigma)]
+        noised_input = input + noise * utils.append_dims(sigma, input.ndim)
+        model_output = self.inner_model(noised_input * c_in, self.sigma_to_t(sigma), **kwargs)
+        target = (input - c_skip * noised_input) / c_out
+        return (model_output - target).pow(2).flatten(1).mean(1)
 
     def forward(self, diffuse_func, x_t, **kwargs):
         x_t *= torch.sqrt(1.0 + self.schedule.sigmas[-1] ** 2.0)

@@ -1010,10 +1010,13 @@ class SD(DiProcess):
 
                 images.append(torch.from_numpy(image).to(self.device, non_blocking=True, dtype=torch.float))
 
-        inputs = self.tokenizer.encode_paragraphs(texts)
+        inputs = self.tokenizer.encode_attention_paragraphs(texts)
         texts = torch.tensor(inputs['segments_ids']).to(self.device)
-        neg_inputs = self.tokenizer.encode_paragraphs(neg_texts)
+        text_weights = torch.tensor(inputs['segments_weights']).to(self.device)
+
+        neg_inputs = self.tokenizer.encode_attention_paragraphs(neg_texts)
         neg_texts = torch.tensor(neg_inputs['segments_ids']).to(self.device)
+        neg_text_weights = torch.tensor(neg_inputs['segments_weights']).to(self.device)
 
         if images:
             images = torch.stack(images)
@@ -1028,7 +1031,11 @@ class SD(DiProcess):
         for name, model in self.models.items():
             # note, something wrong with autocast, got inf result
             # with torch.cuda.amp.autocast(True):
-            fake_x = model(x=images, text=texts, neg_text=neg_texts, mask_x=mask_images)
+            fake_x = model(
+                text=texts, neg_text=neg_texts,
+                text_weights=text_weights, neg_text_weights=neg_text_weights,
+                x=images, mask_x=mask_images,
+            )
             fake_x = (fake_x + 1) * 0.5  # unnormalize, [-1, 1] -> [0, 1]
             fake_x = fake_x.data.mul(255).clamp_(0, 255).permute(0, 2, 3, 1).to("cpu", torch.uint8).numpy()
             model_results[name] = dict(

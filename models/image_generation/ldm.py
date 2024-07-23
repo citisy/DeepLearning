@@ -6,7 +6,7 @@ from torch.utils.checkpoint import checkpoint
 from torch import nn, einsum
 from einops import rearrange, repeat, reduce
 from utils import torch_utils
-from .ddpm import RandomOrLearnedSinusoidalPosEmb, SinusoidalPosEmb, ResnetBlock, make_norm, extract
+from .ddpm import RandomOrLearnedSinusoidalPosEmb, SinusoidalPosEmb, ResnetBlock, make_norm, extract, append_dims
 from . import VAE, ddpm, ddim, k_diffusion
 from ..layers import Linear, Conv, Upsample, Downsample
 from ..attentions import CrossAttention2D, get_attention_input
@@ -321,16 +321,30 @@ class Model(ddim.Model):
 
         return images
 
-    def make_txt_cond(self, text, neg_text=None, **kwargs) -> dict:
+    def make_txt_cond(self, text, neg_text=None, text_weights=None, neg_text_weights=None, **kwargs) -> dict:
         c = self.cond.encode(text)
         uc = None
         if self.scale > 1.0 and neg_text is not None:
             uc = self.cond.encode(neg_text)
 
+        if text_weights is not None:
+            c = self.cond_with_weights(c, text_weights)
+
+        if neg_text is not None and neg_text_weights is not None:
+            uc = self.cond_with_weights(uc, neg_text_weights)
+
         return dict(
             cond=c,
             un_cond=uc
         )
+
+    def cond_with_weights(self, c, weights):
+        # restoring original mean is likely not correct, but it seems to work well to prevent artifacts that happen otherwise
+        original_mean = c.mean()
+        c = c * append_dims(c, len(c.shape)).expand(c.shape)
+        new_mean = self.z.mean()
+        c = c * (original_mean / new_mean)
+        return c
 
     def make_image_cond(self, images, t0=None, noise=None):
         z, _, _ = self.vae.encode(images)
