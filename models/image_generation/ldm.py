@@ -341,8 +341,8 @@ class Model(ddim.Model):
     def cond_with_weights(self, c, weights):
         # restoring original mean is likely not correct, but it seems to work well to prevent artifacts that happen otherwise
         original_mean = c.mean()
-        c = c * append_dims(c, len(c.shape)).expand(c.shape)
-        new_mean = self.z.mean()
+        c = c * append_dims(weights, len(c.shape)).expand(c.shape)
+        new_mean = c.mean()
         c = c * (original_mean / new_mean)
         return c
 
