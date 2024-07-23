@@ -1,0 +1,15 @@
+*/.spyproject/
+*/.idea/
+*/.git/
+
+# byte-compiled / optimized / DLL files
+*/__pycache__/
+*.py[cod]
+
+# log files
+logs/
+
+# caches files
+*cache/
+
+model_data/
