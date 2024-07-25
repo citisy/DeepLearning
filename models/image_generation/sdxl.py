@@ -229,7 +229,7 @@ class Model(ldm.Model):
     def make_cond(self, cond_config=[], **kwargs):
         return EmbedderWarp(cond_config)
 
-    def make_txt_cond(self, text, neg_text=None, text_weights=None, neg_text_weights=None, **kwargs) -> dict:
+    def make_txt_cond(self, text, neg_text=None, text_weights=None, neg_text_weights=None, scale=7.5, **kwargs) -> dict:
         default_value = {
             Config.ORIGINAL_SIZE_AS_TUPLE: self.image_size,
             Config.CROP_COORDS_TOP_LEFT: (0, 0),
@@ -251,7 +251,7 @@ class Model(ldm.Model):
 
             value_dicts.append(value_dict)
 
-        c_values, uc_values = self.cond(value_dicts, return_uc=self.scale > 1 and neg_text is not None)
+        c_values, uc_values = self.cond(value_dicts, return_uc=scale > 1 and neg_text is not None)
 
         if text_weights is not None:
             c_values[self.cond.COND] = self.cond_with_weights(c_values[self.cond.COND], text_weights)
@@ -264,7 +264,7 @@ class Model(ldm.Model):
             uc_values=uc_values
         )
 
-    def diffuse(self, x, time, c_values=None, uc_values=None, **kwargs):
+    def diffuse(self, x, time, c_values=None, uc_values=None, scale=7.5, **kwargs):
         if uc_values is not None:
             x = torch.cat([x] * 2)
             time = torch.cat([time] * 2)
@@ -278,15 +278,15 @@ class Model(ldm.Model):
         if uc_values is not None:
             e_t_uncond, e_t = z.chunk(2)
 
-            if isinstance(self.scale, list):
-                scale = torch.tensor(self.scale).to(e_t_uncond.device)
+            if isinstance(scale, list):
+                scale = torch.tensor(scale).to(e_t_uncond.device)
                 scale = repeat(scale, "1 t -> b t", b=e_t_uncond.shape[0])
                 scale = scale.view((*scale.shape, *e_t.shape[2:]))
                 e_t_uncond = rearrange(e_t_uncond, "(b t) ... -> b t ...", t=self.num_frames)
                 e_t = rearrange(e_t, "(b t) ... -> b t ...", t=self.num_frames)
                 e_t = rearrange(e_t_uncond + scale * (e_t - e_t_uncond), "b t ... -> (b t) ...")
             else:
-                e_t = e_t_uncond + self.scale * (e_t - e_t_uncond)
+                e_t = e_t_uncond + scale * (e_t - e_t_uncond)
 
         else:
             e_t = z

@@ -161,11 +161,9 @@ class Model(nn.ModuleList):
     def forward(self, x=None, **kwargs):
         if self.training:
             # if training, x is x0, the real image
-            b, c, h, w = x.shape
-            t = torch.randint(0, self.timesteps, (b,), device=x.device).long()
-            return {'loss': self.sampler.loss(self.diffuse, x, t, **kwargs)}
+            return {'loss': self.sampler.loss(self.diffuse, x, **kwargs)}
         else:
-            # if predicting, x is xt, the noise
+            # if predicting, x is x_T, the noise
             images = self.post_process(x, **kwargs)
             return images
 
@@ -180,7 +178,7 @@ class Model(nn.ModuleList):
         return self.image_size
 
     def gen_x_t(self, batch_size):
-        return torch.randn((batch_size, self.diffuse_in_ch, *self.diffuse_in_size), device=self.device, dtype=self.dtype)
+        return torch.randn((batch_size, self.diffuse_in_ch, *self.diffuse_in_size[::-1]), device=self.device, dtype=self.dtype)
 
     def post_process(self, x_t, **kwargs):
         return self.sampler(self.diffuse, x_t, **kwargs)
@@ -254,13 +252,19 @@ class Sampler(nn.Module):
         elif self.objective == Config.PRED_V:
             register_buffer('loss_weight', maybe_clipped_snr / (snr + 1))
 
-    def make_timesteps(self, t0=None):
+    @property
+    def num_steps(self):
+        return self.timesteps
+
+    def make_timesteps(self, i0=None):
         timestep_seq = range(0, self.timesteps)
-        if t0:
-            timestep_seq = timestep_seq[:t0]
+        if i0:
+            timestep_seq = timestep_seq[:i0]
         return timestep_seq
 
-    def loss(self, diffuse_func, x_0, t, noise=None, offset_noise_strength=None, **kwargs):
+    def loss(self, diffuse_func, x_0, noise=None, offset_noise_strength=None, **kwargs):
+        b, c, h, w = x_0.shape
+        t = torch.randint(0, self.sampler.timesteps, (b,), device=x_0.device).long()
         if noise is None:
             noise = torch.randn_like(x_0)
 
@@ -284,7 +288,7 @@ class Sampler(nn.Module):
                 x_self_cond, _ = self.model_predictions(diffuse_func, x_t, t)
                 x_self_cond.detach_()
 
-        pred = diffuse_func(x_t, t, x_self_cond)
+        pred = self.model_predictions(diffuse_func, x_t, t, x_self_cond)
 
         if self.objective == Config.PRED_Z:
             real = noise
@@ -307,8 +311,8 @@ class Sampler(nn.Module):
 
         return self.predict_x_t(x0, t, noise)
 
-    def forward(self, diffuse_func, x_t, t0=None, callback_fn=None, **kwargs):
-        timestep_seq = self.make_timesteps(t0)
+    def forward(self, diffuse_func, x_t, i0=None, callback_fn=None, **kwargs):
+        timestep_seq = self.make_timesteps(i0)
         x_0 = None
         if callback_fn:
             callback_fn(x_t, self.timesteps)
@@ -320,6 +324,9 @@ class Sampler(nn.Module):
             if callback_fn:
                 callback_fn(x_t, t)
 
+        return x_t
+
+    def scale_xt(self, x_t):
         return x_t
 
     def p_sample(self, diffuse_func, x_t, t: int, x_self_cond=None, clip_denoised=True, **kwargs):

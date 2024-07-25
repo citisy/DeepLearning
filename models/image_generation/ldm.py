@@ -230,10 +230,7 @@ class Model(ddim.Model):
         - https://github.com/CompVis/stable-diffusion
     """
 
-    # can change in model_config
-    scale = 7.5  # can change dynamically
     scale_factor = 0.18215
-    strength = 0.75
     cond_trainable = False
     vae_trainable = False
 
@@ -287,11 +284,15 @@ class Model(ddim.Model):
                 original images, if given, run the img2img mode
             text (torch.Tensor): (b, l)
                 positive prompt
+            neg_text (torch.Tensor): (b, l)
+            text_weights (torch.Tensor): (b, l)
+            neg_text_weights (torch.Tensor): (b, l)
             mask_x (torch.Tensor): (b, 1, h, w)
                 mask images, if given, run the inpaint mode
                 suggest has the same (h, w) of x
                 fall in [0, 1], 0 gives masked
-            **kwargs:
+            scale:
+            strength:
 
         Returns:
             images
@@ -304,27 +305,29 @@ class Model(ddim.Model):
         # make x_t
         if x is None or not len(x):  # txt2img
             x = self.gen_x_t(b)
-            t0 = None
+            x = self.sampler.scale_x_t(x)
+            z0 = None
 
         else:  # img2img
-            x, t0 = self.make_image_cond(x)
+            x, z0, i0 = self.make_image_cond(x, **kwargs)
+            kwargs.update(i0=i0)
 
-        z = self.sampler(self.diffuse, x, t0=t0, **kwargs)
+        z = self.sampler(self.diffuse, x, **kwargs)
         z = z / self.scale_factor
 
-        if mask_x is not None and len(mask_x):
+        if x is not None and len(x) and mask_x is not None and len(mask_x):
             # todo: apply for different conditioning_key
             mask_x = torch.nn.functional.interpolate(mask_x, size=z.shape[-2:])
-            z = x * mask_x + z * (1 - mask_x)
+            z = z0 * mask_x + z * (1 - mask_x)
 
         images = self.vae.decode(z)
 
         return images
 
-    def make_txt_cond(self, text, neg_text=None, text_weights=None, neg_text_weights=None, **kwargs) -> dict:
+    def make_txt_cond(self, text, neg_text=None, text_weights=None, neg_text_weights=None, scale=7.5, **kwargs) -> dict:
         c = self.cond.encode(text)
         uc = None
-        if self.scale > 1.0 and neg_text is not None:
+        if scale > 1.0 and neg_text is not None:
             uc = self.cond.encode(neg_text)
 
         if text_weights is not None:
@@ -346,18 +349,20 @@ class Model(ddim.Model):
         c = c * (original_mean / new_mean)
         return c
 
-    def make_image_cond(self, images, t0=None, noise=None):
+    def make_image_cond(self, images, i0=None, noise=None, strength=0.75, **kwargs):
         z, _, _ = self.vae.encode(images)
         x0 = self.scale_factor * z
 
-        timestep_seq = self.make_timesteps()
-        if t0 is None:
-            t0 = int(self.strength * self.num_steps)
-        t = torch.full((x0.shape[0],), timestep_seq[t0], device=x0.device, dtype=torch.long)
-        xt = self.q_sample(x0, t, noise=noise)
-        return xt, t0
+        if i0 is None:
+            i0 = int(strength * self.sampler.num_steps)
 
-    def diffuse(self, x, time, cond=None, un_cond=None, **kwargs):
+        timestep_seq = self.sampler.make_timesteps(i0)
+        t = timestep_seq[0]
+        t = torch.full((x0.shape[0],), t, device=x0.device, dtype=torch.long)
+        xt = self.sampler.q_sample(x0, t, noise=noise)
+        return xt, z, i0
+
+    def diffuse(self, x, time, cond=None, un_cond=None, scale=7.5, **kwargs):
         if un_cond is not None:
             x = torch.cat([x] * 2)
             time = torch.cat([time] * 2)
@@ -366,7 +371,7 @@ class Model(ddim.Model):
         z = self.backbone(x, timesteps=time, context=cond)
         if un_cond is not None:
             e_t_uncond, e_t = z.chunk(2)
-            e_t = e_t_uncond + self.scale * (e_t - e_t_uncond)
+            e_t = e_t_uncond + scale * (e_t - e_t_uncond)
         else:
             e_t = z
 

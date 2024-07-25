@@ -20,7 +20,7 @@ class Sampler(Sampler_):
     num_steps = 50
     ddim_discr_method = 'uniform'
 
-    def make_timesteps(self, t0=None):
+    def make_timesteps(self, i0=None):
         if self.ddim_discr_method == 'uniform':
             c = self.timesteps // self.num_steps
             timestep_seq = np.asarray(list(range(0, self.timesteps, c)))
@@ -29,14 +29,14 @@ class Sampler(Sampler_):
         else:
             raise NotImplementedError(f'There is no ddim discretization method called "{self.ddim_discr_method}"')
 
-        if t0:
-            timestep_seq = timestep_seq[:t0]
+        if i0:
+            timestep_seq = timestep_seq[:i0]
 
         # note, add one to get the final alpha values right (the ones from first scale to data during sampling)
         return timestep_seq + 1
 
-    def forward(self, diffuse_func, x_t, t0=None, callback_fn=None, **kwargs):
-        timestep_seq = self.make_timesteps(t0)
+    def forward(self, diffuse_func, x_t, i0=None, callback_fn=None, **kwargs):
+        timestep_seq = self.make_timesteps(i0)
         # previous sequence
         timestep_prev_seq = np.append(np.array([0]), timestep_seq[:-1])
         x_0 = None
