@@ -35,8 +35,8 @@ class SegProcess(Process):
     use_scaler = True
     use_scheduler = True
 
-    def set_optimizer(self):
-        self.optimizer = optim.SGD(self.model.parameters(), lr=0.001, momentum=0.9, weight_decay=1e-4)
+    def set_optimizer(self, lr=0.001, momentum=0.9, weight_decay=1e-4, **kwargs):
+        self.optimizer = optim.SGD(self.model.parameters(), lr=lr, momentum=momentum, weight_decay=weight_decay)
 
     def get_model_inputs(self, rets, train=True):
         images = [torch.from_numpy(ret.pop('image')).to(self.device, non_blocking=True, dtype=torch.float) for ret in rets]

@@ -66,9 +66,9 @@ class Pix2pix(GanProcess):
             input_size=self.input_size
         )
 
-    def set_optimizer(self):
-        optimizer_g = optim.Adam(self.model.net_g.parameters(), lr=0.0002, betas=(0.5, 0.999))
-        optimizer_d = optim.Adam(self.model.net_d.parameters(), lr=0.0002, betas=(0.5, 0.999))
+    def set_optimizer(self, lr_g=0.00002, betas_g=(0.5, 0.999), lr_d=0.00002, betas_d=(0.5, 0.999), **kwargs):
+        optimizer_g = optim.Adam(self.model.net_g.parameters(), lr=lr_g, betas=betas_g)
+        optimizer_d = optim.Adam(self.model.net_d.parameters(), lr=lr_d, betas=betas_d)
         self.optimizer = GanOptimizer(optimizer_d, optimizer_g)
 
     def get_model_inputs(self, rets, train=True):
@@ -159,9 +159,9 @@ class CycleGan(GanProcess):
             input_size=self.input_size
         )
 
-    def set_optimizer(self):
-        optimizer_g = optim.Adam(itertools.chain(self.model.net_g_a.parameters(), self.model.net_g_b.parameters()), lr=0.00005, betas=(0.5, 0.999))
-        optimizer_d = optim.Adam(itertools.chain(self.model.net_d_a.parameters(), self.model.net_d_b.parameters()), lr=0.00005, betas=(0.5, 0.999))
+    def set_optimizer(self, lr_g=0.00005, betas_g=(0.5, 0.999), lr_d=0.00005, betas_d=(0.5, 0.999), **kwargs):
+        optimizer_g = optim.Adam(itertools.chain(self.model.net_g_a.parameters(), self.model.net_g_b.parameters()), lr=lr_g, betas=betas_g)
+        optimizer_d = optim.Adam(itertools.chain(self.model.net_d_a.parameters(), self.model.net_d_b.parameters()), lr=lr_d, betas=betas_d)
         self.optimizer = GanOptimizer(optimizer_d, optimizer_g)
 
     def model_info(self, depth=None, **kwargs):

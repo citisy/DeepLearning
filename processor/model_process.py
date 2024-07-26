@@ -34,6 +34,7 @@ class CheckpointHooks:
             WEIGHT: self.save_weight,
             JIT: self.save_torchscript,
             TRITON: self.save_triton,
+            SAFETENSORS: self.save_safetensors
         }
 
         self.load_funcs = {
@@ -88,11 +89,19 @@ class CheckpointHooks:
             torch.save(additional_items, additional_path, **kwargs)
 
         else:
-            ckpt = {
-                self.model_name: self.model.state_dict(),
-                **additional_items
-            }
+            if raw_tensors:
+                ckpt = self.model.state_dict()
+
+            else:
+                ckpt = {
+                    self.model_name: self.model.state_dict(),
+                    **additional_items
+                }
+
             torch.save(ckpt, save_path, **kwargs)
+
+    def save_safetensors(self, save_path):
+        torch_utils.Export.to_safetensors(self.model.state_dict(), save_path)
 
     device: Union[str, int, torch.device] = None
 
@@ -174,9 +183,9 @@ class CheckpointHooks:
 
         self.load_state_dict(state_dict, include, exclude, cache)
 
-    def load_safetensors(self, save_path, include=None, exclude=None, cache=False, **kwargs):
-        state_dict = torch_utils.Load.from_save_tensor(save_path, **kwargs)
-        self.load_state_dict(state_dict, include, exclude, cache)
+    def load_safetensors(self, save_path, **kwargs):
+        state_dict = torch_utils.Load.from_safetensors(save_path, **kwargs)
+        self.model.load_state_dict(state_dict, strict=False)
 
     def load_state_dict(self, state_dict: dict, include=None, exclude=None, cache=False, **kwargs):
         if self.model_name in state_dict:
@@ -250,13 +259,13 @@ class ModelHooks:
 
     optimizer: Optional
 
-    def set_optimizer(self):
-        self.optimizer = optim.Adam(self.model.parameters())
+    def set_optimizer(self, lr=1e-3, betas=(0.9, 0.999), **kwargs):
+        self.optimizer = optim.Adam(self.model.parameters(), lr=lr, betas=betas)
 
     use_early_stop = True
     stopper: Optional
 
-    def set_stopper(self):
+    def set_stopper(self, **kwargs):
         if self.use_early_stop:
             from utils.torch_utils import EarlyStopping
 
@@ -265,20 +274,17 @@ class ModelHooks:
             elif self.check_strategy == STEP:
                 self.stopper = EarlyStopping(patience=10 * 5000, min_period=10 * 5000, ignore_min_score=0.1, stdout_method=self.log)
 
-    lrf = 0.01
-
-    def lf(self, x, max_epoch):
-        # return (1 - x / max_epoch) * (1.0 - self.lrf) + self.lrf
-        return ((1 - math.cos(x * math.pi / max_epoch)) / 2) * (self.lrf - 1) + 1  # cos_lr
-
     scheduler: Optional
     use_scheduler = False
     scheduler_strategy = EPOCH
 
-    def set_scheduler(self, max_epoch):
+    def set_scheduler(self, max_epoch, lr_lambda=None, lrf=0.01, **kwargs):
         if self.use_scheduler:
             if self.scheduler_strategy == EPOCH:
-                self.scheduler = optim.lr_scheduler.LambdaLR(self.optimizer, lr_lambda=lambda x: self.lf(x, max_epoch))
+                if not lr_lambda:
+                    # lr_lambda = lambda x: (1 - x / max_epoch) * (1.0 - lrf) + lrf
+                    lr_lambda = lambda x: ((1 - math.cos(x * math.pi / max_epoch)) / 2) * (lrf - 1) + 1  # cos_lr
+                self.scheduler = optim.lr_scheduler.LambdaLR(self.optimizer, lr_lambda=lr_lambda)
                 self.scheduler.last_epoch = -1
 
             elif self.scheduler_strategy == STEP:
@@ -294,7 +300,7 @@ class ModelHooks:
     use_scaler = False
     scaler: Optional
 
-    def set_scaler(self):
+    def set_scaler(self, **kwargs):
         if self.use_scaler:
             self.scaler = torch.cuda.amp.GradScaler(enabled=True)
 
@@ -411,11 +417,9 @@ class ModelHooks:
         self.train_container['end_flag'] = False
         self.train_container['last_check_time'] = time.time()
 
-        for item in ('optimizer', 'stopper', 'scaler'):
+        for item in ('optimizer', 'stopper', 'scaler', 'scheduler'):
             if not hasattr(self, item) or getattr(self, item) is None:
-                getattr(self, f'set_{item}')()
-
-        self.set_scheduler(max_epoch=max_epoch)
+                getattr(self, f'set_{item}')(max_epoch=max_epoch, **kwargs)
 
         for func, params in self.train_start_container.items():
             func(**params)

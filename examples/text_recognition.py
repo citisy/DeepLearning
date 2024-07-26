@@ -10,6 +10,9 @@ from processor import Process, DataHooks, bundled, BaseImgDataset, MixDataset, I
 
 
 class TrProcess(Process):
+    def set_optimizer(self, lr=0.0005, **kwargs):
+        self.optimizer = optim.Adam(self.model.parameters(), lr=lr)
+
     def get_model_inputs(self, rets, train=True):
         images = [torch.from_numpy(ret.pop('image')).to(self.device, non_blocking=True, dtype=torch.float) for ret in rets]
         images = torch.stack(images)
@@ -249,9 +252,6 @@ class CRNN(TrProcess):
             char2id=self.word_dict
         )
 
-    def set_optimizer(self):
-        self.optimizer = optim.Adam(self.model.parameters(), lr=0.0005)
-
 
 class CRNN_MJSynth(CRNN, MJSynth):
     """
@@ -300,9 +300,6 @@ class Svtr(TrProcess):
             max_seq_len=self.max_seq_len,
             char2id=self.word_dict
         )
-
-    def set_optimizer(self):
-        self.optimizer = optim.Adam(self.model.parameters(), lr=0.0005)
 
 
 class Svtr_MJSynth(Svtr, MJSynth):

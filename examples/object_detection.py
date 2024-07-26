@@ -35,6 +35,10 @@ class OdProcess(Process):
     use_scaler = True
     use_scheduler = True
 
+    n_classes: int
+    in_ch: int = 3
+    input_size: int
+
     def get_model_inputs(self, rets, train=True):
         images = [torch.from_numpy(ret.pop('image')).to(self.device, non_blocking=True, dtype=torch.float) for ret in rets]
         images = torch.stack(images)
@@ -293,7 +297,7 @@ class YoloV5(OdProcess):
             in_module_config=dict(in_ch=self.in_ch, input_size=self.input_size),
         )
 
-    def set_optimizer(self):
+    def set_optimizer(self, lr=0.01, momentum=0.937, **kwargs):
         g = [], [], []  # optimizer parameter groups
         bn = tuple(v for k, v in nn.__dict__.items() if 'Norm' in k)  # normalization layers, i.e. BatchNorm2d()
         for v in self.model.modules():
@@ -306,7 +310,7 @@ class YoloV5(OdProcess):
 
         weight_decay = 0.0005
 
-        self.optimizer = optim.SGD(g[2], lr=0.01, momentum=0.937, nesterov=True)
+        self.optimizer = optim.SGD(g[2], lr=lr, momentum=momentum, nesterov=True)
         self.optimizer.add_param_group({'params': g[0], 'weight_decay': weight_decay})  # add g0 with weight_decay
         self.optimizer.add_param_group({'params': g[1]})  # add g1 (BatchNorm2d weights)
 

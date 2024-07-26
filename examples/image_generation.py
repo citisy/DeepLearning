@@ -209,9 +209,9 @@ class WGAN(GanProcess):
             hidden_ch=self.hidden_ch,
         )
 
-    def set_optimizer(self):
-        optimizer_d = optim.Adam(self.model.net_d.parameters(), lr=0.00005, betas=(0.5, 0.999))
-        optimizer_g = optim.Adam(self.model.net_g.parameters(), lr=0.00005, betas=(0.5, 0.999))
+    def set_optimizer(self, lr_g=0.00005, betas_g=(0.5, 0.999), lr_d=0.00005, betas_d=(0.5, 0.999), **kwargs):
+        optimizer_d = optim.Adam(self.model.net_d.parameters(), lr=lr_d, betas=betas_d)
+        optimizer_g = optim.Adam(self.model.net_g.parameters(), lr=lr_g, betas=betas_g)
         self.optimizer = GanOptimizer(optimizer_d, optimizer_g)
 
     def on_train_step(self, rets, batch_size=16, **kwargs) -> dict:
@@ -436,10 +436,10 @@ class StyleGan(GanProcess):
         """init some params"""
         self.model.net_d(torch.randn((1, self.in_ch, self.input_size, self.input_size)))
 
-    def set_optimizer(self):
+    def set_optimizer(self, lr_g=1e-4, betas_g=(0.5, 0.9), lr_d=1e-4 * 2, betas_d=(0.5, 0.9), **kwargs):
         generator_params = list(self.model.net_g.parameters()) + list(self.model.net_s.parameters())
-        optimizer_g = optim.Adam(generator_params, lr=1e-4, betas=(0.5, 0.9))
-        optimizer_d = optim.Adam(self.model.net_d.parameters(), lr=1e-4 * 2, betas=(0.5, 0.9))
+        optimizer_g = optim.Adam(generator_params, lr=lr_g, betas=betas_g)
+        optimizer_d = optim.Adam(self.model.net_d.parameters(), lr=lr_d, betas=betas_d)
 
         self.optimizer = GanOptimizer(optimizer_d, optimizer_g)
 
@@ -607,15 +607,15 @@ class StyleGan_IterCelebA(StyleGan, IterCelebA):
 class VAE(IgProcess):
     model_version = 'VAE'
 
+    def set_optimizer(self, lr=1e-4, betas=(0.9, 0.99), **kwargs):
+        super().set_optimizer(lr=lr, betas=betas, **kwargs)
+
     def set_model(self):
         from models.image_generation.VAE import Model, Config
         self.model = Model(
             img_ch=self.in_ch,
             image_size=self.input_size,
         )
-
-    def set_optimizer(self):
-        self.optimizer = optim.Adam(self.model.parameters(), lr=1e-4, betas=(0.9, 0.99))
 
     def on_train_step(self, rets, **kwargs):
         images = [torch.from_numpy(ret.pop('image')).to(self.device, non_blocking=True, dtype=torch.float) for ret in rets]
@@ -669,14 +669,31 @@ class VAE_CelebA(VAE, CelebA):
 
 
 class DiProcess(IgProcess):
+    def set_optimizer(self, lr=1e-4, betas=(0.9, 0.99), **kwargs):
+        super().set_optimizer(lr=lr, betas=betas, **kwargs)
+
+    def get_model_inputs(self, rets, train=True):
+        if train:
+            images = [torch.from_numpy(ret.pop('image')).to(self.device, non_blocking=True, dtype=torch.float) for ret in rets]
+            images = torch.stack(images)
+            images = images * 2 - 1  # normalize, [0, 1] -> [-1, 1]
+            model_inputs = dict(
+                x=images
+            )
+        else:
+            model_inputs = dict(
+                x=rets
+            )
+        return model_inputs
+
     def on_train_step(self, rets, **kwargs) -> dict:
-        images = [torch.from_numpy(ret.pop('image')).to(self.device, non_blocking=True, dtype=torch.float) for ret in rets]
-        images = torch.stack(images)
-        images = images * 2 - 1  # normalize, [0, 1] -> [-1, 1]
-        output = self.model(images)
+        model_inputs = self.get_model_inputs(rets, train=True)
+        output = self.model(**model_inputs)
 
         real_x = self.train_container['metric_kwargs']['real_x']
         if len(real_x) < self.val_data_num:
+            images = model_inputs['x']
+            images = (images + 1) * 0.5
             images = images.data.mul(255).clamp_(0, 255).permute(0, 2, 3, 1).to("cpu", torch.uint8).numpy()
             real_x.extend(list(images)[:self.val_data_num - len(real_x)])
 
@@ -695,11 +712,14 @@ class DiProcess(IgProcess):
 
         super().on_val_start(val_dataloader=gen(), **kwargs)
 
-    def on_val_step(self, rets, **kwargs) -> dict:
-        noise_x = rets
+    def on_val_step(self, rets, model_kwargs=dict(), **kwargs) -> dict:
+        model_inputs = self.get_model_inputs(rets, train=False)
+
         model_results = {}
         for name, model in self.models.items():
-            fake_x = model(noise_x)
+            # note, something wrong with autocast, got inf result
+            # with torch.cuda.amp.autocast(True):
+            fake_x = model(**model_inputs, **model_kwargs)
             fake_x = (fake_x + 1) * 0.5  # unnormalize, [-1, 1] -> [0, 1]
             fake_x = fake_x.data.mul(255).clamp_(0, 255).permute(0, 2, 3, 1).to("cpu", torch.uint8).numpy()
             model_results[name] = dict(
@@ -718,9 +738,6 @@ class Ddpm(DiProcess):
             img_ch=self.in_ch,
             image_size=self.input_size,
         )
-
-    def set_optimizer(self):
-        self.optimizer = optim.Adam(self.model.parameters(), lr=1e-4, betas=(0.9, 0.99))
 
 
 class Ddpm_CelebA(Ddpm, CelebA):
@@ -749,9 +766,6 @@ class Dpim(DiProcess):
             img_ch=self.in_ch,
             image_size=self.input_size,
         )
-
-    def set_optimizer(self):
-        self.optimizer = optim.Adam(self.model.parameters(), lr=1e-4, betas=(0.9, 0.99))
 
 
 class Ddim_CelebA(Dpim, CelebA):
@@ -974,7 +988,7 @@ class SD(DiProcess):
         from data_parse.nlp_data_parse.pre_process.bundled import CLIPTokenizer
         self.tokenizer = CLIPTokenizer.from_pretrain(self.encoder_fn, self.vocab_fn)
 
-    def set_optimizer(self):
+    def set_optimizer(self, **kwargs):
         self.optimizer = optim.Adam(self.model.parameters(), lr=1e-4, betas=(0.9, 0.99))
 
     aug = Apply([
@@ -988,7 +1002,7 @@ class SD(DiProcess):
             ret.update(self.aug(**ret))
         return ret
 
-    def on_val_step(self, rets, **kwargs) -> dict:
+    def get_model_inputs(self, rets, train=True):
         texts = []
         neg_texts = []
         images = []
@@ -1027,22 +1041,14 @@ class SD(DiProcess):
             mask_images = torch.stack(mask_images)
             mask_images /= 255
 
-        model_results = {}
-        for name, model in self.models.items():
-            # note, something wrong with autocast, got inf result
-            # with torch.cuda.amp.autocast(True):
-            fake_x = model(
-                text=texts, neg_text=neg_texts,
-                text_weights=text_weights, neg_text_weights=neg_text_weights,
-                x=images, mask_x=mask_images,
-            )
-            fake_x = (fake_x + 1) * 0.5  # unnormalize, [-1, 1] -> [0, 1]
-            fake_x = fake_x.data.mul(255).clamp_(0, 255).permute(0, 2, 3, 1).to("cpu", torch.uint8).numpy()
-            model_results[name] = dict(
-                fake_x=fake_x,
-            )
-
-        return model_results
+        return dict(
+            text=texts,
+            neg_text=neg_texts,
+            text_weights=text_weights,
+            neg_text_weights=neg_text_weights,
+            x=images,
+            mask_x=mask_images,
+        )
 
     model_input_template = namedtuple('model_inputs', ['text', 'neg_text', 'image'], defaults=[None, None])
 
@@ -1059,8 +1065,8 @@ class SD(DiProcess):
             neg_texts = [None] * len(pos_texts)
 
         if images:
-            # base on one image
             if not isinstance(images, (list, tuple)):
+                # base on one image
                 images = [images for _ in pos_texts]
             else:
                 images = images[start_idx: end_idx]

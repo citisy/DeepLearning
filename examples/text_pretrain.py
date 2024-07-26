@@ -401,10 +401,10 @@ class Bert(Process):
         vocab = super().get_vocab()
         self.tokenizer = bundled.BertTokenizer(vocab, max_seq_len=self.max_seq_len)
 
-    def set_optimizer(self):
+    def set_optimizer(self, lr=1e-4, betas=(0.5, 0.999), **kwargs):
         # todo, use the optimizer config from paper(lr=1e-4, betas=(0.9, 0.999), weight_decay=0.1), the training is failed
         # in RoBERTa, beta_2=0.98
-        self.optimizer = torch.optim.Adam(self.model.parameters(), lr=1e-4, betas=(0.5, 0.999))
+        self.optimizer = torch.optim.Adam(self.model.parameters(), lr=lr, betas=betas)
 
     def get_model_inputs(self, rets, train=True):
         segments = [ret['segment'] for ret in rets]
@@ -718,8 +718,8 @@ class GPT2(Process):
     def get_vocab(self):
         self.tokenizer = bundled.GPT2Tokenizer.from_pretrain(self.encoder_fn, self.vocab_fn)
 
-    def set_optimizer(self):
-        self.optimizer = torch.optim.Adam(self.model.parameters(), lr=1e-4, betas=(0.5, 0.999))
+    def set_optimizer(self, lr=1e-4, betas=(0.5, 0.999), **kwargs):
+        self.optimizer = torch.optim.Adam(self.model.parameters(), lr=lr, betas=betas)
 
     def get_model_inputs(self, rets, train=True):
         segments = [ret['segment'] for ret in rets]
@@ -868,8 +868,8 @@ class T5(Process):
     def get_vocab(self):
         self.tokenizer = bundled.T5Tokenizer.from_pretrain(self.vocab_fn)
 
-    def set_optimizer(self):
-        self.optimizer = torch.optim.Adam(self.model.parameters(), lr=1e-4, betas=(0.5, 0.999))
+    def set_optimizer(self, lr=1e-4, betas=(0.5, 0.999), **kwargs):
+        self.optimizer = torch.optim.Adam(self.model.parameters(), lr=lr, betas=betas)
 
     def get_model_inputs(self, rets, train=True):
         paragraphs = [ret['text'] for ret in rets]

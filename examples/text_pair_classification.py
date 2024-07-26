@@ -99,8 +99,8 @@ class Bert(BertFull):
         self.get_vocab()
         self.model = Model(self.tokenizer.vocab_size, pad_id=self.tokenizer.pad_id, out_features=self.n_classes)
 
-    def set_optimizer(self):
-        self.optimizer = torch.optim.AdamW(self.model.parameters(), lr=5e-5)
+    def set_optimizer(self, lr=5e-5, **kwargs):
+        self.optimizer = torch.optim.AdamW(self.model.parameters(), lr=lr)
 
 
 class Bert_MNLI(Bert, MNLI):
