@@ -12,7 +12,7 @@ class CoLA(TextProcessForBert):
     n_classes = 2
 
     def get_data(self, *args, train=True, **kwargs):
-        from data_parse.nlp_data_parse.CoLA import Loader, DataRegister
+        from data_parse.nl_data_parse.CoLA import Loader, DataRegister
         loader = Loader(self.data_dir)
         if train:
             return loader.load(set_type=DataRegister.TRAIN, max_size=self.train_data_num, generator=False)[0]
@@ -29,7 +29,7 @@ class SST2(TextProcessForBert):
     n_classes = 2
 
     def get_data(self, *args, train=True, **kwargs):
-        from data_parse.nlp_data_parse.SST2 import Loader, DataRegister
+        from data_parse.nl_data_parse.SST2 import Loader, DataRegister
         loader = Loader(self.data_dir)
         if train:
             return loader.load(set_type=DataRegister.TRAIN, max_size=self.train_data_num, generator=False)[0]

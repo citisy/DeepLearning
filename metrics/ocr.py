@@ -2,7 +2,7 @@ import numpy as np
 import pandas as pd
 from tqdm import tqdm
 from . import object_detection, text_generation
-from data_parse.nlp_data_parse.pre_process import spliter
+from data_parse.nl_data_parse.pre_process import spliter
 from utils import os_lib
 
 

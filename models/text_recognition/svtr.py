@@ -6,7 +6,7 @@ import torch.nn.functional as F
 from einops.layers.torch import Rearrange
 from ..layers import Conv, Linear, ConvInModule, OutModule
 from . import BaseTextRecModel
-from data_parse.nlp_data_parse.pre_process import decoder
+from data_parse.nl_data_parse.pre_process import decoder
 
 CONV_MIX = 0
 GLOBAL_MIX = 1

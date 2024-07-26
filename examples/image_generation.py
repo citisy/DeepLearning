@@ -985,7 +985,7 @@ class SD(DiProcess):
             self.lora_warp.load_state_dict(state_dict, strict=False)
 
     def get_vocab(self):
-        from data_parse.nlp_data_parse.pre_process.bundled import CLIPTokenizer
+        from data_parse.nl_data_parse.pre_process.bundled import CLIPTokenizer
         self.tokenizer = CLIPTokenizer.from_pretrain(self.encoder_fn, self.vocab_fn)
 
     def set_optimizer(self, **kwargs):
@@ -1003,6 +1003,12 @@ class SD(DiProcess):
         return ret
 
     def get_model_inputs(self, rets, train=True):
+        if train:
+            return self.get_model_train_inputs(rets)
+        else:
+            return self.get_model_val_inputs(rets)
+
+    def get_model_val_inputs(self, rets):
         texts = []
         neg_texts = []
         images = []
