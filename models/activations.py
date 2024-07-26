@@ -14,6 +14,16 @@ class FastGELU(nn.Module):
         return 0.5 * x * (1. + torch.tanh(math.sqrt(2. / math.pi) * (x + 0.044715 * torch.pow(x, 3.))))
 
 
+class FasterGELU(nn.Module):
+    """
+    Applies GELU approximation that is fast but somewhat inaccurate.
+    See: https://github.com/hendrycks/GELUs
+    """
+
+    def forward(self, x):
+        return x * torch.sigmoid(1.702 * x)
+
+
 class MemoryEfficientMish(nn.Module):
     # Mish activation memory-efficient
     class F(torch.autograd.Function):

@@ -5,7 +5,7 @@ from einops import rearrange, repeat, reduce
 from utils import torch_utils
 from . import ldm, ddpm, ddim, sdv1, sdv2, k_diffusion
 from .ldm import WeightLoader
-from ..text_image_pretrain import CLIP as CLIPModel
+from ..multimodal_pretrain import CLIP as CLIPModel
 
 
 class Config(sdv2.Config):

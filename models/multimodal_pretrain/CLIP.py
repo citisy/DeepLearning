@@ -2,7 +2,7 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 from utils import torch_utils
-from .. import bundles
+from .. import bundles, activations
 from ..text_pretrain.transformers import DecoderEmbedding, make_causal_attention_mask, TransformerSequential
 from ..image_classification.ViT import VisionEmbedding
 
@@ -318,20 +318,10 @@ class TextModel(nn.Module):
         return self.text_model(text_ids, **kwargs)
 
 
-class QuickGELU(nn.Module):
-    """
-    Applies GELU approximation that is fast but somewhat inaccurate.
-    See: https://github.com/hendrycks/GELUs
-    """
-
-    def forward(self, x):
-        return x * torch.sigmoid(1.702 * x)
-
-
 def make_act(name):
     d = dict(
         GELU=nn.GELU,
-        QuickGELU=QuickGELU
+        FasterGELU=activations.FasterGELU
     )
     return d[name]
 
@@ -340,7 +330,7 @@ class VisionTransformer(nn.Module):
     def __init__(
             self, image_size, hidden_size, patch_size, output_size=None,
             num_attention_heads=12, num_hidden_layers=12,
-            is_proj=True, separate=True, act_type='QuickGELU'
+            is_proj=True, separate=True, act_type='FasterGELU'
     ):
         super().__init__()
 
@@ -385,7 +375,7 @@ class VisionTransformer(nn.Module):
 class TextTransformer(nn.Module):
     def __init__(self, vocab_size, hidden_size, output_size=None,
                  max_seq_len=77, num_attention_heads=8, num_hidden_layers=12,
-                 is_proj=True, separate=True, act_type='QuickGELU'):
+                 is_proj=True, separate=True, act_type='FasterGELU'):
         super().__init__()
         self.embedding = DecoderEmbedding(vocab_size, hidden_size, max_seq_len=max_seq_len)
         self.encoder = TransformerSequential(

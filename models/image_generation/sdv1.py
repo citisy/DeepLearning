@@ -2,7 +2,7 @@ import torch
 from torch import nn, einsum
 from . import ldm, k_diffusion
 from .ldm import WeightLoader
-from ..text_image_pretrain import CLIP
+from ..multimodal_pretrain import CLIP
 
 
 class Config(ldm.Config):

@@ -1,6 +1,6 @@
 from . import ldm, ddpm, VAE, sdv1
 from .sdv1 import WeightLoader, Model
-from ..text_image_pretrain import CLIP
+from ..multimodal_pretrain import CLIP
 
 
 class Config(sdv1.Config):
