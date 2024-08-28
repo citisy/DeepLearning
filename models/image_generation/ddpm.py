@@ -161,11 +161,15 @@ class Model(nn.ModuleList):
     def forward(self, x=None, **kwargs):
         if self.training:
             # if training, x is x0, the real image
-            return {'loss': self.sampler.loss(self.diffuse, x, **kwargs)}
+            loss = self.loss(x, **kwargs)
+            return {'loss': loss}
         else:
             # if predicting, x is x_T, the noise
             images = self.post_process(x, **kwargs)
             return images
+
+    def loss(self, x, **kwargs):
+        return self.sampler.loss(self.diffuse, x, **kwargs)
 
     @property
     def diffuse_in_ch(self):

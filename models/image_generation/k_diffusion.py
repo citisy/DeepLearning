@@ -271,7 +271,7 @@ class EulerSampler(Sampler):
 
     def loss(self, diffuse_func, x_0, noise=None, **kwargs):
         b, c, h, w = x_0.shape
-        t = torch.randint(0, self.sampler.timesteps, (b,), device=x_0.device).long()
+        t = torch.randint(0, self.schedule.timesteps, (b,), device=x_0.device).long()
         if noise is None:
             noise = torch.randn_like(x_0)
 
@@ -279,7 +279,7 @@ class EulerSampler(Sampler):
 
         c_skip, c_out, c_in, c_noise = self.scaling(sigma)
         x_t = self.q_sample(x_0, t, noise=noise)
-        pred = diffuse_func(x_t * c_in, self.sigma_to_t(sigma), **kwargs)
+        pred = diffuse_func(x_t * c_in, self.sigma_to_idx(sigma), **kwargs)
         real = self.scaling.predict_real(x_0, t, noise)
 
         loss = F.mse_loss(pred, real, reduction='none')

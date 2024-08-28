@@ -140,7 +140,7 @@ class WeightConverter:
             .. code-block:: python
 
                 state_dict = torch.load(self.pretrain_model, map_location=self.device)['state_dict']
-                state_dict = convert_hf_weights(state_dict)
+                state_dict = WeightConverter.from_official(state_dict)
                 Model(...).load_state_dict(state_dict)
         """
         convert_dict = {
@@ -275,6 +275,15 @@ class Model(ddim.Model):
             self.image_size[0] // self.vae.encoder.down_scale,
             self.image_size[1] // self.vae.encoder.down_scale,
         )
+
+    def loss(self, x, text=None, **kwargs):
+        txt_cond = self.make_txt_cond(text, **kwargs)
+        kwargs.update(txt_cond)
+
+        z, _, _ = self.vae.encode(x)
+        x0 = self.scale_factor * z
+
+        return self.sampler.loss(self.diffuse, x0, **kwargs)
 
     def post_process(self, x=None, text=None, mask_x=None, **kwargs):
         """
