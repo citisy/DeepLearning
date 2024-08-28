@@ -95,6 +95,8 @@ class Conv(nn.Sequential):
                 layers['act'] = act or nn.ReLU()
             elif m == 'd' and is_drop:
                 layers['drop'] = nn.Dropout(drop_prob)
+            elif m not in 'cnad':
+                raise ValueError(f'mode = {mode} not in `cnad`, please check!')
 
         if detail_name:
             super().__init__(layers)
@@ -224,6 +226,8 @@ class ConvT(nn.Sequential):
                     layers['act'] = act or nn.ReLU(True)
                 elif m == 'd' and is_drop:
                     layers['drop'] = nn.Dropout(drop_prob)
+                elif m not in 'cnad':
+                    raise ValueError(f'mode = {mode} not in `cnad`, please check!')
 
         if detail_name:
             super().__init__(layers)
@@ -273,6 +277,8 @@ class Linear(nn.Sequential):
                 layers['act'] = act or nn.Sigmoid()
             elif m == 'd' and is_drop:
                 layers['drop'] = nn.Dropout(drop_prob)
+            elif m not in 'lnad':
+                raise ValueError(f'mode = {mode} not in `lnad`, please check!')
 
         self.in_features = in_features
         self.out_features = out_features
@@ -419,8 +425,8 @@ class Residual(nn.Module):
             self.norm = nn.Identity()
         self.norm_first = norm_first
 
-    def forward(self, x, **kwargs):
+    def forward(self, x, **fn_kwargs):
         if self.norm_first:
-            return self.project_fn(x) + self.fn(self.norm(x), **kwargs)
+            return self.project_fn(x) + self.fn(self.norm(x), **fn_kwargs)
         else:
-            return self.norm(self.project_fn(x) + self.fn(x, **kwargs))
+            return self.norm(self.project_fn(x) + self.fn(x, **fn_kwargs))

@@ -82,22 +82,34 @@ class TransformerBlock(nn.Module):
 
     def __init__(
             self, hidden_size, num_attention_heads, ff_hidden_size,
-            is_decode=False, norm_first=False, separate=True, drop_prob=0.1,
+            is_decode=False, norm_first=False, drop_prob=0.1,
+            attention_fn=None, de_attention_fn=None,
             attend=None, de_attend=None, attend_fn=None, de_attend_fn=None,
             feed_forward_fn=None, norm_fn=None,
             fn_kwargs=dict(), de_fn_kwargs=dict(), ff_kwargs=dict(),
             attend_fn_kwargs=dict(), de_attend_fn_kwargs=dict(), norm_kwargs=dict(),
     ):
         super().__init__()
+        attention_fn = attention_fn or CrossAttention2D
+        de_attention_fn = de_attention_fn or CrossAttention2D
         norm_fn = norm_fn or nn.LayerNorm
         feed_forward_fn = feed_forward_fn or PositionWiseFeedForward
+
         if not attend and attend_fn:
             attend = attend_fn(**attend_fn_kwargs)
         if not de_attend and de_attend_fn:
             de_attend = de_attend_fn(**de_attend_fn_kwargs)
 
+        attention_kwargs = dict(
+            n_heads=num_attention_heads,
+            model_dim=hidden_size,
+        )
+        fn_kwargs.setdefault('drop_prob', drop_prob)
+        de_fn_kwargs.setdefault('drop_prob', drop_prob)
+        ff_kwargs.setdefault('drop_prob', drop_prob)
+
         self.attn_res = Residual(
-            CrossAttention2D(n_heads=num_attention_heads, model_dim=hidden_size, drop_prob=drop_prob, attend=attend, separate=separate, **fn_kwargs),  # SelfAttention
+            attention_fn(attend=attend, **attention_kwargs, **fn_kwargs),  # SelfAttention
             norm=norm_fn(hidden_size, **norm_kwargs),
             norm_first=norm_first
         )
@@ -105,13 +117,13 @@ class TransformerBlock(nn.Module):
         self.is_decode = is_decode
         if is_decode:
             self.de_attn_res = Residual(
-                CrossAttention2D(n_heads=num_attention_heads, model_dim=hidden_size, drop_prob=drop_prob, attend=de_attend, separate=separate, **de_fn_kwargs),  # CrossAttention
+                de_attention_fn(attend=de_attend, **attention_kwargs, **de_fn_kwargs),  # CrossAttention
                 norm=norm_fn(hidden_size, **norm_kwargs),
                 norm_first=norm_first
             )
 
         self.ff_res = Residual(
-            feed_forward_fn(hidden_size, ff_hidden_size, drop_prob=drop_prob, **ff_kwargs),
+            feed_forward_fn(hidden_size, ff_hidden_size, **ff_kwargs),
             norm=norm_fn(hidden_size, **norm_kwargs),
             norm_first=norm_first
         )
@@ -128,11 +140,11 @@ class TransformerBlock(nn.Module):
 class PositionWiseFeedForward(nn.Sequential):
     """y = F2(a(F1(x)))"""
 
-    def __init__(self, hidden_size, feed_forward_hidden, act=None, drop_prob=0.1, **kwargs):
+    def __init__(self, hidden_size, ff_hidden_size, act=None, drop_prob=0.1, **kwargs):
         act = act or nn.GELU()
         super().__init__(
-            Linear(hidden_size, feed_forward_hidden, mode='la', act=act, **kwargs),
-            Linear(feed_forward_hidden, hidden_size, mode='ld', drop_prob=drop_prob, **kwargs)
+            Linear(hidden_size, ff_hidden_size, mode='la', act=act, **kwargs),
+            Linear(ff_hidden_size, hidden_size, mode='ld', drop_prob=drop_prob, **kwargs)
         )
 
 

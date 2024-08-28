@@ -62,8 +62,7 @@ class SinusoidalEmbedding(nn.Module):
         self.embedding_dim = embedding_dim
 
     def forward(self, x):
-        freqs = x[:, None] * self.weights[None, :]
-        emb = torch.cat((freqs.cos(), freqs.sin()), dim=-1)
+        emb = x[:, None] * self.weights[None, :]
         return emb
 
 
@@ -111,11 +110,11 @@ class RotaryEmbedding(nn.Module):
 class PatchEmbedding(nn.Module):
     """embedding for image"""
 
-    def __init__(self, dim, patch_size):
+    def __init__(self, dim, patch_size, in_ch=3, bias=False, out_ndim=3):
         super().__init__()
         self.fn = nn.Sequential(
-            nn.Conv2d(3, dim, patch_size, stride=patch_size, bias=False),
-            Rearrange('b c h w -> b (h w) c')
+            nn.Conv2d(in_ch, dim, patch_size, stride=patch_size, bias=bias),
+            Rearrange('b c h w -> b (h w) c') if out_ndim == 3 else Rearrange('b c h w -> b h w c')
         )
 
     def forward(self, x):

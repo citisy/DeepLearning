@@ -1,10 +1,12 @@
-import torch
-from torch import nn
-import torch.nn.functional as F
 from functools import partial
+
+import torch
+import torch.nn.functional as F
+from einops import rearrange
 from einops.layers.torch import Rearrange
-from einops import rearrange, repeat, reduce
-from .layers import Linear, Conv
+from torch import nn
+
+from .layers import Linear
 
 
 def get_attention_input(n_heads=None, model_dim=None, head_dim=None):
@@ -124,29 +126,48 @@ class CrossAttention3D(nn.Module):
     """cross attention build by conv function"""
 
     def __init__(self, n_heads=None, model_dim=None, head_dim=None, query_dim=None, context_dim=None,
-                 separate=True, drop_prob=0., attend=None, out_fn=None, **fn_kwargs):
+                 use_conv=True, separate=True, drop_prob=0., attend=None, out_fn=None, **fn_kwargs):
         super().__init__()
         n_heads, model_dim, head_dim = get_attention_input(n_heads, model_dim, head_dim)
         query_dim = query_dim or model_dim
         context_dim = context_dim or model_dim
         self.scale = head_dim ** -0.5
         self.n_heads = n_heads
+        self.use_conv = use_conv
         self.separate = separate
 
-        if separate:
-            self.to_qkv = nn.ModuleList([
-                nn.Conv2d(query_dim, model_dim, 1, **fn_kwargs),
-                nn.Conv2d(context_dim, model_dim, 1, **fn_kwargs),
-                nn.Conv2d(context_dim, model_dim, 1, **fn_kwargs),
-            ])
-        else:  # only for self attention
-            assert query_dim == context_dim
-            self.to_qkv = nn.Conv2d(query_dim, model_dim * 3, 1, **fn_kwargs)
+        if use_conv:  # build by conv func
+            if separate:
+                self.to_qkv = nn.ModuleList([
+                    nn.Conv2d(query_dim, model_dim, 1, **fn_kwargs),
+                    nn.Conv2d(context_dim, model_dim, 1, **fn_kwargs),
+                    nn.Conv2d(context_dim, model_dim, 1, **fn_kwargs),
+                ])
+            else:  # only for self attention
+                assert query_dim == context_dim
+                self.to_qkv = nn.Conv2d(query_dim, model_dim * 3, 1, **fn_kwargs)
 
-        self.view_in = Rearrange('b c h w -> b 1 (h w) c')
+            self.view_in = Rearrange('b c h w -> b 1 (h w) c')
+            self.view_out = partial(rearrange, pattern='b 1 (h w) c -> b c h w')
+            self.to_out = nn.Conv2d(model_dim, query_dim, 1) if out_fn is None else out_fn
+
+        else:  # build by linear func
+            if separate:
+                self.to_qkv = nn.ModuleList([
+                    nn.Linear(query_dim, model_dim, **fn_kwargs),
+                    nn.Linear(context_dim, model_dim, **fn_kwargs),
+                    nn.Linear(context_dim, model_dim, **fn_kwargs),
+                ])
+            else:  # only for self attention
+                assert query_dim == context_dim
+                self.to_qkv = nn.Linear(query_dim, model_dim * 3, **fn_kwargs)
+
+            self.view_in = Rearrange('b h w c -> b 1 (h w) c')
+
+            self.view_out = partial(rearrange, pattern='b 1 (h w) c -> b h w c')
+            self.to_out = Linear(model_dim, query_dim, mode='ld', drop_prob=drop_prob, **fn_kwargs) if out_fn is None else out_fn
+
         self.attend = ScaleAttend(drop_prob=drop_prob) if attend is None else attend
-        self.view_out = partial(rearrange, pattern='b 1 (h w) c -> b c h w')  # view_out)
-        self.to_out = nn.Conv2d(model_dim, query_dim, 1) if out_fn is None else out_fn
 
     def forward(self, q, k=None, v=None, **attend_kwargs):
         b, c, h, w = q.shape
@@ -154,7 +175,8 @@ class CrossAttention3D(nn.Module):
             q, k, v = get_qkv(q, k, v)
             q, k, v = [m(x) for m, x in zip(self.to_qkv, (q, k, v))]
         else:  # only for self attention
-            q, k, v = self.to_qkv(q).chunk(3, dim=1)
+            dim = 1 if self.use_conv else -1
+            q, k, v = self.to_qkv(q).chunk(3, dim=dim)
 
         q, k, v = [self.view_in(x).contiguous() for x in (q, k, v)]
 

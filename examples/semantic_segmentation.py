@@ -1,14 +1,18 @@
-import cv2
 import copy
+from datetime import datetime
+from pathlib import Path
+from typing import List
+
+import cv2
 import numpy as np
 import torch
-from torch import optim, nn
-from data_parse.cv_data_parse.data_augmentation import crop, scale, geometry, channel, RandomApply, Apply, complex, pixel_perturbation
-from pathlib import Path
 from PIL import Image
+from torch import optim
+
 from data_parse.cv_data_parse.base import DataVisualizer
+from data_parse.cv_data_parse.data_augmentation import scale, geometry, channel, RandomApply, Apply, pixel_perturbation
 from processor import Process, DataHooks, bundled, BaseImgDataset
-from utils import visualize, torch_utils, configs
+from utils import visualize, configs, torch_utils, os_lib
 
 
 class SegDataset(BaseImgDataset):
@@ -35,14 +39,30 @@ class SegProcess(Process):
     use_scaler = True
     use_scheduler = True
 
+    out_features: int
+
     def set_optimizer(self, lr=0.001, momentum=0.9, weight_decay=1e-4, **kwargs):
         self.optimizer = optim.SGD(self.model.parameters(), lr=lr, momentum=momentum, weight_decay=weight_decay)
 
     def get_model_inputs(self, rets, train=True):
         images = [torch.from_numpy(ret.pop('image')).to(self.device, non_blocking=True, dtype=torch.float) for ret in rets]
         images = torch.stack(images)
-        images = images / 255
-        r = dict(x=images)
+        # images = images / 255
+
+        effective_areas = []
+        for ret in rets:
+            h, w = images.shape[-2:]
+            pad_info = ret['crop.Pad']
+            t = pad_info.get('t', 0)
+            d = pad_info.get('d', 0)
+            l = pad_info.get('l', 0)
+            r = pad_info.get('r', 0)
+            effective_areas.append([l, w - r, t, h - d])
+
+        r = dict(
+            x=images,
+            effective_areas=effective_areas
+        )
         if train:
             pix_images = [torch.from_numpy(ret.pop('pix_image')).to(self.device, non_blocking=True, dtype=torch.long) for ret in rets]
             pix_images = torch.stack(pix_images)
@@ -106,22 +126,23 @@ class SegProcess(Process):
             r.setdefault('preds', []).extend(results['preds'])
 
     def visualize(self, rets, model_results, n, **kwargs):
-        for ret in rets:
-            ret.pop('bboxes')
-            ret.pop('pix_image')
-
         for name, results in model_results.items():
             vis_trues = []
             vis_preds = []
             for i in range(n):
                 gt_ret = rets[i]
                 pred = results['preds'][i]
-                true = gt_ret['ori_pix_image']
-                true_image = np.zeros((*true.shape, 3), dtype=true.dtype) + 255
+
+                true_image = None
+                if 'ori_pix_image' in gt_ret:
+                    true = gt_ret['ori_pix_image']
+                    true_image = np.zeros((*true.shape, 3), dtype=true.dtype) + 255
+                    for c in np.unique(true):
+                        true_image[true == c] = visualize.get_color_array(c)
+
                 pred_image = np.zeros((*pred.shape, 3), dtype=pred.dtype) + 255
-                for i in range(self.out_features + 1):
-                    true_image[true == i] = visualize.get_color_array(i)
-                    pred_image[pred == i] = visualize.get_color_array(i)
+                for c in np.unique(pred):
+                    pred_image[pred == c] = visualize.get_color_array(c)
 
                 vis_trues.append(dict(
                     _id=gt_ret['_id'],
@@ -132,10 +153,39 @@ class SegProcess(Process):
                     image=pred_image
                 ))
 
-            cache_image = DataVisualizer(f'{self.cache_dir}/{self.counters["epoch"]}/{name}', verbose=False, pbar=False)(vis_trues, vis_preds, return_image=True)
+            visualizer = DataVisualizer(f'{self.cache_dir}/{self.counters.get("epoch", "")}/{name}', verbose=False, pbar=False)
+            cache_image = visualizer(vis_trues, vis_preds, return_image=True)
             self.get_log_trace(bundled.WANDB).setdefault(f'val_image/{name}', []).extend(
-                [self.wandb.Image(cv2.cvtColor(img, cv2.COLOR_BGR2RGB), caption=Path(r['_id']).stem) for img, r in zip(cache_image, vis_trues)]
+                [self.wandb.Image(cv2.cvtColor(img, cv2.COLOR_BGR2RGB), caption=Path(str(r['_id'])).stem)
+                 for img, r in zip(cache_image, vis_trues)]
             )
+
+    def gen_predict_inputs(self, *objs, start_idx=None, end_idx=None, ids=None, **kwargs):
+        images = objs[0]
+        if ids is None:
+            ids = [f'{i}.png' for i in range(start_idx, end_idx)]
+
+        rets = []
+        for image, _id in zip(images[start_idx: end_idx], ids):
+            if isinstance(image, str):
+                image = os_lib.loader.load_img(image)
+            rets.append(dict(
+                ori_image=image,
+                image=image,
+                _id=_id
+            ))
+        return rets
+
+    def on_predict_reprocess(self, rets, model_results, **kwargs):
+        for name, results in model_results.items():
+            r = self.predict_container['model_results'].setdefault(name, dict())
+            r.setdefault('preds', []).extend(results['preds'])
+
+    def on_predict_step_end(self, rets, model_results, **kwargs):
+        self.visualize(rets, model_results, len(rets), **kwargs)
+
+    def on_predict_end(self, **kwargs) -> List:
+        return self.predict_container['model_results'][self.model_name]['preds']
 
 
 class SegDataProcess(DataHooks):
@@ -170,7 +220,7 @@ class Voc(SegDataProcess):
     rand_aug2 = RandomApply([pixel_perturbation.Jitter()])
 
     post_aug = Apply([
-        # pixel_perturbation.MinMax(),
+        pixel_perturbation.MinMax(),
         # pixel_perturbation.Normalize(127.5, 127.5),
         channel.HWC2CHW()
     ])
@@ -198,10 +248,17 @@ class Voc(SegDataProcess):
             pix_image = self.rand_aug1.apply_image(pix_image, ret)
         pix_image = self.pix_aug.apply_image(pix_image, ret)
         ret['pix_image'] = pix_image
+
         return ret
 
     def val_data_restore(self, ret):
         ret = self.pix_aug.restore(ret)
+        return ret
+
+    def predict_data_augment(self, ret) -> dict:
+        ret.update(dst=self.input_size)
+        ret.update(self.aug(**ret))
+        ret.update(self.post_aug(**ret))
         return ret
 
 
@@ -266,3 +323,57 @@ class DeeplabV3_Voc(SegProcess, Voc):
             input_size=self.input_size,
             out_features=self.out_features
         )
+
+
+class VocForSAM(Voc):
+    input_size = 1024
+
+    aug = Apply([
+        scale.LetterBox(fill=[123.675, 116.28, 103.53], pad_type=(1, 1)),  # there are gray lines
+    ])
+
+    # note that, use cv2.INTER_NEAREST mode to resize
+    pix_aug = Apply([
+        scale.LetterBox(interpolation=1, fill=255),  # there are gray lines
+    ])
+
+    rand_aug1 = RandomApply([
+        geometry.HFlip(),
+        geometry.VFlip(),
+    ])
+    rand_aug2 = RandomApply([pixel_perturbation.Jitter()])
+
+    post_aug = Apply([
+        pixel_perturbation.Normalize(
+            [123.675, 116.28, 103.53],
+            [58.395, 57.12, 57.375]
+        ),
+        channel.HWC2CHW()
+    ])
+
+
+class SAM_Voc(SegProcess, VocForSAM):
+    """
+    Usage:
+        .. code-block:: python
+
+            from examples.semantic_segment import DeeplabV3_Voc as Process
+    """
+
+    model_version = 'SAM'
+
+    def set_model(self):
+        from models.semantic_segmentation.SAM import Model
+
+        self.model = Model(
+            in_ch=self.in_ch,
+            input_size=self.input_size,
+        )
+
+    def load_pretrain(self):
+        if hasattr(self, 'pretrain_model'):
+            from models.semantic_segmentation.SAM import WeightConverter
+
+            state_dict = torch_utils.Load.from_file(self.pretrain_model)
+            state_dict = WeightConverter.from_official(state_dict)
+            self.model.load_state_dict(state_dict, strict=False)
