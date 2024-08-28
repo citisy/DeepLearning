@@ -1,9 +1,11 @@
-import os
 import copy
+import os
+from typing import Optional
+
 import torch
 from torch.utils.data import DataLoader, Dataset, IterableDataset, get_worker_info
+
 from utils import os_lib
-from typing import Optional, List
 
 
 class BaseDataset(Dataset):
@@ -298,13 +300,22 @@ class DataHooks:
     def val_data_augment(self, ret) -> dict:
         return self.data_augment(ret, train=False)
 
+    def val_data_restore(self, ret) -> dict:
+        return ret
+
+    def predict_data_preprocess(self, iter_data):
+        return self.val_data_preprocess(iter_data)
+
+    def predict_data_augment(self, ret) -> dict:
+        return self.val_data_augment(ret)
+
+    def predict_data_restore(self, ret) -> dict:
+        return self.val_data_restore(ret)
+
     def data_preprocess(self, iter_data, train=True):
         return iter_data
 
     def data_augment(self, ret, train=True) -> dict:
-        return ret
-
-    def val_data_restore(self, ret) -> dict:
         return ret
 
     def get_model_inputs(self, rets, train=True):

@@ -586,7 +586,7 @@ class Bert(Process):
         rets = self.val_data_preprocess(rets)
         return rets
 
-    def on_predict_step_end(self, model_results, **kwargs):
+    def on_predict_reprocess(self, rets, model_results, **kwargs):
         for name, results in model_results.items():
             self.predict_container['model_results'].setdefault(name, []).extend(results['pred_segment'])
 
@@ -770,7 +770,7 @@ class GPT2(Process):
         rets = self.val_data_preprocess(rets)
         return rets
 
-    def on_predict_step_end(self, model_results, **kwargs):
+    def on_predict_reprocess(self, rets, model_results, **kwargs):
         for name, results in model_results.items():
             self.predict_container['model_results'].setdefault(name, []).extend(results['pred_segment'])
 
@@ -921,7 +921,7 @@ class T5(Process):
         rets = self.val_data_preprocess(rets)
         return rets
 
-    def on_predict_step_end(self, model_results, **kwargs):
+    def on_predict_reprocess(self, rets, model_results, **kwargs):
         for name, results in model_results.items():
             self.predict_container['model_results'].setdefault(name, []).extend(results['pred_segment'])
 

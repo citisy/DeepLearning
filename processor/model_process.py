@@ -764,8 +764,9 @@ class ModelHooks:
         for i in tqdm(range(0, len(objs[0]), batch_size), desc=visualize.TextVisualize.highlight_str('Predict')):
             rets = self.gen_predict_inputs(*objs, start_idx=i, end_idx=i + batch_size, **kwargs)
             rets = self.on_predict_step_start(rets, **kwargs)
-            model_results = self.on_val_step(rets, **kwargs)
-            self.on_predict_step_end(model_results, **kwargs)
+            model_results = self.on_predict_step(rets, **kwargs)
+            self.on_predict_reprocess(rets, model_results, **kwargs)
+            self.on_predict_step_end(rets, model_results, **kwargs)
 
         return self.on_predict_end(**kwargs)
 
@@ -781,19 +782,26 @@ class ModelHooks:
         self.counters["total_nums"] = -1
         self.predict_container['model_results'] = dict()
 
-    def gen_predict_inputs(self, *objs, start_idx=None, end_idx=None, **kwargs):
+    def gen_predict_inputs(self, *objs, start_idx=None, end_idx=None, **kwargs) -> List[dict]:
         raise NotImplementedError
 
     def on_predict_step_start(self, rets, **kwargs):
         """preprocess the model inputs"""
-        if hasattr(self, 'val_data_augment'):
-            rets = [self.val_data_augment(ret) for ret in rets]
+        if hasattr(self, 'predict_data_augment'):
+            rets = [self.predict_data_augment(ret) for ret in rets]
         return rets
 
-    def on_predict_step_end(self, model_results, **kwargs):
-        """filter the model outputs which you want to return, and post process them"""
+    def on_predict_step(self, rets, **kwargs):
+        return self.on_val_step(rets, **kwargs)
+
+    def on_predict_reprocess(self, rets, model_results, **kwargs):
+        """prepare true and pred label for `visualize()`
+        reprocess data will be cached in predict_container"""
         self.predict_container['model_results'].setdefault(self.model_name, []).extend(model_results[self.model_name]['preds'])
 
-    def on_predict_end(self, **kwargs):
+    def on_predict_step_end(self, rets, model_results, **kwargs):
+        """visualize the model outputs usually"""
+
+    def on_predict_end(self, **kwargs) -> List:
         """visualize results and the return the results"""
         return self.predict_container['model_results'][self.model_name]

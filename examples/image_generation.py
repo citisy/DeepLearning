@@ -117,7 +117,7 @@ class IgProcess(Process):
                             self.wandb.Image(cv2.cvtColor(image, cv2.COLOR_BGR2RGB), caption=f'{sub_name}{name2}.{i}')
                         )
 
-    def on_predict_step_end(self, model_results, **kwargs):
+    def on_predict_reprocess(self, rets, model_results, **kwargs):
         for name, results in model_results.items():
             r = self.predict_container['model_results'].setdefault(name, dict())
             for n, items in results.items():
@@ -688,7 +688,8 @@ class DiProcess(IgProcess):
 
     def on_train_step(self, rets, **kwargs) -> dict:
         model_inputs = self.get_model_inputs(rets, train=True)
-        output = self.model(**model_inputs)
+        with torch.cuda.amp.autocast(True):
+            output = self.model(**model_inputs)
 
         real_x = self.train_container['metric_kwargs']['real_x']
         if len(real_x) < self.val_data_num:
@@ -799,7 +800,88 @@ class Ddim_CelebAHQ(Dpim, CelebAHQ):
     """
 
 
-class SD(DiProcess):
+class WithLora(Process):
+    use_lora = False
+    use_half_lora = False
+    lora_warp: 'models.tuning.lora.ModelWarp'
+    lora_pretrain_model: str
+    lora_config = {}
+    config_version = 'v1'  # for config choose
+
+    def init_components(self):
+        super().init_components()
+        if self.use_lora:
+            self.set_lora()
+            self.load_lora_pretrain()
+
+    def set_lora(self):
+        from models.tuning import lora
+
+        self.lora_warp = lora.ModelWarp(
+            include=(
+                'attn_res.fn.to_qkv',
+                'ff_res.fn',
+                'transformer_blocks',
+                'proj_in',
+                'proj_out',
+                'to_out.linear'
+            ),
+            exclude=(
+                'drop',
+                'act',
+                'norm',
+                'view',
+                'ff.1',
+            ),
+            **self.lora_config
+        )
+        self.lora_warp.warp(self.model)
+
+        for full_name in self.lora_warp.layers:
+            layer = torch_utils.ModuleManager.get_module_by_name(self.model, full_name)
+            layer.to(self.device)
+            if self.use_half_lora:
+                layer.to(torch.bfloat16)
+
+    def unset_lora(self):
+        self.lora_warp.dewarp()
+
+    def load_lora_pretrain(self):
+        if hasattr(self, 'lora_pretrain_model'):
+            if 'v1' in self.config_version:
+                from models.image_generation.sdv1 import WeightLoader, WeightConverter
+            elif 'v2' in self.config_version:
+                from models.image_generation.sdv2 import WeightLoader, WeightConverter
+            elif 'xl' in self.config_version:
+                from models.image_generation.sdxl import WeightLoader, WeightConverter
+            else:
+                raise
+
+            state_dict = WeightLoader.auto_load(self.lora_pretrain_model)
+            state_dict = WeightConverter.from_official_lora(state_dict)
+            self.lora_warp.load_state_dict(state_dict, strict=False)
+
+
+class FromPretrain(CheckpointHooks):
+    config_version = 'v1'  # for config choose
+
+    def load_pretrain(self):
+        if 'v1' in self.config_version:
+            from models.image_generation.sdv1 import WeightLoader, WeightConverter
+        elif 'v2' in self.config_version:
+            from models.image_generation.sdv2 import WeightLoader, WeightConverter
+        elif 'xl' in self.config_version:
+            from models.image_generation.sdxl import WeightLoader, WeightConverter
+        else:
+            raise
+
+        if hasattr(self, 'pretrain_model'):
+            state_dict = WeightLoader.auto_load(self.pretrain_model)
+            state_dict = WeightConverter.from_official(state_dict)
+            self.model.load_state_dict(state_dict, strict=False)
+
+
+class SD(DiProcess, FromPretrain, WithLora):
     """no training, only for prediction
 
     Usage:
@@ -925,73 +1007,15 @@ class SD(DiProcess):
             self.model.vae.encode = partial(torch_utils.ModuleManager.low_memory_run, self.model.vae, self.model.vae.encode, self.device)
             self.model.vae.decode = partial(torch_utils.ModuleManager.low_memory_run, self.model.vae, self.model.vae.decode, self.device)
 
-        if self.use_lora:
-            self.set_lora()
-
-    use_lora = False
-    lora_warp: 'models.tuning.lora.ModelWarp'
-    lora_pretrain_model: str
-    lora_config = {}
-
-    def set_lora(self):
-        from models.tuning import lora
-
-        self.lora_warp = lora.ModelWarp(
-            include=(
-                'attn_res.fn.to_qkv',
-                'ff_res.fn',
-                'transformer_blocks',
-                'proj_in',
-                'proj_out',
-                'to_out.linear'
-            ),
-            exclude=(
-                'drop',
-                'act',
-                'norm',
-                'view',
-                'ff.1',
-            ),
-            **self.lora_config
-        )
-        self.lora_warp.warp(self.model)
-
-        if self.use_half:
-            for full_name in self.lora_warp.layers:
-                layer = torch_utils.ModuleManager.get_module_by_name(self.model, full_name)
-                layer.to(torch.bfloat16)
-
-    def unset_lora(self):
-        self.lora_warp.dewarp()
-
-    def load_pretrain(self):
-        if 'v1' in self.config_version:
-            from models.image_generation.sdv1 import WeightLoader, WeightConverter
-        elif 'v2' in self.config_version:
-            from models.image_generation.sdv2 import WeightLoader, WeightConverter
-        elif 'xl' in self.config_version:
-            from models.image_generation.sdxl import WeightLoader, WeightConverter
-        else:
-            raise
-
-        if hasattr(self, 'pretrain_model'):
-            state_dict = WeightLoader.auto_load(self.pretrain_model)
-            state_dict = WeightConverter.from_official(state_dict)
-            self.model.load_state_dict(state_dict, strict=False)
-
-        if hasattr(self, 'lora_pretrain_model'):
-            state_dict = WeightLoader.auto_load(self.lora_pretrain_model)
-            state_dict = WeightConverter.from_official_lora(state_dict)
-            self.lora_warp.load_state_dict(state_dict, strict=False)
-
     def get_vocab(self):
         from data_parse.nl_data_parse.pre_process.bundled import CLIPTokenizer
         self.tokenizer = CLIPTokenizer.from_pretrain(self.encoder_fn, self.vocab_fn)
 
     def set_optimizer(self, **kwargs):
-        self.optimizer = optim.Adam(self.model.parameters(), lr=1e-4, betas=(0.9, 0.99))
+        # self.optimizer = optim.Adam(self.model.parameters(), lr=1e-4, betas=(0.9, 0.99))
+        self.optimizer = torch_utils.make_optimizer_cls('AdamW8bit')(self.model.parameters(), lr=1e-4)
 
-    aug = Apply([
+    val_aug = Apply([
         scale.Rectangle(),
         channel.HWC2CHW(),
     ])
@@ -999,7 +1023,7 @@ class SD(DiProcess):
     def val_data_augment(self, ret) -> dict:
         if 'image' in ret and ret['image'] is not None:
             ret.update(dst=self.input_size)
-            ret.update(self.aug(**ret))
+            ret.update(self.val_aug(**ret))
         return ret
 
     def get_model_inputs(self, rets, train=True):
@@ -1007,6 +1031,21 @@ class SD(DiProcess):
             return self.get_model_train_inputs(rets)
         else:
             return self.get_model_val_inputs(rets)
+
+    def get_model_train_inputs(self, rets):
+        texts = [ret['text'] for ret in rets]
+        inputs = self.tokenizer.encode_attention_paragraphs(texts)
+        texts = torch.tensor(inputs['segments_ids']).to(self.device)
+        text_weights = torch.tensor(inputs['segments_weights']).to(self.device)
+
+        images = [torch.from_numpy(ret.pop('image')).to(self.device, non_blocking=True, dtype=torch.float) for ret in rets]
+        images = torch.stack(images)
+        images = images * 2 - 1  # normalize, [0, 1] -> [-1, 1]
+        return dict(
+            x=images,
+            text=texts,
+            text_weights=text_weights
+        )
 
     def get_model_val_inputs(self, rets):
         texts = []
@@ -1087,7 +1126,7 @@ class SD(DiProcess):
 
         return rets
 
-    def on_predict_step_end(self, model_results, add_watermark=True, watermark='watermark', **kwargs):
+    def on_predict_reprocess(self, rets, model_results, add_watermark=True, watermark='watermark', **kwargs):
         for name, results in model_results.items():
             r = self.predict_container['model_results'].setdefault(name, dict())
             for n, items in results.items():
@@ -1106,3 +1145,38 @@ class SD(DiProcess):
 
         images = [wm_encoder.encode(image, 'dwtDct') for image in images]
         return images
+
+
+class SimpleTextImage(DataProcess):
+    dataset_version = 'simple_text_image'
+    data_dir = 'data/simple_text_image'
+    train_data_num = 40000  # do not set too large, 'cause images will be cached in memory
+    input_size = 512
+    in_ch = 3
+
+    def get_train_data(self, *args, task='images', text_task='texts', **kwargs):
+        from data_parse.cv_data_parse.SimpleTextImage import Loader
+
+        loader = Loader(self.data_dir)
+        iter_data = loader.load(
+            generator=False,
+            max_size=self.train_data_num,
+            task=task,
+            text_task=text_task
+        )[0]
+        return iter_data
+
+
+class SD_SimpleTextImage(SD, SimpleTextImage):
+    """
+    Usage:
+        .. code-block:: python
+
+            from examples.image_generation import SD_SimpleTextImage as Process
+
+            Process().run(
+                max_epoch=50, train_batch_size=32,
+                fit_kwargs=dict(check_period=40000, max_save_weight_num=10),
+                metric_kwargs=dict(is_visualize=True, max_vis_num=64 * 8),
+            )
+    """
