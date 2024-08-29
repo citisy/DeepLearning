@@ -159,7 +159,7 @@ class Model(nn.Module):
 
         self.grid_points = self.make_grid_points()
 
-    def forward(self, x, pix_images=None, **kwargs):
+    def forward(self, x, label_masks=None, **kwargs):
         if self.training:
             raise NotImplemented
         else:
@@ -174,12 +174,12 @@ class Model(nn.Module):
                 effective_areas = [(0, self.input_size, 0, self.input_size)] * b
             points = self.make_points(effective_areas)
 
-        pixel_images = []
+        label_masks = []
         for f, p in zip(features, points):
-            pixel_image = self.post_process_one_image(f[None], p, multimask_output)
-            pixel_images.append(pixel_image)
+            label_mask = self.post_process_one_image(f[None], p, multimask_output)
+            label_masks.append(label_mask)
 
-        return torch.stack(pixel_images)
+        return torch.stack(label_masks)
 
     def post_process_one_image(self, features, points, multimask_output):
         device = features.device
@@ -240,11 +240,11 @@ class Model(nn.Module):
         )
 
         masks, boxes, iou_predictions = masks[keep], boxes[keep], iou_predictions[keep]
-        pixel_image = torch.zeros(*masks.shape[1:], dtype=torch.int, device=masks.device)
+        label_mask = torch.zeros(*masks.shape[1:], dtype=torch.int, device=masks.device)
         for i, mask in enumerate(masks):
-            pixel_image[mask] = i + 1
+            label_mask[mask] = i + 1
 
-        return pixel_image
+        return label_mask
 
     def make_grid_points(self):
         offset_x, offset_y = map(lambda x: 1 / (2 * (x + 1)), self.n_grids)

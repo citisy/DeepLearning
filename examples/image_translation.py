@@ -44,9 +44,9 @@ class Facade(DataHooks):
     def data_augment(self, ret, train=True) -> dict:
         ret.update(dst=self.input_size)
         ret.update(self.aug(**ret))
-        pix_image = ret['pix_image']
-        pix_image = self.aug.apply_image(pix_image, ret)
-        ret['pix_image'] = pix_image
+        label_mask = ret['label_mask']
+        label_mask = self.aug.apply_image(label_mask, ret)
+        ret['label_mask'] = label_mask
 
         return ret
 
@@ -75,7 +75,7 @@ class Pix2pix(GanProcess):
         images_a = [torch.from_numpy(ret.pop('image')).to(self.device, non_blocking=True, dtype=torch.float) for ret in rets]
         images_a = torch.stack(images_a)
 
-        images_b = [torch.from_numpy(ret.pop('pix_image')).to(self.device, non_blocking=True, dtype=torch.float) for ret in rets]
+        images_b = [torch.from_numpy(ret.pop('label_mask')).to(self.device, non_blocking=True, dtype=torch.float) for ret in rets]
         images_b = torch.stack(images_b)
 
         return dict(
@@ -191,7 +191,7 @@ class CycleGan(GanProcess):
         images_a = [torch.from_numpy(ret.pop('image')).to(self.device, non_blocking=True, dtype=torch.float) for ret in rets]
         images_a = torch.stack(images_a)
 
-        images_b = [torch.from_numpy(ret.pop('pix_image')).to(self.device, non_blocking=True, dtype=torch.float) for ret in rets]
+        images_b = [torch.from_numpy(ret.pop('label_mask')).to(self.device, non_blocking=True, dtype=torch.float) for ret in rets]
         images_b = torch.stack(images_b)
 
         return dict(

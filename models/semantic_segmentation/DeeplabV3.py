@@ -46,11 +46,11 @@ class Model(BaseSemSegModel):
         )
         ModuleManager.initialize_layers(self)
 
-    def forward(self, x, pix_images=None):
+    def forward(self, x, label_masks=None):
         x = self.backbone(x)
         x = self.neck(x)
         x = self.head(x)
-        return super().forward(x, pix_images)
+        return super().forward(x, label_masks)
 
 
 class ASPP(nn.Module):

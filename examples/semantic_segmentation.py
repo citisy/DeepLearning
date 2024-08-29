@@ -21,12 +21,12 @@ class SegDataset(BaseImgDataset):
         if isinstance(ret['image'], str):
             ret['image_path'] = ret['image']
             ret['image'] = cv2.imread(ret['image'])
-            ret['pix_image_path'] = ret['pix_image']
+            ret['label_mask_path'] = ret['label_mask']
             # note that, use PIL.Image to get the label image
-            ret['pix_image'] = np.asarray(Image.open(ret['pix_image']))
+            ret['label_mask'] = np.asarray(Image.open(ret['label_mask']))
 
         ret['ori_image'] = ret['image']
-        ret['ori_pix_image'] = ret['pix_image']
+        ret['ori_label_mask'] = ret['label_mask']
         ret['idx'] = idx
 
         if self.augment_func:
@@ -64,9 +64,9 @@ class SegProcess(Process):
             effective_areas=effective_areas
         )
         if train:
-            pix_images = [torch.from_numpy(ret.pop('pix_image')).to(self.device, non_blocking=True, dtype=torch.long) for ret in rets]
-            pix_images = torch.stack(pix_images)
-            r.update(pix_images=pix_images)
+            label_masks = [torch.from_numpy(ret.pop('label_mask')).to(self.device, non_blocking=True, dtype=torch.long) for ret in rets]
+            label_masks = torch.stack(label_masks)
+            r.update(label_masks=label_masks)
 
         return r
 
@@ -122,7 +122,7 @@ class SegProcess(Process):
     def on_val_reprocess(self, rets, model_results, **kwargs):
         for name, results in model_results.items():
             r = self.val_container['model_results'].setdefault(name, dict())
-            r.setdefault('trues', []).extend([ret['ori_pix_image'] for ret in rets])
+            r.setdefault('trues', []).extend([ret['ori_label_mask'] for ret in rets])
             r.setdefault('preds', []).extend(results['preds'])
 
     def visualize(self, rets, model_results, n, **kwargs):
@@ -134,8 +134,8 @@ class SegProcess(Process):
                 pred = results['preds'][i]
 
                 true_image = None
-                if 'ori_pix_image' in gt_ret:
-                    true = gt_ret['ori_pix_image']
+                if 'ori_label_mask' in gt_ret:
+                    true = gt_ret['ori_label_mask']
                     true_image = np.zeros((*true.shape, 3), dtype=true.dtype) + 255
                     for c in np.unique(true):
                         true_image[true == c] = visualize.get_color_array(c)
@@ -147,7 +147,7 @@ class SegProcess(Process):
                 vis_trues.append(dict(
                     _id=gt_ret['_id'],
                     image=gt_ret['ori_image'],
-                    pix_image=true_image
+                    label_mask=true_image
                 ))
                 vis_preds.append(dict(
                     image=pred_image
@@ -207,7 +207,7 @@ class Voc(SegDataProcess):
     ])
 
     # note that, use cv2.INTER_NEAREST mode to resize
-    pix_aug = Apply([
+    mask_aug = Apply([
         # scale.Proportion(choice_type=3, interpolation=1),
         # crop.Random(is_pad=False, fill=255),
         scale.LetterBox(interpolation=1, fill=255),  # there are gray lines
@@ -243,16 +243,16 @@ class Voc(SegDataProcess):
         ret.update(self.aug(**ret))
         ret.update(self.post_aug(**ret))
 
-        pix_image = ret['pix_image']
+        label_mask = ret['label_mask']
         if train:
-            pix_image = self.rand_aug1.apply_image(pix_image, ret)
-        pix_image = self.pix_aug.apply_image(pix_image, ret)
-        ret['pix_image'] = pix_image
+            label_mask = self.rand_aug1.apply_image(label_mask, ret)
+        label_mask = self.mask_aug.apply_image(label_mask, ret)
+        ret['label_mask'] = label_mask
 
         return ret
 
     def val_data_restore(self, ret):
-        ret = self.pix_aug.restore(ret)
+        ret = self.mask_aug.restore(ret)
         return ret
 
     def predict_data_augment(self, ret) -> dict:
@@ -333,7 +333,7 @@ class VocForSAM(Voc):
     ])
 
     # note that, use cv2.INTER_NEAREST mode to resize
-    pix_aug = Apply([
+    mask_aug = Apply([
         scale.LetterBox(interpolation=1, fill=255),  # there are gray lines
     ])
 

@@ -3,11 +3,11 @@ import torch.nn.functional as F
 
 
 class BaseSemSegModel(nn.Module):
-    def forward(self, x, pix_images=None):
-        if self.training and pix_images is not None:
+    def forward(self, x, label_masks=None):
+        if self.training and label_masks is not None:
             return dict(
                 preds=x,
-                loss=self.loss(x, pix_images)
+                loss=self.loss(x, label_masks)
             )
         else:
             return self.post_process(x)
@@ -15,12 +15,12 @@ class BaseSemSegModel(nn.Module):
     def post_process(self, preds):
         return preds.argmax(1)
 
-    def loss(self, preds, pix_images):
+    def loss(self, preds, label_masks):
         """
         Args:
             preds: [b, out_features + 1, h, w]
-            pix_images: [b, h, w]
+            label_masks: [b, h, w]
 
         """
         # value=255 is the padding or edge areas
-        return F.cross_entropy(preds, pix_images, ignore_index=255)
+        return F.cross_entropy(preds, label_masks, ignore_index=255)
