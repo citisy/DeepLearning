@@ -3,9 +3,8 @@ import torch
 import torch.nn.functional as F
 from functools import partial
 from ..layers import Linear, Conv, Residual
-from ..attentions import CrossAttention3D, LinearAttention3D, ScaleAttendWithXformers
-from ..activations import GroupNorm32
 from ..image_translation.pix2pix import NetD as NLayerDiscriminator
+from .. import attentions, activations
 from utils import torch_utils
 
 
@@ -94,18 +93,18 @@ def make_attn(in_channels, attn_type=Config.VANILLA, groups=32):
     attn_dict = {
         Config.VANILLA: lambda in_ch: nn.Sequential(
             make_norm(groups, in_ch),
-            CrossAttention3D(n_heads=1, head_dim=in_ch)
+            attentions.CrossAttention3D(n_heads=1, head_dim=in_ch, attend=attentions.SplitScaleAttend())
         ),
         Config.VANILLA_XFORMERS: lambda in_ch: nn.Sequential(
             make_norm(groups, in_ch),
-            CrossAttention3D(n_heads=1, head_dim=in_ch, attend=ScaleAttendWithXformers())
+            attentions.CrossAttention3D(n_heads=1, head_dim=in_ch, attend=attentions.ScaleAttendWithXformers())
         ),  # use xformers, equal to VANILLA
-        Config.LINEAR: lambda in_ch: LinearAttention3D(n_heads=1, head_dim=in_ch, separate=True),
+        Config.LINEAR: lambda in_ch: attentions.LinearAttention3D(n_heads=1, head_dim=in_ch, separate=True),
     }
     return attn_dict.get(attn_type, nn.Identity)(in_channels)
 
 
-make_norm = partial(GroupNorm32, eps=1e-6, affine=True)
+make_norm = partial(activations.GroupNorm32, eps=1e-6, affine=True)
 
 
 class Swish(nn.Module):

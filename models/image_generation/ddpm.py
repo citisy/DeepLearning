@@ -1,16 +1,16 @@
 import math
+from functools import partial
+from random import random
+
 import torch
 import torch.nn.functional as F
+from einops import rearrange, reduce
+from torch import nn
 from torch.utils.checkpoint import checkpoint
-from torch import nn, einsum
-from einops import rearrange, repeat, reduce
-from random import random
-from functools import partial
+
 from utils import torch_utils
+from .. import bundles, attentions, activations
 from ..layers import Linear, Conv, Upsample, Downsample
-from ..attentions import CrossAttention3D, LinearAttention3D, LearnedMemoryLinearAttend
-from ..activations import GroupNorm32
-from .. import bundles
 
 
 class Config(bundles.Config):
@@ -21,6 +21,10 @@ class Config(bundles.Config):
     LINEAR = 1
     COSINE = 2
     SIGMOID = 3
+
+    SCALE_ATTEND = 1
+    XFORMERS_ATTEND = 2
+    SPLIT_ATTEND = 3
 
     sampler_config = dict(
         objective=PRED_V,
@@ -111,6 +115,18 @@ def make_beta_schedule(name=Config.LINEAR):
         Config.SIGMOID: sigmoid_beta_schedule
     }
     return d.get(name)
+
+
+def make_attend(name=Config.SCALE_ATTEND):
+    d = {
+        Config.SCALE_ATTEND: attentions.ScaleAttend,
+        Config.XFORMERS_ATTEND: attentions.ScaleAttendWithXformers,
+        Config.SPLIT_ATTEND: attentions.SplitScaleAttend
+    }
+    return d.get(name)
+
+
+make_norm = partial(activations.GroupNorm32, eps=1e-5, affine=True)
 
 
 class Model(nn.ModuleList):
@@ -485,14 +501,14 @@ class UNetModel(nn.Module):
                 make_res(in_ch, in_ch),
                 make_res(in_ch, in_ch),
                 RMSNorm(in_ch),
-                make_attn(in_ch, head_dim=attn_dim_heads[i], n_heads=attn_heads[i], is_bottom=is_bottom),
+                self.make_attn(in_ch, head_dim=attn_dim_heads[i], n_heads=attn_heads[i], is_bottom=is_bottom),
                 nn.Conv2d(in_ch, out_ch, 3, padding=1) if is_bottom else Downsample(in_ch, out_ch),
             ]))
 
             in_ch = out_ch
 
         self.mid_block1 = make_res(out_ch, out_ch)
-        self.mid_attn = CrossAttention3D(out_ch, n_heads=attn_heads[-1], head_dim=attn_dim_heads[-1])
+        self.mid_attn = attentions.CrossAttention3D(out_ch, n_heads=attn_heads[-1], head_dim=attn_dim_heads[-1])
         self.mid_block2 = make_res(out_ch, out_ch)
 
         self.ups = nn.ModuleList([])
@@ -505,13 +521,21 @@ class UNetModel(nn.Module):
                 make_res(out_ch + in_ch, out_ch),
                 make_res(out_ch + in_ch, out_ch),
                 RMSNorm(out_ch),
-                make_attn(out_ch, head_dim=attn_dim_heads[i], n_heads=attn_heads[i], is_bottom=is_bottom),
+                self.make_attn(out_ch, head_dim=attn_dim_heads[i], n_heads=attn_heads[i], is_bottom=is_bottom),
                 nn.Conv2d(out_ch, in_ch, 3, padding=1) if is_top else Upsample(out_ch, in_ch),
             ]))
 
             out_ch = in_ch
 
         self.final_res_block = make_res(in_ch * 2, in_ch)
+
+    def make_attn(self, in_ch, n_heads, head_dim, is_bottom, n_mem_size=4):
+        attn = attentions.CrossAttention3D if is_bottom else partial(
+            attentions.LinearAttention3D,
+            attend=attentions.LearnedMemoryLinearAttend(n_heads, head_dim, n_mem_size),
+            out_fn=Conv(n_heads * head_dim, n_heads * head_dim, 1, mode='cn', norm=RMSNorm(in_ch)),
+        )
+        return attn(in_ch, head_dim=head_dim, n_heads=n_heads)
 
     def forward(self, x, time):
         r = x.clone()
@@ -582,18 +606,6 @@ class SinusoidalPosEmb(nn.Module):
         emb = x[:, None] * emb[None, :]
         emb = torch.cat((emb.cos(), emb.sin()), dim=-1)
         return emb
-
-
-def make_attn(in_ch, n_heads, head_dim, is_bottom, n_mem_size=4):
-    attn = CrossAttention3D if is_bottom else partial(
-        LinearAttention3D,
-        attend=LearnedMemoryLinearAttend(n_heads, head_dim, n_mem_size),
-        out_fn=Conv(n_heads * head_dim, n_heads * head_dim, 1, mode='cn', norm=RMSNorm(in_ch)),
-    )
-    return attn(in_ch, head_dim=head_dim, n_heads=n_heads)
-
-
-make_norm = partial(GroupNorm32, eps=1e-5, affine=True)
 
 
 class ResnetBlock(nn.Module):

@@ -1,3 +1,4 @@
+import math
 from functools import partial
 
 import torch
@@ -7,6 +8,7 @@ from einops.layers.torch import Rearrange
 from torch import nn
 
 from .layers import Linear
+from utils import log_utils
 
 
 def get_attention_input(n_heads=None, model_dim=None, head_dim=None):
@@ -270,6 +272,53 @@ class ScaleAttendWithXformers(nn.Module):
         """
         attention_mask = get_mask(attention_mask, q.shape, q.dtype, return_bool=True)
         return self.fn(q, k, v, attn_bias=attention_mask, **kwargs)
+
+
+class SplitScaleAttend(ScaleAttend):
+    """avoid out of memery
+    todo: support mask"""
+
+    def forward(self, q, k, v, **kwargs):
+        q_in_shape, k_in_shape, v_in_shape = q.shape, k.shape, v.shape
+        q = q.view((-1, q_in_shape[-2], q_in_shape[-1]))
+        k = k.view((-1, k_in_shape[-2], k_in_shape[-1]))
+        v = v.view((-1, v_in_shape[-2], v_in_shape[-1]))
+
+        scale = q.shape[-1] ** -0.5
+        k = k * scale
+
+        r1 = torch.zeros(q.shape[0], q.shape[1], v.shape[2], device=q.device, dtype=q.dtype)
+
+        mem_free_total = log_utils.MemoryInfo.get_vram_info(q.device)['free_total']
+
+        gb = 1024 ** 3
+        tensor_size = q.shape[0] * q.shape[1] * k.shape[1] * q.element_size()
+        modifier = 3 if q.element_size() == 2 else 2.5
+        mem_required = tensor_size * modifier
+        steps = 1
+
+        if mem_required > mem_free_total:
+            steps = 2 ** (math.ceil(math.log2(mem_required / mem_free_total)))
+
+        if steps > 64:
+            max_res = math.floor(math.sqrt(math.sqrt(mem_free_total / 2.5)) / 8) * 64
+            raise RuntimeError(f'Not enough memory, use lower resolution (max approx. {max_res}x{max_res}). '
+                               f'Need: {mem_required / 64 / gb:0.1f}GB free, Have:{mem_free_total / gb:0.1f}GB free')
+
+        slice_size = q.shape[1] // steps
+        for i in range(0, q.shape[1], slice_size):
+            end = min(i + slice_size, q.shape[1])
+            s1 = torch.einsum('b i d, b j d -> b i j', q[:, i:end], k)
+
+            s2 = s1.softmax(dim=-1, dtype=q.dtype)
+            del s1
+
+            r1[:, i:end] = torch.einsum('b i j, b j d -> b i d', s2, v)
+            del s2
+
+        del q, k, v
+        r1 = r1.view(q_in_shape)
+        return r1
 
 
 class LinearAttend(nn.Module):

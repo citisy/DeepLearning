@@ -6,7 +6,7 @@ from torch.utils.checkpoint import checkpoint
 from torch import nn, einsum
 from einops import rearrange, repeat, reduce
 from utils import torch_utils
-from .ddpm import RandomOrLearnedSinusoidalPosEmb, SinusoidalPosEmb, ResnetBlock, make_norm, extract, append_dims
+from .ddpm import RandomOrLearnedSinusoidalPosEmb, SinusoidalPosEmb, ResnetBlock, make_norm, make_attend, extract, append_dims
 from . import VAE, ddpm, ddim, k_diffusion
 from ..layers import Linear, Conv, Upsample, Downsample
 from ..attentions import CrossAttention2D, get_attention_input
@@ -39,6 +39,7 @@ class Config(ddim.Config):
 
     backbone = dict(
         num_heads=8,
+        attend_type=ddim.Config.SPLIT_ATTEND
     )
     vae = VAE.Config.backbone_32x32x4
 
@@ -439,7 +440,7 @@ class UNetModel(nn.Module):
             self,
             in_ch, context_dim,
             out_ch=4, unit_dim=320, ch_mult=(1, 2, 4, 4),  # for model
-            use_checkpoint=False,  # for resnet and transformers
+            use_checkpoint=False,  attend_type=Config.SCALE_ATTEND,  # for resnet and transformers
             sinusoidal_pos_emb_theta=10000, learned_sinusoidal_cond=False, random_fourier_features=False, learned_sinusoidal_dim=16,  # for time embed
             num_classes=None, adm_in_channels=None,  # for label_emb
             groups=32, num_res_blocks=2,  # for resnet
@@ -458,7 +459,7 @@ class UNetModel(nn.Module):
 
         # helper
         make_res = functools.partial(ResnetBlock, groups=groups, use_checkpoint=use_checkpoint, time_emb_dim=time_emb_dim)
-        make_trans = functools.partial(TransformerBlock, context_dim=context_dim, use_checkpoint=use_checkpoint, use_linear=use_linear_in_transformer)
+        make_trans = functools.partial(TransformerBlock, context_dim=context_dim, use_checkpoint=use_checkpoint, use_linear=use_linear_in_transformer, attend_type=attend_type)
 
         if learned_sinusoidal_cond:
             sin_pos_emb = RandomOrLearnedSinusoidalPosEmb(learned_sinusoidal_dim, random_fourier_features)
@@ -603,7 +604,7 @@ class TimestepEmbedSequential(nn.Module):
 
 class TransformerBlock(nn.Module):
     def __init__(self, in_ch, n_heads, head_dim, groups=32,
-                 depth=1, dropout=0., context_dim=None, use_linear=False, use_checkpoint=False):
+                 depth=1, dropout=0., context_dim=None, use_linear=False, use_checkpoint=False, attend_type=Config.SCALE_ATTEND):
         super().__init__()
         self.in_channels = in_ch
         self.use_linear = use_linear
@@ -622,7 +623,7 @@ class TransformerBlock(nn.Module):
             self.proj_in = nn.Conv2d(in_ch, model_dim, 1)
 
         self.transformer_blocks = nn.ModuleList([BasicTransformerBlock(
-            model_dim, n_heads, head_dim, drop_prob=dropout, context_dim=d, use_checkpoint=use_checkpoint
+            model_dim, n_heads, head_dim, drop_prob=dropout, context_dim=d, use_checkpoint=use_checkpoint, attend_type=attend_type
         ) for d in context_dim])
 
         if use_linear:
@@ -655,14 +656,15 @@ class TransformerBlock(nn.Module):
 
 
 class BasicTransformerBlock(nn.Module):
-    def __init__(self, query_dim, n_heads, head_dim, drop_prob=0., context_dim=None, gated_ff=True, use_checkpoint=False):
+    def __init__(self, query_dim, n_heads, head_dim, attend_type=Config.SCALE_ATTEND, drop_prob=0., context_dim=None, gated_ff=True, use_checkpoint=False):
         super().__init__()
+        attend_fn = make_attend(attend_type)
         self.norm1 = nn.LayerNorm(query_dim)
-        self.attn1 = CrossAttention2D(query_dim=query_dim, n_heads=n_heads, head_dim=head_dim, drop_prob=drop_prob, bias=False)  # is a self-attention
+        self.attn1 = CrossAttention2D(query_dim=query_dim, n_heads=n_heads, head_dim=head_dim, attend=attend_fn(), drop_prob=drop_prob, bias=False)  # is a self-attention
         self.attn1.to_out.linear.bias = nn.Parameter(torch.empty(query_dim))  # only to_out module has bias
 
         self.norm2 = nn.LayerNorm(query_dim)
-        self.attn2 = CrossAttention2D(query_dim=query_dim, context_dim=context_dim, n_heads=n_heads, head_dim=head_dim, drop_prob=drop_prob, bias=False)  # is self-attn if context is none
+        self.attn2 = CrossAttention2D(query_dim=query_dim, context_dim=context_dim, n_heads=n_heads, head_dim=head_dim, attend=attend_fn(), drop_prob=drop_prob, bias=False)  # is self-attn if context is none
         self.attn2.to_out.linear.bias = nn.Parameter(torch.empty(query_dim))  # only to_out module has bias
 
         self.norm3 = nn.LayerNorm(query_dim)

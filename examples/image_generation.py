@@ -1,16 +1,19 @@
+from collections import namedtuple
+from datetime import datetime
+from functools import partial
+from pathlib import Path
+from typing import List
+
 import cv2
 import numpy as np
 import torch
-from torch import optim, nn
-from pathlib import Path
-from functools import partial
-from datetime import datetime
-from collections import namedtuple
-from utils import os_lib, torch_utils, configs
-from data_parse.cv_data_parse.data_augmentation import crop, scale, geometry, channel, RandomApply, Apply, complex, pixel_perturbation
+from torch import optim
+
 from data_parse import DataRegister
 from data_parse.cv_data_parse.base import DataVisualizer
+from data_parse.cv_data_parse.data_augmentation import crop, scale, geometry, channel, RandomApply, Apply, pixel_perturbation
 from processor import Process, DataHooks, bundled, model_process, BatchIterImgDataset, CheckpointHooks
+from utils import os_lib, torch_utils, configs
 
 
 class GanOptimizer:
@@ -611,7 +614,7 @@ class VAE(IgProcess):
         super().set_optimizer(lr=lr, betas=betas, **kwargs)
 
     def set_model(self):
-        from models.image_generation.VAE import Model, Config
+        from models.image_generation.VAE import Model
         self.model = Model(
             img_ch=self.in_ch,
             image_size=self.input_size,
@@ -899,10 +902,10 @@ class SD(DiProcess, FromPretrain, WithLora):
             neg_prompts = ['', '']
 
             # predict one
-            image = process.single_predict(prompt, neg_prompt, is_visualize=True)
+            image = process.single_predict(prompt, neg_texts=neg_prompt, is_visualize=True)
 
             # predict batch
-            images = process.batch_predict(prompts, neg_prompts, batch_size=2, is_visualize=True)
+            images = process.batch_predict(prompts, neg_texts=neg_prompts, batch_size=2, is_visualize=True)
 
             # img2img
             image = 'test.jpg'
@@ -912,8 +915,8 @@ class SD(DiProcess, FromPretrain, WithLora):
             image = process.single_predict(prompt, images=image, is_visualize=True)
 
             # predict batch
-            images = process.batch_predict(prompts, neg_prompts, images=image, batch_size=2, is_visualize=True)     # base on same image
-            images = process.batch_predict(prompts, neg_prompts, images=images, batch_size=2, is_visualize=True)    # base on different image
+            images = process.batch_predict(prompts, neg_texts=neg_prompts, images=image, batch_size=2, is_visualize=True)     # base on same image
+            images = process.batch_predict(prompts, neg_texts=neg_prompts, images=images, batch_size=2, is_visualize=True)    # base on different image
     """
 
     model_version = 'sd'
@@ -1007,6 +1010,9 @@ class SD(DiProcess, FromPretrain, WithLora):
             self.model.vae.encode = partial(torch_utils.ModuleManager.low_memory_run, self.model.vae, self.model.vae.encode, self.device)
             self.model.vae.decode = partial(torch_utils.ModuleManager.low_memory_run, self.model.vae, self.model.vae.decode, self.device)
 
+            # Not critical to run single batch for decoding strategy, but reduce more GPU memory
+            self.model.vae.decode = partial(torch_utils.ModuleManager.single_batch_run, self.model.vae, self.model.vae.decode)
+
     def get_vocab(self):
         from data_parse.nl_data_parse.pre_process.bundled import CLIPTokenizer
         self.tokenizer = CLIPTokenizer.from_pretrain(self.encoder_fn, self.vocab_fn)
@@ -1056,7 +1062,7 @@ class SD(DiProcess, FromPretrain, WithLora):
             if 'text' in ret:
                 texts.append(ret['text'])
 
-            if 'neg_text' in ret and ret['neg_text']:
+            if 'neg_text' in ret and ret['neg_text'] is not None:
                 neg_texts.append(ret['neg_text'])
             else:
                 neg_texts.append('')
@@ -1065,9 +1071,14 @@ class SD(DiProcess, FromPretrain, WithLora):
                 image = ret.pop('image')
                 if image.shape[0] == 4:
                     image, mask_image = image[:-1], image[-1:]
-                    mask_images.append(torch.from_numpy(mask_image).to(self.device, non_blocking=True, dtype=torch.float))
+                    if 'mask_image' not in ret or ret['mask_image'] is None:
+                        mask_images.append(torch.from_numpy(mask_image).to(self.device, non_blocking=True, dtype=torch.float))
 
                 images.append(torch.from_numpy(image).to(self.device, non_blocking=True, dtype=torch.float))
+
+            if 'mask_image' in ret and ret['mask_image'] is not None:
+                mask_image = ret.pop('mask_image')
+                mask_images.append(torch.from_numpy(mask_image).to(self.device, non_blocking=True, dtype=torch.float))
 
         inputs = self.tokenizer.encode_attention_paragraphs(texts)
         texts = torch.tensor(inputs['segments_ids']).to(self.device)
@@ -1095,34 +1106,58 @@ class SD(DiProcess, FromPretrain, WithLora):
             mask_x=mask_images,
         )
 
-    model_input_template = namedtuple('model_inputs', ['text', 'neg_text', 'image'], defaults=[None, None])
+    model_input_template = namedtuple('model_inputs', ['text', 'neg_text', 'image', 'mask_image'], defaults=[None, None])
 
-    def gen_predict_inputs(self, *objs, images=None, start_idx=None, end_idx=None, **kwargs):
-        assert len(objs) <= 2
+    def gen_predict_inputs(self, *objs, neg_texts=None, images=None, mask_images=None, start_idx=None, end_idx=None, **kwargs):
+        """
 
-        if len(objs) == 2:
-            pos_texts, neg_texts = objs
-            pos_texts = pos_texts[start_idx: end_idx]
-            neg_texts = neg_texts[start_idx: end_idx]
-            assert len(pos_texts) == len(neg_texts)
+        Args:
+            *objs:
+            neg_texts (str|List[str]):
+            images (str|List[str]|np.ndarray|List[np.ndarray]):
+            mask_images (str|List[str]|np.ndarray|List[np.ndarray]):
+            start_idx:
+            end_idx:
+            **kwargs:
+
+        Returns:
+
+        """
+        pos_texts = objs[0][start_idx: end_idx]
+        b = len(pos_texts)
+
+        if neg_texts is None:
+            neg_texts = [None] * b
+        elif isinstance(neg_texts, str):
+            neg_texts = [neg_texts] * b
         else:
-            pos_texts = objs[0][start_idx: end_idx]
-            neg_texts = [None] * len(pos_texts)
+            neg_texts = neg_texts[start_idx: end_idx]
 
         if images:
             if not isinstance(images, (list, tuple)):
                 # base on one image
-                images = [images for _ in pos_texts]
+                images = [images for _ in range(b)]
             else:
                 images = images[start_idx: end_idx]
         else:
-            images = [None] * len(pos_texts)
+            images = [None] * b
+
+        if mask_images:
+            if not isinstance(mask_images, (list, tuple)):
+                # base on one image
+                mask_images = [mask_images for _ in range(b)]
+            else:
+                mask_images = mask_images[start_idx: end_idx]
+        else:
+            mask_images = [None] * b
 
         rets = []
-        for text, neg_text, image in zip(pos_texts, neg_texts, images):
+        for text, neg_text, image, mask_image in zip(pos_texts, neg_texts, images, mask_images):
             if isinstance(image, str):
-                image = os_lib.Loader(verbose=False).load_img(image)
-            rets.append(self.model_input_template(image=image, text=text, neg_text=neg_text)._asdict())
+                image = os_lib.loader.load_img(image)
+            if isinstance(mask_image, str):
+                image = os_lib.loader.load_img(mask_image)
+            rets.append(self.model_input_template(image=image, text=text, neg_text=neg_text, mask_image=mask_image)._asdict())
 
         return rets
 
