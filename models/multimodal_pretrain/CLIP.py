@@ -379,8 +379,9 @@ class TextTransformer(nn.Module):
         super().__init__()
         self.embedding = DecoderEmbedding(vocab_size, hidden_size, max_seq_len=max_seq_len)
         self.encoder = TransformerSequential(
-            hidden_size, num_attention_heads, hidden_size * 4, norm_first=True, separate=separate,
+            hidden_size, num_attention_heads, hidden_size * 4, norm_first=True,
             ff_kwargs=dict(act=make_act(act_type)()),
+            fn_kwargs=dict(separate=separate),
             num_blocks=num_hidden_layers
         )
         self.norm = nn.LayerNorm(hidden_size)
