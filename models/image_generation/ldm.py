@@ -81,7 +81,7 @@ class WeightConverter:
         'first_stage_model': 'vae',
         'first_stage_model.{0}.block.{1}.norm{2}.': 'vae.{0}.blocks.{1}.fn.conv{2}.norm.',
         'first_stage_model.{0}.block.{1}.conv{2}.': 'vae.{0}.blocks.{1}.fn.conv{2}.conv.',
-        'first_stage_model.{0}.block.{1}.nin_shortcut': 'vae.{0}.blocks.{1}.project_fn',
+        'first_stage_model.{0}.block.{1}.nin_shortcut': 'vae.{0}.blocks.{1}.proj',
         'first_stage_model.{0}sample.conv': 'vae.{0}sample.fn.1',
         'first_stage_model.{0}.mid.block_{1}.norm{2}.': 'vae.{0}.neck.block_{1}.fn.conv{2}.norm.',
         'first_stage_model.{0}.mid.block_{1}.conv{2}.': 'vae.{0}.neck.block_{1}.fn.conv{2}.conv.',
