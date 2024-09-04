@@ -83,6 +83,6 @@ class ResBlock(Residual):
 
         super().__init__(
             fn=conv_seq,
-            project_fn=conv_x
+            proj=conv_x
         )
 

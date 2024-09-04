@@ -1,3 +1,7 @@
+"""Some definition:
+layer_fn: nn.Module without called, e.g.: `nn.Conv2d`
+layer: nn.Module(), e.g.: `nn.Conv2d()`
+"""
 import warnings
 import torch
 from torch import nn
@@ -401,13 +405,13 @@ class Add(nn.Module):
 
 
 class Residual(nn.Module):
-    def __init__(self, fn, project_fn=None, is_norm=True, norm=None, norm_first=False):
+    def __init__(self, fn, proj=None, is_norm=True, norm=None, norm_first=False):
         """y = x + fn(x)
 
         Args:
             fn:
-            project_fn:
-                if not none, y = project_fn(x) + fn(x)
+            proj:
+                if not none, y = proj(x) + fn(x)
             is_norm:
             norm:
             norm_first:
@@ -415,8 +419,10 @@ class Residual(nn.Module):
                 if false, y = norm(x + fn(x))
         """
         super().__init__()
+        # note, In order to maintain naming consistency, the initial plan was to rename fn
+        # but due to the need for too many changes, the idea was later abandoned
         self.fn = fn
-        self.project_fn = project_fn or nn.Identity()
+        self.proj = proj or nn.Identity()
 
         if is_norm:
             assert norm is not None
@@ -427,6 +433,6 @@ class Residual(nn.Module):
 
     def forward(self, x, **fn_kwargs):
         if self.norm_first:
-            return self.project_fn(x) + self.fn(self.norm(x), **fn_kwargs)
+            return self.proj(x) + self.fn(self.norm(x), **fn_kwargs)
         else:
-            return self.norm(self.project_fn(x) + self.fn(x, **fn_kwargs))
+            return self.norm(self.proj(x) + self.fn(x, **fn_kwargs))

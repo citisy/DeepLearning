@@ -64,7 +64,7 @@ class CrossAttention2D(nn.Module):
     """cross attention"""
 
     def __init__(self, n_heads=None, model_dim=None, head_dim=None, query_dim=None, context_dim=None,
-                 use_conv=False, separate=True, drop_prob=0.1, attend=None, out_fn=None, **fn_kwargs):
+                 use_conv=False, separate=True, drop_prob=0.1, attend=None, out_layer=None, **fn_kwargs):
         super().__init__()
         n_heads, model_dim, head_dim = get_attention_input(n_heads, model_dim, head_dim)
         query_dim = query_dim or model_dim
@@ -87,7 +87,7 @@ class CrossAttention2D(nn.Module):
             self.view_in = Rearrange('b (n c) dk-> b n c dk', n=n_heads)
 
             self.view_out = Rearrange('b n c dk -> b (n c) dk')
-            self.to_out = nn.Conv1d(model_dim, query_dim, **fn_kwargs) if out_fn is None else out_fn
+            self.to_out = nn.Conv1d(model_dim, query_dim, **fn_kwargs) if out_layer is None else out_layer
 
         else:  # build by linear func
             if separate:
@@ -103,7 +103,7 @@ class CrossAttention2D(nn.Module):
             self.view_in = Rearrange('b s (n dk)-> b n s dk', n=n_heads)
 
             self.view_out = Rearrange('b n s dk -> b s (n dk)')
-            self.to_out = Linear(model_dim, query_dim, mode='ld', drop_prob=drop_prob, **fn_kwargs) if out_fn is None else out_fn
+            self.to_out = Linear(model_dim, query_dim, mode='ld', drop_prob=drop_prob, **fn_kwargs) if out_layer is None else out_layer
 
         self.attend = ScaleAttend(drop_prob=drop_prob) if attend is None else attend
 
@@ -128,7 +128,7 @@ class CrossAttention3D(nn.Module):
     """cross attention build by conv function"""
 
     def __init__(self, n_heads=None, model_dim=None, head_dim=None, query_dim=None, context_dim=None,
-                 use_conv=True, separate=True, drop_prob=0., attend=None, out_fn=None, **fn_kwargs):
+                 use_conv=True, separate=True, drop_prob=0., attend=None, out_layer=None, **fn_kwargs):
         super().__init__()
         n_heads, model_dim, head_dim = get_attention_input(n_heads, model_dim, head_dim)
         query_dim = query_dim or model_dim
@@ -151,7 +151,7 @@ class CrossAttention3D(nn.Module):
 
             self.view_in = Rearrange('b c h w -> b 1 (h w) c')
             self.view_out = partial(rearrange, pattern='b 1 (h w) c -> b c h w')
-            self.to_out = nn.Conv2d(model_dim, query_dim, 1) if out_fn is None else out_fn
+            self.to_out = nn.Conv2d(model_dim, query_dim, 1) if out_layer is None else out_layer
 
         else:  # build by linear func
             if separate:
@@ -167,7 +167,7 @@ class CrossAttention3D(nn.Module):
             self.view_in = Rearrange('b h w c -> b 1 (h w) c')
 
             self.view_out = partial(rearrange, pattern='b 1 (h w) c -> b h w c')
-            self.to_out = Linear(model_dim, query_dim, mode='ld', drop_prob=drop_prob, **fn_kwargs) if out_fn is None else out_fn
+            self.to_out = Linear(model_dim, query_dim, mode='ld', drop_prob=drop_prob, **fn_kwargs) if out_layer is None else out_layer
 
         self.attend = ScaleAttend(drop_prob=drop_prob) if attend is None else attend
 
@@ -191,7 +191,7 @@ class LinearAttention3D(nn.Module):
     """linear attention build by conv function"""
 
     def __init__(self, n_heads=None, model_dim=None, head_dim=None, query_dim=None, context_dim=None,
-                 separate=True, attend=None, out_fn=None, **fn_kwargs):
+                 separate=True, attend=None, out_layer=None, **fn_kwargs):
         super().__init__()
         n_heads, model_dim, head_dim = get_attention_input(n_heads, model_dim, head_dim)
         query_dim = query_dim or model_dim
@@ -213,7 +213,7 @@ class LinearAttention3D(nn.Module):
         self.view_in = Rearrange('b (n d) h w -> b n d (h w)', n=n_heads)
         self.attend = LinearAttend() if attend is None else attend
         self.view_out = partial(rearrange, pattern='b n d (h w) -> b (n d) h w')
-        self.to_out = nn.Conv2d(model_dim, query_dim, 1) if out_fn is None else out_fn
+        self.to_out = nn.Conv2d(model_dim, query_dim, 1) if out_layer is None else out_layer
 
     def forward(self, q, k=None, v=None, **attend_kwargs):
         b, c, h, w = q.shape
