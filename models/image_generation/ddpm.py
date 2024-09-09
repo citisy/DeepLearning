@@ -624,7 +624,11 @@ class ResnetBlock(nn.Module):
         self.proj = nn.Conv2d(in_ch, out_ch, 1) if in_ch != out_ch else nn.Identity()
 
     def forward(self, x, time_emb=None):
-        if self.use_checkpoint:
+        if self.training and self.use_checkpoint:
+            # note, ensure having the right backward in checkpoint mode
+            x.requires_grad_(True)
+            if time_emb is not None:
+                time_emb.requires_grad_(True)
             return checkpoint(self._forward, x, time_emb)
         else:
             return self._forward(x, time_emb)

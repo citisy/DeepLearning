@@ -7,7 +7,7 @@ from utils import torch_utils
 from collections import OrderedDict
 
 
-class LoraModule(nn.Module):
+class Module(nn.Module):
     def __init__(self, base_layer: nn.Module, r=8, multiplier=1.0, alpha=1, drop_prob=0.):
         self.r = r
         self.scale = multiplier * alpha / r
@@ -16,13 +16,15 @@ class LoraModule(nn.Module):
         self.ori_forward = base_layer.forward
         self.dropout = nn.Dropout(drop_prob)
 
+        # todo: more than one lora fused
+
     def initialize_layers(self):
         nn.init.kaiming_uniform_(self.down.weight, a=math.sqrt(5))
         nn.init.zeros_(self.up.weight)
 
     def forward(self, x):
-        with torch.no_grad():
-            y = self.ori_forward(x)
+        # note, do not use torch.no_grad()
+        y = self.ori_forward(x)
 
         h = self.lora_call(x)
         h = self.dropout(h) * self.scale
@@ -37,11 +39,11 @@ class LoraModule(nn.Module):
         torch_utils.ModuleManager.torch_gc()
 
 
-class Linear(LoraModule):
+class Linear(Module):
     def __init__(self, base_layer: nn.Linear, r=8, **kwargs):
         super().__init__(base_layer, r, **kwargs)
-        self.down = torch.nn.Linear(self.in_features, r, bias=False)
-        self.up = torch.nn.Linear(r, self.out_features, bias=False)
+        self.down = nn.Linear(self.in_features, r, bias=False)
+        self.up = nn.Linear(r, self.out_features, bias=False)
 
         self.initialize_layers()
 
@@ -54,7 +56,7 @@ class Linear(LoraModule):
         self.dewarp()
 
 
-class Embedding(LoraModule):
+class Embedding(Module):
     def __init__(self, base_layer: nn.Embedding, r=8, **kwargs):
         super().__init__(base_layer, r, **kwargs)
         self.down = torch.nn.Linear(self.num_embeddings, r, bias=False)
@@ -75,7 +77,7 @@ class Embedding(LoraModule):
         self.dewarp()
 
 
-class Conv2d(LoraModule):
+class Conv2d(Module):
     def __init__(self, base_layer: nn.Conv2d, r=8, **kwargs):
         super().__init__(base_layer, r, **kwargs)
         self.down = nn.Conv2d(base_layer.in_channels, r, base_layer.kernel_size, base_layer.stride, base_layer.padding, bias=False)
@@ -117,7 +119,10 @@ class ModelWarp:
     layer_mapping = {
         nn.Linear: Linear,
         nn.Embedding: Embedding,
-        nn.Conv2d: Conv2d
+        nn.Conv2d: Conv2d,
+        Linear: Linear,
+        Embedding: Embedding,
+        Conv2d: Conv2d
     }
 
     def __init__(self, include=(), exclude=(), r=8, **lora_kwargs):
@@ -158,7 +163,8 @@ class ModelWarp:
             # note, to avoid the layer is changed
             layer = torch_utils.ModuleManager.get_module_by_name(self.model, full_name)
             for k, v in layer.state_dict().items():
-                state_dict[full_name + '.' + k] = v
+                if k.startswith('down') or k.startswith('up'):
+                    state_dict[full_name + '.' + k] = v
 
         return state_dict
 

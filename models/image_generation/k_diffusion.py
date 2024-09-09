@@ -282,7 +282,7 @@ class EulerSampler(Sampler):
         pred = diffuse_func(x_t * c_in, self.sigma_to_idx(sigma), **kwargs)
         real = self.scaling.predict_real(x_0, t, noise)
 
-        loss = F.mse_loss(pred, real, reduction='none')
+        loss = F.mse_loss(pred.float(), real.float(), reduction='none')
         loss = reduce(loss, 'b ... -> b', 'mean')
         return loss.mean()
 

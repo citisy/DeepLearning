@@ -1,16 +1,17 @@
 import functools
-import copy
+
 import torch
 import torch.nn.functional as F
+from einops import rearrange
+from torch import nn
 from torch.utils.checkpoint import checkpoint
-from torch import nn, einsum
-from einops import rearrange, repeat, reduce
+
 from utils import torch_utils
-from .ddpm import RandomOrLearnedSinusoidalPosEmb, SinusoidalPosEmb, ResnetBlock, make_norm, make_attend, extract, append_dims
 from . import VAE, ddpm, ddim, k_diffusion
-from ..layers import Linear, Conv, Upsample, Downsample
-from ..attentions import CrossAttention2D, get_attention_input
+from .ddpm import RandomOrLearnedSinusoidalPosEmb, SinusoidalPosEmb, ResnetBlock, make_norm, make_attend, append_dims
 from .. import bundles
+from ..attentions import CrossAttention2D, get_attention_input
+from ..layers import Linear, Conv, Upsample, Downsample
 
 
 class Config(ddim.Config):
@@ -232,7 +233,7 @@ class Model(ddim.Model):
     """
 
     scale_factor = 0.18215
-    cond_trainable = False
+    cond_trainable = True
     vae_trainable = False
 
     sampler_mapping = {
@@ -440,7 +441,7 @@ class UNetModel(nn.Module):
             self,
             in_ch, context_dim,
             out_ch=4, unit_dim=320, ch_mult=(1, 2, 4, 4),  # for model
-            use_checkpoint=False,  attend_type=Config.SCALE_ATTEND,  # for resnet and transformers
+            use_checkpoint=True, attend_type=Config.SCALE_ATTEND,  # for resnet and transformers
             sinusoidal_pos_emb_theta=10000, learned_sinusoidal_cond=False, random_fourier_features=False, learned_sinusoidal_dim=16,  # for time embed
             num_classes=None, adm_in_channels=None,  # for label_emb
             groups=32, num_res_blocks=2,  # for resnet
@@ -608,6 +609,8 @@ class TransformerBlock(nn.Module):
         super().__init__()
         self.in_channels = in_ch
         self.use_linear = use_linear
+        self.use_checkpoint = use_checkpoint
+
         model_dim = n_heads * head_dim
 
         if not isinstance(context_dim, list):
@@ -623,7 +626,7 @@ class TransformerBlock(nn.Module):
             self.proj_in = nn.Conv2d(in_ch, model_dim, 1)
 
         self.transformer_blocks = nn.ModuleList([BasicTransformerBlock(
-            model_dim, n_heads, head_dim, drop_prob=dropout, context_dim=d, use_checkpoint=use_checkpoint, attend_type=attend_type
+            model_dim, n_heads, head_dim, drop_prob=dropout, context_dim=d, attend_type=attend_type
         ) for d in context_dim])
 
         if use_linear:
@@ -632,6 +635,16 @@ class TransformerBlock(nn.Module):
             self.proj_out = nn.Conv2d(model_dim, in_ch, 1, stride=1, padding=0)
 
     def forward(self, x, context=None):
+        if self.training and self.use_checkpoint:
+            # note, ensure having the right backward in checkpoint mode
+            x.requires_grad_(True)
+            if context is not None:
+                context.requires_grad_(True)
+            return checkpoint(self._forward, x, context)
+        else:
+            return self._forward(x, context)
+
+    def _forward(self, x, context=None):
         # note: if no context is given, cross-attention defaults to self-attention
         b, c, h, w = x.shape
 
@@ -656,7 +669,7 @@ class TransformerBlock(nn.Module):
 
 
 class BasicTransformerBlock(nn.Module):
-    def __init__(self, query_dim, n_heads, head_dim, attend_type=Config.SCALE_ATTEND, drop_prob=0., context_dim=None, gated_ff=True, use_checkpoint=False):
+    def __init__(self, query_dim, n_heads, head_dim, attend_type=Config.SCALE_ATTEND, drop_prob=0., context_dim=None, gated_ff=True):
         super().__init__()
         attend_fn = make_attend(attend_type)
         self.norm1 = nn.LayerNorm(query_dim)
@@ -670,15 +683,7 @@ class BasicTransformerBlock(nn.Module):
         self.norm3 = nn.LayerNorm(query_dim)
         self.ff = FeedForward(query_dim, drop_prob=drop_prob, glu=gated_ff)
 
-        self.use_checkpoint = use_checkpoint
-
     def forward(self, x, context=None):
-        if self.use_checkpoint:
-            return checkpoint(self._forward, x, context)
-        else:
-            return self._forward(x, context)
-
-    def _forward(self, x, context=None):
         x = self.attn1(self.norm1(x)) + x
         x = self.attn2(self.norm2(x), context, context) + x
         x = self.ff(self.norm3(x)) + x

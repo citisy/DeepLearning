@@ -264,14 +264,19 @@ class ScaleAttendWithXformers(nn.Module):
         # requires pytorch > 2.0
         from xformers.ops import memory_efficient_attention
         self.fn = partial(memory_efficient_attention, p=drop_prob)
+        self.view_in = Rearrange('b n s d -> b s n d')
+        self.view_out = Rearrange('b s n d -> b n s d')
 
     def forward(self, q, k, v, attention_mask=None, **kwargs):
         """
         in(q|k|v): (b n s d)
         out(attn): (b n s d)
         """
+        q, k, v = [self.view_in(x) for x in (q, k, v)]
         attention_mask = get_mask(attention_mask, q.shape, q.dtype, return_bool=True)
-        return self.fn(q, k, v, attn_bias=attention_mask, **kwargs)
+        attn = self.fn(q, k, v, attn_bias=attention_mask, **kwargs)
+        attn = self.view_out(attn)
+        return attn
 
 
 class SplitScaleAttend(ScaleAttend):
@@ -279,6 +284,8 @@ class SplitScaleAttend(ScaleAttend):
     todo: support mask"""
 
     def forward(self, q, k, v, **kwargs):
+        assert not self.training, 'Do not support training mode yet'
+
         q_in_shape, k_in_shape, v_in_shape = q.shape, k.shape, v.shape
         q = q.view((-1, q_in_shape[-2], q_in_shape[-1]))
         k = k.view((-1, k_in_shape[-2], k_in_shape[-1]))

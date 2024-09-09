@@ -41,26 +41,38 @@ class IgProcess(Process):
     in_ch: int
 
     def on_train_start(self, **kwargs):
-        from metrics import image_generation
 
         super().on_train_start(**kwargs)
         self.train_container['metric_kwargs'].update(
             real_x=[],
-            fid_cls_model=image_generation.get_default_cls_model(device=self.device)
         )
+        self.register_val_start(self.set_fid_cls_model)
 
-    def metric(self, real_x=None, fid_cls_model=None, **kwargs):
+    use_fid_cls_model = True
+    fid_cls_model: 'nn.Module'
+
+    def set_fid_cls_model(self):
+        if self.use_fid_cls_model and not hasattr(self, 'fid_cls_model'):
+            from metrics import image_generation
+
+            self.fid_cls_model = image_generation.get_default_cls_model(device=self.device)
+
+    def metric(self, real_x=None, **kwargs):
         from metrics import image_generation
 
         container = self.predict(**kwargs)
         metric_results = {}
         for name, results in container['model_results'].items():
             if real_x is not None and 'fake_x' in results:
-                score = image_generation.fid(real_x, results['fake_x'], cls_model=fid_cls_model, device=self.device)
+                if self.use_fid_cls_model:
+                    score = image_generation.fid(real_x, results['fake_x'], cls_model=self.fid_cls_model, device=self.device)
+                else:
+                    score = -1
+
                 result = dict(score=score)
                 metric_results[name] = result
             else:
-                metric_results[name] = {'score': None}
+                metric_results[name] = {'score': -1}
 
         return metric_results
 
@@ -835,6 +847,7 @@ class WithLora(Process):
                 'norm',
                 'view',
                 'ff.1',
+                'attend'
             ),
             **self.lora_config
         )
@@ -862,7 +875,14 @@ class WithLora(Process):
 
             state_dict = WeightLoader.auto_load(self.lora_pretrain_model)
             state_dict = WeightConverter.from_official_lora(state_dict)
-            self.lora_warp.load_state_dict(state_dict, strict=False)
+            self.lora_warp.load_state_dict(state_dict, strict=True)
+
+    def save_lora_weight(self, save_name='lora.safetensors'):
+        from collections import OrderedDict
+
+        state_dict = self.lora_warp.state_dict()
+        state_dict = OrderedDict({k: v.to(torch.bfloat16) for k, v in state_dict.items()})
+        torch_utils.Export.to_safetensors(state_dict, f'{self.work_dir}/{save_name}')
 
 
 class FromPretrain(CheckpointHooks):
@@ -929,6 +949,7 @@ class SD(DiProcess, FromPretrain, WithLora):
     tokenizer: 'CLIPTokenizer'
     low_memory_run = False
     use_half = False
+    train_cond = False
 
     model_config: dict = {}
 
@@ -1003,15 +1024,17 @@ class SD(DiProcess, FromPretrain, WithLora):
             self.model.vae.decode = partial(torch_utils.ModuleManager.assign_dtype_run, self.model.vae, self.model.vae.decode, dtype, force_effect_module=False)
 
         if self.low_memory_run:
+            # Not critical to run single batch for decoding strategy, but reduce more GPU memory
+            self.model.vae.encode = partial(torch_utils.ModuleManager.single_batch_run, self.model.vae, self.model.vae.encode)
+            self.model.vae.decode = partial(torch_utils.ModuleManager.single_batch_run, self.model.vae, self.model.vae.decode)
+
             # explicitly define the device for the model
             self.model._device = self.device
-            self.model.make_txt_cond = partial(torch_utils.ModuleManager.low_memory_run, self.model.cond, self.model.make_txt_cond, self.device)
+            if not self.train_cond:
+                self.model.make_txt_cond = partial(torch_utils.ModuleManager.low_memory_run, self.model.cond, self.model.make_txt_cond, self.device)
             self.model.sampler.forward = partial(torch_utils.ModuleManager.low_memory_run, self.model.backbone, self.model.sampler.forward, self.device)
             self.model.vae.encode = partial(torch_utils.ModuleManager.low_memory_run, self.model.vae, self.model.vae.encode, self.device)
             self.model.vae.decode = partial(torch_utils.ModuleManager.low_memory_run, self.model.vae, self.model.vae.decode, self.device)
-
-            # Not critical to run single batch for decoding strategy, but reduce more GPU memory
-            self.model.vae.decode = partial(torch_utils.ModuleManager.single_batch_run, self.model.vae, self.model.vae.decode)
 
     def get_vocab(self):
         from data_parse.nl_data_parse.pre_process.bundled import CLIPTokenizer
@@ -1192,7 +1215,7 @@ class SimpleTextImage(DataProcess):
     def get_train_data(self, *args, task='images', text_task='texts', **kwargs):
         from data_parse.cv_data_parse.SimpleTextImage import Loader
 
-        loader = Loader(self.data_dir)
+        loader = Loader(self.data_dir, image_suffix='png')
         iter_data = loader.load(
             generator=False,
             max_size=self.train_data_num,

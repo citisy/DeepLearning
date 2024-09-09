@@ -1,17 +1,16 @@
 import logging
-import os
-import time
-import numpy as np
 import math
+import time
+from datetime import datetime
+from typing import List, Optional, Dict, Union
+
+import numpy as np
 import torch
 from torch import nn, optim
-from pathlib import Path
-from datetime import datetime
-from typing import List, Optional, Callable, Dict, Tuple, Union
 from tqdm import tqdm
-from functools import partial
-from . import bundled, data_process
+
 from utils import os_lib, configs, visualize, log_utils, torch_utils
+from . import bundled, data_process
 
 MODEL = 'model'
 WEIGHT = 'weight'
@@ -282,10 +281,8 @@ class ModelHooks:
         if self.use_scheduler:
             if self.scheduler_strategy == EPOCH:
                 if not lr_lambda:
-                    # lr_lambda = lambda x: (1 - x / max_epoch) * (1.0 - lrf) + lrf
-                    lr_lambda = lambda x: ((1 - math.cos(x * math.pi / max_epoch)) / 2) * (lrf - 1) + 1  # cos_lr
-                self.scheduler = optim.lr_scheduler.LambdaLR(self.optimizer, lr_lambda=lr_lambda)
-                self.scheduler.last_epoch = -1
+                    lr_lambda = torch_utils.SchedulerMaker.cosine_lr_lambda(max_epoch, lrf, **kwargs)
+                self.scheduler = optim.lr_scheduler.LambdaLR(self.optimizer, lr_lambda=lr_lambda, last_epoch=-1)
 
             elif self.scheduler_strategy == STEP:
                 from transformers import get_scheduler
@@ -558,6 +555,18 @@ class ModelHooks:
         self.log_trace(bundled.WANDB)
 
     def _check_train(self, max_save_weight_num, check_num):
+        """
+
+        Args:
+            max_save_weight_num (int|None):
+                None, save two weight file with name of `[last/best].pth`
+                0, don't save any weight file
+                1, save num file with name of `{check_num}.pth`
+            check_num:
+
+        Returns:
+
+        """
         losses = self.train_container.get('losses')
         if losses is not None:
             for k, v in losses.items():
