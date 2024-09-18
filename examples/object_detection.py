@@ -109,7 +109,7 @@ class OdProcess(Process):
 
             preds = []
             for (output, ret) in zip(outputs, rets):
-                output = configs.merge_dict(ret, output)
+                output = configs.ConfigObjParse.merge_dict(ret, output)
                 output = self.val_data_restore(output)
                 preds.append(dict(
                     bboxes=output['bboxes'],

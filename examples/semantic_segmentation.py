@@ -108,7 +108,7 @@ class SegProcess(Process):
 
             preds = []
             for (output, ret) in zip(outputs, rets):
-                output = configs.merge_dict(ret, {'image': output})
+                output = configs.ConfigObjParse.merge_dict(ret, {'image': output})
                 output = self.val_data_restore(output)
                 preds.append(output['image'])
 

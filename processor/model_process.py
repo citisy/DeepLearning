@@ -392,7 +392,7 @@ class ModelHooks:
         metric_kwargs = metric_kwargs.copy()
         metric_kwargs.setdefault('batch_size', batch_size)
         metric_kwargs.setdefault('dataloader_kwargs', {})
-        metric_kwargs['dataloader_kwargs'] = configs.merge_dict(dataloader_kwargs, metric_kwargs['dataloader_kwargs'])
+        metric_kwargs['dataloader_kwargs'] = configs.ConfigObjParse.merge_dict(dataloader_kwargs, metric_kwargs['dataloader_kwargs'])
 
         _counters = ['epoch', 'total_nums', 'total_steps', 'check_nums']
         for c in _counters:

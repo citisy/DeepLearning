@@ -358,7 +358,7 @@ class ParamsSearch:
             sub_version = ''
             info_msg = ''
             for key, (var_p, const_p) in zip(self.keys, _):
-                tmp_var_p = configs.collapse_dict(var_p)
+                tmp_var_p = configs.ConfigObjParse.collapse_dict(var_p)
                 for k, v in tmp_var_p.items():
                     if len(str(v)) > 8:
                         s = converter.DataConvert.str_to_md5(str(v))
@@ -367,8 +367,8 @@ class ParamsSearch:
                         sub_version += f'{k}={v};'
                     info_msg += f'{k}={v};'
 
-                var_p = configs.expand_dict(var_p)
-                params = configs.merge_dict(var_p, const_p)
+                var_p = configs.ConfigObjParse.expand_dict(var_p)
+                params = configs.ConfigObjParse.merge_dict(var_p, const_p)
                 if key in self.var_instance:
                     ins = self.var_instance[key]
                     kwargs[key] = ins(**params)

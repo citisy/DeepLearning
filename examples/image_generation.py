@@ -990,7 +990,7 @@ class SD(DiProcess, FromPretrain, WithLora):
             # todo: different pad_id from sdv1 adn sdv2
             pass
 
-        model_config = configs.merge_dict(Config.get(self.config_version), self.model_config)
+        model_config = configs.ConfigObjParse.merge_dict(Config.get(self.config_version), self.model_config)
         self.model = Model(
             img_ch=self.in_ch,
             image_size=self.input_size,
