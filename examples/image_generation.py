@@ -412,7 +412,7 @@ class IterCelebA(DataProcess):
         """
         from data_parse.cv_data_parse.SimpleGridImage import Loader
 
-        loader = Loader(self.data_dir, image_suffix='jpg')
+        loader = Loader(self.data_dir, image_suffix='.jpg')
         return lambda: loader.load(generator=False, task='img_align_celeba_bind', size=(178, 218), max_size=self.train_data_num)[0]
 
 
@@ -1215,7 +1215,7 @@ class SimpleTextImage(DataProcess):
     def get_train_data(self, *args, task='images', text_task='texts', **kwargs):
         from data_parse.cv_data_parse.SimpleTextImage import Loader
 
-        loader = Loader(self.data_dir, image_suffix='png')
+        loader = Loader(self.data_dir, image_suffix='.png')
         iter_data = loader.load(
             generator=False,
             max_size=self.train_data_num,
