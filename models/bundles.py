@@ -1,6 +1,7 @@
 import os
-import torch
 import warnings
+
+from utils import torch_utils
 
 
 class Config:
@@ -39,7 +40,7 @@ class WeightLoader:
     def auto_load(cls, save_path, save_name='', **kwargs):
         try:
             file_name = cls.get_file_name(save_path, save_name, **kwargs)
-            state_dict = torch.load(file_name)
+            state_dict = torch_utils.Load.from_file(file_name)
         except ValueError:
             state_dict = cls.auto_download(save_path, save_name=save_name, **kwargs)
         return state_dict

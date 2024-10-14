@@ -358,7 +358,16 @@ class LinearAttend(nn.Module):
 
 class FlashAttend(nn.Module):
     """requires pytorch > 2.0
-    refer to: https://arxiv.org/pdf/2205.14135.pdf"""
+    refer to: https://arxiv.org/pdf/2205.14135.pdf
+
+    note, use `pip install flash-attn --no-build-isolation` to install,
+    will be very slow, suggest to use the follow step to install:
+    ```
+    git clone https://github.com/Dao-AILab/flash-attention
+    cd flash-attention
+    python setup.py install
+    ```
+    """
 
     def __init__(self, drop_prob=0.):
         super().__init__()

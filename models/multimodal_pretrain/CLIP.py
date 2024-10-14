@@ -68,17 +68,19 @@ class Config(bundles.Config):
         image_size=224,
         num_attention_heads=16,
         num_hidden_layers=32,
+        ff_ratio=4.,
         patch_size=14,
         act_type='GELU',
         separate=False
     )
 
     laion_vision_bigG_14 = dict(
-        output_size=1024,
+        output_size=1280,
         hidden_size=1664,
         image_size=224,
         num_attention_heads=16,
         num_hidden_layers=48,
+        ff_ratio=4.9231,
         patch_size=14,
         act_type='GELU',
         separate=False
@@ -329,7 +331,7 @@ def make_act(name):
 class VisionTransformer(nn.Module):
     def __init__(
             self, image_size, hidden_size, patch_size, output_size=None,
-            num_attention_heads=12, num_hidden_layers=12,
+            num_attention_heads=12, num_hidden_layers=12, ff_ratio=4.0,
             is_proj=True, separate=True, act_type='FasterGELU'
     ):
         super().__init__()
@@ -337,8 +339,9 @@ class VisionTransformer(nn.Module):
         self.embedding = VisionEmbedding(hidden_size, image_size, patch_size)
         self.norm1 = nn.LayerNorm(hidden_size)
         self.encoder = TransformerSequential(
-            hidden_size, num_attention_heads, hidden_size * 4, norm_first=True, separate=separate,
+            hidden_size, num_attention_heads, int(hidden_size * ff_ratio), norm_first=True,
             ff_kwargs=dict(act=make_act(act_type)()),
+            fn_kwargs=dict(separate=separate),
             num_blocks=num_hidden_layers
         )
         self.norm2 = nn.LayerNorm(hidden_size)
@@ -374,12 +377,12 @@ class VisionTransformer(nn.Module):
 
 class TextTransformer(nn.Module):
     def __init__(self, vocab_size, hidden_size, output_size=None,
-                 max_seq_len=77, num_attention_heads=8, num_hidden_layers=12,
+                 max_seq_len=77, num_attention_heads=8, num_hidden_layers=12, ff_ratio=4.0,
                  is_proj=True, separate=True, act_type='FasterGELU'):
         super().__init__()
         self.embedding = DecoderEmbedding(vocab_size, hidden_size, max_seq_len=max_seq_len)
         self.encoder = TransformerSequential(
-            hidden_size, num_attention_heads, hidden_size * 4, norm_first=True,
+            hidden_size, num_attention_heads, int(hidden_size * ff_ratio), norm_first=True,
             ff_kwargs=dict(act=make_act(act_type)()),
             fn_kwargs=dict(separate=separate),
             num_blocks=num_hidden_layers
