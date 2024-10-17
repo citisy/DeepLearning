@@ -1,8 +1,10 @@
 import torch
 from torch import nn
-from ..layers import Linear, Residual
+from torch.utils.checkpoint import checkpoint
+
 from ..attentions import CrossAttention2D
 from ..embeddings import LearnedPositionEmbedding
+from ..layers import Linear, Residual
 
 
 class EncoderEmbedding(nn.Module):
@@ -59,13 +61,23 @@ class DecoderEmbedding(nn.Module):
 
 
 class TransformerSequential(nn.ModuleList):
-    def __init__(self, *args, num_blocks=None, **kwargs):
+    def __init__(self, *args, num_blocks=None, use_checkpoint=False, **kwargs):
         assert num_blocks is not None
+        self.use_checkpoint = use_checkpoint
         super().__init__(
             [TransformerBlock(*args, **kwargs) for _ in range(num_blocks)]
         )
 
     def forward(self, x, attention_mask=None, callback_fn=None, per_block_kwargs=(), **block_kwargs):
+        if self.training and self.use_checkpoint:
+            # note, ensure having the right backward in checkpoint mode
+            x.requires_grad_(True)
+            # note, if having kwargs, use `use_reentrant=False`
+            return checkpoint(self._forward, x, use_reentrant=False, attention_mask=attention_mask, callback_fn=callback_fn, per_block_kwargs=per_block_kwargs, **block_kwargs)
+        else:
+            return self._forward(x, attention_mask=attention_mask, callback_fn=callback_fn, per_block_kwargs=per_block_kwargs, **block_kwargs)
+
+    def _forward(self, x, attention_mask=None, callback_fn=None, per_block_kwargs=(), **block_kwargs):
         for i, m in enumerate(self):
             if per_block_kwargs:
                 block_kwargs.update(per_block_kwargs[i])

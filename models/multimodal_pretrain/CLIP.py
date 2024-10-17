@@ -1,10 +1,12 @@
 import torch
 from torch import nn
 from torch.nn import functional as F
+from torch.utils.checkpoint import checkpoint
+
 from utils import torch_utils
 from .. import bundles, activations
-from ..text_pretrain.transformers import DecoderEmbedding, make_causal_attention_mask, TransformerSequential
 from ..image_classification.ViT import VisionEmbedding
+from ..text_pretrain.transformers import DecoderEmbedding, make_causal_attention_mask, TransformerSequential
 
 
 class Config(bundles.Config):
@@ -272,8 +274,8 @@ class Model(nn.Module):
         self.text_model = TextTransformer(**text_config)
         self.logit_scale = nn.Parameter(torch.ones([]) * logit_scale_init_value)
 
-    def forward(self, image, text_ids, attention_mask=None):
-        vision_outputs = self.vision_model(image)['pooled_output']
+    def forward(self, images, text_ids, attention_mask=None):
+        vision_outputs = self.vision_model(images)['pooled_output']
         text_outputs = self.text_model(text_ids, attention_mask=attention_mask)['pooled_output']
 
         image_embeds = vision_outputs / vision_outputs.norm(p=2, dim=-1, keepdim=True)
@@ -332,10 +334,11 @@ class VisionTransformer(nn.Module):
     def __init__(
             self, image_size, hidden_size, patch_size, output_size=None,
             num_attention_heads=12, num_hidden_layers=12, ff_ratio=4.0,
-            is_proj=True, separate=True, act_type='FasterGELU'
+            is_proj=True, separate=True, act_type='FasterGELU', use_checkpoint=True
     ):
         super().__init__()
 
+        self.use_checkpoint = use_checkpoint
         self.embedding = VisionEmbedding(hidden_size, image_size, patch_size)
         self.norm1 = nn.LayerNorm(hidden_size)
         self.encoder = TransformerSequential(
@@ -366,6 +369,14 @@ class VisionTransformer(nn.Module):
         return pooled_output
 
     def forward(self, image):
+        if self.training and self.use_checkpoint:
+            # note, ensure having the right backward in checkpoint mode
+            image.requires_grad_(True)
+            return checkpoint(self._forward, image)
+        else:
+            return self._forward(image)
+
+    def _forward(self, image):
         x = self.backbone(image)
         h = self.neck(x)
         pooled_output = self.head(h)
@@ -378,14 +389,16 @@ class VisionTransformer(nn.Module):
 class TextTransformer(nn.Module):
     def __init__(self, vocab_size, hidden_size, output_size=None,
                  max_seq_len=77, num_attention_heads=8, num_hidden_layers=12, ff_ratio=4.0,
-                 is_proj=True, separate=True, act_type='FasterGELU'):
+                 is_proj=True, separate=True, act_type='FasterGELU', use_checkpoint=True):
         super().__init__()
+        self.use_checkpoint = use_checkpoint
         self.embedding = DecoderEmbedding(vocab_size, hidden_size, max_seq_len=max_seq_len)
         self.encoder = TransformerSequential(
             hidden_size, num_attention_heads, int(hidden_size * ff_ratio), norm_first=True,
             ff_kwargs=dict(act=make_act(act_type)()),
             fn_kwargs=dict(separate=separate),
-            num_blocks=num_hidden_layers
+            num_blocks=num_hidden_layers,
+            use_checkpoint=use_checkpoint
         )
         self.norm = nn.LayerNorm(hidden_size)
         if is_proj:
