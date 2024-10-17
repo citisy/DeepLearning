@@ -1,7 +1,6 @@
 import torch
 from torch import nn
 from torch.nn import functional as F
-from torch.utils.checkpoint import checkpoint
 
 from utils import torch_utils
 from .. import bundles, activations
@@ -345,7 +344,8 @@ class VisionTransformer(nn.Module):
             hidden_size, num_attention_heads, int(hidden_size * ff_ratio), norm_first=True,
             ff_kwargs=dict(act=make_act(act_type)()),
             fn_kwargs=dict(separate=separate),
-            num_blocks=num_hidden_layers
+            num_blocks=num_hidden_layers,
+            use_checkpoint=use_checkpoint
         )
         self.norm2 = nn.LayerNorm(hidden_size)
         if is_proj:
@@ -368,16 +368,8 @@ class VisionTransformer(nn.Module):
         pooled_output = self.proj(pooled_output)
         return pooled_output
 
-    def forward(self, image):
-        if self.training and self.use_checkpoint:
-            # note, ensure having the right backward in checkpoint mode
-            image.requires_grad_(True)
-            return checkpoint(self._forward, image)
-        else:
-            return self._forward(image)
-
-    def _forward(self, image):
-        x = self.backbone(image)
+    def forward(self, images):
+        x = self.backbone(images)
         h = self.neck(x)
         pooled_output = self.head(h)
         return dict(
