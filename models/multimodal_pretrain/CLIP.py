@@ -277,13 +277,7 @@ class Model(nn.Module):
         vision_outputs = self.vision_model(images)['pooled_output']
         text_outputs = self.text_model(text_ids, attention_mask=attention_mask)['pooled_output']
 
-        image_embeds = vision_outputs / vision_outputs.norm(p=2, dim=-1, keepdim=True)
-        text_embeds = text_outputs / text_outputs.norm(p=2, dim=-1, keepdim=True)
-
-        # cosine similarity as logits
-        logit_scale = self.logit_scale.exp()
-        logits_per_text = torch.matmul(text_embeds, image_embeds.t()) * logit_scale
-        logits_per_image = logits_per_text.t()
+        logits_per_text, logits_per_image = self.head(vision_outputs, text_outputs)
 
         loss = None
         if self.training:
@@ -295,11 +289,20 @@ class Model(nn.Module):
             loss=loss
         )
 
-    def loss(self, similarity):
-        loss_fn = lambda x: F.cross_entropy(x, torch.arange(len(x), device=x.device))
+    def head(self, vision_outputs, text_outputs):
+        image_embeds = vision_outputs / vision_outputs.norm(p=2, dim=-1, keepdim=True)
+        text_embeds = text_outputs / text_outputs.norm(p=2, dim=-1, keepdim=True)
 
-        caption_loss = loss_fn(similarity)
-        image_loss = loss_fn(similarity.t())
+        # cosine similarity as logits
+        logit_scale = self.logit_scale.exp()
+        logits_per_text = torch.matmul(text_embeds, image_embeds.t()) * logit_scale
+        logits_per_image = logits_per_text.t()
+        return logits_per_text, logits_per_image
+
+    def loss(self, similarity):
+        true = torch.arange(len(similarity), device=similarity.device)
+        caption_loss = F.cross_entropy(similarity, true)
+        image_loss = F.cross_entropy(similarity.t(), true.t())
         return (caption_loss + image_loss) / 2.0
 
 
