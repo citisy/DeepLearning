@@ -51,10 +51,8 @@ class CheckpointHooks:
         assert func, ValueError(f'dont support {save_type = }')
 
         func(save_path, **kwargs)
-        if verbose:
-            self.log(f'Successfully saved to {save_path} !')
 
-    def save_model(self, save_path, additional_items: dict = {}, **kwargs):
+    def save_model(self, save_path, additional_items: dict = {}, verbose=True, **kwargs):
         """
 
         Args:
@@ -65,10 +63,17 @@ class CheckpointHooks:
 
         """
         torch.save(self.model, save_path, **kwargs)
+
+        if verbose:
+            self.log(f'Successfully saved to {save_path} !')
+
         for path, item in additional_items.items():
             torch.save(item, path, **kwargs)
 
-    def save_weight(self, save_path, additional_items: dict = {}, additional_path=None, raw_tensors=True, **kwargs):
+            if verbose:
+                self.log(f'Successfully saved to {path} !')
+
+    def save_weight(self, save_path, additional_items: dict = {}, additional_path=None, raw_tensors=True, verbose=True, **kwargs):
         """
 
         Args:
@@ -76,9 +81,13 @@ class CheckpointHooks:
             additional_items: {name: item}
                 name, which key of the item;
                 item, which obj wanted to save
+                if `raw_tensors=True`, additional_items would not be saved
             additional_path:
-                if provided, additional_items are saved with the path
+                if provided, additional_items are saved in additional_path
+                if not, additional_items are saved in save_path, together with the model weights
             raw_tensors:
+                if True, the fmt of weight file is liked, `{weight_names: weights}`
+                if False, the fmt of weight file is liked, `{model_name: {weight_names: weights}}`
         """
         if additional_path:
             state_dict = self.model.state_dict()
@@ -86,6 +95,9 @@ class CheckpointHooks:
                 state_dict = {self.model_name: state_dict}
             torch.save(state_dict, save_path, **kwargs)
             torch.save(additional_items, additional_path, **kwargs)
+            if verbose:
+                self.log(f'Successfully saved to {save_path} !')
+                self.log(f'Successfully saved to {additional_path} !')
 
         else:
             if raw_tensors:
@@ -98,13 +110,17 @@ class CheckpointHooks:
                 }
 
             torch.save(ckpt, save_path, **kwargs)
+            if verbose:
+                self.log(f'Successfully saved to {save_path} !')
 
-    def save_safetensors(self, save_path):
+    def save_safetensors(self, save_path, verbose=True, **kwargs):
         torch_utils.Export.to_safetensors(self.model.state_dict(), save_path)
+        if verbose:
+            self.log(f'Successfully saved to {save_path} !')
 
     device: Union[str, int, torch.device] = None
 
-    def save_torchscript(self, save_path, trace_input=None, model_warp=None, **kwargs):
+    def save_torchscript(self, save_path, trace_input=None, model_warp=None, verbose=True, **kwargs):
         assert trace_input is not None
 
         model = self.model
@@ -113,8 +129,10 @@ class CheckpointHooks:
         model.to(self.device)
         model = torch_utils.Export.to_torchscript(model, *trace_input, **kwargs)
         model.save(save_path)
+        if verbose:
+            self.log(f'Successfully saved to {save_path} !')
 
-    def save_onnx(self, save_path, trace_input=None, model_warp=None, **kwargs):
+    def save_onnx(self, save_path, trace_input=None, model_warp=None, verbose=True, **kwargs):
         assert trace_input is not None
 
         model = self.model
@@ -122,22 +140,22 @@ class CheckpointHooks:
             model = model_warp(model)
         model.to(self.device)
         torch_utils.Export.to_onnx(model, save_path, *trace_input, **kwargs)
+        if verbose:
+            self.log(f'Successfully saved to {save_path} !')
 
     def save_triton(self, save_path, **kwargs):
         raise NotImplementedError
 
-    def load(self, save_path, save_type=WEIGHT, verbose=True, **kwargs):
+    def load(self, save_path, save_type=WEIGHT, **kwargs):
         func = self.load_funcs.get(save_type)
         assert func, ValueError(f'dont support {save_type = }')
 
         func(save_path, **kwargs)
-        if verbose:
-            self.log(f'Successfully load {save_path} !')
 
     model: nn.Module
     model_name: str
 
-    def load_model(self, save_path, additional_items: dict = {}, **kwargs):
+    def load_model(self, save_path, additional_items: dict = {}, verbose=True, **kwargs):
         """
 
         Args:
@@ -148,10 +166,14 @@ class CheckpointHooks:
 
         """
         self.model = torch.load(save_path, map_location=self.device, **kwargs)
+        if verbose:
+            self.log(f'Successfully load {save_path} !')
         for path, name in additional_items.items():
             self.__dict__.update({name: torch.load(path, map_location=self.device)})
+            if verbose:
+                self.log(f'Successfully load {name} from {path} !')
 
-    def load_weight(self, save_path, include=None, exclude=None, cache=False, additional_path=None, raw_tensors=True, **kwargs):
+    def load_weight(self, save_path, include=None, exclude=None, cache=False, additional_path=None, raw_tensors=True, verbose=True, **kwargs):
         """
 
         Args:
@@ -174,11 +196,16 @@ class CheckpointHooks:
                 **state_dict,
                 **torch_utils.Load.from_ckpt(additional_path, map_location=self.device, **kwargs)
             }
+            if verbose:
+                self.log(f'Successfully load {save_path} !')
+                self.log(f'Successfully load {additional_path} !')
 
         else:
             state_dict = torch_utils.Load.from_ckpt(save_path, map_location=self.device, **kwargs)
             if raw_tensors:
                 state_dict = {self.model_name: state_dict}
+            if verbose:
+                self.log(f'Successfully load {save_path} !')
 
         self.load_state_dict(state_dict, include, exclude, cache)
 
@@ -207,8 +234,10 @@ class CheckpointHooks:
                     )
                     self.__dict__[name] = item
 
-    def load_jit(self, save_path, **kwargs):
+    def load_jit(self, save_path, verbose=True, **kwargs):
         self.model = torch.jit.load(save_path, map_location=self.device, **kwargs)
+        if verbose:
+            self.log(f'Successfully load {save_path} !')
 
     pretrain_model: str
 
@@ -251,6 +280,7 @@ class ModelHooks:
             self.ema = torch_utils.EMA(self.model)
             # self.aux_modules['ema'] = self.ema
             self.models['ema'] = self.ema.ema_model
+            self.log('Successfully init ema model!')
 
     def set_mode(self, train=True):
         for v in self.models.values():
@@ -347,8 +377,14 @@ class ModelHooks:
                 max_epoch:
                 batch_size: for fit() and predict()
                 check_period:
+                max_save_weight_num:
+                    None,
+                        if check_period=0 and check_strategy=epoch, save weight with name of `last.pth`,
+                        elif check_period=0 and check_strategy=step, save nothing
+                        else save weight with name of `[last/best].pth`
+                    0, don't save any weight file
+                    >0, if check_period=0 and check_strategy=epoch, save num weights, else save nothing
                 metric_kwargs: for metric() and predict()
-                return_val_dataloader:
                 dataloader_kwargs: for fit() and predict()
 
         train_container:
@@ -561,7 +597,7 @@ class ModelHooks:
             max_save_weight_num (int|None):
                 None, save two weight file with name of `[last/best].pth`
                 0, don't save any weight file
-                1, save num file with name of `{check_num}.pth`
+                >0, save num file with name of `{check_num}.pth`
             check_num:
 
         Returns:

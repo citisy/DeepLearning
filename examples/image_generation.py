@@ -889,16 +889,16 @@ class FromPretrain(CheckpointHooks):
     config_version = 'v1'  # for config choose
 
     def load_pretrain(self):
-        if 'v1' in self.config_version:
-            from models.image_generation.sdv1 import WeightLoader, WeightConverter
-        elif 'v2' in self.config_version:
-            from models.image_generation.sdv2 import WeightLoader, WeightConverter
-        elif 'xl' in self.config_version:
-            from models.image_generation.sdxl import WeightLoader, WeightConverter
-        else:
-            raise
-
         if hasattr(self, 'pretrain_model'):
+            if 'v1' in self.config_version:
+                from models.image_generation.sdv1 import WeightLoader, WeightConverter
+            elif 'v2' in self.config_version:
+                from models.image_generation.sdv2 import WeightLoader, WeightConverter
+            elif 'xl' in self.config_version:
+                from models.image_generation.sdxl import WeightLoader, WeightConverter
+            else:
+                raise
+
             state_dict = WeightLoader.auto_load(self.pretrain_model)
             state_dict = WeightConverter.from_official(state_dict)
             self.model.load_state_dict(state_dict, strict=False)

@@ -1,6 +1,6 @@
 import copy
 import os
-from typing import Optional
+from typing import Optional, Iterable, List
 
 import torch
 from torch.utils.data import DataLoader, Dataset, IterableDataset, get_worker_info
@@ -279,13 +279,13 @@ class DataHooks:
             **dataloader_kwargs
         )
 
-    def get_train_data(self, *args, **kwargs):
+    def get_train_data(self, *args, **kwargs) -> Optional[Iterable | Dataset | List[Dataset]]:
         return self.get_data(*args, train=True, **kwargs)
 
-    def get_val_data(self, *args, **kwargs):
+    def get_val_data(self, *args, **kwargs) -> Optional[Iterable | Dataset | List[Dataset]]:
         return self.get_data(*args, train=False, **kwargs)
 
-    def get_data(self, *args, train=True, **kwargs):
+    def get_data(self, *args, train=True, **kwargs) -> Optional[Iterable | Dataset | List[Dataset]]:
         raise NotImplementedError
 
     def train_data_preprocess(self, iter_data):

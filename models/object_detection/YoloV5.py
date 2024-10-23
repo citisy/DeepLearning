@@ -1,19 +1,24 @@
 import math
+
+import cv2
+import numpy as np
 import torch
 from torch import nn
-import numpy as np
 from tqdm import tqdm
-import cv2
-from utils import os_lib, visualize
-from ..losses import FocalLoss, IouLoss
+
+from utils import os_lib, visualize, torch_utils
 from utils.torch_utils import ModuleManager
-from ..layers import ConvInModule, Cache, Concat
 from . import cls_nms, Iou
+from .. import bundles
 from ..image_classification.CspDarkNet import Backbone, C3, Conv
+from ..layers import ConvInModule, Cache, Concat
+from ..losses import FocalLoss, IouLoss
 
 
-class Config:
+class Config(bundles.Config):
     # default configs, base on yolov5l config
+    default_model = 'yolov5l'
+
     in_module = dict(
         in_ch=3,
         input_size=640,
@@ -41,18 +46,24 @@ class Config:
     }
 
     @classmethod
-    def get(cls, name='yolov5l'):
-        return dict(
-            in_module_config=cls.in_module,
-            **cls.make_config(cls.backbone, cls.neck, **cls.default_model_multiple[name]),
-            head_config=cls.head,
-            loss_config=cls.model
-        )
+    def make_full_config(cls) -> dict:
+        config_dict = {}
+        for k, model_multiple in cls.default_model_multiple.items():
+            config_dict[k] = dict(
+                in_module_config=cls.in_module,
+                **cls._make_config(cls.backbone, cls.neck, **model_multiple),
+                head_config=cls.head,
+                model_config=cls.model
+            )
+
+        return config_dict
 
     @staticmethod
-    def make_config(backbone_config=backbone, neck_config=neck, depth_multiple=1, width_multiple=1):
+    def _make_config(backbone_config, neck_config, depth_multiple=1, width_multiple=1):
         """
         Args:
+            backbone_config:
+            neck_config:
             depth_multiple: model depth multiple
             width_multiple: layer channel multiple
 
@@ -74,8 +85,8 @@ class Config:
 
         return dict(backbone_config=backbone_config, neck_config=neck_config)
 
-    @staticmethod
-    def auto_anchors(iter_data, img_size, head_config=head, **kwargs):
+    @classmethod
+    def auto_anchors(cls, iter_data, img_size, head_config=None, **kwargs):
         """
         Usage:
             .. code-block:: python
@@ -84,11 +95,24 @@ class Config:
                 head_config = auto_anchors(iter_data, img_size)
                 Model(head_config=head_config)
         """
+        if head_config is None:
+            head_config = cls.head
         anchors = AutoAnchor(iter_data, img_size=img_size, **kwargs).run(head_config['anchors'], head_config['stride'])
         head_config = head_config.copy()
         head_config['anchors'] = anchors
 
         return head_config
+
+
+class WeightConverter:
+    convert_dict = {
+
+    }
+
+    @classmethod
+    def from_official(cls, state_dict):
+        state_dict = torch_utils.Converter.convert_keys(state_dict, cls.convert_dict)
+        return state_dict
 
 
 class Model(nn.Module):
@@ -120,6 +144,11 @@ class Model(nn.Module):
     conf_thres = 0.1
     nms_thres = 0.6
     max_det = 300
+
+    def fuse(self):
+        for name, m in self._modules.items():
+            if hasattr(m, 'fuse'):
+                m.fuse()
 
     def forward(self, x, gt_boxes=None, gt_cls=None):
         x = self.input(x)

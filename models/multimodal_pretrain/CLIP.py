@@ -295,14 +295,14 @@ class Model(nn.Module):
 
         # cosine similarity as logits
         logit_scale = self.logit_scale.exp()
-        logits_per_text = torch.matmul(text_embeds, image_embeds.t()) * logit_scale
-        logits_per_image = logits_per_text.t()
+        logits_per_text = logit_scale * text_embeds @ image_embeds.T
+        logits_per_image = logit_scale * image_embeds @ text_embeds.T
         return logits_per_text, logits_per_image
 
     def loss(self, similarity):
         true = torch.arange(len(similarity), device=similarity.device)
         caption_loss = F.cross_entropy(similarity, true)
-        image_loss = F.cross_entropy(similarity.t(), true.t())
+        image_loss = F.cross_entropy(similarity.t(), true)
         return (caption_loss + image_loss) / 2.0
 
 
