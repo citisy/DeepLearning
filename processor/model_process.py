@@ -549,6 +549,7 @@ class ModelHooks:
 
         self.log({
             **losses,
+            'lr': self.optimizer.param_groups[0]['lr'],
             **mem_info
         }, 'pbar')
 

@@ -1,18 +1,20 @@
+from pathlib import Path
+
 import cv2
+import numpy as np
 import torch
 from torch import optim
-import numpy as np
-from pathlib import Path
-from processor import Process, DataHooks, bundled
+
 from data_parse.cv_data_parse.base import DataVisualizer, DataRegister
-from data_parse.cv_data_parse.data_augmentation import crop, scale, geometry, channel, RandomApply, Apply
+from data_parse.cv_data_parse.data_augmentation import scale, geometry, channel, RandomApply, Apply, pixel_perturbation
+from processor import Process, DataHooks, bundled
 
 
 class ClsProcess(Process):
     def get_model_inputs(self, rets, train=True):
         images = [torch.from_numpy(ret.pop('image')).to(self.device, non_blocking=True, dtype=torch.float) for ret in rets]
         images = torch.stack(images)
-        images = images / 255
+        # images = images / 255
         inputs = dict(x=images)
 
         if train:
@@ -99,17 +101,20 @@ class Mnist(DataHooks):
         else:
             return loader(set_type=DataRegister.TEST, image_type=DataRegister.ARRAY, generator=False)[0]
 
-    aug = Apply([
+    train_aug = Apply([
         RandomApply([
             geometry.HFlip(),
             geometry.VFlip(),
         ]),
     ])
-    post_aug = channel.HWC2CHW()
+    post_aug = Apply([
+        pixel_perturbation.MinMax(),
+        channel.HWC2CHW()
+    ])
 
     def data_augment(self, ret, train=True) -> dict:
         if train:
-            ret.update(self.aug(**ret))
+            ret.update(self.train_aug(**ret))
 
         ret.update(self.post_aug(**ret))
         return ret
@@ -179,26 +184,31 @@ class ImageNet(DataHooks):
 
             return iter_data
 
+    train_aug = Apply([
+        scale.RuderJitter((256, 257)),
+        RandomApply([
+            geometry.HFlip(),
+            geometry.VFlip(),
+        ]),
+    ])
+
+    val_aug = scale.LetterBox()
+
+    post_aug = Apply([
+        pixel_perturbation.MinMax(),
+        channel.HWC2CHW()
+    ])
+
     def train_data_augment(self, ret):
-        ret.update(scale.Proportion()(**ret, dst=256))
         ret.update(dst=self.input_size)
-        ret.update(Apply([
-            crop.Random(),
-            RandomApply([
-                geometry.HFlip(),
-                geometry.VFlip(),
-            ]),
-            # pixel_perturbation.MinMax(),
-            channel.HWC2CHW()
-        ])(**ret))
+        ret.update(self.train_aug(**ret))
+        ret.update(self.post_aug(**ret))
         return ret
 
     def val_data_augment(self, ret):
         ret.update(dst=self.input_size)
-        ret.update(Apply([
-            scale.LetterBox(),
-            channel.HWC2CHW()
-        ])(**ret))
+        ret.update(self.val_aug(**ret))
+        ret.update(self.post_aug(**ret))
         return ret
 
 
@@ -328,17 +338,39 @@ class ResNet_ImageNet(ClsProcess, ImageNet):
     model_version = 'ResNet'
 
     def set_model(self):
-        from models.image_classification.ResNet import Model, Res50_config
+        from models.image_classification.ResNet import Model
         self.model = Model(self.in_ch, self.input_size, self.out_features)
+
+    # see `torchvision.transforms._presets.ImageClassification`
+    train_aug = Apply([
+        scale.Jitter((256, 384)),
+        RandomApply([
+            geometry.HFlip()
+        ])
+    ])
+
+    post_aug = Apply([
+        pixel_perturbation.MinMax(),
+        pixel_perturbation.Normalize(
+            mean=[0.485, 0.456, 0.406],
+            std=[0.229, 0.224, 0.225]
+        ),
+        channel.HWC2CHW()
+    ])
+
+    # see `keras.applications.resnet.preprocess_input`
+    # post_aug = Apply([
+    #     pixel_perturbation.Normalize(
+    #         mean=[103.939, 116.779, 123.68],
+    #         std=[1, 1, 1]
+    #     ),
+    #     channel.HWC2CHW()
+    # ])
 
     def train_data_augment(self, ret):
         ret.update(dst=self.input_size)
-        ret.update(scale.Jitter((256, 384))(**ret))
-        ret.update(RandomApply([geometry.HFlip()])(**ret))
-        ret.update(Apply([
-            # pixel_perturbation.MinMax(),
-            channel.HWC2CHW()
-        ])(**ret))
+        ret.update(self.train_aug(**ret))
+        ret.update(self.post_aug(**ret))
         return ret
 
 
