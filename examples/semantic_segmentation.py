@@ -1,5 +1,4 @@
 import copy
-from datetime import datetime
 from pathlib import Path
 from typing import List
 
@@ -377,3 +376,33 @@ class SAM_Voc(SegProcess, VocForSAM):
             state_dict = torch_utils.Load.from_file(self.pretrain_model)
             state_dict = WeightConverter.from_official(state_dict)
             self.model.load_state_dict(state_dict, strict=False)
+
+
+class U2net_Voc(SegProcess, Voc):
+    model_version = 'U2net'
+
+    input_size = 320
+
+    aug = scale.Rectangle(interpolation=2)
+
+    post_aug = Apply([
+        channel.BGR2RGB(),
+        pixel_perturbation.MinMax(),
+        pixel_perturbation.Normalize(
+            mean=(0.485, 0.456, 0.406),
+            std=(0.229, 0.224, 0.225),
+        ),
+        channel.HWC2CHW(),
+    ])
+
+    mask_aug = Apply([
+        scale.Rectangle(interpolation=2),
+        pixel_perturbation.MinMax(),
+        channel.Keep3Dims(),
+        channel.HWC2CHW(),
+    ])
+
+    def set_model(self):
+        from models.semantic_segmentation.u2net import Model
+
+        self.model = Model(self.in_ch)
