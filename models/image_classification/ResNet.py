@@ -145,7 +145,7 @@ class Model(BaseImgClsModel):
 
     def __init__(
             self,
-            in_ch=None, input_size=None, out_features=None, drop_prob=0.4, bias=False,
+            in_ch=3, input_size=224, out_features=1000, drop_prob=0.4, bias=False,
             backbone_config=Config.resnet18_backbone, add_block: nn.Module = None, block_config=dict(), **kwargs
     ):
         backbone = Backbone(backbone_config=backbone_config, bias=bias, add_block=add_block, **block_config)

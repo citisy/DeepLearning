@@ -104,8 +104,9 @@ class CurUnetBlock(nn.Module):
 class CirUnetBlock(nn.Module):
     """Unet block built by cyclic strategy"""
 
-    def __init__(self, in_ch, out_ch, unit_ch=64, ch_mult=(1, 2, 4, 8, 8, 8, 8, 8)):
+    def __init__(self, in_ch, out_ch, unit_ch=64, ch_mult=(1, 2, 4, 8, 8, 8, 8, 8), **kwargs):
         super().__init__()
+        self.__dict__.update(kwargs)
         self.in_channels = in_ch
         self.out_channels = out_ch
 
@@ -117,13 +118,13 @@ class CirUnetBlock(nn.Module):
             is_bottom = i == num_stages - 1
 
             out_ch = unit_ch * mult
-            layers.append(self.make_down_layer(in_ch, out_ch, is_top, is_bottom))
+            layers.append(self.make_down_layer(in_ch, out_ch, is_top, is_bottom, i))
             in_ch = out_ch
 
         self.downs = nn.ModuleList(layers)
 
         out_ch = unit_ch * ch_mult[-1]
-        self.mid = self.make_mid_layer(in_ch, in_ch)
+        self.mid = self.make_mid_layer(in_ch, in_ch, i + 1)
         in_ch = out_ch
 
         layers = []
@@ -132,12 +133,12 @@ class CirUnetBlock(nn.Module):
             is_bottom = i == num_stages - 1
 
             out_ch = unit_ch * ch_mult[i - 1] if not is_top else self.out_channels
-            layers.append(self.make_up_layer(in_ch, out_ch, is_top, is_bottom))
+            layers.append(self.make_up_layer(in_ch, out_ch, is_top, is_bottom, i))
             in_ch = out_ch
 
         self.ups = nn.ModuleList(layers)
 
-    def make_down_layer(self, in_ch, out_ch, is_top=False, is_bottom=False):
+    def make_down_layer(self, in_ch, out_ch, is_top=False, is_bottom=False, layer_idx=None):
         if is_top:
             layer = Conv(in_ch, out_ch, k=4, s=2, p=1, mode='c')
         else:
@@ -145,13 +146,13 @@ class CirUnetBlock(nn.Module):
 
         return layer
 
-    def make_mid_layer(self, in_ch, out_ch):
+    def make_mid_layer(self, in_ch, out_ch, layer_idx=None):
         return nn.Sequential(
             Conv(in_ch, out_ch, k=4, s=2, p=1, act=nn.LeakyReLU(0.2), mode='ac'),
             ConvT(out_ch, in_ch, k=4, s=2, p=1, mode='acn')
         )
 
-    def make_up_layer(self, in_ch, out_ch, is_top=False, is_bottom=False):
+    def make_up_layer(self, in_ch, out_ch, is_top=False, is_bottom=False, layer_idx=None):
         if is_top:
             layer = ConvT(in_ch * 2, out_ch, k=4, s=2, p=1, mode='ac')
         else:

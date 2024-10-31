@@ -96,7 +96,7 @@ class Conv(nn.Sequential):
                     norm = nn.BatchNorm2d(norm_ch)
                 layers['norm'] = norm
             elif m == 'a' and is_act:
-                layers['act'] = act or nn.ReLU()
+                layers['act'] = act or nn.ReLU(inplace=True)
             elif m == 'd' and is_drop:
                 layers['drop'] = nn.Dropout(drop_prob)
             elif m not in 'cnad':
@@ -346,13 +346,18 @@ class Upsample(nn.Module):
 
 
 class Cache(nn.Module):
-    def __init__(self, idx=None, replace=True):
+    def __init__(self, idx=None, replace=True, inplace=False, init_features=[]):
         super().__init__()
         self.idx = idx
         self.replace = replace
+        self.inplace = inplace
+        self.features = init_features
 
-    def forward(self, x, features: list):
+    def forward(self, x, features: list = []):
         """f_i = x"""
+        if self.inplace:
+            features = self.features
+
         if self.idx is not None:
             if self.replace:
                 features[self.idx] = x
@@ -360,19 +365,28 @@ class Cache(nn.Module):
                 features.insert(self.idx, x)
         else:
             features.append(x)
-        return x, features
+
+        if self.inplace:
+            return x
+        else:
+            return x, features
 
 
 class Concat(nn.Module):
-    def __init__(self, idx=-1, dim=1, replace=False, pop=False):
+    def __init__(self, idx=-1, dim=1, replace=False, pop=False, inplace=False, init_features=[]):
         super().__init__()
         self.idx = idx
         self.dim = dim
         self.replace = replace
         self.pop = pop
+        self.inplace = inplace
+        self.features = init_features
 
-    def forward(self, x, features: list):
+    def forward(self, x, features: list = []):
         """x <- concat(x, f_i)"""
+        if self.inplace:
+            features = self.features
+
         x = torch.cat([x, features[self.idx]], self.dim)
 
         if self.replace:
@@ -381,18 +395,26 @@ class Concat(nn.Module):
         if self.pop:
             features.pop(self.idx)
 
-        return x, features
+        if self.inplace:
+            return x
+        else:
+            return x, features
 
 
 class Add(nn.Module):
-    def __init__(self, idx=-1, replace=False, pop=False):
+    def __init__(self, idx=-1, replace=False, pop=False, inplace=False, init_features=[]):
         super().__init__()
         self.idx = idx
         self.replace = replace
         self.pop = pop
+        self.inplace = inplace
+        self.features = init_features
 
-    def forward(self, x, features: list):
+    def forward(self, x, features: list = []):
         """x <- x + f_i"""
+        if self.inplace:
+            features = self.features
+
         x += features[self.idx]
 
         if self.replace:
@@ -401,7 +423,10 @@ class Add(nn.Module):
         if self.pop:
             features.pop(self.idx)
 
-        return x, features
+        if self.inplace:
+            return x
+        else:
+            return x, features
 
 
 class Residual(nn.Module):
