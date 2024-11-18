@@ -1,10 +1,10 @@
 import functools
+from functools import partial
 
 import torch
 import torch.nn.functional as F
 from einops import rearrange
 from torch import nn
-from torch.utils.checkpoint import checkpoint
 
 from utils import torch_utils
 from . import VAE, ddpm, ddim, k_diffusion
@@ -241,6 +241,10 @@ class Model(ddim.Model):
         Config.DDIM: ddim.Sampler,
         Config.EULER: k_diffusion.EulerSampler
     }
+
+    def set_low_memory_run(self):
+        super().set_low_memory_run()
+        self.make_txt_cond = partial(torch_utils.ModuleManager.low_memory_run, self.cond, self.make_txt_cond, self.device)
 
     def make_sampler(self, sampler_config=Config.sampler_config, **kwargs):
         self.sampler = self.sampler_mapping.get(sampler_config['name'], sampler_config['name'])(**sampler_config)
@@ -609,7 +613,6 @@ class TransformerBlock(nn.Module):
         super().__init__()
         self.in_channels = in_ch
         self.use_linear = use_linear
-        self.use_checkpoint = use_checkpoint
 
         model_dim = n_heads * head_dim
 
@@ -634,17 +637,10 @@ class TransformerBlock(nn.Module):
         else:
             self.proj_out = nn.Conv2d(model_dim, in_ch, 1, stride=1, padding=0)
 
-    def forward(self, x, context=None):
-        if self.training and self.use_checkpoint:
-            # note, ensure having the right backward in checkpoint mode
-            x.requires_grad_(True)
-            if context is not None:
-                context.requires_grad_(True)
-            return checkpoint(self._forward, x, context)
-        else:
-            return self._forward(x, context)
+        if use_checkpoint:
+            self.forward = torch_utils.ModuleManager.checkpoint(self, self.forward, is_first_layer=True)
 
-    def _forward(self, x, context=None):
+    def forward(self, x, context=None):
         # note: if no context is given, cross-attention defaults to self-attention
         b, c, h, w = x.shape
 

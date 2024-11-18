@@ -726,7 +726,7 @@ class DiProcess(IgProcess):
             for i in range(0, self.val_data_num, batch_size):
                 yield val_noise[i: i + batch_size]
 
-        super().on_val_start(val_dataloader=gen(), **kwargs)
+        super().on_val_start(val_dataloader=gen(), batch_size=batch_size, **kwargs)
 
     def on_val_step(self, rets, model_kwargs=dict(), **kwargs) -> dict:
         model_inputs = self.get_model_inputs(rets, train=False)
@@ -876,6 +876,7 @@ class WithLora(Process):
             state_dict = WeightLoader.auto_load(self.lora_pretrain_model)
             state_dict = WeightConverter.from_official_lora(state_dict)
             self.lora_warp.load_state_dict(state_dict, strict=True)
+            self.log(f'Load lora pretrain model from {self.lora_pretrain_model}')
 
     def save_lora_weight(self, save_name='lora.safetensors'):
         from collections import OrderedDict
@@ -902,6 +903,7 @@ class FromPretrain(CheckpointHooks):
             state_dict = WeightLoader.auto_load(self.pretrain_model)
             state_dict = WeightConverter.from_official(state_dict)
             self.model.load_state_dict(state_dict, strict=False)
+            self.log(f'load pretrain model from {self.pretrain_model}')
 
 
 class SD(DiProcess, FromPretrain, WithLora):
@@ -996,45 +998,6 @@ class SD(DiProcess, FromPretrain, WithLora):
             image_size=self.input_size,
             **model_config
         )
-
-        if self.use_half:
-            from models.activations import GroupNorm32
-            # note, vanilla sdxl vae can not convert to fp16, but bf16
-            # or use a special vae checkpoint, e.g. https://huggingface.co/madebyollin/sdxl-vae-fp16-fix
-            dtype = torch.bfloat16
-
-            torch_utils.ModuleManager.apply(
-                self.model,
-                lambda module: module.to(dtype),
-                include=['cond', 'backbone', 'vae'],
-                exclude=[GroupNorm32]
-            )
-
-            modules = [self.model.sampler]
-            if hasattr(self.model.sampler, 'schedule'):
-                modules.append(self.model.sampler.schedule)
-
-            for module in modules:
-                for name, tensor in module.named_buffers():
-                    setattr(module, name, tensor.to(dtype))
-
-            self.model.make_txt_cond = partial(torch_utils.ModuleManager.assign_dtype_run, self.model.cond, self.model.make_txt_cond, dtype, force_effect_module=False)
-            self.model.sampler.forward = partial(torch_utils.ModuleManager.assign_dtype_run, self.model.backbone, self.model.sampler.forward, dtype, force_effect_module=False)
-            self.model.vae.encode = partial(torch_utils.ModuleManager.assign_dtype_run, self.model.vae, self.model.vae.encode, dtype, force_effect_module=False)
-            self.model.vae.decode = partial(torch_utils.ModuleManager.assign_dtype_run, self.model.vae, self.model.vae.decode, dtype, force_effect_module=False)
-
-        if self.low_memory_run:
-            # Not critical to run single batch for decoding strategy, but reduce more GPU memory
-            self.model.vae.encode = partial(torch_utils.ModuleManager.single_batch_run, self.model.vae, self.model.vae.encode)
-            self.model.vae.decode = partial(torch_utils.ModuleManager.single_batch_run, self.model.vae, self.model.vae.decode)
-
-            # explicitly define the device for the model
-            self.model._device = self.device
-            if not self.train_cond:
-                self.model.make_txt_cond = partial(torch_utils.ModuleManager.low_memory_run, self.model.cond, self.model.make_txt_cond, self.device)
-            self.model.sampler.forward = partial(torch_utils.ModuleManager.low_memory_run, self.model.backbone, self.model.sampler.forward, self.device)
-            self.model.vae.encode = partial(torch_utils.ModuleManager.low_memory_run, self.model.vae, self.model.vae.encode, self.device)
-            self.model.vae.decode = partial(torch_utils.ModuleManager.low_memory_run, self.model.vae, self.model.vae.decode, self.device)
 
     def get_vocab(self):
         from data_parse.nl_data_parse.pre_process.bundled import CLIPTokenizer

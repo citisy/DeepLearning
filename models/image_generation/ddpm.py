@@ -138,6 +138,9 @@ class Model(nn.ModuleList):
         - https://github.com/lucidrains/denoising-diffusion-pytorch
     """
 
+    use_half = True
+    low_memory_run = True
+
     def __init__(self, img_ch, image_size, **configs):
         super().__init__()
         if isinstance(image_size, int):
@@ -149,6 +152,12 @@ class Model(nn.ModuleList):
         self.make_sampler(**configs)
         self.make_diffuse(**configs)
 
+        if self.use_half:
+            self.set_half()
+
+        if self.low_memory_run:
+            self.set_low_memory_run()
+
     _device = None
     _dtype = None
 
@@ -159,6 +168,42 @@ class Model(nn.ModuleList):
     @property
     def dtype(self):
         return torch_utils.ModuleInfo.possible_dtype(self) if self._dtype is None else self._dtype
+
+    def set_low_memory_run(self):
+        # Not critical to run single batch for decoding strategy, but reduce more GPU memory
+        self.vae.encode = partial(torch_utils.ModuleManager.single_batch_run, self.vae, self.vae.encode)
+        self.vae.decode = partial(torch_utils.ModuleManager.single_batch_run, self.vae, self.vae.decode)
+
+        # explicitly define the device for the model
+        self._device = self.device
+        self.sampler.forward = partial(torch_utils.ModuleManager.low_memory_run, self.backbone, self.sampler.forward, self.device)
+        self.vae.encode = partial(torch_utils.ModuleManager.low_memory_run, self.vae, self.vae.encode, self.device)
+        self.vae.decode = partial(torch_utils.ModuleManager.low_memory_run, self.vae, self.vae.decode, self.device)
+
+    def set_half(self):
+        # note, vanilla sdxl vae can not convert to fp16, but bf16
+        # or use a special vae checkpoint, e.g. https://huggingface.co/madebyollin/sdxl-vae-fp16-fix
+        dtype = torch.bfloat16
+
+        torch_utils.ModuleManager.apply(
+            self,
+            lambda module: module.to(dtype),
+            include=['cond', 'backbone', 'vae'],
+            exclude=[activations.GroupNorm32]
+        )
+
+        modules = [self.sampler]
+        if hasattr(self.sampler, 'schedule'):
+            modules.append(self.sampler.schedule)
+
+        for module in modules:
+            for name, tensor in module.named_buffers():
+                setattr(module, name, tensor.to(dtype))
+
+        self.make_txt_cond = partial(torch_utils.ModuleManager.assign_dtype_run, self.cond, self.make_txt_cond, dtype, force_effect_module=False)
+        self.sampler.forward = partial(torch_utils.ModuleManager.assign_dtype_run, self.backbone, self.sampler.forward, dtype, force_effect_module=False)
+        self.vae.encode = partial(torch_utils.ModuleManager.assign_dtype_run, self.vae, self.vae.encode, dtype, force_effect_module=False)
+        self.vae.decode = partial(torch_utils.ModuleManager.assign_dtype_run, self.vae, self.vae.decode, dtype, force_effect_module=False)
 
     def make_sampler(self, sampler_config=Config.sampler_config, **kwargs):
         self.sampler = Sampler(**sampler_config)
@@ -623,17 +668,10 @@ class ResnetBlock(nn.Module):
         self.out_layers = Conv(out_ch, out_ch, 3, p=1, mode='adc', act=nn.SiLU(), drop_prob=drop_prob)
         self.proj = nn.Conv2d(in_ch, out_ch, 1) if in_ch != out_ch else nn.Identity()
 
-    def forward(self, x, time_emb=None):
-        if self.training and self.use_checkpoint:
-            # note, ensure having the right backward in checkpoint mode
-            x.requires_grad_(True)
-            if time_emb is not None:
-                time_emb.requires_grad_(True)
-            return checkpoint(self._forward, x, time_emb)
-        else:
-            return self._forward(x, time_emb)
+        if use_checkpoint:
+            self.forward = torch_utils.ModuleManager.checkpoint(self, self.forward, is_first_layer=True)
 
-    def _forward(self, x, time_emb=None):
+    def forward(self, x, time_emb=None):
         h = self.in_layers(x)
 
         if self.emb_layers is not None and time_emb is not None:

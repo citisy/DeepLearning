@@ -377,13 +377,17 @@ class ModelHooks:
                 max_epoch:
                 batch_size: for fit() and predict()
                 check_period:
+                    None or 0, do not metric or save weights.
+                    >0, epoch period to metric or save weights, `self.check_strategy` also affect it
+                is_metric: whether to metric when training end or not
                 max_save_weight_num:
                     None,
-                        if check_period=0 and check_strategy=epoch, save weight with name of `last.pth`,
-                        elif check_period=0 and check_strategy=step, save nothing
-                        else save weight with name of `[last/best].pth`
+                        if is_metric=False, only save weight with name of `last.pth`,
+                        else, save weight with name of `[last/best].pth`
                     0, don't save any weight file
-                    >0, if check_period=0 and check_strategy=epoch, save num weights, else save nothing
+                    >0,
+                        if is_metric=False, only save weight with name of `{check_period}.pth`,
+                        else, also save weight with name of 'best.pth' additional
                 metric_kwargs: for metric() and predict()
                 dataloader_kwargs: for fit() and predict()
 
@@ -569,26 +573,28 @@ class ModelHooks:
             self._check_on_train_epoch_end(**kwargs)
         return self.train_container.get('end_flag', False)  # cancel the training when end_flag is True
 
-    def _check_on_train_step_end(self, check_period=None, batch_size=None, max_save_weight_num=None, **kwargs):
+    def _check_on_train_step_end(self, check_period=None, batch_size=None, max_save_weight_num=None, is_metric=True, **kwargs):
         total_nums = self.counters['total_nums']
         if check_period and total_nums % check_period < batch_size:
             self.trace({'total_nums': total_nums}, (bundled.LOGGING, bundled.WANDB))
 
             ckpt = self._check_train(max_save_weight_num, total_nums)
-            self.log_trace(bundled.LOGGING)
+            if is_metric:
+                self._check_metric(ckpt, total_nums, max_save_weight_num)
 
-            self._check_metric(ckpt, total_nums, max_save_weight_num)
+            self.log_trace(bundled.LOGGING)
             self.log_trace(bundled.WANDB)
 
-    def _check_on_train_epoch_end(self, check_period=None, max_save_weight_num=None, **kwargs):
+    def _check_on_train_epoch_end(self, check_period=None, max_save_weight_num=None, is_metric=True, **kwargs):
         epoch = self.counters['epoch'] - 1  # epoch in counters is the next epoch, not the last
         self.trace({'epoch': epoch}, (bundled.LOGGING, bundled.WANDB))
 
-        state_dict = self._check_train(max_save_weight_num, epoch)
-        self.log_trace(bundled.LOGGING)
-
         if check_period and epoch % check_period == check_period - 1:
-            self._check_metric(state_dict, epoch, max_save_weight_num)
+            state_dict = self._check_train(max_save_weight_num, epoch)
+            if is_metric:
+                self._check_metric(state_dict, epoch, max_save_weight_num)
+
+        self.log_trace(bundled.LOGGING)
         self.log_trace(bundled.WANDB)
 
     def _check_train(self, max_save_weight_num, check_num):
