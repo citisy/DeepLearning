@@ -173,8 +173,7 @@ class Model(nn.ModuleList):
         self.vae.encode = partial(torch_utils.ModuleManager.single_batch_run, self.vae, self.vae.encode)
         self.vae.decode = partial(torch_utils.ModuleManager.single_batch_run, self.vae, self.vae.decode)
 
-        # explicitly define the device for the model
-        self._device = self.device
+        self.make_txt_cond = partial(torch_utils.ModuleManager.low_memory_run, self.cond, self.make_txt_cond, self.device)
         self.sampler.forward = partial(torch_utils.ModuleManager.low_memory_run, self.backbone, self.sampler.forward, self.device)
         self.vae.encode = partial(torch_utils.ModuleManager.low_memory_run, self.vae, self.vae.encode, self.device)
         self.vae.decode = partial(torch_utils.ModuleManager.low_memory_run, self.vae, self.vae.decode, self.device)
