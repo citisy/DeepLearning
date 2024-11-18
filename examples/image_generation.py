@@ -993,7 +993,7 @@ class SD(DiProcess, FromPretrain, WithLora):
             pass
 
         model_config = configs.ConfigObjParse.merge_dict(Config.get(self.config_version), self.model_config)
-        model_config = configs.ConfigObjParse.merge_dict({'_device': self.device}, model_config)   # explicitly define the device for the model
+        model_config = configs.ConfigObjParse.merge_dict({'model_config': {'_device': self.device}}, model_config)   # explicitly define the device for the model
         self.model = Model(
             img_ch=self.in_ch,
             image_size=self.input_size,

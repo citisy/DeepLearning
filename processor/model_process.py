@@ -645,7 +645,8 @@ class ModelHooks:
                 additional_items=state_dict,
                 save_type=WEIGHT,
             )
-            os_lib.FileCacher(self.work_dir, max_size=max_save_weight_num, stdout_method=self.log).delete_over_range(suffix='pth')
+            os_lib.FileCacher(self.work_dir, max_size=max_save_weight_num, stdout_method=self.log).delete_over_range(suffix='pth', ignore_keys=('additional', 'best'))
+            os_lib.FileCacher(self.work_dir, max_size=max_save_weight_num, stdout_method=self.log).delete_over_range(suffix='additional.pth', ignore_keys=('best', ))
 
         return state_dict
 
