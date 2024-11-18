@@ -6,7 +6,6 @@ import torch
 import torch.nn.functional as F
 from einops import rearrange, reduce
 from torch import nn
-from torch.utils.checkpoint import checkpoint
 
 from utils import torch_utils
 from .. import bundles, attentions, activations
@@ -669,7 +668,7 @@ class ResnetBlock(nn.Module):
         self.proj = nn.Conv2d(in_ch, out_ch, 1) if in_ch != out_ch else nn.Identity()
 
         if use_checkpoint:
-            self.forward = torch_utils.ModuleManager.checkpoint(self, self.forward, is_first_layer=True)
+            self.forward = partial(torch_utils.ModuleManager.checkpoint, self, self.forward, is_first_layer=True)
 
     def forward(self, x, time_emb=None):
         h = self.in_layers(x)

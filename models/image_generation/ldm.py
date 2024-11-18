@@ -1,5 +1,4 @@
 import functools
-from functools import partial
 
 import torch
 import torch.nn.functional as F
@@ -244,7 +243,7 @@ class Model(ddim.Model):
 
     def set_low_memory_run(self):
         super().set_low_memory_run()
-        self.make_txt_cond = partial(torch_utils.ModuleManager.low_memory_run, self.cond, self.make_txt_cond, self.device)
+        self.make_txt_cond = functools.partial(torch_utils.ModuleManager.low_memory_run, self.cond, self.make_txt_cond, self.device)
 
     def make_sampler(self, sampler_config=Config.sampler_config, **kwargs):
         self.sampler = self.sampler_mapping.get(sampler_config['name'], sampler_config['name'])(**sampler_config)
@@ -638,7 +637,7 @@ class TransformerBlock(nn.Module):
             self.proj_out = nn.Conv2d(model_dim, in_ch, 1, stride=1, padding=0)
 
         if use_checkpoint:
-            self.forward = torch_utils.ModuleManager.checkpoint(self, self.forward, is_first_layer=True)
+            self.forward = functools.partial(torch_utils.ModuleManager.checkpoint, self, self.forward, is_first_layer=True)
 
     def forward(self, x, context=None):
         # note: if no context is given, cross-attention defaults to self-attention
