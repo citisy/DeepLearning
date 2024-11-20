@@ -278,8 +278,14 @@ class ModelHooks:
     def set_ema(self):
         if self.use_ema:
             self.ema = torch_utils.EMA(self.model)
-            # self.aux_modules['ema'] = self.ema
             self.models['ema'] = self.ema.ema_model
+
+            def save(suffix, max_save_weight_num, **kwargs):
+                torch.save(self.ema.ema_model.state_dict(), f'{self.work_dir}/{suffix}.ema.pth')
+                os_lib.FileCacher(self.work_dir, max_size=max_save_weight_num, stdout_method=self.log).delete_over_range(suffix=r'\d+\.ema\.pth')
+                self.log(f'Successfully save ema model to {self.work_dir}/{suffix}.ema.pth')
+
+            self.register_save_checkpoint(save)
             self.log('Successfully init ema model!')
 
     def set_mode(self, train=True):
@@ -631,22 +637,12 @@ class ModelHooks:
         state_dict = self.state_dict()
 
         if not isinstance(max_save_weight_num, int):  # None
-            self.save(
-                f'{self.work_dir}/last.pth',
-                additional_path=f'{self.work_dir}/last.additional.pth',
-                additional_items=state_dict,
-                save_type=WEIGHT,
-            )
+            self._save_checkpoint('last', max_save_weight_num, state_dict)
 
         elif max_save_weight_num > 0:
-            self.save(
-                f'{self.work_dir}/{check_num}.pth',
-                additional_path=f'{self.work_dir}/{check_num}.additional.pth',
-                additional_items=state_dict,
-                save_type=WEIGHT,
-            )
-            os_lib.FileCacher(self.work_dir, max_size=max_save_weight_num, stdout_method=self.log).delete_over_range(suffix='pth', ignore_keys=('additional', 'best'))
-            os_lib.FileCacher(self.work_dir, max_size=max_save_weight_num, stdout_method=self.log).delete_over_range(suffix='additional.pth', ignore_keys=('best', ))
+            self._save_checkpoint(str(check_num), max_save_weight_num, state_dict)
+            os_lib.FileCacher(self.work_dir, max_size=max_save_weight_num, stdout_method=self.log).delete_over_range(suffix=r'\d+\.pth')
+            os_lib.FileCacher(self.work_dir, max_size=max_save_weight_num, stdout_method=self.log).delete_over_range(suffix=r'\d+\.additional\.pth')
 
         return state_dict
 
@@ -666,21 +662,32 @@ class ModelHooks:
             score = results[self.model_name]['score']
             if score > self.stopper.best_score:
                 if not isinstance(max_save_weight_num, int) or max_save_weight_num > 0:
-                    self.save(
-                        f'{self.work_dir}/best.pth',
-                        additional_path=f'{self.work_dir}/best.additional.pth',
-                        additional_items=state_dict,
-                        save_type=WEIGHT,
-                    )
+                    self._save_checkpoint('best', max_save_weight_num, state_dict)
 
             self.train_container['end_flag'] = self.train_container['end_flag'] or self.stopper(check_num, score)
+
+    checkpoint_container: dict = {}
+
+    def register_save_checkpoint(self, func, **kwargs):
+        self.checkpoint_container.update({func: kwargs})
+
+    def _save_checkpoint(self, suffix, max_save_weight_num, state_dict):
+        self.save(
+            f'{self.work_dir}/{suffix}.pth',
+            additional_path=f'{self.work_dir}/{suffix}.additional.pth',
+            additional_items=state_dict,
+            save_type=WEIGHT,
+        )
+
+        for func, kwargs in self.checkpoint_container.items():
+            func(suffix, max_save_weight_num, **kwargs)
 
     def state_dict(self):
         state_dict = {
             'date': datetime.now().isoformat()
         }
 
-        for name in ('optimizer', 'stopper', 'ema', 'counters', 'wandb_id'):
+        for name in ('optimizer', 'stopper', 'counters', 'wandb_id'):
             if hasattr(self, name):
                 var = getattr(self, name)
                 if hasattr(var, 'state_dict'):

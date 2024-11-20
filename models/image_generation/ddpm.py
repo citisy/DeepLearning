@@ -173,10 +173,18 @@ class Model(nn.ModuleList):
         self.vae.encode = partial(torch_utils.ModuleManager.single_batch_run, self.vae, self.vae.encode)
         self.vae.decode = partial(torch_utils.ModuleManager.single_batch_run, self.vae, self.vae.decode)
 
-        self.make_txt_cond = partial(torch_utils.ModuleManager.low_memory_run, self.cond, self.make_txt_cond, self.device)
-        self.sampler.forward = partial(torch_utils.ModuleManager.low_memory_run, self.backbone, self.sampler.forward, self.device)
-        self.vae.encode = partial(torch_utils.ModuleManager.low_memory_run, self.vae, self.vae.encode, self.device)
-        self.vae.decode = partial(torch_utils.ModuleManager.low_memory_run, self.vae, self.vae.decode, self.device)
+        def wrap1(module, func):
+            # note, device would be changed after model initialization.
+            def wrap2(*args, **kwargs):
+                return torch_utils.ModuleManager.low_memory_run(module, func, self.device, *args, **kwargs)
+
+            return wrap2
+
+        self.make_txt_cond = wrap1(self.cond, self.make_txt_cond)
+        self.sampler.forward = wrap1(self.backbone, self.sampler.forward)
+        self.sampler.loss = wrap1(self.backbone, self.sampler.loss)
+        self.vae.encode = wrap1(self.vae, self.vae.encode)
+        self.vae.decode = wrap1(self.vae, self.vae.decode)
 
     def set_half(self):
         # note, vanilla sdxl vae can not convert to fp16, but bf16
@@ -200,6 +208,7 @@ class Model(nn.ModuleList):
 
         self.make_txt_cond = partial(torch_utils.ModuleManager.assign_dtype_run, self.cond, self.make_txt_cond, dtype, force_effect_module=False)
         self.sampler.forward = partial(torch_utils.ModuleManager.assign_dtype_run, self.backbone, self.sampler.forward, dtype, force_effect_module=False)
+        self.sampler.loss = partial(torch_utils.ModuleManager.assign_dtype_run, self.backbone, self.sampler.loss, dtype, force_effect_module=False)
         self.vae.encode = partial(torch_utils.ModuleManager.assign_dtype_run, self.vae, self.vae.encode, dtype, force_effect_module=False)
         self.vae.decode = partial(torch_utils.ModuleManager.assign_dtype_run, self.vae, self.vae.decode, dtype, force_effect_module=False)
 

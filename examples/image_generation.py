@@ -1,13 +1,13 @@
 from collections import namedtuple
 from datetime import datetime
-from functools import partial
 from pathlib import Path
-from typing import List
+from typing import List, Optional, Iterable
 
 import cv2
 import numpy as np
 import torch
 from torch import optim
+from torch.utils.data import Dataset
 
 from data_parse import DataRegister
 from data_parse.cv_data_parse.base import DataVisualizer
@@ -40,22 +40,23 @@ class IgProcess(Process):
     input_size: int
     in_ch: int
 
+    use_fid_cls_model = True
+    fid_cls_model: 'nn.Module'
+
     def on_train_start(self, **kwargs):
 
         super().on_train_start(**kwargs)
         self.train_container['metric_kwargs'].update(
             real_x=[],
         )
-        self.register_val_start(self.set_fid_cls_model)
 
-    use_fid_cls_model = True
-    fid_cls_model: 'nn.Module'
+        def set_fid_cls_model():
+            if self.use_fid_cls_model and not hasattr(self, 'fid_cls_model'):
+                from metrics import image_generation
 
-    def set_fid_cls_model(self):
-        if self.use_fid_cls_model and not hasattr(self, 'fid_cls_model'):
-            from metrics import image_generation
+                self.fid_cls_model = image_generation.get_default_cls_model(device=self.device)
 
-            self.fid_cls_model = image_generation.get_default_cls_model(device=self.device)
+        self.register_val_start(set_fid_cls_model)
 
     def metric(self, real_x=None, **kwargs):
         from metrics import image_generation
@@ -88,13 +89,15 @@ class IgProcess(Process):
 
     def on_val_end(self, save_samples=False, save_synth=True, num_synth_per_image=64, is_visualize=False, max_vis_num=None, **kwargs):
         # {name1: {name2: items}}
+        _max_vis_num = float('inf')
         for name, results in self.val_container['model_results'].items():
             for name2, items in results.items():
                 results[name2] = np.stack(items)
+                _max_vis_num = len(items)
 
         if is_visualize:
             for i in range(0, self.val_data_num, num_synth_per_image):
-                max_vis_num = max_vis_num or float('inf')
+                max_vis_num = min(_max_vis_num, max_vis_num or float('inf'))
                 n = min(num_synth_per_image, max_vis_num - self.counters['vis_num'])
                 if n > 0:
                     self.visualize(None, self.val_container['model_results'], n,
@@ -720,11 +723,11 @@ class DiProcess(IgProcess):
         return val_obj
 
     def on_val_start(self, val_dataloader=None, batch_size=16, dataloader_kwargs=dict(), **kwargs):
-        val_noise = val_dataloader if val_dataloader is not None else self.get_val_data()
+        iter_data = val_dataloader if val_dataloader is not None else self.get_val_data()
 
         def gen():
-            for i in range(0, self.val_data_num, batch_size):
-                yield val_noise[i: i + batch_size]
+            for i in range(0, min(self.val_data_num, len(iter_data)), batch_size):
+                yield iter_data[i: i + batch_size]
 
         super().on_val_start(val_dataloader=gen(), batch_size=batch_size, **kwargs)
 
@@ -859,6 +862,15 @@ class WithLora(Process):
             if self.use_half_lora:
                 layer.to(torch.bfloat16)
 
+        def save(suffix, max_save_weight_num, **kwargs):
+            fp = f'{self.work_dir}/{suffix}.lora.safetensors'
+            torch_utils.Export.to_safetensors(self.lora_warp.state_dict(), fp)
+            os_lib.FileCacher(self.work_dir, max_size=max_save_weight_num, stdout_method=self.log).delete_over_range(suffix=r'\d+\.lora\.safetensors')
+            self.log(f'Successfully save lora to {fp}!')
+
+        self.register_save_checkpoint(save)
+        self.log('Successfully add lora!')
+
     def unset_lora(self):
         self.lora_warp.dewarp()
 
@@ -884,6 +896,11 @@ class WithLora(Process):
         state_dict = self.lora_warp.state_dict()
         state_dict = OrderedDict({k: v.to(torch.bfloat16) for k, v in state_dict.items()})
         torch_utils.Export.to_safetensors(state_dict, f'{self.work_dir}/{save_name}')
+
+    def state_dict(self):
+        state_dict = super().state_dict()
+        state_dict['lora'] = self.lora_warp.state_dict()
+        return state_dict
 
 
 class FromPretrain(CheckpointHooks):
@@ -989,16 +1006,16 @@ class SD(DiProcess, FromPretrain, WithLora):
             # note, special pad_id for laion clip model
             self.tokenizer.pad_id = 0
         elif 'xl' in self.config_version:
-            # todo: different pad_id from sdv1 adn sdv2
+            # todo: different pad_id from sdv1 and sdv2
             pass
 
         model_config = configs.ConfigObjParse.merge_dict(Config.get(self.config_version), self.model_config)
-        model_config = configs.ConfigObjParse.merge_dict({'model_config': {'_device': self.device}}, model_config)   # explicitly define the device for the model
         self.model = Model(
             img_ch=self.in_ch,
             image_size=self.input_size,
             **model_config
         )
+        self.model._device = self.device  # explicitly define the device for the model
 
     def get_vocab(self):
         from data_parse.nl_data_parse.pre_process.bundled import CLIPTokenizer
@@ -1006,7 +1023,23 @@ class SD(DiProcess, FromPretrain, WithLora):
 
     def set_optimizer(self, **kwargs):
         # self.optimizer = optim.Adam(self.model.parameters(), lr=1e-4, betas=(0.9, 0.99))
+        # todo, found that, it will take device 0 when `optimizer.step()`, even thought only choose device 1
+        # it's bug for `bnb.optim.AdamW8bit`, found no resolution to fix yet
         self.optimizer = torch_utils.make_optimizer_cls('AdamW8bit')(self.model.parameters(), lr=1e-4)
+
+    def get_val_data(self, *args, pos_text_fn='prompts.txt', neg_text_fn='neg_prompts.txt', **kwargs) -> Optional[Iterable | Dataset | List[Dataset]]:
+        pos_texts = os_lib.loader.load_txt(f'{self.data_dir}/{pos_text_fn}')
+        neg_texts = os_lib.loader.load_txt(f'{self.data_dir}/{neg_text_fn}')
+
+        if self.val_data_num:
+            pos_texts = pos_texts[:self.val_data_num]
+            neg_texts = neg_texts[:self.val_data_num]
+
+        iter_data = []
+        for text, neg_text in zip(pos_texts, neg_texts):
+            iter_data.append(dict(text=text, neg_text=neg_text))
+
+        return iter_data
 
     val_aug = Apply([
         scale.Rectangle(),
@@ -1173,6 +1206,7 @@ class SimpleTextImage(DataProcess):
     dataset_version = 'simple_text_image'
     data_dir = 'data/simple_text_image'
     train_data_num = 40000  # do not set too large, 'cause images will be cached in memory
+    val_data_num = 512
     input_size = 512
     in_ch = 3
 
@@ -1196,9 +1230,41 @@ class SD_SimpleTextImage(SD, SimpleTextImage):
 
             from examples.image_generation import SD_SimpleTextImage as Process
 
-            Process().run(
-                max_epoch=50, train_batch_size=32,
-                fit_kwargs=dict(check_period=40000, max_save_weight_num=10),
-                metric_kwargs=dict(is_visualize=True, max_vis_num=64 * 8),
+            # lora finetune
+            process = Process(
+                data_dir='xxx',
+
+                use_half_lora=True,
+                use_scheduler=True,
+                use_lora=True,
+
+                model_config=dict(
+                    sampler_config=dict(schedule_config=dict(
+                        num_steps=20
+                    )),
+                    vae_config=dict(
+                        attn_type=2,
+                    ),
+                    backbone_config=dict(
+                        attend_type=2,
+                    )
+                ),
+
+                lora_config=dict(
+                    r=128,
+                    alpha=64
+                ),
+
+                encoder_fn='xxx/vocab.json',
+                vocab_fn='xxx/merges.txt',
+
+                config_version = 'v1.5',
+                pretrain_model='xxx',
+            )
+
+            process.run(
+                max_epoch=50, train_batch_size=16,
+                fit_kwargs=dict(check_period=1000, max_save_weight_num=10),
+                metric_kwargs=dict(is_visualize=True),
             )
     """
