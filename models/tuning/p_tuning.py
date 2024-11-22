@@ -42,7 +42,7 @@ class PromptEncoder(nn.Module):
         return output_embeds
 
 
-class ModelWarpForPT:
+class ModelWrapForPT:
     def __init__(self, sp_id_dict, template, layer_name='token'):
         self.sp_id_dict = sp_id_dict
         self.layer_name = layer_name
@@ -52,7 +52,7 @@ class ModelWarpForPT:
         self.layers = []
         self.model = None
 
-    def warp(self, model):
+    def wrap(self, model):
         torch_utils.ModuleManager.freeze_module(model, allow_train=True)
         model.forward = partial(self.model_forward, model, model.forward)
 
@@ -141,19 +141,19 @@ class ModelWarpForPT:
     def fuse(self):
         raise NotImplementedError
 
-    def dewarp(self):
+    def dewrap(self):
         raise NotImplementedError
 
 
-class ModelWarpForBert(ModelWarpForPT):
+class ModelWrapForBert(ModelWrapForPT):
     """
     Usages:
         .. code-block:: python
 
             # model having an embedding layer with name of 'token'
             model = ...
-            model_warp = ModelWarpForBert(sp_id_dict, layer_name='token')
-            model_warp.warp(model)
+            model_wrap = ModelWrapForBert(sp_id_dict, layer_name='token')
+            model_wrap.wrap(model)
 
             # define your train step
             opti = ...
@@ -161,12 +161,12 @@ class ModelWarpForBert(ModelWarpForPT):
             ...
 
             # save the additional weight
-            state_dict = model_warp.state_dict()
+            state_dict = model_wrap.state_dict()
             torch.save(state_dict, save_path)
 
             # load the additional weight
-            model_warp.load_state_dict(state_dict)
-            # or load directly by model with warped
+            model_wrap.load_state_dict(state_dict)
+            # or load directly by model with wraped
             model.load_state_dict(state_dict, strict=False)
     """
 
@@ -208,15 +208,15 @@ class ModelWarpForBert(ModelWarpForPT):
         return queries, flags
 
 
-class ModelWarpForGpt(ModelWarpForPT):
+class ModelWrapForGpt(ModelWrapForPT):
     """
     Usages:
         .. code-block:: python
 
             # model having an embedding layer with name of 'token'
             model = ...
-            model_warp = ModelWarpForGpt(sp_id_dict, layer_name='token')
-            model_warp.warp(model)
+            model_wrap = ModelWrapForGpt(sp_id_dict, layer_name='token')
+            model_wrap.wrap(model)
 
             # define your train step
             opti = ...
@@ -224,12 +224,12 @@ class ModelWarpForGpt(ModelWarpForPT):
             ...
 
             # save the additional weight
-            state_dict = model_warp.state_dict()
+            state_dict = model_wrap.state_dict()
             torch.save(state_dict, save_path)
 
             # load the additional weight
-            model_warp.load_state_dict(state_dict)
-            # or load directly by model with warped
+            model_wrap.load_state_dict(state_dict)
+            # or load directly by model with wrapped
             model.load_state_dict(state_dict, strict=False)
     """
 

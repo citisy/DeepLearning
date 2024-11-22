@@ -16,7 +16,7 @@ class Config(sdv2.Config):
 
     EULER = 'Euler'
 
-    # for EmbedderWarp input_key
+    # for EmbedderWrap input_key
     TXT = 'txt'
     ORIGINAL_SIZE_AS_TUPLE = 'original_size_as_tuple'
     CROP_COORDS_TOP_LEFT = 'crop_coords_top_left'
@@ -227,7 +227,7 @@ class Model(ldm.Model):
     num_frames = 14
 
     def make_cond(self, cond_config=[], **kwargs):
-        return EmbedderWarp(cond_config)
+        return EmbedderWrap(cond_config)
 
     def make_txt_cond(self, text, neg_text=None, text_weights=None, neg_text_weights=None, scale=7.5, **kwargs) -> dict:
         default_value = {
@@ -313,7 +313,7 @@ class ConcatTimestepEmbedderND(nn.Module):
         return emb
 
 
-class EmbedderWarp(nn.Module):
+class EmbedderWrap(nn.Module):
     VECTOR = 'vector'
     COND = 'cond'
     CONCAT = 'concat'

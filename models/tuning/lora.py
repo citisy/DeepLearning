@@ -33,7 +33,7 @@ class Module(nn.Module):
     def lora_call(self, x):
         raise NotImplementedError
 
-    def dewarp(self):
+    def dewrap(self):
         del self.down
         del self.up
         torch_utils.ModuleManager.torch_gc()
@@ -53,7 +53,7 @@ class Linear(Module):
     def fuse(self):
         self.weight.data += self.up.weight @ self.down.weight * self.scale
         self.forward = self.ori_forward
-        self.dewarp()
+        self.dewrap()
 
 
 class Embedding(Module):
@@ -74,7 +74,7 @@ class Embedding(Module):
     def fuse(self):
         self.weight.data += (self.up.weight @ self.down.weight).T * self.scale
         self.forward = self.ori_forward
-        self.dewarp()
+        self.dewrap()
 
 
 class Conv2d(Module):
@@ -92,14 +92,14 @@ class Conv2d(Module):
         raise "conv layer can not fuse"
 
 
-class ModelWarp:
+class ModelWrap:
     """
     Usages:
         .. code-block:: python
 
             model = ...
-            model_warp = ModelWarp(include=['to_qkv'])
-            model_warp.warp(model)
+            model_wrap = ModelWrap(include=['to_qkv'])
+            model_wrap.wrap(model)
 
             # define your train step
             opti = ...
@@ -107,12 +107,12 @@ class ModelWarp:
             ...
 
             # save the additional weight
-            state_dict = model_warp.state_dict()
+            state_dict = model_wrap.state_dict()
             torch.save(state_dict, save_path)
 
             # load the additional weight
-            model_warp.load_state_dict(state_dict)
-            # or load directly by model with warped
+            model_wrap.load_state_dict(state_dict)
+            # or load directly by model with wraped
             model.load_state_dict(state_dict, strict=False)
     """
 
@@ -133,7 +133,7 @@ class ModelWarp:
         self.layers = []
         self.model = None
 
-    def warp(self, model: nn.Module):
+    def wrap(self, model: nn.Module):
         model.requires_grad_(False)
         layers = torch_utils.ModuleManager.get_module_by_key(model, include=self.include, exclude=self.exclude)
         if len(layers) == 0:
@@ -194,8 +194,8 @@ class ModelWarp:
             if hasattr(layer, 'fuse'):
                 layer.fuse()
 
-    def dewarp(self):
+    def dewrap(self):
         for full_name in self.layers:
             layer = torch_utils.ModuleManager.get_module_by_name(self.model, full_name)
             if hasattr(layer, 'fuse'):
-                layer.dewarp()
+                layer.dewrap()

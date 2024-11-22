@@ -50,15 +50,15 @@ class PrefixEncoder(nn.Module):
         return past_key_values
 
 
-class ModelWarp:
+class ModelWrap:
     """
     Usages:
         .. code-block:: python
 
             # model having an attention layer with name of 'attend'
             model = ...
-            model_warp = ModelWarp(n_heads, head_dim, include=['attend'])
-            model_warp.warp(model)
+            model_wrap = ModelWrap(n_heads, head_dim, include=['attend'])
+            model_wrap.wrap(model)
 
             # define your train step
             opti = ...
@@ -66,12 +66,12 @@ class ModelWarp:
             ...
 
             # save the additional weight
-            state_dict = model_warp.state_dict()
+            state_dict = model_wrap.state_dict()
             torch.save(state_dict, save_path)
 
             # load the additional weight
-            model_warp.load_state_dict(state_dict)
-            # or load directly by model with warped
+            model_wrap.load_state_dict(state_dict)
+            # or load directly by model with wraped
             model.load_state_dict(state_dict, strict=False)
     """
 
@@ -91,7 +91,7 @@ class ModelWarp:
         self.attn_layers = []
         self.model = None
 
-    def warp(self, model: nn.Module):
+    def wrap(self, model: nn.Module):
         torch_utils.ModuleManager.freeze_module(model, allow_train=True)
         # add prefix layers
         layers = torch_utils.ModuleManager.get_module_by_key(model, include=self.include, exclude=self.exclude, is_last_module=True)
@@ -172,5 +172,5 @@ class ModelWarp:
     def fuse(self):
         raise NotImplementedError
 
-    def dewarp(self):
+    def dewrap(self):
         raise NotImplementedError

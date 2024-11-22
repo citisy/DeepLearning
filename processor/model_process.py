@@ -120,24 +120,24 @@ class CheckpointHooks:
 
     device: Union[str, int, torch.device] = None
 
-    def save_torchscript(self, save_path, trace_input=None, model_warp=None, verbose=True, **kwargs):
+    def save_torchscript(self, save_path, trace_input=None, model_wrap=None, verbose=True, **kwargs):
         assert trace_input is not None
 
         model = self.model
-        if model_warp is not None:
-            model = model_warp(model)
+        if model_wrap is not None:
+            model = model_wrap(model)
         model.to(self.device)
         model = torch_utils.Export.to_torchscript(model, *trace_input, **kwargs)
         model.save(save_path)
         if verbose:
             self.log(f'Successfully saved to {save_path} !')
 
-    def save_onnx(self, save_path, trace_input=None, model_warp=None, verbose=True, **kwargs):
+    def save_onnx(self, save_path, trace_input=None, model_wrap=None, verbose=True, **kwargs):
         assert trace_input is not None
 
         model = self.model
-        if model_warp is not None:
-            model = model_warp(model)
+        if model_wrap is not None:
+            model = model_wrap(model)
         model.to(self.device)
         torch_utils.Export.to_onnx(model, save_path, *trace_input, **kwargs)
         if verbose:

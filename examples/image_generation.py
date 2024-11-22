@@ -821,7 +821,7 @@ class Ddim_CelebAHQ(Dpim, CelebAHQ):
 class WithLora(Process):
     use_lora = False
     use_half_lora = False
-    lora_warp: 'models.tuning.lora.ModelWarp'
+    lora_wrap: 'models.tuning.lora.ModelWrap'
     lora_pretrain_model: str
     lora_config = {}
     config_version = 'v1'  # for config choose
@@ -835,7 +835,7 @@ class WithLora(Process):
     def set_lora(self):
         from models.tuning import lora
 
-        self.lora_warp = lora.ModelWarp(
+        self.lora_wrap = lora.ModelWrap(
             include=(
                 'attn_res.fn.to_qkv',
                 'ff_res.fn',
@@ -854,9 +854,9 @@ class WithLora(Process):
             ),
             **self.lora_config
         )
-        self.lora_warp.warp(self.model)
+        self.lora_wrap.wrap(self.model)
 
-        for full_name in self.lora_warp.layers:
+        for full_name in self.lora_wrap.layers:
             layer = torch_utils.ModuleManager.get_module_by_name(self.model, full_name)
             layer.to(self.device)
             if self.use_half_lora:
@@ -864,7 +864,7 @@ class WithLora(Process):
 
         def save(suffix, max_save_weight_num, **kwargs):
             fp = f'{self.work_dir}/{suffix}.lora.safetensors'
-            torch_utils.Export.to_safetensors(self.lora_warp.state_dict(), fp)
+            torch_utils.Export.to_safetensors(self.lora_wrap.state_dict(), fp)
             os_lib.FileCacher(self.work_dir, max_size=max_save_weight_num, stdout_method=self.log).delete_over_range(suffix=r'\d+\.lora\.safetensors')
             self.log(f'Successfully save lora to {fp}!')
 
@@ -872,7 +872,7 @@ class WithLora(Process):
         self.log('Successfully add lora!')
 
     def unset_lora(self):
-        self.lora_warp.dewarp()
+        self.lora_wrap.dewrap()
 
     def load_lora_pretrain(self):
         if hasattr(self, 'lora_pretrain_model'):
@@ -887,19 +887,19 @@ class WithLora(Process):
 
             state_dict = WeightLoader.auto_load(self.lora_pretrain_model)
             state_dict = WeightConverter.from_official_lora(state_dict)
-            self.lora_warp.load_state_dict(state_dict, strict=True)
+            self.lora_wrap.load_state_dict(state_dict, strict=True)
             self.log(f'Load lora pretrain model from {self.lora_pretrain_model}')
 
     def save_lora_weight(self, save_name='lora.safetensors'):
         from collections import OrderedDict
 
-        state_dict = self.lora_warp.state_dict()
+        state_dict = self.lora_wrap.state_dict()
         state_dict = OrderedDict({k: v.to(torch.bfloat16) for k, v in state_dict.items()})
         torch_utils.Export.to_safetensors(state_dict, f'{self.work_dir}/{save_name}')
 
     def state_dict(self):
         state_dict = super().state_dict()
-        state_dict['lora'] = self.lora_warp.state_dict()
+        state_dict['lora'] = self.lora_wrap.state_dict()
         return state_dict
 
 
