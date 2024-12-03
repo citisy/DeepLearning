@@ -1,8 +1,7 @@
 import logging
-import math
 import time
 from datetime import datetime
-from typing import List, Optional, Dict, Union
+from typing import List, Optional, Dict, Union, Annotated
 
 import numpy as np
 import torch
@@ -43,7 +42,7 @@ class CheckpointHooks:
             JIT: self.load_jit
         }
 
-    log: 'bundled.LogHooks.log'
+    log: bundled.LogHooks.log
 
     def save(self, save_path, save_type=WEIGHT, verbose=True, **kwargs):
         os_lib.mk_parent_dir(save_path)
@@ -118,7 +117,10 @@ class CheckpointHooks:
         if verbose:
             self.log(f'Successfully saved to {save_path} !')
 
-    device: Union[str, int, torch.device] = None
+    device: Annotated[
+        Union[str, int, torch.device],
+        "'cpu', or id of gpu device if gpu is available"
+    ] = None
 
     def save_torchscript(self, save_path, trace_input=None, model_wrap=None, verbose=True, **kwargs):
         assert trace_input is not None
@@ -253,9 +255,9 @@ class CheckpointHooks:
 
 
 class ModelHooks:
-    trace: 'bundled.LogHooks.trace'
-    log: 'bundled.LogHooks.log'
-    log_trace: 'bundled.LogHooks.log_trace'
+    trace: bundled.LogHooks.trace
+    log: bundled.LogHooks.log
+    log_trace: bundled.LogHooks.log_trace
     device: Optional[str]
 
     def __init__(self):
@@ -266,6 +268,15 @@ class ModelHooks:
 
         # todo: perhaps, for convenient management, move all the modules like optimizer, ema, stopper, ect. to aux_modules?
         # self.aux_modules = {}
+
+        self.train_start_container: dict = {}
+        self.train_end_container: dict = {}
+        self.train_container: dict = {}
+        self.val_start_container: dict = {}
+        self.val_end_container: dict = {}
+        self.val_container: dict = {}
+        self.predict_container: dict = {}
+        self.checkpoint_container: dict = {}
 
     model: nn.Module
 
@@ -311,7 +322,10 @@ class ModelHooks:
 
     scheduler: Optional
     use_scheduler = False
-    scheduler_strategy = EPOCH
+    scheduler_strategy: Annotated[
+        str,
+        'every `epoch` or every `step` to run scheduler'
+    ] = EPOCH
 
     def set_scheduler(self, max_epoch, lr_lambda=None, lrf=0.01, **kwargs):
         if self.use_scheduler:
@@ -352,8 +366,6 @@ class ModelHooks:
         """
         import torchexplorer
         torchexplorer.watch(self.model, log=['io', 'params'], disable_inplace=True, backend='standalone')
-
-    train_container: dict
 
     def fit(self, **kwargs):
         """
@@ -408,17 +420,15 @@ class ModelHooks:
         self.on_train(**kwargs)
         self.on_train_end(**kwargs)
 
-    init_wandb: 'bundled.LogHooks.init_wandb'
+    init_wandb: bundled.LogHooks.init_wandb
     work_dir: str
     model_name: str
-    get_train_dataloader: 'data_process.DataHooks.get_train_dataloader'
-    get_val_dataloader: 'data_process.DataHooks.get_val_dataloader'
-    save: 'CheckpointHooks.save'
-    load: 'CheckpointHooks.load'
-    load_pretrain_checkpoint: 'CheckpointHooks.load_pretrain_checkpoint'
+    get_train_dataloader: data_process.DataHooks.get_train_dataloader
+    get_val_dataloader: data_process.DataHooks.get_val_dataloader
+    save: CheckpointHooks.save
+    load: CheckpointHooks.load
+    load_pretrain_checkpoint: CheckpointHooks.load_pretrain_checkpoint
     counters: dict
-    train_start_container: dict = {}
-    train_end_container: dict = {}
 
     def register_train_start(self, func, **kwargs):
         self.train_start_container.update({func: kwargs})
@@ -470,9 +480,12 @@ class ModelHooks:
         self.load_pretrain_checkpoint()
         self.set_mode(train=True)
 
-    register_logger: 'bundled.LogHooks.register_logger'
+    register_logger: bundled.LogHooks.register_logger
     log_methods: dict
-    check_strategy: str = EPOCH
+    check_strategy: Annotated[
+        str,
+        'every epoch or every step to run training check, like saving checkpoint, run the metric step, etc'
+    ] = EPOCH
 
     def on_train(self, max_epoch=100, **kwargs):
         for i in range(self.counters['epoch'], max_epoch):
@@ -666,8 +679,6 @@ class ModelHooks:
 
             self.train_container['end_flag'] = self.train_container['end_flag'] or self.stopper(check_num, score)
 
-    checkpoint_container: dict = {}
-
     def register_save_checkpoint(self, func, **kwargs):
         self.checkpoint_container.update({func: kwargs})
 
@@ -709,8 +720,6 @@ class ModelHooks:
         """call the `predict()` function to get model output, then count the score, expected to return a dict of model score"""
         raise NotImplementedError
 
-    val_container: dict
-
     @torch.no_grad()
     def predict(self, **kwargs) -> dict:
         """
@@ -750,9 +759,6 @@ class ModelHooks:
 
         self.on_val_end(**kwargs)
         return self.val_container
-
-    val_start_container: dict = {}
-    val_end_container: dict = {}
 
     def register_val_start(self, func, **kwargs):
         self.val_start_container.update({func: kwargs})
@@ -811,7 +817,6 @@ class ModelHooks:
             func(**params)
 
     model_input_template: 'namedtuple'
-    predict_container: dict
 
     @torch.no_grad()
     def single_predict(self, *obj, **kwargs):

@@ -1,7 +1,7 @@
 from .bundled import *
 from .data_process import *
 from .model_process import *
-from utils import converter
+from utils import converter, log_utils
 import os
 
 
@@ -129,23 +129,67 @@ class Process(
         and then, you can set special value of `input_size` when called like that:
             MyProcess(input_size=512, ...)
 
-        see `ProcessConfig` to get more kwargs info,
-        also can use the following code to get all possible input kwargs
-            from utils.log_utils import get_class_annotations
-            print(get_class_annotations(MyProcess))
+        see `Process.help()` to get more kwargs info,
+        clas can see `ProcessConfig` to get more kwargs info,
     """
 
     def __init__(self, **kwargs):
+        self.date = datetime.now().isoformat()
+        self.default_model_path: str = ''
+        self.cache_dir: str = ''
+
         super().__init__()
         self.__dict__.update(kwargs)
 
-    log_dir = None
-    date = datetime.now().isoformat()
-    _model_cache_dir = 'model_data'
-    _result_cache_dir = 'cache_data'
-    default_model_path: str
-    cache_dir: str
-    model_name = 'model'
+    log_dir: Annotated[
+        str,
+        'for saving log info, if None, do not save the log info'
+    ] = None
+    _model_cache_dir: Annotated[
+        str,
+        'for saving some model data, like weight, config, vocab, etc.',
+        "self.work_dir = os.path.abspath(f'{self._model_cache_dir}/{self.model_version}/{self.dataset_version}')"
+    ] = 'model_data'
+
+    _result_cache_dir: Annotated[
+        str,
+        'for saving some cache data, like visual image, result text, etc.',
+        "self.cache_dir = os.path.abspath(f'{self._result_cache_dir}/{self.model_version}/{self.dataset_version}')"
+    ] = 'cache_data'
+
+    model_name: Annotated[
+        str,
+        'for marking the base model',
+        "self.default_model_path = f'{self.work_dir}/{self.model_name}.pth'"
+    ] = 'model'
+
+    @classmethod
+    def help(cls):
+        info = log_utils.get_class_info(cls)
+        anno_dict = log_utils.get_class_annotations(cls)
+        keys = sorted(anno_dict.keys())
+        help_str = ''
+        for k in keys:
+            s = f'    ' + k
+
+            if 'type' in anno_dict[k]:
+                s += ': ' + str(anno_dict[k]['type'])
+
+            if 'default' in anno_dict[k]:
+                default = anno_dict[k]['default']
+                if isinstance(default, str):
+                    default = f"'{default}'"
+                s += ' = ' + str(default)
+
+            if 'comments' in anno_dict[k]:
+                c = ''
+                for comment in anno_dict[k]['comments']:
+                    c += '    # ' + comment + '\n'
+                s = c + s
+
+            help_str += s + '\n\n'
+        help_str = f'{info["path"]}(\n{help_str})'
+        return help_str
 
     @staticmethod
     def setup_seed(seed=42):

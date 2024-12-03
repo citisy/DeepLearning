@@ -1,6 +1,6 @@
 import logging
 from utils import log_utils, web_app, converter
-from typing import Optional
+from typing import Optional, Annotated
 from functools import partial
 
 LOGGING = 'logging'
@@ -48,12 +48,16 @@ class LogHooks:
     use_wandb = False
     wandb: Optional
 
-    model_version: str
-    dataset_version: str
+    model_version: Annotated[
+        str,
+        'for work_dir and cache_dir'
+    ] = ''
+    dataset_version: Annotated[
+        str,
+        'for work_dir and cache_dir'
+    ]
     work_dir: str
-    wandb_id: str
-    register_train_start: 'model_process.ModelHooks.register_train_start'
-    register_train_end: 'model_process.ModelHooks.register_train_end'
+    wandb_id: Annotated[str, 'for wandb logging']
 
     def init_wandb(self):
         if self.use_wandb:

@@ -1,6 +1,6 @@
 import copy
 import os
-from typing import Optional, Iterable, List
+from typing import Optional, Iterable, List, Annotated
 
 import torch
 from torch.utils.data import DataLoader, Dataset, IterableDataset, get_worker_info
@@ -240,8 +240,11 @@ class MixDataset(BaseDataset):
 class DataHooks:
     train_dataset_ins = BaseImgDataset
     val_dataset_ins = BaseImgDataset
-    dataset_version: str = ''
-    data_dir: str
+    dataset_version: Annotated[
+        str,
+        'for work_dir and cache_dir'
+    ] = ''
+    data_dir: Annotated[str, 'for loading the train or test data']
 
     def get_train_dataloader(self, data_get_kwargs=dict(), dataloader_kwargs=dict()):
         train_data = self.get_train_data(**data_get_kwargs)
