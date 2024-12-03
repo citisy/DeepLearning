@@ -278,6 +278,9 @@ class ModelHooks:
         self.predict_container: dict = {}
         self.checkpoint_container: dict = {}
 
+        self.counters = dict()
+
+
     model: nn.Module
 
     def set_model(self):
@@ -428,7 +431,6 @@ class ModelHooks:
     save: CheckpointHooks.save
     load: CheckpointHooks.load
     load_pretrain_checkpoint: CheckpointHooks.load_pretrain_checkpoint
-    counters: dict
 
     def register_train_start(self, func, **kwargs):
         self.train_start_container.update({func: kwargs})

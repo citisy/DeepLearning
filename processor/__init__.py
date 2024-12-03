@@ -129,8 +129,8 @@ class Process(
         and then, you can set special value of `input_size` when called like that:
             MyProcess(input_size=512, ...)
 
-        see `Process.help()` to get more kwargs info,
-        clas can see `ProcessConfig` to get more kwargs info,
+        run `Process.help()` to get more kwargs info,
+        also can see `ProcessConfig` to get more kwargs info,
     """
 
     def __init__(self, **kwargs):
@@ -228,7 +228,6 @@ class Process(
 
     def init_components(self):
         self.setup_seed()
-        self.counters = dict()
         if torch.cuda.is_available():
             if isinstance(self.device, (str, int)) and self.device != 'cpu':
                 self.device = torch.device(f"cuda:{self.device}")

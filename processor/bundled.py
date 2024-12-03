@@ -38,8 +38,6 @@ class LogHooks:
         self.trace_log_items[name] = {}
         self.log_methods[name] = log_method
 
-    logger: Optional
-
     def init_log_base(self, log_dir=None, logger=None):
         log_utils.logger_init(log_dir)
         logger = log_utils.get_logger(logger)
