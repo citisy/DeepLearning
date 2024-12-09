@@ -220,9 +220,9 @@ class Model(nn.ModuleList):
         self.backbone = UNetModel(self.hidden_ch, **backbone_config)
         self.head = nn.Conv2d(self.hidden_ch, self.img_ch, 1)
 
-    def diffuse(self, x, time, x_self_cond=None, **kwargs):
+    def diffuse(self, x, time, x_self_cond=None, **backbone_kwargs):
         x = self.in_module(x, x_self_cond)
-        x = self.backbone(x, time)
+        x = self.backbone(x, time, **backbone_kwargs)
         x = self.head(x)
         return x
 

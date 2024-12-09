@@ -221,6 +221,22 @@ class WeightConverter:
     def to_official_lora(cls):
         pass
 
+    @classmethod
+    def from_official_controlnet(cls, state_dict):
+        """see https://github.com/lllyasviel/ControlNet?tab=readme-ov-file"""
+        convert_dict = {}
+        for k, v in cls.backbone_convert_dict.items():
+            convert_dict[k.replace('model.diffusion_model', 'control_model')] = v.replace('backbone', 'backbone.control_model')
+
+        convert_dict.update({
+            'control_model.zero_convs.{0}.0': 'backbone.control_model.zero_convs.{0}.layers.0',
+            'control_model.input_hint_block.{[0]}.': 'backbone.control_model.input_hint_block.layers.{([0]+1)//2}.conv.',
+            'control_model.middle_block_out': 'backbone.control_model.middle_block_out.layers'
+        })
+
+        state_dict = torch_utils.Converter.convert_keys(state_dict, convert_dict)
+        return state_dict
+
 
 class Model(ddim.Model):
     """refer to:
@@ -376,13 +392,13 @@ class Model(ddim.Model):
         xt = self.sampler.q_sample(x0, t, noise=noise)
         return xt, z, i0
 
-    def diffuse(self, x, time, cond=None, un_cond=None, scale=7.5, **kwargs):
+    def diffuse(self, x, time, cond=None, un_cond=None, scale=7.5, **backbone_kwargs):
         if un_cond is not None:
             x = torch.cat([x] * 2)
             time = torch.cat([time] * 2)
             cond = torch.cat([un_cond, cond])
 
-        z = self.backbone(x, timesteps=time, context=cond)
+        z = self.backbone(x, timesteps=time, context=cond, **backbone_kwargs)
         if un_cond is not None:
             e_t_uncond, e_t = z.chunk(2)
             e_t = e_t_uncond + scale * (e_t - e_t_uncond)

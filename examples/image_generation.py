@@ -11,7 +11,7 @@ from torch.utils.data import Dataset
 
 from data_parse import DataRegister
 from data_parse.cv_data_parse.base import DataVisualizer
-from data_parse.cv_data_parse.data_augmentation import crop, scale, geometry, channel, RandomApply, Apply, pixel_perturbation
+from data_parse.cv_data_parse.data_augmentation import crop, scale, geometry, channel, RandomApply, Apply, pixel_perturbation, Lambda
 from processor import Process, DataHooks, bundled, model_process, BatchIterImgDataset, CheckpointHooks
 from utils import os_lib, torch_utils, configs
 
@@ -686,6 +686,20 @@ class VAE_CelebA(VAE, CelebA):
     """
 
 
+def _load_images(images, b, start_idx, end_idx):
+    if images:
+        if not isinstance(images, (list, tuple)):
+            # base on one image
+            images = [images for _ in range(b)]
+        else:
+            images = images[start_idx: end_idx]
+        images = [os_lib.loader.load_img(image) if isinstance(image, str) else image for image in images]
+    else:
+        images = [None] * b
+
+    return images
+
+
 class DiProcess(IgProcess):
     def set_optimizer(self, lr=1e-4, betas=(0.9, 0.99), **kwargs):
         super().set_optimizer(lr=lr, betas=betas, **kwargs)
@@ -903,6 +917,85 @@ class WithLora(Process):
         return state_dict
 
 
+class WithControlNet(Process):
+    use_control_net = False
+    control_net_wrap: 'models.tuning.control_net.ModelWrap'
+    control_net_pretrain_model: str
+    control_net_config = {}
+    config_version = 'v1.5'  # for config choose
+
+    def init_components(self):
+        super().init_components()
+        if self.use_control_net:
+            self.set_control_net()
+            self.load_control_net_pretrain()
+
+    def set_control_net(self):
+        from models.tuning.control_net import ModelWrap
+
+        if 'v1' in self.config_version:
+            from models.image_generation.sdv1 import Config
+        elif 'v2' in self.config_version:
+            from models.image_generation.sdv2 import Config
+        elif 'xl' in self.config_version:
+            from models.image_generation.sdxl import Config
+        else:
+            raise
+
+        config = Config.get(self.config_version)['backbone_config']
+        config = configs.ConfigObjParse.merge_dict(config, self.control_net_config)
+        self.control_net_wrap = ModelWrap(config)
+        self.control_net_wrap.wrap(self.model)
+        self.log('Successfully add control_net!')
+
+    def load_control_net_pretrain(self):
+        if hasattr(self, 'control_net_pretrain_model'):
+            from models.image_generation.ldm import WeightLoader, WeightConverter
+
+            state_dict = torch_utils.Load.from_file(self.control_net_pretrain_model)
+            state_dict = WeightConverter.from_official_controlnet(state_dict)
+            self.control_net_wrap.load_state_dict(state_dict, strict=False)
+            self.log(f'Load control_net pretrain model from {self.control_net_pretrain_model}')
+
+    control_aug = Apply([
+        Lambda(lambda image, **kwargs: cv2.Canny(image, 100, 200)),
+        scale.RuderLetterBox(),
+        channel.Keep3Dims(),
+        channel.Keep3Channels(),
+        channel.HWC2CHW(),
+    ])
+
+    def gen_predict_inputs(self, *objs, control_images=None, start_idx=None, end_idx=None, **kwargs):
+        rets = super().gen_predict_inputs(*objs, start_idx=start_idx, end_idx=end_idx, **kwargs)
+        b = len(rets)
+        control_images = _load_images(control_images, b, start_idx, end_idx)
+        for i, ret in enumerate(rets):
+            ret['control_image'] = control_images[i]
+
+        return rets
+
+    def val_data_augment(self, ret) -> dict:
+        ret = super().val_data_augment(ret)
+        if 'control_image' in ret and ret['control_image'] is not None:
+            ret['control_image'] = self.control_aug(image=ret['control_image'], dst=self.input_size)['image']
+        return ret
+
+    def get_model_val_inputs(self, rets):
+        model_inputs = super().get_model_val_inputs(rets)
+        control_images = []
+        for ret in rets:
+            if 'control_image' in ret and ret['control_image'] is not None:
+                control_image = ret.pop('control_image')
+                control_images.append(torch.from_numpy(control_image).to(self.device, non_blocking=True, dtype=torch.float))
+
+        if control_images:
+            control_images = torch.stack(control_images)
+            control_images /= 255
+            model_inputs.update(control_images=control_images)
+
+        return model_inputs
+
+
 class FromPretrain(CheckpointHooks):
     config_version = 'v1'  # for config choose
 
@@ -923,41 +1016,7 @@ class FromPretrain(CheckpointHooks):
             self.log(f'load pretrain model from {self.pretrain_model}')
 
 
-class SD(DiProcess, FromPretrain, WithLora):
-    """no training, only for prediction
-
-    Usage:
-        .. code-block:: python
-
-            from examples.image_generation import SD as Process
-
-            process = Process(pretrain_model='...', encoder_fn='...', vocab_fn='...', config_version='...')
-            process.init()
-
-            # txt2img
-            prompt = 'a painting of a virus monster playing guitar'
-            neg_prompt = ''
-            prompts = ['a painting of a virus monster playing guitar', 'a painting of two virus monster playing guitar']
-            neg_prompts = ['', '']
-
-            # predict one
-            image = process.single_predict(prompt, neg_texts=neg_prompt, is_visualize=True)
-
-            # predict batch
-            images = process.batch_predict(prompts, neg_texts=neg_prompts, batch_size=2, is_visualize=True)
-
-            # img2img
-            image = 'test.jpg'
-            images = ['test1.jpg', 'test2.jpg']
-
-            # predict one
-            image = process.single_predict(prompt, images=image, is_visualize=True)
-
-            # predict batch
-            images = process.batch_predict(prompts, neg_texts=neg_prompts, images=image, batch_size=2, is_visualize=True)     # base on same image
-            images = process.batch_predict(prompts, neg_texts=neg_prompts, images=images, batch_size=2, is_visualize=True)    # base on different image
-    """
-
+class BaseSD(DiProcess):
     model_version = 'sd'
     config_version = 'v1'  # for config choose
     in_ch = 3
@@ -1010,6 +1069,8 @@ class SD(DiProcess, FromPretrain, WithLora):
             pass
 
         model_config = configs.ConfigObjParse.merge_dict(Config.get(self.config_version), self.model_config)
+        model_config.setdefault('use_half', self.use_half)
+        model_config.setdefault('low_memory_run', self.low_memory_run)
         self.model = Model(
             img_ch=self.in_ch,
             image_size=self.input_size,
@@ -1153,30 +1214,11 @@ class SD(DiProcess, FromPretrain, WithLora):
         else:
             neg_texts = neg_texts[start_idx: end_idx]
 
-        if images:
-            if not isinstance(images, (list, tuple)):
-                # base on one image
-                images = [images for _ in range(b)]
-            else:
-                images = images[start_idx: end_idx]
-        else:
-            images = [None] * b
-
-        if mask_images:
-            if not isinstance(mask_images, (list, tuple)):
-                # base on one image
-                mask_images = [mask_images for _ in range(b)]
-            else:
-                mask_images = mask_images[start_idx: end_idx]
-        else:
-            mask_images = [None] * b
+        images = _load_images(images, b, start_idx, end_idx)
+        mask_images = _load_images(mask_images, b, start_idx, end_idx)
 
         rets = []
         for text, neg_text, image, mask_image in zip(pos_texts, neg_texts, images, mask_images):
-            if isinstance(image, str):
-                image = os_lib.loader.load_img(image)
-            if isinstance(mask_image, str):
-                image = os_lib.loader.load_img(mask_image)
             rets.append(self.model_input_template(image=image, text=text, neg_text=neg_text, mask_image=mask_image)._asdict())
 
         return rets
@@ -1200,6 +1242,42 @@ class SD(DiProcess, FromPretrain, WithLora):
 
         images = [wm_encoder.encode(image, 'dwtDct') for image in images]
         return images
+
+
+class SD(WithLora, WithControlNet, FromPretrain, BaseSD):
+    """no training, only for prediction
+
+    Usage:
+        .. code-block:: python
+
+            from examples.image_generation import SD as Process
+
+            process = Process(pretrain_model='...', encoder_fn='...', vocab_fn='...', config_version='...')
+            process.init()
+
+            # txt2img
+            prompt = 'a painting of a virus monster playing guitar'
+            neg_prompt = ''
+            prompts = ['a painting of a virus monster playing guitar', 'a painting of two virus monster playing guitar']
+            neg_prompts = ['', '']
+
+            # predict one
+            image = process.single_predict(prompt, neg_texts=neg_prompt, is_visualize=True)
+
+            # predict batch
+            images = process.batch_predict(prompts, neg_texts=neg_prompts, batch_size=2, is_visualize=True)
+
+            # img2img
+            image = 'test.jpg'
+            images = ['test1.jpg', 'test2.jpg']
+
+            # predict one
+            image = process.single_predict(prompt, images=image, is_visualize=True)
+
+            # predict batch
+            images = process.batch_predict(prompts, neg_texts=neg_prompts, images=image, batch_size=2, is_visualize=True)     # base on same image
+            images = process.batch_predict(prompts, neg_texts=neg_prompts, images=images, batch_size=2, is_visualize=True)    # base on different image
+    """
 
 
 class SimpleTextImage(DataProcess):

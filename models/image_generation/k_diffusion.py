@@ -237,7 +237,7 @@ class Sampler(nn.Module):
     def q_sample(self, x0, sigma, noise=None):
         raise NotImplementedError
 
-    def forward(self, diffuse_func, x_t, i0=None, callback_fn=None, **kwargs):
+    def forward(self, diffuse_func, x_t, i0=None, callback_fn=None, **p_sample_kwargs):
         timestep_seq = self.schedule.make_timesteps(i0)
         # previous sequence
         timestep_prev_seq = np.append(np.array([0]), timestep_seq[:-1])
@@ -247,13 +247,13 @@ class Sampler(nn.Module):
 
         for i in reversed(range(len(timestep_seq))):
             self_cond = x_0 if self.self_condition else None
-            x_t, x_0 = self.p_sample(diffuse_func, x_t, timestep_seq[i], prev_t=timestep_prev_seq[i], x_self_cond=self_cond, **kwargs)
+            x_t, x_0 = self.p_sample(diffuse_func, x_t, timestep_seq[i], prev_t=timestep_prev_seq[i], x_self_cond=self_cond, **p_sample_kwargs)
 
             if callback_fn:
                 callback_fn(x_t, timestep_seq[i])
         return x_t
 
-    def p_sample(self, diffuse_func, x_t, t, **kwargs):
+    def p_sample(self, diffuse_func, x_t, t, **diffuse_kwargs):
         raise NotImplementedError
 
     def scale_x_t(self, x_t):
@@ -299,7 +299,7 @@ class EulerSampler(Sampler):
     def scale_x_t(self, x_t):
         return x_t * torch.sqrt(1.0 + self.schedule.sigmas[-1] ** 2.0)
 
-    def p_sample(self, diffuse_func, x_t, t, prev_t=None, **kwargs):
+    def p_sample(self, diffuse_func, x_t, t, prev_t=None, **diffuse_kwargs):
         # todo: add more sample methods
         t = torch.full((x_t.shape[0],), t, device=x_t.device, dtype=torch.long)
         prev_t = torch.full((x_t.shape[0],), prev_t, device=x_t.device, dtype=torch.long)
@@ -325,7 +325,7 @@ class EulerSampler(Sampler):
         possible_t = possible_t - 1
         c_skip, c_out, c_in, c_noise = c_skip[:, None, None, None], c_out[:, None, None, None], c_in[:, None, None, None], c_noise[:, None, None, None]
 
-        d = diffuse_func(c_in * x_t, possible_t, **kwargs) * c_out + x_t * c_skip
+        d = diffuse_func(c_in * x_t, possible_t, **diffuse_kwargs) * c_out + x_t * c_skip
 
         d = (x_t - d) / sigma_hat
         dt = next_sigma - sigma_hat
