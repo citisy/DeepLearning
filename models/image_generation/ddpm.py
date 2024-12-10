@@ -25,14 +25,14 @@ class Config(bundles.Config):
     XFORMERS_ATTEND = 2
     SPLIT_ATTEND = 3
 
-    sampler_config = dict(
+    sampler = dict(
         objective=PRED_V,
         schedule_type=LINEAR
     )
 
-    in_module_config = dict(self_condition=False)
+    in_module = dict(self_condition=False)
 
-    backbone_config = dict(
+    backbone = dict(
         learned_sinusoidal_cond=False,
         random_fourier_features=False,
         learned_sinusoidal_dim=16,
@@ -47,9 +47,9 @@ class Config(bundles.Config):
     def make_full_config(cls) -> dict:
         return {
             '': dict(
-                sampler_config=cls.sampler_config,
-                in_module_config=cls.in_module_config,
-                backbone_config=cls.backbone_config
+                sampler_config=cls.sampler,
+                in_module_config=cls.in_module,
+                backbone_config=cls.backbone
             )
         }
 

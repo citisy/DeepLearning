@@ -922,7 +922,7 @@ class WithControlNet(Process):
     control_net_wrap: 'models.tuning.control_net.ModelWrap'
     control_net_pretrain_model: str
     control_net_config = {}
-    config_version = 'v1.5'  # for config choose
+    control_net_version = 'v1.5'  # for config choose
 
     def init_components(self):
         super().init_components()
@@ -931,18 +931,9 @@ class WithControlNet(Process):
             self.load_control_net_pretrain()
 
     def set_control_net(self):
-        from models.tuning.control_net import ModelWrap
+        from models.tuning.control_net import ModelWrap, Config
 
-        if 'v1' in self.config_version:
-            from models.image_generation.sdv1 import Config
-        elif 'v2' in self.config_version:
-            from models.image_generation.sdv2 import Config
-        elif 'xl' in self.config_version:
-            from models.image_generation.sdxl import Config
-        else:
-            raise
-
-        config = Config.get(self.config_version)['backbone_config']
+        config = Config.get(self.control_net_version)
         config = configs.ConfigObjParse.merge_dict(config, self.control_net_config)
         self.control_net_wrap = ModelWrap(config)
         self.control_net_wrap.wrap(self.model)
@@ -950,7 +941,14 @@ class WithControlNet(Process):
 
     def load_control_net_pretrain(self):
         if hasattr(self, 'control_net_pretrain_model'):
-            from models.image_generation.ldm import WeightLoader, WeightConverter
+            if 'v1' in self.control_net_version:
+                from models.image_generation.sdv1 import WeightConverter
+            elif 'v2' in self.control_net_version:
+                from models.image_generation.sdv2 import WeightConverter
+            elif 'xl' in self.control_net_version:
+                from models.image_generation.sdxl import WeightConverter
+            else:
+                raise
 
             state_dict = torch_utils.Load.from_file(self.control_net_pretrain_model)
             state_dict = WeightConverter.from_official_controlnet(state_dict)

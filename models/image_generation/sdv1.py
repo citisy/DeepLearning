@@ -23,7 +23,7 @@ class Config(ldm.Config):
 
     v1_5sampler = dict(
         name=ldm.Config.EULER,
-        **k_diffusion.Config.get(),
+        **k_diffusion.Config.get(''),
     )
 
     default_model = 'v1'

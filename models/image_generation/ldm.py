@@ -34,7 +34,7 @@ class Config(ddim.Config):
 
     sampler = dict(
         name=DDIM,
-        **ddim.Config.sampler_config,
+        **ddim.Config.sampler,
     )
 
     backbone = dict(
@@ -470,6 +470,7 @@ class UNetModel(nn.Module):
         super().__init__()
         self.in_channels = in_ch
         self.out_channels = out_ch
+        self.context_dim = context_dim
         self.num_classes = num_classes
 
         time_emb_dim = unit_dim * 4

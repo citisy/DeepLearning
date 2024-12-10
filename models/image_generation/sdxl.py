@@ -1,10 +1,10 @@
-import numpy as np
 import torch
-from torch import nn, einsum
-from einops import rearrange, repeat, reduce
+from einops import rearrange, repeat
+from torch import nn
+
 from utils import torch_utils
-from . import ldm, ddpm, ddim, sdv1, sdv2, k_diffusion
-from .ldm import WeightLoader
+from . import ldm, sdv1, sdv2
+from .ldm import WeightLoader  # noqa
 from ..multimodal_pretrain import CLIP as CLIPModel
 
 
@@ -219,6 +219,46 @@ class WeightConverter(ldm.WeightConverter):
 
         return state_dict
 
+    @classmethod
+    def from_official_controlnet(cls, state_dict):
+        """https://gist.github.com/takuma104/4adfb3d968d80bea1d18a30c06439242"""
+        convert_dict = {
+            'time_embedding.linear_1': 'time_embed.0',
+            'time_embedding.linear_2': 'time_embed.2',
+            'add_embedding.linear_1': 'label_emb.0.0',
+            'add_embedding.linear_2': 'label_emb.0.2',
+
+            'controlnet_cond_embedding.conv_in': 'input_hint_block.0',
+            'controlnet_cond_embedding.conv_out': 'input_hint_block.14',
+            'controlnet_cond_embedding.blocks.{[i]}.': 'input_hint_block.{([i]+1)*2}.',
+            'controlnet_down_blocks.{0}.': 'zero_convs.{0}.0.',
+            'controlnet_mid_block': 'middle_block_out.0',
+
+            'conv_in': 'input_blocks.0.0',
+            'down_blocks.{[i]}.downsamplers.0.conv': 'input_blocks.{3 * ([i] + 1)}.0.op',
+            'down_blocks.{[i]}.resnets.{[j]}.norm1': 'input_blocks.{3*[i] + [j] + 1}.0.in_layers.0',
+            'down_blocks.{[i]}.resnets.{[j]}.conv1': 'input_blocks.{3*[i] + [j] + 1}.0.in_layers.2',
+            'down_blocks.{[i]}.resnets.{[j]}.norm2': 'input_blocks.{3*[i] + [j] + 1}.0.out_layers.0',
+            'down_blocks.{[i]}.resnets.{[j]}.conv2': 'input_blocks.{3*[i] + [j] + 1}.0.out_layers.3',
+            'down_blocks.{[i]}.resnets.{[j]}.time_emb_proj': 'input_blocks.{3*[i] + [j] + 1}.0.emb_layers.1',
+            'down_blocks.{[i]}.resnets.{[j]}.conv_shortcut': 'input_blocks.{3*[i] + [j] + 1}.0.skip_connection',
+            'down_blocks.{[i]}.attentions.{[j]}.': 'input_blocks.{3 * [i] + [j] + 1}.1.',
+
+            'mid_block.attentions.0.': 'middle_block.1.',
+            'mid_block.resnets.{[j]}.norm1': 'middle_block.{2*[j]}.in_layers.0',
+            'mid_block.resnets.{[j]}.conv1': 'middle_block.{2*[j]}.in_layers.2',
+            'mid_block.resnets.{[j]}.norm2': 'middle_block.{2*[j]}.out_layers.0',
+            'mid_block.resnets.{[j]}.conv2': 'middle_block.{2*[j]}.out_layers.3',
+            'mid_block.resnets.{[j]}.time_emb_proj': 'middle_block.{2*[j]}.emb_layers.1',
+            'mid_block.resnets.{[j]}.conv_shortcut': 'middle_block.{2*[j]}.skip_connection',
+        }
+        convert_dict = {k: 'control_model.' + v for k, v in convert_dict.items()}
+        state_dict = torch_utils.Converter.convert_keys(state_dict, convert_dict)
+
+        state_dict = ldm.WeightConverter.from_official_controlnet(state_dict)
+
+        return state_dict
+
 
 class Model(ldm.Model):
     """https://github.com/Stability-AI/generative-models"""
@@ -264,7 +304,7 @@ class Model(ldm.Model):
             uc_values=uc_values
         )
 
-    def diffuse(self, x, time, c_values=None, uc_values=None, scale=7.5, **kwargs):
+    def diffuse(self, x, time, c_values=None, uc_values=None, scale=7.5, **backbone_kwargs):
         if uc_values is not None:
             x = torch.cat([x] * 2)
             time = torch.cat([time] * 2)
@@ -274,7 +314,7 @@ class Model(ldm.Model):
             cond = c_values[self.cond.COND]
             y = c_values[self.cond.VECTOR]
 
-        z = self.backbone(x, timesteps=time, context=cond, y=y)
+        z = self.backbone(x, timesteps=time, context=cond, y=y, **backbone_kwargs)
         if uc_values is not None:
             e_t_uncond, e_t = z.chunk(2)
 
