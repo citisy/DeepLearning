@@ -11,7 +11,7 @@ class Model(Model_):
         - https://github.com/lucidrains/denoising-diffusion-pytorch
     """
 
-    def make_sampler(self, sampler_config=Config.sampler_config, **kwargs):
+    def make_sampler(self, sampler_config=Config.sampler, **kwargs):
         self.sampler = Sampler(**sampler_config)
 
 

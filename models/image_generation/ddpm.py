@@ -212,10 +212,10 @@ class Model(nn.ModuleList):
         self.vae.encode = partial(torch_utils.ModuleManager.assign_dtype_run, self.vae, self.vae.encode, dtype, force_effect_module=False)
         self.vae.decode = partial(torch_utils.ModuleManager.assign_dtype_run, self.vae, self.vae.decode, dtype, force_effect_module=False)
 
-    def make_sampler(self, sampler_config=Config.sampler_config, **kwargs):
+    def make_sampler(self, sampler_config=Config.sampler, **kwargs):
         self.sampler = Sampler(**sampler_config)
 
-    def make_diffuse(self, in_module_config=Config.in_module_config, backbone_config=Config.backbone_config, **kwargs):
+    def make_diffuse(self, in_module_config=Config.in_module, backbone_config=Config.backbone, **kwargs):
         self.in_module = InModule(self.img_ch, self.hidden_ch, **in_module_config)
         self.backbone = UNetModel(self.hidden_ch, **backbone_config)
         self.head = nn.Conv2d(self.hidden_ch, self.img_ch, 1)

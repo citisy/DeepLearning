@@ -13,7 +13,7 @@ class Config(bundles.Config):
     @classmethod
     def make_full_config(cls):
         return {
-            'v15': sdv1.Config.backbone,
+            'v1.5': sdv1.Config.backbone,
 
             'xl_full': sdxl.Config.xl_base_backbone,
 

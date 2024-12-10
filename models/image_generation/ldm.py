@@ -261,7 +261,7 @@ class Model(ddim.Model):
         super().set_low_memory_run()
         self.make_txt_cond = functools.partial(torch_utils.ModuleManager.low_memory_run, self.cond, self.make_txt_cond, self.device)
 
-    def make_sampler(self, sampler_config=Config.sampler_config, **kwargs):
+    def make_sampler(self, sampler_config=Config.sampler, **kwargs):
         self.sampler = self.sampler_mapping.get(sampler_config['name'], sampler_config['name'])(**sampler_config)
 
     def make_cond(self, **kwargs):
