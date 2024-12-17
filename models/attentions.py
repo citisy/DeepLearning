@@ -7,8 +7,8 @@ from einops import rearrange
 from einops.layers.torch import Rearrange
 from torch import nn
 
-from .layers import Linear
 from utils import log_utils
+from .layers import Linear
 
 
 def get_attention_input(n_heads=None, model_dim=None, head_dim=None):
@@ -449,6 +449,37 @@ class MemoryScaleAttend2D(MemoryAttend):
         super().__init__(ScaleAttend(**kwargs), mem_kv)
 
 
+class DynamicMemoryAttend(nn.Module):
+    """don't alloc the kv memory when the class created
+    only when the class called
+    has dynamic cache len"""
+
+    def __init__(self, base_layer=None, layer_idx=None, **kwargs):
+        super().__init__()
+        self.base_layer = base_layer
+
+    def forward(self, q, k, v, attention_mask=None, cache_fn=None, **kwargs):
+        """q,k,v: (b,n,s,d)"""
+        k, v = cache_fn(k, v)  # only support inplace mode, see `cache_fn` to get more info
+        return self.base_layer(q, k, v, attention_mask=attention_mask, **kwargs)
+
+    @staticmethod
+    def cache(k, v, past_kv={}, **kwargs):  # noqa
+        """cache_fn example"""
+        k = torch.cat([past_kv['k'], k], dim=-2)
+        v = torch.cat([past_kv['v'], v], dim=-2)
+        past_kv.update(
+            k=k,
+            v=v,
+        )
+        return k, v
+
+
+class DynamicMemoryScaleAttend2D(DynamicMemoryAttend):
+    def __init__(self, **kwargs):
+        super().__init__(ScaleAttend(**kwargs))
+
+
 class LearnedMemoryAttend(nn.Module):
     """apply learned kv cache"""
 
@@ -507,48 +538,51 @@ class LearnedMemoryLinearAttend(LearnedMemoryAttend):
 
 
 class RotaryAttend(ScaleAttend):
-    def __init__(self, embedding=None, max_seq_len=None, dim=None, **kwargs):
+    def __init__(self, embedding=None, dim=None, **kwargs):
         super().__init__(**kwargs)
         if embedding is None:
             from .embeddings import RotaryEmbedding
-            embedding = RotaryEmbedding(max_seq_len, dim)
+            embedding = RotaryEmbedding(dim)
 
         self.view_in = Rearrange('b n s d -> b s n d')
         self.embedding = embedding
         self.view_out = Rearrange('b s n d -> b n s d')
 
-    def forward(self, q, k, v, attention_mask=None, **kwargs):
+    def forward(self, q, k, v, attention_mask=None, embedding_kwargs=dict(), **attend_kwargs):
         """
         in(q|k|v): (b n s d)
         out(attn): (b n s d)
         """
         q, k, v = [self.view_in(x).contiguous() for x in (q, k, v)]
-        q, k = map(self.embedding, (q, k))
+        q = self.embedding(q, **embedding_kwargs)
+        k = self.embedding(k, **embedding_kwargs)
         q, k, v = [self.view_out(x).contiguous() for x in (q, k, v)]
-        attn = super().forward(q, k, v, attention_mask=attention_mask, **kwargs)
+        attn = super().forward(q, k, v, attention_mask=attention_mask, **attend_kwargs)
         return attn
 
 
 class MemoryRotaryAttend(ScaleAttend):
-    def __init__(self, n_heads, n_mem_size, head_dim, max_batch_size, embedding=None, max_seq_len=None, dim=None, **kwargs):
+    def __init__(self, n_heads, n_mem_size, head_dim, max_batch_size, embedding=None, dim=None, **kwargs):
         super().__init__(**kwargs)
         if embedding is None:
             from .embeddings import RotaryEmbedding
-            embedding = RotaryEmbedding(max_seq_len, dim)
+            embedding = RotaryEmbedding(dim)
 
         self.view_in = Rearrange('b n s d -> b s n d')
         self.embedding = embedding
         self.view_out = Rearrange('b s n d -> b n s d')
         self.mem_kv = torch.zeros(2, max_batch_size, n_mem_size, n_heads, head_dim)
 
-    def forward(self, q, k, v, start_pos=0, **kwargs):
+    def forward(self, q, k, v, start_pos=0, embedding_kwargs=dict(), **kwargs):
         """
         in(q|k|v): (b n s d)
         out(attn): (b n s d)
         """
         b, _, s, _ = q.shape
         q, k, v = [self.view_in(x).contiguous() for x in (q, k, v)]
-        q, k = map(partial(self.embedding, start_pos=start_pos), (q, k))
+        q = self.embedding(q, start_pos=start_pos, **embedding_kwargs)
+        k = self.embedding(k, start_pos=start_pos, **embedding_kwargs)
+
         k = self.cache(self.mem_kv[0], k, start_pos=start_pos)
         v = self.cache(self.mem_kv[1], v, start_pos=start_pos)
 

@@ -85,23 +85,44 @@ class LearnedSinusoidalEmbedding(nn.Module):
 
 class RotaryEmbedding(nn.Module):
     """for qk of rotary attention, not for seq"""
-    def __init__(self, num_embeddings, embedding_dim, theta=10000.):
+    def __init__(self, embedding_dim, theta=10000.):
         super().__init__()
-        position = torch.arange(0, num_embeddings).float()
 
-        # exp{-d / D * log{\theta}} = \theta ^ {-d / D}
-        # same to
+        # exp{-d / D * log{\theta}} = \theta ^ {-d / D} = 1 / (\theta ^ {d / D})
+        # equal to
         # div_term = 1.0 / (theta ** (torch.arange(0, embedding_dim, 2)[: (embedding_dim // 2)].float() / embedding_dim))
+        # but will
         div_term = (torch.arange(0, embedding_dim, 2).float() * -(math.log(theta) / embedding_dim)).exp()
-        freqs = torch.outer(position, div_term).float()  # type: ignore
-        weights = torch.polar(torch.ones_like(freqs), freqs)
-        weights = weights[None, :, None, :]  # (s d) -> (1 s 1 d)
-        self.register_buffer('weights', weights)
+        self.div_term = div_term
 
-    def forward(self, x, start_pos=0):
-        """x: (b s n d)"""
+    def make_weights(self, seq_len):
+        position = torch.arange(0, seq_len).float()
+        freqs = torch.outer(position, self.div_term).float()
+
+        weights = torch.polar(torch.ones_like(freqs), freqs)
+        return weights
+
+    def forward(self, x, start_pos=0, weights=None):
+        """x: (b s n d)
+        y_{d-1} = x_{d-1}cos(w_{d/2}) - x_{d}sin(w_{d/2}), d in {1,3,5,...}
+        y_{d} = x_{d}cos(w_{d/2}) + x_{d-1}sin(w_{d/2}), d in {2,4,6,...}
+        """
+        if weights is None:
+            weights = self.make_weights(x.shape[1])
+
+        weights = weights.to(x.device)
         s = x.shape[1]
-        weights = self.weights[:, start_pos:start_pos + s, :, :]
+        weights = weights[None, :, None, :]  # (s d) -> (1 s 1 d)
+        weights = weights[:, start_pos:start_pos + s, :, :]
+
+        # equal to:
+        # weights = weights.repeat_interleave(2, -1)
+        # weights = torch.view_as_real(weights)
+        # cos = weights[..., 0]
+        # sin = weights[..., 1]
+        # x = x.float()
+        # _x = torch.stack((-x[..., 1::2], x[..., ::2]), dim=-1).flatten(-2, -1)
+        # y = (x * cos) + (_x * sin)
         y = torch.view_as_complex(x.float().reshape(*x.shape[:-1], -1, 2))
         y = torch.view_as_real(y * weights).flatten(3)
         return y.type_as(x)

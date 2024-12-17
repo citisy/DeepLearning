@@ -63,7 +63,7 @@ class Model(nn.Module):
         self.__dict__.update(kwargs)
 
         self.embedding = nn.Embedding(vocab_size, hidden_size)
-        rotary_embedding = embeddings.RotaryEmbedding(max_seq_len * 2, hidden_size // num_attention_heads)
+        rotary_embedding = embeddings.RotaryEmbedding(hidden_size // num_attention_heads)
         ff_hidden_size = int(hidden_size * 4 * 2 / 3)
         ff_hidden_size = multiple_of * ((ff_hidden_size + multiple_of - 1) // multiple_of)
         self.encoder = TransformerSequential(
@@ -138,8 +138,8 @@ class Model(nn.Module):
             prev_pos = cur_pos
         return x
 
-    def decode(self, sequence, start_pos=0, **encoder_kwargs):
-        x = self.embedding(sequence)
+    def decode(self, x, start_pos=0, **encoder_kwargs):
+        x = self.embedding(x)
         attention_mask = make_causal_attention_mask(x, start_pos=start_pos)
         x = self.encoder(x, attention_mask=attention_mask, start_pos=start_pos, **encoder_kwargs)
         x = self.norm(x)
@@ -153,9 +153,9 @@ class FeedForward(nn.Module):
     def __init__(self, hidden_size, ff_hidden_size, act=None, drop_prob=0., **kwargs):
         super().__init__()
         act = act or nn.SiLU()
-        self.f1 = layers.Linear(hidden_size, ff_hidden_size, mode='la', act=act, **kwargs)
-        self.f2 = layers.Linear(ff_hidden_size, hidden_size, mode='ld', drop_prob=drop_prob, **kwargs)
-        self.f3 = layers.Linear(hidden_size, ff_hidden_size, mode='l', **kwargs)
+        self.f1 = layers.Linear(hidden_size, ff_hidden_size, mode='la', act=act, **kwargs)  # gate
+        self.f2 = layers.Linear(ff_hidden_size, hidden_size, mode='ld', drop_prob=drop_prob, **kwargs)  # down
+        self.f3 = layers.Linear(hidden_size, ff_hidden_size, mode='l', **kwargs)    # up
 
     def forward(self, x):
         return self.f2(self.f1(x) * self.f3(x))
