@@ -99,7 +99,7 @@ class ModelWrap:
             warnings.warn(f'can not find any layer by include={self.include} and exclude={self.exclude}')
 
         for current_m, name, full_name in layers:
-            new = attentions.LearnedMemoryAttend(getattr(current_m, name))
+            new = attentions.LearnedMemoryAttendWrapper(base_layer=getattr(current_m, name))
             new.to(torch_utils.ModuleInfo.possible_device(current_m))
             setattr(current_m, name, new)
             self.attn_layers.append(full_name)

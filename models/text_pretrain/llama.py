@@ -69,7 +69,7 @@ class Model(nn.Module):
         self.encoder = TransformerSequential(
             hidden_size, num_attention_heads, ff_hidden_size,
             norm_first=True, drop_prob=drop_prob,
-            attend_fn=attentions.MemoryRotaryAttend,
+            attend_fn=attentions.MemoryRotaryAttendWrapper,
             attend_fn_kwargs=dict(
                 n_heads=num_attention_heads,
                 n_mem_size=max_seq_len,

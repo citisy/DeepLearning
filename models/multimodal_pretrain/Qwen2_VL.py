@@ -9,7 +9,8 @@ from torch.nn import functional as F
 from utils import torch_utils
 from .. import bundles
 from ..activations import FasterGELU
-from ..attentions import RotaryAttend, get_attention_input, ScaleAttend, get_qkv
+from .. import attentions
+from ..attentions import RotaryAttendWrapper, get_attention_input, get_qkv
 from ..embeddings import RotaryEmbedding
 from ..layers import Linear
 from ..normalizations import RMSNorm2D
@@ -18,6 +19,12 @@ from ..text_pretrain.transformers import TransformerSequential, make_causal_atte
 
 
 class Config(bundles.Config):
+    LayerNorm = 'LayerNorm'
+    RMSNorm2D = 'RMSNorm2D'
+
+    ScaleAttend = 'ScaleAttend'
+    FlashAttend = 'FlashAttend'
+
     _2b_vit_config = dict(
         output_size=1536
     )
@@ -349,7 +356,21 @@ class Model(nn.Module):
         return loss
 
 
-make_norm = partial(nn.LayerNorm, eps=1e-6)
+def make_norm(*args, name=Config.LayerNorm, **kwargs):
+    mapping = {
+        Config.LayerNorm: nn.LayerNorm,
+        Config.RMSNorm2D: RMSNorm2D,
+    }
+    kwargs.setdefault('eps', 1e-6)
+    return mapping[name](*args, **kwargs)
+
+
+def make_base_attend_fn(name=Config.ScaleAttend):
+    mapping = {
+        Config.ScaleAttend: attentions.ScaleAttend,
+        Config.FlashAttend: attentions.FlashAttend
+    }
+    return mapping[name]
 
 
 class Vit(nn.Module):
@@ -360,6 +381,7 @@ class Vit(nn.Module):
             in_ch=3, embed_dim=1280, output_size=1536,
             patch_size=14, temporal_patch_size=2, spatial_merge_size=2,
             num_heads=16, mlp_ratio=4, num_blocks=32,
+            base_attend_name=Config.ScaleAttend,
             use_checkpoint=False,
             **kwargs
     ):
@@ -375,9 +397,10 @@ class Vit(nn.Module):
 
         self.blocks = TransformerSequential(
             embed_dim, num_heads, int(embed_dim * mlp_ratio),
-            attend_fn=RotaryAttend,
+            attend_fn=RotaryAttendWrapper,
             attend_fn_kwargs=dict(
-                embedding=self.rot_embedding
+                embedding=self.rot_embedding,
+                base_layer_fn=make_base_attend_fn(base_attend_name),
             ),
             fn_kwargs=dict(
                 separate=False,
@@ -535,7 +558,8 @@ class Vlm(nn.Module):
             pad_token_id=None, vocab_size=151936,
             hidden_size=1536, ff_hidden_size=8960,
             num_heads=12, num_kv_heads=2, num_blocks=28,
-            rms_norm_eps=1e-06, use_checkpoint=False
+            base_attend_name=Config.ScaleAttend, norm_name=Config.RMSNorm2D,
+            use_checkpoint=False
     ):
         super().__init__()
         self.hidden_size = hidden_size
@@ -553,15 +577,16 @@ class Vlm(nn.Module):
             ),
             attend_fn=VisionSdpaAttend,
             attend_fn_kwargs=dict(
-                embedding=self.rot_embedding
+                embedding=self.rot_embedding,
+                base_layer_fn=make_base_attend_fn(base_attend_name),
             ),
             feed_forward_fn=FeedForward,
             ff_kwargs=dict(
                 bias=False,
             ),
-            norm_fn=RMSNorm2D,
+            norm_fn=make_norm,
             norm_kwargs=dict(
-                eps=rms_norm_eps
+                name=norm_name
             ),
             norm_first=True,
 
@@ -569,9 +594,9 @@ class Vlm(nn.Module):
             use_checkpoint=use_checkpoint
 
         )
-        self.norm = RMSNorm2D(hidden_size, eps=rms_norm_eps)
+        self.norm = make_norm(hidden_size, name=norm_name)
 
-    def forward(self, input_ids=None, inputs_embeds=None, attention_mask=None, position_ids=None, past_key_values=None, ):
+    def forward(self, input_ids=None, inputs_embeds=None, attention_mask=None, position_ids=None, past_key_values=None):
         if inputs_embeds is None:
             inputs_embeds = self.embed_tokens(input_ids)
 
@@ -602,7 +627,7 @@ class VisionSdpaAttention(nn.Module):
     """cross attention"""
 
     def __init__(self, n_heads=None, model_dim=None, head_dim=None, n_kv_heads=None,
-                 drop_prob=0.1, attend=None, out_layer=None, **fn_kwargs):
+                 attend=None, out_layer=None, **fn_kwargs):
         super().__init__()
         n_heads, model_dim, head_dim = get_attention_input(n_heads, model_dim, head_dim)
         query_dim = model_dim
@@ -621,7 +646,7 @@ class VisionSdpaAttention(nn.Module):
         self.view_out = Rearrange('b n s dk -> b s (n dk)')
         self.to_out = Linear(model_dim, query_dim, mode='l', bias=False, **fn_kwargs) if out_layer is None else out_layer
 
-        self.attend = ScaleAttend(drop_prob=drop_prob) if attend is None else attend
+        self.attend = VisionSdpaAttend() if attend is None else attend
 
     def forward(self, q, k=None, v=None, attention_mask=None, **attend_kwargs):
         q, k, v = get_qkv(q, k, v)
@@ -638,17 +663,7 @@ class VisionSdpaAttention(nn.Module):
         return x
 
 
-class VisionSdpaAttend(ScaleAttend):
-    def __init__(self, embedding=None, dim=None, **kwargs):
-        super().__init__(**kwargs)
-        if embedding is None:
-            from ..embeddings import RotaryEmbedding
-            embedding = RotaryEmbedding(dim)
-
-        self.view_in = Rearrange('b n s d -> b s n d')
-        self.embedding = embedding
-        self.view_out = Rearrange('b s n d -> b n s d')
-
+class VisionSdpaAttend(RotaryAttendWrapper):
     def forward(self, q, k, v, attention_mask=None, embedding_kwargs=dict(), **attend_kwargs):
         """
         in(q|k|v): (b n s d)
@@ -662,7 +677,7 @@ class VisionSdpaAttend(ScaleAttend):
         # note, mainly difference.
         k = k.repeat_interleave(ratio, dim=1)
         v = v.repeat_interleave(ratio, dim=1)
-        attn = super().forward(q, k, v, attention_mask=attention_mask, **attend_kwargs)
+        attn = self.base_layer(q, k, v, attention_mask=attention_mask, **attend_kwargs)
         return attn
 
 

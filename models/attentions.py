@@ -402,7 +402,7 @@ class FlashAttend(nn.Module):
                 enable_mem_efficient=True
             )
 
-    def forward(self, q, k, v, **kwargs):
+    def forward(self, q, k, v, attention_mask=None, **kwargs):
         """
         in(q|k|v): (b n s d)
         out(attn): (b n s d)
@@ -413,25 +413,32 @@ class FlashAttend(nn.Module):
 
         # Check if there is a compatible device for flash attention
         config = self.cuda_config if q.is_cuda else self.cpu_config
+        attention_mask = get_mask(
+            attention_mask,
+            (q.shape[0], q.shape[1], q.shape[2], q.shape[2]),
+            q.dtype, return_bool=False
+        )
 
         # pytorch 2.0 flash attn: q, k, v, mask, dropout, causal, softmax_scale
         with torch.backends.cuda.sdp_kernel(**config):
             out = F.scaled_dot_product_attention(
                 q, k, v,
+                attn_mask=attention_mask,
                 dropout_p=self.drop_prob if self.training else 0.
             )
 
         return out
 
 
-class MemoryAttend(nn.Module):
-    def __init__(self, base_layer=None, mem_kv=None, **kwargs):
+class MemoryAttendWrapper(nn.Module):
+    def __init__(self, mem_kv, base_layer=None, base_layer_fn=ScaleAttend, **base_layer_kwargs):
         super().__init__()
-        self.base_layer = base_layer
+        self.base_layer = base_layer or base_layer_fn(**base_layer_kwargs)
         self.mem_kv = mem_kv
 
     def forward(self, q, k, v, attention_mask=None, start_pos=0, **kwargs):
         """q,k,v: (b,n,s,d)"""
+        self.mem_kv = self.mem_kv.to(q.device)
         k = self.cache(self.mem_kv[0], k, start_pos=start_pos)
         v = self.cache(self.mem_kv[1], v, start_pos=start_pos)
         return self.base_layer(q, k, v, attention_mask=attention_mask, **kwargs)
@@ -443,20 +450,20 @@ class MemoryAttend(nn.Module):
         return mem_x[:b, :, :start_pos + s, :]
 
 
-class MemoryScaleAttend2D(MemoryAttend):
-    def __init__(self, n_heads, n_mem_size, head_dim, max_batch_size, **kwargs):
+class MemoryScaleAttend2DWrapper(MemoryAttendWrapper):
+    def __init__(self, n_heads, n_mem_size, head_dim, max_batch_size, **base_layer_kwargs):
         mem_kv = torch.zeros(2, max_batch_size, n_heads, n_mem_size, head_dim)
-        super().__init__(ScaleAttend(**kwargs), mem_kv)
+        super().__init__(mem_kv, base_layer_fn=ScaleAttend, **base_layer_kwargs)
 
 
-class DynamicMemoryAttend(nn.Module):
+class DynamicMemoryAttendWrapper(nn.Module):
     """don't alloc the kv memory when the class created
     only when the class called
     has dynamic cache len"""
 
-    def __init__(self, base_layer=None, layer_idx=None, **kwargs):
+    def __init__(self, base_layer=None, base_layer_fn=ScaleAttend, **base_layer_kwargs):
         super().__init__()
-        self.base_layer = base_layer
+        self.base_layer = base_layer or base_layer_fn(**base_layer_kwargs)
 
     def forward(self, q, k, v, attention_mask=None, cache_fn=None, **kwargs):
         """q,k,v: (b,n,s,d)"""
@@ -475,17 +482,12 @@ class DynamicMemoryAttend(nn.Module):
         return k, v
 
 
-class DynamicMemoryScaleAttend2D(DynamicMemoryAttend):
-    def __init__(self, **kwargs):
-        super().__init__(ScaleAttend(**kwargs))
-
-
-class LearnedMemoryAttend(nn.Module):
+class LearnedMemoryAttendWrapper(nn.Module):
     """apply learned kv cache"""
 
-    def __init__(self, base_layer=None, mem_kv=None, is_repeat=True, **kwargs):
+    def __init__(self, mem_kv, is_repeat=True, base_layer=None, base_layer_fn=ScaleAttend, **base_layer_kwargs):
         super().__init__()
-        self.base_layer = base_layer
+        self.base_layer = base_layer or base_layer_fn(**base_layer_kwargs)
         self.mem_kv = mem_kv
         self.is_repeat = is_repeat
 
@@ -504,42 +506,42 @@ class LearnedMemoryAttend(nn.Module):
         return self.base_layer(q, k, v, **kwargs)
 
 
-class LearnedMemoryScaleAttend2D(LearnedMemoryAttend):
+class LearnedMemoryScaleAttend2DWrapper(LearnedMemoryAttendWrapper):
     """apply learned kv cache for 2D scale attend
     in(q|k|v): (b n s d)
     out(attn): (b n s d)
     """
 
-    def __init__(self, n_heads, n_mem_size, head_dim, **kwargs):
+    def __init__(self, n_heads, n_mem_size, head_dim, **base_layer_kwargs):
         mem_kv = nn.Parameter(torch.randn(2, n_heads, n_mem_size, head_dim))
-        super().__init__(ScaleAttend(**kwargs), mem_kv)
+        super().__init__(mem_kv, base_layer_fn=ScaleAttend, **base_layer_kwargs)
 
 
-class LearnedMemoryScaleAttend3D(LearnedMemoryAttend):
+class LearnedMemoryScaleAttend3DWrapper(LearnedMemoryAttendWrapper):
     """apply learned kv cache for 3D scale attend
     in(q|k|v): (b n s d)
     out(attn): (b n s d)
     """
 
-    def __init__(self, n_heads, n_mem_size, head_dim, **kwargs):
+    def __init__(self, n_heads, n_mem_size, head_dim, **base_layer_kwargs):
         mem_kv = nn.Parameter(torch.randn(2, 1, n_mem_size, n_heads * head_dim))
-        super().__init__(ScaleAttend(**kwargs), mem_kv)
+        super().__init__(mem_kv, base_layer_fn=ScaleAttend, **base_layer_kwargs)
 
 
-class LearnedMemoryLinearAttend(LearnedMemoryAttend):
+class LearnedMemoryLinearAttendWrapper(LearnedMemoryAttendWrapper):
     """apply learned kv cache for linear attend
     in(q|k|v): (b n d s)
     out(attn): (b n d s)
     """
 
-    def __init__(self, n_heads, n_mem_size, head_dim, **kwargs):
+    def __init__(self, n_heads, n_mem_size, head_dim, **base_layer_kwargs):
         mem_kv = nn.Parameter(torch.randn(2, n_heads, n_mem_size, head_dim))
-        super().__init__(LinearAttend(**kwargs), mem_kv)
+        super().__init__(mem_kv, base_layer_fn=LinearAttend, **base_layer_kwargs)
 
 
-class RotaryAttend(ScaleAttend):
-    def __init__(self, embedding=None, dim=None, **kwargs):
-        super().__init__(**kwargs)
+class RotaryAttendWrapper(nn.Module):
+    def __init__(self, embedding=None, dim=None, base_layer=None, base_layer_fn=ScaleAttend, **base_layer_kwargs):
+        super().__init__()
         if embedding is None:
             from .embeddings import RotaryEmbedding
             embedding = RotaryEmbedding(dim)
@@ -547,6 +549,7 @@ class RotaryAttend(ScaleAttend):
         self.view_in = Rearrange('b n s d -> b s n d')
         self.embedding = embedding
         self.view_out = Rearrange('b s n d -> b n s d')
+        self.base_layer = base_layer or base_layer_fn(**base_layer_kwargs)
 
     def forward(self, q, k, v, attention_mask=None, embedding_kwargs=dict(), **attend_kwargs):
         """
@@ -557,21 +560,26 @@ class RotaryAttend(ScaleAttend):
         q = self.embedding(q, **embedding_kwargs)
         k = self.embedding(k, **embedding_kwargs)
         q, k, v = [self.view_out(x).contiguous() for x in (q, k, v)]
-        attn = super().forward(q, k, v, attention_mask=attention_mask, **attend_kwargs)
+        attn = self.base_layer(q, k, v, attention_mask=attention_mask, **attend_kwargs)
         return attn
 
 
-class MemoryRotaryAttend(ScaleAttend):
-    def __init__(self, n_heads, n_mem_size, head_dim, max_batch_size, embedding=None, dim=None, **kwargs):
-        super().__init__(**kwargs)
+class MemoryRotaryAttendWrapper(nn.Module):
+    def __init__(self, n_heads, n_mem_size, head_dim, max_batch_size, embedding=None, dim=None,
+                 base_layer=None, base_layer_fn=ScaleAttend, **base_layer_kwargs):
+        super().__init__()
         if embedding is None:
             from .embeddings import RotaryEmbedding
             embedding = RotaryEmbedding(dim)
 
         self.view_in = Rearrange('b n s d -> b s n d')
         self.embedding = embedding
+        self.mem_layer = MemoryAttendWrapper(
+            mem_kv=torch.zeros(2, max_batch_size, n_mem_size, n_heads, head_dim),
+            base_layer=lambda q, k, v, **kwargs: (q, k, v)
+        )
         self.view_out = Rearrange('b s n d -> b n s d')
-        self.mem_kv = torch.zeros(2, max_batch_size, n_mem_size, n_heads, head_dim)
+        self.base_layer = base_layer or base_layer_fn(**base_layer_kwargs)
 
     def forward(self, q, k, v, start_pos=0, embedding_kwargs=dict(), **kwargs):
         """
@@ -583,15 +591,7 @@ class MemoryRotaryAttend(ScaleAttend):
         q = self.embedding(q, start_pos=start_pos, **embedding_kwargs)
         k = self.embedding(k, start_pos=start_pos, **embedding_kwargs)
 
-        k = self.cache(self.mem_kv[0], k, start_pos=start_pos)
-        v = self.cache(self.mem_kv[1], v, start_pos=start_pos)
-
+        q, k, v = self.mem_layer(q, k, v, **kwargs)
         q, k, v = [self.view_out(x).contiguous() for x in (q, k, v)]
-        attn = super().forward(q, k, v, **kwargs)
+        attn = self.base_layer(q, k, v, **kwargs)
         return attn
-
-    @staticmethod
-    def cache(mem_x, x, start_pos):
-        b, s, _, _ = x.shape
-        mem_x[:b, start_pos:start_pos + s, :, :] = x
-        return mem_x[:b, :start_pos + s, :, :]
