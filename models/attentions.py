@@ -556,10 +556,10 @@ class RotaryAttendWrapper(nn.Module):
         in(q|k|v): (b n s d)
         out(attn): (b n s d)
         """
-        q, k, v = [self.view_in(x).contiguous() for x in (q, k, v)]
+        q, k = [self.view_in(x).contiguous() for x in (q, k)]
         q = self.embedding(q, **embedding_kwargs)
         k = self.embedding(k, **embedding_kwargs)
-        q, k, v = [self.view_out(x).contiguous() for x in (q, k, v)]
+        q, k = [self.view_out(x).contiguous() for x in (q, k)]
         attn = self.base_layer(q, k, v, attention_mask=attention_mask, **attend_kwargs)
         return attn
 

@@ -7,15 +7,9 @@ from torch import nn
 from torch.nn import functional as F
 
 from utils import torch_utils
-from .. import bundles
-from ..activations import FasterGELU
-from .. import attentions
-from ..attentions import RotaryAttendWrapper, get_attention_input, get_qkv
-from ..embeddings import RotaryEmbedding
+from .. import bundles, attentions, embeddings, activations, normalizations
 from ..layers import Linear
-from ..normalizations import RMSNorm2D
-from ..text_pretrain.llama import FeedForward
-from ..text_pretrain.transformers import TransformerSequential, make_causal_attention_mask
+from ..text_pretrain import llama, transformers
 
 
 class Config(bundles.Config):
@@ -24,6 +18,8 @@ class Config(bundles.Config):
 
     ScaleAttend = 'ScaleAttend'
     FlashAttend = 'FlashAttend'
+    DynamicMemoryScaleAttend = 'DynamicMemoryScaleAttend'
+    DynamicMemoryFlashAttend = 'DynamicMemoryFlashAttend'
 
     _2b_vit_config = dict(
         output_size=1536
@@ -123,6 +119,7 @@ class Model(nn.Module):
     image_token_id = 151655
     video_token_id = 151656
     vision_start_token_id = 151652
+    eos_ids = [151645, 151643]
 
     def __init__(self, vit_config=Config._2b_vit_config, vlm_config=Config._2b_vlm_config, model_config={}):
         super().__init__()
@@ -131,6 +128,9 @@ class Model(nn.Module):
         self.vit = Vit(**vit_config)
         self.vlm = Vlm(**vlm_config)
         self.head = nn.Linear(self.vlm.hidden_size, self.vlm.vocab_size, bias=False)
+        # note, officially use `vlm.embed_tokens.weight`!!!
+        self.head.weight = self.vlm.embed_tokens.weight
+
         self.loss_fn = nn.CrossEntropyLoss()
 
         self.rope_deltas = None
@@ -283,62 +283,142 @@ class Model(nn.Module):
 
             return position_ids, mrope_position_deltas
 
-    def forward(
+    def forward(self, input_ids, trues=None, **kwargs):
+
+        if self.training:
+            preds = self.decode(input_ids)
+            outputs = dict(
+                preds=preds
+            )
+            outputs['loss'] = self.loss(trues, preds)
+            return outputs
+        else:
+            return self.post_process(
+                input_ids,
+                **kwargs
+            )
+
+    def post_process(
             self,
-            input_ids,
-            attention_mask=None, position_ids=None, cache_position=None,
+            x, seq_lens=None, max_gen_len=100, top_k=1,
+            **decode_kwargs
+    ):
+        assert seq_lens is not None
+        batch_size = len(x)
+        eos_flag = [False] * batch_size
+
+        vlm_past_kvs = [dict(
+            # (b, n, s, d)
+            k=torch.empty((x.shape[0], self.vlm.num_heads, 0, self.vlm.hidden_size // self.vlm.num_heads), dtype=self.vlm.dtype, device=self.vlm.device),
+            v=torch.empty((x.shape[0], self.vlm.num_heads, 0, self.vlm.hidden_size // self.vlm.num_heads), dtype=self.vlm.dtype, device=self.vlm.device)
+        ) for i in range(self.vit.num_blocks)]
+
+        prev_pos = 0
+        min_pos = min(seq_lens)
+
+        for cur_pos in range(min_pos, min_pos + max_gen_len):
+            logits = self.decode(
+                x[:, prev_pos: cur_pos],
+                start_pos=prev_pos, vlm_past_kvs=vlm_past_kvs,
+                **decode_kwargs
+            )
+
+            x = torch.cat([x, torch.zeros((batch_size, 1)).to(x)], dim=-1)
+
+            for index in range(batch_size):
+                if eos_flag[index]:
+                    continue
+
+                if x[index][cur_pos] != 0:
+                    continue
+
+                preds = logits[index, -1]
+                arg = torch.argsort(preds, descending=True)
+                keep = arg[:top_k]
+                preds = preds[keep]
+                preds = preds / preds.sum()
+
+                # random sampling
+                next_id = keep[preds.multinomial(1)[0]]
+                x[index][cur_pos] = next_id
+
+                if next_id in self.eos_ids:
+                    eos_flag[index] = True
+
+            if all(eos_flag):
+                break
+
+            prev_pos = cur_pos
+
+        return x
+
+    def decode(
+            self,
+            input_ids=None,
             pixel_values=None, image_grid_thw=None,
             pixel_values_videos=None, video_grid_thw=None,
-            labels=None
+            start_pos=0, vlm_past_kvs=None,
+            **kwargs
     ):
-        inputs_embeds = self.vlm.embed_tokens(input_ids)
-        if pixel_values is not None:
-            inputs_embeds = self.make_image_embeds(input_ids, pixel_values, image_grid_thw, inputs_embeds)
+        inputs_embeds = self.make_input_embeds(
+            input_ids,
+            pixel_values=pixel_values if start_pos == 0 else None, image_grid_thw=image_grid_thw,
+            pixel_values_videos=pixel_values_videos if start_pos == 0 else None, video_grid_thw=video_grid_thw,
+        )
 
-        if pixel_values_videos is not None:
-            inputs_embeds = self.make_video_embeds(input_ids, pixel_values_videos, video_grid_thw, inputs_embeds)
+        # calculate RoPE index once per generation in the pre-fill stage only
+        if start_pos == 0:
+            attention_mask = torch.ones((1, inputs_embeds.shape[1])).to(inputs_embeds)
+            position_ids, rope_deltas = self.get_rope_index(input_ids, image_grid_thw, video_grid_thw, attention_mask)
+            self.rope_deltas = rope_deltas
 
-        if position_ids is None and input_ids is not None and (attention_mask is None or attention_mask.ndim == 2):
-            # calculate RoPE index once per generation in the pre-fill stage only
-            if (cache_position is not None and cache_position[0] == 0) or self.rope_deltas is None:
-                position_ids, rope_deltas = self.get_rope_index(input_ids, image_grid_thw, video_grid_thw, attention_mask)
-                self.rope_deltas = rope_deltas
-            # then use the prev pre-calculated rope-deltas to get the correct position ids
-            else:
-                batch_size, seq_length, _ = inputs_embeds.shape
-                delta = cache_position[0] + self.rope_deltas if cache_position is not None else 0
-                position_ids = torch.arange(seq_length, device=inputs_embeds.device)
-                position_ids = position_ids.view(1, -1).expand(batch_size, -1)
-                if cache_position is not None:  # otherwise `deltas` is an int `0`
-                    delta = delta.repeat_interleave(batch_size // delta.shape[0], dim=0)
-                position_ids = position_ids.add(delta)
-                position_ids = position_ids.unsqueeze(0).expand(3, -1, -1)
+        # then use the prev pre-calculated rope-deltas to get the correct position ids
+        else:
+            batch_size, seq_length, _ = inputs_embeds.shape
+
+            delta = self.rope_deltas + start_pos
+            delta = delta.repeat_interleave(batch_size // delta.shape[0], dim=0)
+
+            position_ids = torch.arange(seq_length, device=inputs_embeds.device)
+            position_ids = position_ids.view(1, -1).expand(batch_size, -1)
+            position_ids = position_ids.add(delta)
+            position_ids = position_ids.unsqueeze(0).expand(3, -1, -1)
 
         hidden_states = self.vlm(
             position_ids=position_ids,
-            attention_mask=attention_mask,
             inputs_embeds=inputs_embeds,
+            past_kvs=vlm_past_kvs,
+            start_pos=start_pos
         )
-        outputs = dict(
-            hidden_states=hidden_states
-        )
+        hidden_states = self.head(hidden_states)
+        return hidden_states
 
-        if self.training:
-            logits = self.head(hidden_states)
-            outputs['loss'] = self.loss(labels, logits)
+    def make_input_embeds(
+            self, input_ids,
+            pixel_values=None, image_grid_thw=None,
+            pixel_values_videos=None, video_grid_thw=None,
+            **kwargs
+    ):
+        inputs_embeds = self.vlm.embed_tokens(input_ids)
 
-        return outputs
+        if pixel_values is not None:
+            inputs_embeds = self.make_image_embeds(input_ids, pixel_values, image_grid_thw, inputs_embeds, **kwargs)
 
-    def make_image_embeds(self, input_ids, pixel_values, image_grid_thw, inputs_embeds):
+        if pixel_values_videos is not None:
+            inputs_embeds = self.make_video_embeds(input_ids, pixel_values_videos, video_grid_thw, inputs_embeds, **kwargs)
+
+        return inputs_embeds
+
+    def make_image_embeds(self, input_ids, pixel_values, image_grid_thw, inputs_embeds, **kwargs):
         """for image inputs"""
-        image_embeds = self.vit(pixel_values, grid_thw=image_grid_thw)
+        image_embeds = self.vit(pixel_values, grid_thw=image_grid_thw, **kwargs)
         image_mask = (input_ids == self.image_token_id).unsqueeze(-1).expand_as(inputs_embeds)
         inputs_embeds = inputs_embeds.masked_scatter(image_mask, image_embeds)
         return inputs_embeds
 
-    def make_video_embeds(self, input_ids, pixel_values_videos, video_grid_thw, inputs_embeds):
+    def make_video_embeds(self, input_ids, pixel_values_videos, video_grid_thw, inputs_embeds, **kwargs):
         """for video inputs"""
-        video_embeds = self.vit(pixel_values_videos, grid_thw=video_grid_thw)
+        video_embeds = self.vit(pixel_values_videos, grid_thw=video_grid_thw, **kwargs)
         video_mask = (input_ids == self.video_token_id).unsqueeze(-1).expand_as(inputs_embeds)
         inputs_embeds = inputs_embeds.masked_scatter(video_mask, video_embeds)
         return inputs_embeds
@@ -359,7 +439,7 @@ class Model(nn.Module):
 def make_norm(*args, name=Config.LayerNorm, **kwargs):
     mapping = {
         Config.LayerNorm: nn.LayerNorm,
-        Config.RMSNorm2D: RMSNorm2D,
+        Config.RMSNorm2D: normalizations.RMSNorm2D,
     }
     kwargs.setdefault('eps', 1e-6)
     return mapping[name](*args, **kwargs)
@@ -368,7 +448,9 @@ def make_norm(*args, name=Config.LayerNorm, **kwargs):
 def make_base_attend_fn(name=Config.ScaleAttend):
     mapping = {
         Config.ScaleAttend: attentions.ScaleAttend,
-        Config.FlashAttend: attentions.FlashAttend
+        Config.FlashAttend: attentions.FlashAttend,
+        Config.DynamicMemoryScaleAttend: partial(attentions.DynamicMemoryAttendWrapper, base_layer_fn=attentions.ScaleAttend),
+        Config.DynamicMemoryFlashAttend: partial(attentions.DynamicMemoryAttendWrapper, base_layer_fn=attentions.FlashAttend),
     }
     return mapping[name]
 
@@ -395,9 +477,9 @@ class Vit(nn.Module):
 
         self.rot_embedding = RotaryEmbedding2D(embed_dim // num_heads // 2)
 
-        self.blocks = TransformerSequential(
+        self.blocks = transformers.TransformerSequential(
             embed_dim, num_heads, int(embed_dim * mlp_ratio),
-            attend_fn=RotaryAttendWrapper,
+            attend_fn=attentions.RotaryAttendWrapper,
             attend_fn_kwargs=dict(
                 embedding=self.rot_embedding,
                 base_layer_fn=make_base_attend_fn(base_attend_name),
@@ -406,7 +488,7 @@ class Vit(nn.Module):
                 separate=False,
             ),
             ff_kwargs=dict(
-                act=FasterGELU(),
+                act=activations.FasterGELU(),
             ),
             norm_fn=make_norm,
             norm_first=True,
@@ -419,6 +501,20 @@ class Vit(nn.Module):
         )
 
         self.spatial_merge_size = spatial_merge_size
+        self.num_blocks = num_blocks
+        self.embed_dim = embed_dim
+        self.num_heads = num_heads
+
+    _device = None
+    _dtype = None
+
+    @property
+    def device(self):
+        return torch_utils.ModuleInfo.possible_device(self) if self._device is None else self._device
+
+    @property
+    def dtype(self):
+        return torch_utils.ModuleInfo.possible_dtype(self) if self._dtype is None else self._dtype
 
     def make_attention_mask(self, hidden_states, grid_thw):
         cu_seqlens = torch.repeat_interleave(grid_thw[:, 1] * grid_thw[:, 2], grid_thw[:, 0]).cumsum(
@@ -442,17 +538,13 @@ class Vit(nn.Module):
         hidden_states = self.patch_embed(hidden_states)[None]
 
         attention_mask = self.make_attention_mask(hidden_states, grid_thw)
-        # max_grid_size, position_ids = self.make_rot_pos_emb_kwargs(grid_thw)
-        max_grid_size, position_ids = self.rot_embedding.make_rot_pos_emb_kwargs(grid_thw, self.spatial_merge_size)
-        rot_embedding_weights = self.rot_embedding.make_weights(hidden_states.shape[1])
+        rot_embedding_weights = self.rot_embedding.make_weights(grid_thw, self.spatial_merge_size).to(hidden_states.device)
 
         hidden_states = self.blocks(
             hidden_states, attention_mask=attention_mask,
             embedding_kwargs=dict(
-                grid_size=max_grid_size,
-                position_ids=position_ids,
                 weights=rot_embedding_weights
-            )
+            ),
         )
 
         return self.merger(hidden_states)
@@ -480,11 +572,11 @@ class PatchEmbedding3D(nn.Module):
         return x
 
 
-class RotaryEmbedding2D(RotaryEmbedding):
+class RotaryEmbedding2D(embeddings.RotaryEmbedding):
     """for qk of rotary attention, not for seq"""
 
     def make_rot_pos_emb_kwargs(self, grid_thw, spatial_merge_size):
-        pos_ids = []
+        position_ids = []
         for t, h, w in grid_thw:
             hpos_ids = torch.arange(h).unsqueeze(1).expand(-1, w)
             hpos_ids = hpos_ids.reshape(
@@ -505,26 +597,29 @@ class RotaryEmbedding2D(RotaryEmbedding):
             )
             wpos_ids = wpos_ids.permute(0, 2, 1, 3)
             wpos_ids = wpos_ids.flatten()
-            pos_ids.append(torch.stack([hpos_ids, wpos_ids], dim=-1).repeat(t, 1))
-        pos_ids = torch.cat(pos_ids, dim=0)
-        max_grid_size = grid_thw[:, 1:].max()
-        return max_grid_size, pos_ids
+            position_ids.append(torch.stack([hpos_ids, wpos_ids], dim=-1).repeat(t, 1))
+        position_ids = torch.cat(position_ids, dim=0)
+        return position_ids
 
-    def forward(self, x, grid_size, position_ids, weights=None):
+    def make_weights(self, grid_thw, spatial_merge_size):
+        weights = super().make_weights(grid_thw[:, 1:].max())
+        position_ids = self.make_rot_pos_emb_kwargs(grid_thw, spatial_merge_size)
+        weights = weights[position_ids].flatten(1)
+        weights = weights.repeat(1, 2)
+        weights = weights[None, :, None, :]  # (s d) -> (1 s 1 d)
+        return weights
+
+    def forward(self, x, grid_thw=None, spatial_merge_size=None, weights=None):
         """x: (b s n d)"""
         if weights is None:
-            weights = self.make_weights(x.shape[1])
+            weights = self.make_weights(grid_thw, spatial_merge_size)
 
         weights = weights.to(x.device)
-        weights = weights.repeat(1, 2)
-        weights = weights[:grid_size]
-        weights = weights[position_ids].flatten(1)
-        weights = weights[None, :, None, :]  # (s d) -> (1 s 1 d)
         weights = torch.view_as_real(weights)
         cos = weights[..., 0]
         sin = weights[..., 1]
-        x = x.float()
-        y = (x * cos) + (self.rotate_half(x) * sin)
+        x_ = x.float()
+        y = (x_ * cos) + (self.rotate_half(x_) * sin)
         return y.type_as(x)
 
     def rotate_half(self, x):
@@ -558,29 +653,30 @@ class Vlm(nn.Module):
             pad_token_id=None, vocab_size=151936,
             hidden_size=1536, ff_hidden_size=8960,
             num_heads=12, num_kv_heads=2, num_blocks=28,
-            base_attend_name=Config.ScaleAttend, norm_name=Config.RMSNorm2D,
+            base_attend_name=Config.DynamicMemoryScaleAttend, norm_name=Config.RMSNorm2D,
             use_checkpoint=False
     ):
         super().__init__()
         self.hidden_size = hidden_size
         self.vocab_size = vocab_size
         self.num_blocks = num_blocks
+        self.num_heads = num_heads
 
         self.embed_tokens = nn.Embedding(vocab_size, hidden_size, pad_token_id)
         self.rot_embedding = MRotaryEmbedding(hidden_size // num_heads, theta=1000000.0)
 
-        self.blocks = TransformerSequential(
+        self.blocks = transformers.TransformerSequential(
             hidden_size, num_heads, ff_hidden_size,
             attention_fn=VisionSdpaAttention,
             fn_kwargs=dict(
                 n_kv_heads=num_kv_heads,
             ),
-            attend_fn=VisionSdpaAttend,
+            attend_fn=VisionSdpaAttendWrapper,
             attend_fn_kwargs=dict(
                 embedding=self.rot_embedding,
                 base_layer_fn=make_base_attend_fn(base_attend_name),
             ),
-            feed_forward_fn=FeedForward,
+            feed_forward_fn=llama.FeedForward,
             ff_kwargs=dict(
                 bias=False,
             ),
@@ -596,26 +692,44 @@ class Vlm(nn.Module):
         )
         self.norm = make_norm(hidden_size, name=norm_name)
 
-    def forward(self, input_ids=None, inputs_embeds=None, attention_mask=None, position_ids=None, past_key_values=None):
+    _device = None
+    _dtype = None
+
+    @property
+    def device(self):
+        return torch_utils.ModuleInfo.possible_device(self) if self._device is None else self._device
+
+    @property
+    def dtype(self):
+        return torch_utils.ModuleInfo.possible_dtype(self) if self._dtype is None else self._dtype
+
+    def forward(
+            self,
+            input_ids=None, inputs_embeds=None, attention_mask=None, position_ids=None,
+            past_kvs=None, start_pos=0
+    ):
         if inputs_embeds is None:
             inputs_embeds = self.embed_tokens(input_ids)
 
-        if position_ids is None:
-            past_seen_tokens = past_key_values.get_seq_length() if past_key_values is not None else 0
-            cache_position = torch.arange(past_seen_tokens, past_seen_tokens + inputs_embeds.shape[1], device=inputs_embeds.device)
-            position_ids = cache_position.view(1, 1, -1).expand(3, inputs_embeds.shape[0], -1)
-
         if attention_mask is None:
-            attention_mask = make_causal_attention_mask(inputs_embeds)
+            attention_mask = transformers.make_causal_attention_mask(inputs_embeds, start_pos=start_pos)
+
         rot_embedding_weights = self.rot_embedding.make_weights(position_ids=position_ids)
 
         hidden_states = inputs_embeds
+
+        per_block_kwargs = []
+        for past_kv in past_kvs:
+            per_block_kwargs.append(dict(
+                cache_fn=partial(attentions.DynamicMemoryAttendWrapper.cache, past_kv=past_kv),
+            ))
 
         hidden_states = self.blocks(
             hidden_states, attention_mask=attention_mask,
             embedding_kwargs=dict(
                 weights=rot_embedding_weights
-            )
+            ),
+            per_block_kwargs=per_block_kwargs
         )
 
         hidden_states = self.norm(hidden_states)
@@ -627,9 +741,9 @@ class VisionSdpaAttention(nn.Module):
     """cross attention"""
 
     def __init__(self, n_heads=None, model_dim=None, head_dim=None, n_kv_heads=None,
-                 attend=None, out_layer=None, **fn_kwargs):
+                 drop_prob=0., attend=None, out_layer=None, **fn_kwargs):
         super().__init__()
-        n_heads, model_dim, head_dim = get_attention_input(n_heads, model_dim, head_dim)
+        n_heads, model_dim, head_dim = attentions.get_attention_input(n_heads, model_dim, head_dim)
         query_dim = model_dim
         context_dim = n_kv_heads * head_dim
 
@@ -646,10 +760,10 @@ class VisionSdpaAttention(nn.Module):
         self.view_out = Rearrange('b n s dk -> b s (n dk)')
         self.to_out = Linear(model_dim, query_dim, mode='l', bias=False, **fn_kwargs) if out_layer is None else out_layer
 
-        self.attend = VisionSdpaAttend() if attend is None else attend
+        self.attend = VisionSdpaAttendWrapper() if attend is None else attend
 
     def forward(self, q, k=None, v=None, attention_mask=None, **attend_kwargs):
-        q, k, v = get_qkv(q, k, v)
+        q, k, v = attentions.get_qkv(q, k, v)
         q, k, v = [m(x) for m, x in zip(self.to_qkv, (q, k, v))]
 
         q = self.q_view_in(q).contiguous()
@@ -663,7 +777,9 @@ class VisionSdpaAttention(nn.Module):
         return x
 
 
-class VisionSdpaAttend(RotaryAttendWrapper):
+class VisionSdpaAttendWrapper(attentions.RotaryAttendWrapper):
+    """vision scaled-dot-product-attention"""
+
     def forward(self, q, k, v, attention_mask=None, embedding_kwargs=dict(), **attend_kwargs):
         """
         in(q|k|v): (b n s d)
@@ -674,7 +790,7 @@ class VisionSdpaAttend(RotaryAttendWrapper):
         k = self.embedding(k, **embedding_kwargs)
         q, k, v = [self.view_out(x).contiguous() for x in (q, k, v)]
         ratio = q.shape[1] // k.shape[1]
-        # note, mainly difference.
+        # note, mainly difference from `RotaryAttendWrapper`.
         k = k.repeat_interleave(ratio, dim=1)
         v = v.repeat_interleave(ratio, dim=1)
         attn = self.base_layer(q, k, v, attention_mask=attention_mask, **attend_kwargs)
@@ -688,11 +804,11 @@ class MRotaryEmbedding(RotaryEmbedding2D):
     def make_weights(self, position_ids):
         inv_freq_expanded = self.div_term[None, None, :, None].float().expand(3, position_ids.shape[1], -1, 1)
         position_ids_expanded = position_ids[:, :, None, :].float()  # shape (3, bs, 1, positions)
+        inv_freq_expanded = inv_freq_expanded.to(position_ids_expanded)
         freqs = (inv_freq_expanded @ position_ids_expanded).transpose(2, 3)
         emb = torch.cat((freqs, freqs), dim=-1)
         cos = emb.cos()
         sin = emb.sin()
-
         cos = torch.cat([m[i % 3] for i, m in enumerate(cos.split(self.mrope_section, dim=-1))], dim=-1)[:, :, None, :]
         sin = torch.cat([m[i % 3] for i, m in enumerate(sin.split(self.mrope_section, dim=-1))], dim=-1)[:, :, None, :]
 
@@ -706,5 +822,6 @@ class MRotaryEmbedding(RotaryEmbedding2D):
         cos = cos.to(x.device)
         sin = sin.to(x.device)
 
-        y = (x * cos) + (self.rotate_half(x) * sin)
-        return y
+        x_ = x.float()
+        y = (x_ * cos) + (self.rotate_half(x_) * sin)
+        return y.type_as(x)
