@@ -383,7 +383,7 @@ class FlashAttend(nn.Module):
             enable_mem_efficient=True
         )
 
-        self.cuda_config = None
+        self.cuda_config = dict()
 
         if not torch.cuda.is_available():
             return

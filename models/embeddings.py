@@ -35,7 +35,7 @@ class PositionalEmbedding(nn.Module):
 class LearnedPositionEmbedding(nn.Embedding):
     def __init__(self, num_embeddings, embedding_dim, **kwargs):
         super().__init__(num_embeddings, embedding_dim, **kwargs)
-        self.register_buffer("position_ids", torch.arange(num_embeddings).expand((1, -1)))
+        self.register_buffer("position_ids", torch.arange(num_embeddings).expand((1, -1)), persistent=False)
 
     def forward(self, x):
         """make sure x.ndim >= 2 and x.shape[1] is seq_len"""

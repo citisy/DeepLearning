@@ -21,10 +21,14 @@ class BCEBlurWithLogitsLoss(nn.Module):
 
 
 class FocalLoss(nn.Module):
-    def __init__(self, base_loss, gamma=1.5, alpha=0.25):
+    def __init__(self, base_loss=None, gamma=1.5, alpha=0.25):
         """Wraps focal loss around existing loss_fcn(), i.e. criteria = FocalLoss(nn.BCEWithLogitsLoss(), gamma=1.5)"""
         super().__init__()
-        self.base_loss = base_loss  # must be nn.BCEWithLogitsLoss()
+        if base_loss is None:
+            # must be nn.BCEWithLogitsLoss()
+            base_loss = nn.BCEWithLogitsLoss()
+
+        self.base_loss = base_loss
         self.gamma = gamma
         self.alpha = alpha
         self.reduction = base_loss.reduction

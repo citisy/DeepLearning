@@ -121,7 +121,7 @@ class Model(nn.Module):
     vision_start_token_id = 151652
     eos_ids = [151645, 151643]
 
-    def __init__(self, vit_config=Config._2b_vit_config, vlm_config=Config._2b_vlm_config, model_config={}):
+    def __init__(self, vit_config=Config._2b_vit_config, vlm_config=Config._2b_vlm_config, model_config={}):    # noqa
         super().__init__()
         self.__dict__.update(model_config)
 
@@ -350,6 +350,9 @@ class Model(nn.Module):
 
             prev_pos = cur_pos
 
+        del vlm_past_kvs
+        torch_utils.ModuleManager.torch_gc()
+
         return x
 
     def decode(
@@ -410,7 +413,10 @@ class Model(nn.Module):
         return inputs_embeds
 
     def make_image_embeds(self, input_ids, pixel_values, image_grid_thw, inputs_embeds, **kwargs):
-        """for image inputs"""
+        """for image inputs
+        pixel_values: [b, w, h]
+        image_grid_thw: [b, gw, gh]
+        """
         image_embeds = self.vit(pixel_values, grid_thw=image_grid_thw, **kwargs)
         image_mask = (input_ids == self.image_token_id).unsqueeze(-1).expand_as(inputs_embeds)
         inputs_embeds = inputs_embeds.masked_scatter(image_mask, image_embeds)
@@ -535,7 +541,7 @@ class Vit(nn.Module):
         return attention_mask
 
     def forward(self, hidden_states: torch.Tensor, grid_thw: torch.Tensor) -> torch.Tensor:
-        hidden_states = self.patch_embed(hidden_states)[None]
+        hidden_states = self.patch_embed(hidden_states)
 
         attention_mask = self.make_attention_mask(hidden_states, grid_thw)
         rot_embedding_weights = self.rot_embedding.make_weights(grid_thw, self.spatial_merge_size).to(hidden_states.device)
@@ -564,11 +570,12 @@ class PatchEmbedding3D(nn.Module):
         self.fn = nn.Conv3d(in_ch, dim, kernel_size, stride=kernel_size, bias=bias)
 
     def forward(self, x):
-        # 's (c w h) -> k c tp p p'
+        b = x.shape[0]
+        # 'b s (c w h) -> k c tp p p'
         x = x.view(-1, self.in_channels, self.temporal_patch_size, self.patch_size, self.patch_size)
         x = self.fn(x)
-        # 'k d tp p p -> (k tp p p) d'
-        x = x.view(-1, self.dim)
+        # 'k d tp p p -> b (k tp p p) d'
+        x = x.view(b, -1, self.dim)
         return x
 
 

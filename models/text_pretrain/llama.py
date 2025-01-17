@@ -107,7 +107,7 @@ class Model(nn.Module):
         prev_pos = 0
         min_pos = min(seq_lens)
         eos_flag = [False] * batch_size
-        for cur_pos in range(min_pos, max_gen_len):
+        for cur_pos in range(min_pos, min_pos + max_gen_len):
             logits = self.decode(x[:, prev_pos: cur_pos], start_pos=prev_pos, **decode_kwargs)
             # add next preds
             x = torch.cat([x, torch.zeros((batch_size, 1)).to(x)], dim=-1)
