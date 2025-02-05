@@ -6,6 +6,7 @@ from utils import torch_utils
 from . import ldm, sdv1, sdv2
 from .ldm import WeightLoader  # noqa
 from ..multimodal_pretrain import CLIP as CLIPModel
+from ..embeddings import SinusoidalEmbedding
 
 
 class Config(sdv2.Config):
@@ -269,7 +270,7 @@ class Model(ldm.Model):
     def make_cond(self, cond_config=[], **kwargs):
         return EmbedderWrap(cond_config)
 
-    def make_txt_cond(self, text, neg_text=None, text_weights=None, neg_text_weights=None, scale=7.5, **kwargs) -> dict:
+    def make_txt_cond(self, text_ids, neg_text_ids=None, text_weights=None, neg_text_weights=None, scale=7.5, **kwargs) -> dict:
         default_value = {
             Config.ORIGINAL_SIZE_AS_TUPLE: self.image_size,
             Config.CROP_COORDS_TOP_LEFT: (0, 0),
@@ -277,8 +278,8 @@ class Model(ldm.Model):
         }
 
         value_dicts = []
-        _neg_text = neg_text if neg_text is not None else [''] * len(text)
-        for prompt, negative_prompt in zip(text, _neg_text):
+        _neg_text = neg_text_ids if neg_text_ids is not None else [''] * len(text_ids)
+        for prompt, negative_prompt in zip(text_ids, _neg_text):
             value_dict = {}
             for k in self.cond.input_keys:
                 if k == Config.TXT:
@@ -291,12 +292,12 @@ class Model(ldm.Model):
 
             value_dicts.append(value_dict)
 
-        c_values, uc_values = self.cond(value_dicts, return_uc=scale > 1 and neg_text is not None)
+        c_values, uc_values = self.cond(value_dicts, return_uc=scale > 1 and neg_text_ids is not None)
 
         if text_weights is not None:
             c_values[self.cond.COND] = self.cond_with_weights(c_values[self.cond.COND], text_weights)
 
-        if neg_text is not None and neg_text_weights is not None:
+        if neg_text_ids is not None and neg_text_weights is not None:
             uc_values[self.cond.COND] = self.cond_with_weights(uc_values[self.cond.COND], neg_text_weights)
 
         return dict(
@@ -339,7 +340,7 @@ class ConcatTimestepEmbedderND(nn.Module):
 
     def __init__(self, output_size=256):
         super().__init__()
-        self.timestep = ldm.SinusoidalPosEmb(output_size)
+        self.timestep = SinusoidalEmbedding(output_size)
         self.output_size = output_size
 
     def forward(self, x):

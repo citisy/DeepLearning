@@ -1,11 +1,12 @@
-from torch import nn, einsum
+from functools import partial
+
 import torch
 import torch.nn.functional as F
-from functools import partial
-from ..layers import Linear, Conv, Residual
-from ..image_translation.pix2pix import NetD as NLayerDiscriminator
-from .. import attentions, activations
+from torch import nn
+
 from utils import torch_utils
+from .. import attentions, activations
+from ..layers import Linear, Conv, Residual
 
 
 class Config:
@@ -34,6 +35,12 @@ class Config:
         attn_layers=[]
     )
 
+    # required pytorch>2.0
+    backbone_32x32x4_with_xformers = dict(
+        attn_type=VANILLA_XFORMERS,
+        **backbone_32x32x4
+    )
+
     backbone_64x64x3 = dict(
         z_ch=3,
         ch_mult=(1, 2, 4),
@@ -53,20 +60,54 @@ class Config:
         )
 
 
+class WeightConverter:
+    convert_dict = {
+        '{0}.block.{1}.norm{2}.': '{0}.blocks.{1}.fn.conv{2}.norm.',
+        '{0}.block.{1}.conv{2}.': '{0}.blocks.{1}.fn.conv{2}.conv.',
+        '{0}.block.{1}.nin_shortcut': '{0}.blocks.{1}.proj',
+        '{0}sample.conv': '{0}sample.fn.1',
+        '{0}.mid.block_{1}.norm{2}.': '{0}.neck.block_{1}.fn.conv{2}.norm.',
+        '{0}.mid.block_{1}.conv{2}.': '{0}.neck.block_{1}.fn.conv{2}.conv.',
+        '{0}.mid.attn_1.norm': '{0}.neck.attn.0',
+        '{0}.mid.attn_1.q': '{0}.neck.attn.1.to_qkv.0',
+        '{0}.mid.attn_1.k': '{0}.neck.attn.1.to_qkv.1',
+        '{0}.mid.attn_1.v': '{0}.neck.attn.1.to_qkv.2',
+        '{0}.mid.attn_1.proj_out': '{0}.neck.attn.1.to_out',
+        '{0}.norm_out': '{0}.head.norm',
+        '{0}.conv_out': '{0}.head.conv',
+    }
+
+    @classmethod
+    def from_ldm_official(cls, state_dict):
+        state_dict = torch_utils.Converter.convert_keys(state_dict, cls.convert_dict)
+        return state_dict
+
+
 class Model(nn.Module):
     """vae from ldm"""
 
+    use_quant_conv = True
+    use_post_quant_conv = True
+
+    scale_factor = 1.
+    shift_factor = 0.
+
     def __init__(self, img_ch, backbone_config=Config.backbone_8x8x64, loss_config=Config.loss, **kwargs):
         super().__init__()
+        self.__dict__.update(kwargs)
+
         z_ch = backbone_config["z_ch"]
 
         self.encoder = Encoder(img_ch, **backbone_config)
-        self.quant_conv = nn.Conv2d(self.encoder.out_channels, 2 * z_ch, 1)
+        self.quant_conv = nn.Conv2d(self.encoder.out_channels, 2 * z_ch, 1) if self.use_quant_conv else nn.Identity()
         self.re_parametrize = ReParametrize()
-        self.post_quant_conv = nn.Conv2d(z_ch, z_ch, 1)
-        self.decoder = Decoder(self.post_quant_conv.out_channels, img_ch, **backbone_config)
+        self.post_quant_conv = nn.Conv2d(z_ch, z_ch, 1) if self.use_post_quant_conv else nn.Identity()
+        self.decoder = Decoder(z_ch, img_ch, **backbone_config)
         self.loss = Loss(self.re_parametrize, **loss_config)
         self.z_ch = z_ch
+
+    def set_inference_only(self):
+        del self.loss
 
     def forward(self, x, sample_posterior=True, **loss_kwargs):
         z, mean, log_var = self.encode(x, sample_posterior)
@@ -81,11 +122,13 @@ class Model(nn.Module):
         h = self.encoder(x)
         h = self.quant_conv(h)
         z, mean, log_var = self.re_parametrize(h, sample_posterior=sample_posterior)
+        z = self.scale_factor * (z - self.shift_factor)
         return z, mean, log_var
 
     def decode(self, z):
         z = self.post_quant_conv(z)
         z = self.decoder(z)
+        z = z / self.scale_factor + self.shift_factor
         return z
 
 
@@ -319,7 +362,7 @@ class Decoder(nn.Module):
             self.out_act = nn.Identity()
         else:
             self.head = Conv(in_ch, self.out_channels, 3, mode='nac', norm=make_norm(groups, in_ch), act=Swish())
-            self.out_act = nn.Tanh() if tanh_out else nn.Identity()
+            self.out_act = nn.Tanh() if tanh_out else nn.Identity()  # todo: something wrong???
 
     def forward(self, z, time_emb=None):
         h = self.conv_in(z)
@@ -375,6 +418,8 @@ class Loss(nn.Module):
 
         if use_gan:
             from ..losses import HingeGanLoss
+            from ..image_translation.pix2pix import NetD as NLayerDiscriminator
+
             assert disc_loss in ["hinge", "vanilla"]
             self.discriminator = NLayerDiscriminator(disc_in_ch, n_layers=disc_num_layers, norm_layer=ActNorm if use_actnorm else nn.BatchNorm2d)
             self.disc_loss = HingeGanLoss if disc_loss == "hinge" else self.vanilla_d_loss

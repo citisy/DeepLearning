@@ -49,7 +49,7 @@ class SinusoidalEmbedding(nn.Module):
     where, x is seq vec, d is emb position of D
     """
 
-    def __init__(self, embedding_dim, theta=10000.):
+    def __init__(self, embedding_dim, theta=10000., factor=1.):
         super().__init__()
         weights = torch.zeros(embedding_dim).float()
         # exp{-d / D * log{\theta}} = \theta ^ {-d / D}
@@ -58,10 +58,12 @@ class SinusoidalEmbedding(nn.Module):
         weights[0::2] = torch.sin(div_term)
         weights[1::2] = torch.cos(div_term)
 
-        self.register_buffer('weights', weights)
+        self.register_buffer('weights', weights, persistent=False)
         self.embedding_dim = embedding_dim
+        self.factor = factor
 
     def forward(self, x):
+        x = x * self.factor
         emb = x[:, None] * self.weights[None, :]
         return emb
 
@@ -93,10 +95,12 @@ class RotaryEmbedding(nn.Module):
         # div_term = 1.0 / (theta ** (torch.arange(0, embedding_dim, 2)[: (embedding_dim // 2)].float() / embedding_dim))
         # but will
         div_term = (torch.arange(0, embedding_dim, 2).float() * -(math.log(theta) / embedding_dim)).exp()
-        self.div_term = div_term
+        self.register_buffer('div_term', div_term, persistent=False)
 
     def make_weights(self, seq_len):
         position = torch.arange(0, seq_len).float()
+        # equal to
+        # freqs = torch.einsum("...n,d->...nd", position, self.div_term)
         freqs = torch.outer(position, self.div_term).float()
 
         weights = torch.polar(torch.ones_like(freqs), freqs)

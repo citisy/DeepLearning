@@ -369,7 +369,7 @@ class SAM_Voc(SegProcess, VocForSAM):
             input_size=self.input_size,
         )
 
-    def load_pretrain(self):
+    def load_pretrained(self):
         if hasattr(self, 'pretrain_model'):
             from models.semantic_segmentation.SAM import WeightConverter
 

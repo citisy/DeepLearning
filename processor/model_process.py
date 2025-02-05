@@ -243,15 +243,15 @@ class CheckpointHooks:
 
     pretrain_model: str
 
-    def load_pretrain(self):
+    def load_pretrained(self):
         if hasattr(self, 'pretrain_model'):
             self.load(self.pretrain_model, save_type=WEIGHT, include=())
 
-    pretrain_checkpoint: str
+    pretrained_checkpoint: str
 
-    def load_pretrain_checkpoint(self):
-        if hasattr(self, 'pretrain_checkpoint'):
-            self.load(self.pretrain_checkpoint, save_type=WEIGHT, raw_tensors=False)
+    def load_pretrained_checkpoint(self):
+        if hasattr(self, 'pretrained_checkpoint'):
+            self.load(self.pretrained_checkpoint, save_type=WEIGHT, raw_tensors=False)
 
 
 class ModelHooks:
@@ -430,7 +430,7 @@ class ModelHooks:
     get_val_dataloader: data_process.DataHooks.get_val_dataloader
     save: CheckpointHooks.save
     load: CheckpointHooks.load
-    load_pretrain_checkpoint: CheckpointHooks.load_pretrain_checkpoint
+    load_pretrained_checkpoint: CheckpointHooks.load_pretrained_checkpoint
 
     def register_train_start(self, func, **kwargs):
         self.train_start_container.update({func: kwargs})
@@ -479,7 +479,7 @@ class ModelHooks:
         for func, params in self.train_start_container.items():
             func(**params)
 
-        self.load_pretrain_checkpoint()
+        self.load_pretrained_checkpoint()
         self.set_mode(train=True)
 
     register_logger: bundled.LogHooks.register_logger

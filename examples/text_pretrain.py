@@ -594,7 +594,7 @@ class Bert(Process):
 class LoadBertFromHFPretrain(CheckpointHooks):
     """load pretrain model from hugging face"""
 
-    def load_pretrain(self):
+    def load_pretrained(self):
         if hasattr(self, 'pretrain_model'):
             from models.text_pretrain.bert import WeightLoader, WeightConverter
             state_dict = WeightLoader.from_hf(self.pretrain_model)
@@ -716,7 +716,7 @@ class GPT2(Process):
     encoder_fn: str
 
     def get_vocab(self):
-        self.tokenizer = bundled.GPT2Tokenizer.from_pretrain(self.encoder_fn, self.vocab_fn)
+        self.tokenizer = bundled.GPT2Tokenizer.from_pretrained(self.encoder_fn, self.vocab_fn)
 
     def set_optimizer(self, lr=1e-4, betas=(0.5, 0.999), **kwargs):
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=lr, betas=betas)
@@ -778,7 +778,7 @@ class GPT2(Process):
 class LoadGPT2FromOpenaiPretrain(CheckpointHooks):
     """load pretrain model from openai"""
 
-    def load_pretrain(self):
+    def load_pretrained(self):
         if hasattr(self, 'pretrain_model'):
             from models.text_pretrain.gpt2 import WeightConverter, WeightLoader
 
@@ -790,7 +790,7 @@ class LoadGPT2FromOpenaiPretrain(CheckpointHooks):
 class LoadGPT2FromHFPretrain(CheckpointHooks):
     """load pretrain model from huggingface"""
 
-    def load_pretrain(self):
+    def load_pretrained(self):
         if hasattr(self, 'pretrain_model'):
             from models.text_pretrain.gpt2 import WeightLoader, WeightConverter
             state_dict = WeightLoader.from_hf(self.pretrain_model)
@@ -848,6 +848,7 @@ class SimpleTextForT5(DataHooks):
 
 class T5(Process):
     model_version = 'T5'
+    config_version = 'small'
     use_scaler = True
     scheduler_strategy = 'step'  # step
     tokenizer: bundled.T5Tokenizer
@@ -860,13 +861,11 @@ class T5(Process):
         self.model = Model(
             self.tokenizer.vocab_size,
             eos_id=self.tokenizer.eos_id,
-            **Config.get('small')
+            **Config.get(self.config_version)
         )
 
-    encoder_fn: str
-
     def get_vocab(self):
-        self.tokenizer = bundled.T5Tokenizer.from_pretrain(self.vocab_fn)
+        self.tokenizer = bundled.T5Tokenizer.from_pretrained(self.vocab_fn)
 
     def set_optimizer(self, lr=1e-4, betas=(0.5, 0.999), **kwargs):
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=lr, betas=betas)
@@ -929,7 +928,7 @@ class T5(Process):
 class LoadT5FromHFPretrain(CheckpointHooks):
     """load pretrain model from huggingface"""
 
-    def load_pretrain(self):
+    def load_pretrained(self):
         if hasattr(self, 'pretrain_model'):
             from models.text_pretrain.T5 import WeightLoader, WeightConverter
             state_dict = WeightLoader.from_hf(self.pretrain_model)
@@ -944,7 +943,7 @@ class T5FromHFPretrain(T5, LoadT5FromHFPretrain, SimpleTextForT5):
 
             from examples.text_pretrain import T5FromHFPretrain as Process
 
-            process = Process(pretrain_model='...', vocab_fn='...', encoder_fn='...')
+            process = Process(pretrain_model='xxx/pytorch_model.bin', vocab_fn='xxx/spiece.model', config_version='xxx')
             process.init()
 
             # if using `117M` pretrain model
@@ -952,7 +951,7 @@ class T5FromHFPretrain(T5, LoadT5FromHFPretrain, SimpleTextForT5):
             # Das Haus ist wunderbar.
 
             process.batch_predict([
-                'translate English to German: The house is wonderful.'
+                'translate English to German: The house is wonderful.',
                 'summarize: studies have shown that owning a dog is good for you',
             ])
             # Das Haus ist wunderbar.

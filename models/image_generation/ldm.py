@@ -7,10 +7,11 @@ from torch import nn
 
 from utils import torch_utils
 from . import VAE, ddpm, ddim, k_diffusion
-from .ddpm import RandomOrLearnedSinusoidalPosEmb, SinusoidalPosEmb, ResnetBlock, make_norm, make_attend, append_dims
+from .ddpm import RandomOrLearnedSinusoidalPosEmb, ResnetBlock, make_norm, make_attend, append_dims
 from .. import bundles
 from ..attentions import CrossAttention2D, get_attention_input
 from ..layers import Linear, Conv, Upsample, Downsample
+from ..embeddings import SinusoidalEmbedding
 
 
 class Config(ddim.Config):
@@ -41,13 +42,7 @@ class Config(ddim.Config):
         num_heads=8,
         attend_type=ddim.Config.SPLIT_ATTEND
     )
-    vae = VAE.Config.backbone_32x32x4
-
-    # required pytorch>2.0
-    xformers_vae = dict(
-        attn_type=VAE.Config.VANILLA_XFORMERS,
-        **vae
-    )
+    vae = VAE.Config.get('backbone_32x32x4')
 
     default_model = 'vanilla'
 
@@ -69,7 +64,7 @@ class WeightLoader(bundles.WeightLoader):
     def auto_load(cls, save_path, save_name='', **kwargs):
         file_name = cls.get_file_name(save_path, save_name)
         state_dict = torch_utils.Load.from_file(file_name)
-        if torch_utils.WeightsFormats.get_format_from_suffix(file_name) == 'PyTorch':
+        if 'state_dict' in state_dict:
             state_dict = state_dict['state_dict']
         return state_dict
 
@@ -79,19 +74,7 @@ class WeightConverter:
 
     vae_convert_dict = {
         'first_stage_model': 'vae',
-        'first_stage_model.{0}.block.{1}.norm{2}.': 'vae.{0}.blocks.{1}.fn.conv{2}.norm.',
-        'first_stage_model.{0}.block.{1}.conv{2}.': 'vae.{0}.blocks.{1}.fn.conv{2}.conv.',
-        'first_stage_model.{0}.block.{1}.nin_shortcut': 'vae.{0}.blocks.{1}.proj',
-        'first_stage_model.{0}sample.conv': 'vae.{0}sample.fn.1',
-        'first_stage_model.{0}.mid.block_{1}.norm{2}.': 'vae.{0}.neck.block_{1}.fn.conv{2}.norm.',
-        'first_stage_model.{0}.mid.block_{1}.conv{2}.': 'vae.{0}.neck.block_{1}.fn.conv{2}.conv.',
-        'first_stage_model.{0}.mid.attn_1.norm': 'vae.{0}.neck.attn.0',
-        'first_stage_model.{0}.mid.attn_1.q': 'vae.{0}.neck.attn.1.to_qkv.0',
-        'first_stage_model.{0}.mid.attn_1.k': 'vae.{0}.neck.attn.1.to_qkv.1',
-        'first_stage_model.{0}.mid.attn_1.v': 'vae.{0}.neck.attn.1.to_qkv.2',
-        'first_stage_model.{0}.mid.attn_1.proj_out': 'vae.{0}.neck.attn.1.to_out',
-        'first_stage_model.{0}.norm_out': 'vae.{0}.head.norm',
-        'first_stage_model.{0}.conv_out': 'vae.{0}.head.conv',
+        **{'first_stage_model.' + k: 'vae.' + v for k, v in VAE.WeightConverter.convert_dict.items()}
     }
 
     backbone_convert_dict = {
@@ -250,6 +233,7 @@ class Model(ddim.Model):
     scale_factor = 0.18215
     cond_trainable = True
     vae_trainable = False
+    inference_only = False
 
     sampler_mapping = {
         Config.DDPM: ddpm.Sampler,
@@ -269,7 +253,7 @@ class Model(ddim.Model):
 
     def make_diffuse(self, vae_config=Config.vae, backbone_config=Config.backbone, **kwargs):
         cond = self.make_cond(**kwargs)
-        vae = VAE.Model(self.img_ch, backbone_config=vae_config)  # decode is in module, encode is head module
+        vae = VAE.Model(self.img_ch, **vae_config)  # decode is in module, encode is head module
         backbone = UNetModel(vae.z_ch, cond.output_size, **backbone_config)
 
         if not hasattr(cond, 'encode'):
@@ -297,8 +281,8 @@ class Model(ddim.Model):
             self.image_size[1] // self.vae.encoder.down_scale,
         )
 
-    def loss(self, x, text=None, **kwargs):
-        txt_cond = self.make_txt_cond(text, **kwargs)
+    def loss(self, x, text_ids=None, **kwargs):
+        txt_cond = self.make_txt_cond(text_ids, **kwargs)
         kwargs.update(txt_cond)
 
         z, _, _ = self.vae.encode(x)
@@ -306,15 +290,15 @@ class Model(ddim.Model):
 
         return self.sampler.loss(self.diffuse, x0, **kwargs)
 
-    def post_process(self, x=None, text=None, mask_x=None, **kwargs):
+    def post_process(self, x=None, text_ids=None, mask_x=None, **kwargs):
         """
 
         Args:
             x (torch.Tensor): (b, c, h, w)
                 original images, if given, run the img2img mode
-            text (torch.Tensor): (b, l)
+            text_ids (torch.Tensor): (b, l)
                 positive prompt
-            neg_text (torch.Tensor): (b, l)
+            neg_text_ids (torch.Tensor): (b, l)
             text_weights (torch.Tensor): (b, l)
             neg_text_weights (torch.Tensor): (b, l)
             mask_x (torch.Tensor): (b, 1, h, w)
@@ -327,9 +311,9 @@ class Model(ddim.Model):
         Returns:
             images
         """
-        b = len(text)
+        b = len(text_ids)
 
-        txt_cond = self.make_txt_cond(text, **kwargs)
+        txt_cond = self.make_txt_cond(text_ids, **kwargs)
         kwargs.update(txt_cond)
 
         # make x_t
@@ -347,23 +331,23 @@ class Model(ddim.Model):
 
         if x is not None and len(x) and mask_x is not None and len(mask_x):
             # todo: apply for different conditioning_key
-            mask_x = torch.nn.functional.interpolate(mask_x, size=z.shape[-2:])
+            mask_x = F.interpolate(mask_x, size=z.shape[-2:])
             z = z0 * mask_x + z * (1 - mask_x)
 
         images = self.vae.decode(z)
 
         return images
 
-    def make_txt_cond(self, text, neg_text=None, text_weights=None, neg_text_weights=None, scale=7.5, **kwargs) -> dict:
-        c = self.cond.encode(text)
+    def make_txt_cond(self, text_ids, neg_text_ids=None, text_weights=None, neg_text_weights=None, scale=7.5, **kwargs) -> dict:
+        c = self.cond.encode(text_ids)
         uc = None
-        if scale > 1.0 and neg_text is not None:
-            uc = self.cond.encode(neg_text)
+        if scale > 1.0 and neg_text_ids is not None:
+            uc = self.cond.encode(neg_text_ids)
 
         if text_weights is not None:
             c = self.cond_with_weights(c, text_weights)
 
-        if neg_text is not None and neg_text_weights is not None:
+        if neg_text_ids is not None and neg_text_weights is not None:
             uc = self.cond_with_weights(uc, neg_text_weights)
 
         return dict(
@@ -423,7 +407,7 @@ class Txt2ImgModel4Triton(nn.Module):
         Returns:
             torch.uint8, (b, h, w, c)
         """
-        fake_x = self.model(x=None, text=tokens, ng_text=neg_token)
+        fake_x = self.model(x=None, text_ids=tokens, neg_text_ids=neg_token)
         fake_x = (fake_x + 1) * 0.5  # unnormalize, [-1, 1] -> [0, 1]
         fake_x = fake_x.mul(255).clamp_(0, 255).permute(0, 2, 3, 1).contiguous().to(torch.uint8)
         return fake_x
@@ -447,7 +431,7 @@ class Img2ImgModel4Triton(nn.Module):
         """
         images = images / 255.
         images = images * 2 - 1  # normalize, [0, 1] -> [-1, 1]
-        fake_x = self.model(x=images, text=tokens, neg_token=neg_token)
+        fake_x = self.model(x=images, text_ids=tokens, neg_text_ids=neg_token)
         fake_x = (fake_x + 1) * 0.5  # unnormalize, [-1, 1] -> [0, 1]
         fake_x = fake_x.mul(255).clamp_(0, 255).permute(0, 2, 3, 1).contiguous().to(torch.uint8)
         return fake_x
@@ -486,7 +470,7 @@ class UNetModel(nn.Module):
             sin_pos_emb = RandomOrLearnedSinusoidalPosEmb(learned_sinusoidal_dim, random_fourier_features)
             fourier_dim = learned_sinusoidal_dim + 1
         else:
-            sin_pos_emb = SinusoidalPosEmb(unit_dim, theta=sinusoidal_pos_emb_theta)
+            sin_pos_emb = SinusoidalEmbedding(unit_dim, theta=sinusoidal_pos_emb_theta)
             fourier_dim = unit_dim
 
         self.time_embed = nn.Sequential(
@@ -562,7 +546,7 @@ class UNetModel(nn.Module):
                 label_emb = nn.Linear(1, time_emb_dim)
             elif self.num_classes == Config.TIMESTEP:
                 label_emb = nn.Sequential(
-                    SinusoidalPosEmb(unit_dim),
+                    SinusoidalEmbedding(unit_dim),
                     nn.Sequential(
                         nn.Linear(unit_dim, time_emb_dim),
                         nn.SiLU(),

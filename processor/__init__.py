@@ -243,7 +243,7 @@ class Process(
             # note that, it must be set device before load_state_dict()
             self.model.to(self.device)
 
-        self.load_pretrain()
+        self.load_pretrained()
         self.models[self.model_name] = self.model
 
         # todo: multi device
@@ -251,8 +251,8 @@ class Process(
         #     assert torch.cuda.device_count() >= len(self.device)
         #     device_ids = self.device
         #     self.device = torch.device(f"cuda:{self.device[0]}")
-        #     self.model.to(self.device)
         #     self.model = nn.DataParallel(self.model, device_ids=device_ids)
+        #     self.model.to(self.device)
         #     self.optimizer = nn.DataParallel(self.optimizer, device_ids=device_ids)
 
         try_init_components = [self.set_ema]

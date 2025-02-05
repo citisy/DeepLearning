@@ -1,10 +1,14 @@
 import math
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from .transformers import make_causal_attention_mask, TransformerSequential, EmbeddingSim
-from .. import bundles, attentions
+
 from utils import torch_utils
+from . import llama
+from .transformers import make_causal_attention_mask, TransformerSequential, EmbeddingSim, PositionWiseFeedForward
+from .. import bundles, attentions
+from functools import partial
 
 
 class Config(bundles.Config):
@@ -84,8 +88,6 @@ class WeightConverter:
             '{1}.block.{0}.layer.0.SelfAttention.o': '{1}.{0}.attn_res.fn.to_out.linear',
             '{1}.block.{0}.layer.0.layer_norm': '{1}.{0}.attn_res.norm',
 
-            'encoder.block.{0}.layer.1.DenseReluDense.wi': 'encoder.{0}.ff_res.fn.0.linear',
-            'encoder.block.{0}.layer.1.DenseReluDense.wo': 'encoder.{0}.ff_res.fn.1.linear',
             'encoder.block.{0}.layer.1.layer_norm': 'encoder.{0}.ff_res.norm',
 
             'decoder.block.{0}.layer.1.EncDecAttention.q': 'decoder.{0}.de_attn_res.fn.to_qkv.0',
@@ -94,14 +96,30 @@ class WeightConverter:
             'decoder.block.{0}.layer.1.EncDecAttention.o': 'decoder.{0}.de_attn_res.fn.to_out.linear',
             'decoder.block.{0}.layer.1.layer_norm': 'decoder.{0}.de_attn_res.norm',
 
-            'decoder.block.{0}.layer.2.DenseReluDense.wi': 'decoder.{0}.ff_res.fn.0.linear',
-            'decoder.block.{0}.layer.2.DenseReluDense.wo': 'decoder.{0}.ff_res.fn.1.linear',
             'decoder.block.{0}.layer.2.layer_norm': 'decoder.{0}.ff_res.norm',
 
             '{0}.block.0.layer.0.SelfAttention.relative_attention_bias': '{0}_relative_bias',
             '{0}.final_layer_norm': '{0}_norm',
 
         }
+
+        if 'encoder.block.0.layer.1.DenseReluDense.wi.weight' in state_dict:
+            convert_dict.update({
+                'encoder.block.{0}.layer.1.DenseReluDense.wi': 'encoder.{0}.ff_res.fn.0.linear',
+                'encoder.block.{0}.layer.1.DenseReluDense.wo': 'encoder.{0}.ff_res.fn.1.linear',
+                'decoder.block.{0}.layer.2.DenseReluDense.wi': 'decoder.{0}.ff_res.fn.0.linear',
+                'decoder.block.{0}.layer.2.DenseReluDense.wo': 'decoder.{0}.ff_res.fn.1.linear',
+            })
+        else:
+            convert_dict.update({
+                'encoder.block.{0}.layer.1.DenseReluDense.wi_0': 'encoder.{0}.ff_res.fn.f1.linear',
+                'encoder.block.{0}.layer.1.DenseReluDense.wi_1': 'encoder.{0}.ff_res.fn.f3.linear',
+                'encoder.block.{0}.layer.1.DenseReluDense.wo': 'encoder.{0}.ff_res.fn.f2.linear',
+                'decoder.block.{0}.layer.2.DenseReluDense.wi_0': 'decoder.{0}.ff_res.fn.f1.linear',
+                'decoder.block.{0}.layer.2.DenseReluDense.wi_1': 'decoder.{0}.ff_res.fn.f3.linear',
+                'decoder.block.{0}.layer.2.DenseReluDense.wo': 'decoder.{0}.ff_res.fn.f2.linear',
+            })
+
         state_dict = torch_utils.Converter.convert_keys(state_dict, convert_dict)
 
         return state_dict
@@ -115,15 +133,21 @@ class Model(nn.Module):
 
     def __init__(
             self, vocab_size, eos_id,
-            hidden_size=768, num_hidden_layers=12, num_attention_heads=12,
+            hidden_size=768, num_attention_heads=12,
+            ff_hidden_size=None, is_gated_act=False,
+            num_hidden_layers=12,
             n_relative_buckets=32, relative_max_distance=128,
             drop_prob=0.1):
         super().__init__()
+        ff_hidden_size = ff_hidden_size or hidden_size * 4
 
         self.hidden_size = hidden_size
         self.eos_id = eos_id
 
         self.embedding = nn.Embedding(vocab_size, hidden_size)
+
+        # layer norm without bias for t5
+        make_norm = partial(nn.LayerNorm, bias=False)
 
         fn_kwargs = dict(bias=False)
         attend_kwargs = dict(
@@ -135,42 +159,44 @@ class Model(nn.Module):
             act=nn.ReLU(),
             bias=False,
         )
-        self.encoder_relative_bias = nn.Embedding(32, 8)
+        self.encoder_relative_bias = nn.Embedding(n_relative_buckets, num_attention_heads)
         self.encoder = TransformerSequential(
-            hidden_size, num_attention_heads, hidden_size * 4,
+            hidden_size, num_attention_heads, ff_hidden_size,
             norm_first=True,
-            norm_fn=LayerNorm,
+            norm_fn=make_norm,
             drop_prob=drop_prob,
             fn_kwargs=fn_kwargs,
-            attend=ScaleAttend(
+            attend=T5ScaleAttend(
                 relative_bias=self.encoder_relative_bias,
                 is_relative_bidirectional=True,
                 **attend_kwargs
             ),
+            feed_forward_fn=llama.FeedForward if is_gated_act else PositionWiseFeedForward,
             ff_kwargs=ff_kwargs,
             num_blocks=num_hidden_layers
         )
-        self.encoder_norm = LayerNorm(hidden_size)
+        self.encoder_norm = make_norm(hidden_size)
 
-        self.decoder_relative_bias = nn.Embedding(32, 8)
+        self.decoder_relative_bias = nn.Embedding(n_relative_buckets, num_attention_heads)
         self.decoder = TransformerSequential(
             hidden_size, num_attention_heads, hidden_size * 4,
             is_decode=True,
             norm_first=True,
-            norm_fn=LayerNorm,
+            norm_fn=make_norm,
             drop_prob=drop_prob,
             fn_kwargs=fn_kwargs,
             de_fn_kwargs=fn_kwargs,
-            attend=ScaleAttend(
+            attend=T5ScaleAttend(
                 relative_bias=self.decoder_relative_bias,
                 is_relative_bidirectional=False,
                 **attend_kwargs
             ),
-            de_attend=ScaleAttend(),
+            de_attend=T5ScaleAttend(),
+            feed_forward_fn=llama.FeedForward if is_gated_act else PositionWiseFeedForward,
             ff_kwargs=ff_kwargs,
             num_blocks=num_hidden_layers
         )
-        self.decoder_norm = LayerNorm(hidden_size)
+        self.decoder_norm = make_norm(hidden_size)
 
         self.head = EmbeddingSim(self.embedding.weight, use_bias=False)
 
@@ -241,21 +267,7 @@ class Model(nn.Module):
         return x
 
 
-class LayerNorm(nn.Module):
-    """layer norm without bias for t5"""
-
-    def __init__(self, normalized_shape, eps=1e-6):
-        super().__init__()
-        self.weight = nn.Parameter(torch.ones(normalized_shape))
-        self.register_buffer('bias', torch.zeros(normalized_shape))
-        self.normalized_shape = normalized_shape
-        self.eps = eps
-
-    def forward(self, x):
-        return F.layer_norm(x, x.shape[-1:], self.weight, self.bias, self.eps)
-
-
-class ScaleAttend(attentions.ScaleAttend):
+class T5ScaleAttend(attentions.ScaleAttend):
     """ScaleAttend from T5"""
 
     def __init__(
@@ -270,7 +282,7 @@ class ScaleAttend(attentions.ScaleAttend):
         self.relative_max_distance = relative_max_distance
         self.is_relative_bidirectional = is_relative_bidirectional
 
-    def forward(self, q, k, v, attention_mask=None):
+    def forward(self, q, k, v, attention_mask=None, **kwargs):
         # similarity -> (..., i, j), usually i=j=s
         # sim = torch.einsum('... i d, ... j d -> ... i j', q, k) * self.scale
         # note, don't use scaling from t5 attention

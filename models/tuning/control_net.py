@@ -7,6 +7,7 @@ from utils import torch_utils, configs
 from ..image_generation import ldm, sdv1, sdxl
 from ..layers import Conv, Linear
 from .. import bundles
+from ..embeddings import SinusoidalEmbedding
 
 
 class Config(bundles.Config):
@@ -127,7 +128,7 @@ class ControlBlock(nn.Module):
 
         time_emb_dim = unit_dim * 4
         self.time_embed = nn.Sequential(
-            ldm.SinusoidalPosEmb(unit_dim),
+            SinusoidalEmbedding(unit_dim),
             Linear(unit_dim, time_emb_dim, mode='la', act=nn.SiLU()),
             Linear(time_emb_dim, time_emb_dim, mode='l'),
         )

@@ -10,6 +10,7 @@ from torch import nn
 from utils import torch_utils
 from .. import bundles, attentions, activations
 from ..layers import Linear, Conv, Upsample, Downsample
+from ..embeddings import SinusoidalEmbedding
 
 
 class Config(bundles.Config):
@@ -276,7 +277,7 @@ class Sampler(nn.Module):
 
     def make_schedule(self):
         # helper function to register buffer from float64 to float32
-        register_buffer = lambda name, val: self.register_buffer(name, val.to(torch.float32))
+        register_buffer = lambda name, val: self.register_buffer(name, val.to(torch.float32), persistent=False)
 
         # define beta schedule
         betas = make_beta_schedule(self.schedule_type)(timesteps=self.timesteps)  # (timesteps, )
@@ -522,7 +523,7 @@ class UNetModel(nn.Module):
             sin_pos_emb = RandomOrLearnedSinusoidalPosEmb(learned_sinusoidal_dim, random_fourier_features)
             fourier_dim = learned_sinusoidal_dim + 1
         else:
-            sin_pos_emb = SinusoidalPosEmb(unit_dim, theta=sinusoidal_pos_emb_theta)
+            sin_pos_emb = SinusoidalEmbedding(unit_dim, theta=sinusoidal_pos_emb_theta)
             fourier_dim = unit_dim
 
         time_emb_dim = unit_dim * 4
@@ -641,23 +642,6 @@ class RandomOrLearnedSinusoidalPosEmb(nn.Module):
         fouriered = torch.cat((freqs.sin(), freqs.cos()), dim=-1)
         fouriered = torch.cat((x, fouriered), dim=-1)
         return fouriered
-
-
-class SinusoidalPosEmb(nn.Module):
-    def __init__(self, dim, theta=10000):
-        super().__init__()
-        half_dim = dim // 2
-        log_theta = math.log(theta)
-        # emb = log_theta / (half_dim - 1)
-        emb = log_theta / half_dim
-        emb = torch.exp(torch.arange(half_dim) * -emb)
-        self.register_buffer('emb', emb)
-
-    def forward(self, x):
-        emb = self.emb
-        emb = x[:, None] * emb[None, :]
-        emb = torch.cat((emb.cos(), emb.sin()), dim=-1)
-        return emb
 
 
 class ResnetBlock(nn.Module):

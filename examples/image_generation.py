@@ -994,10 +994,10 @@ class WithControlNet(Process):
         return model_inputs
 
 
-class FromPretrain(CheckpointHooks):
+class FromPretrained(CheckpointHooks):
     config_version = 'v1'  # for config choose
 
-    def load_pretrain(self):
+    def load_pretrained(self):
         if hasattr(self, 'pretrain_model'):
             if 'v1' in self.config_version:
                 from models.image_generation.sdv1 import WeightLoader, WeightConverter
@@ -1078,7 +1078,7 @@ class BaseSD(DiProcess):
 
     def get_vocab(self):
         from data_parse.nl_data_parse.pre_process.bundled import CLIPTokenizer
-        self.tokenizer = CLIPTokenizer.from_pretrain(self.encoder_fn, self.vocab_fn)
+        self.tokenizer = CLIPTokenizer.from_pretrained(self.encoder_fn, self.vocab_fn)
 
     def set_optimizer(self, **kwargs):
         # self.optimizer = optim.Adam(self.model.parameters(), lr=1e-4, betas=(0.9, 0.99))
@@ -1120,7 +1120,7 @@ class BaseSD(DiProcess):
     def get_model_train_inputs(self, rets):
         texts = [ret['text'] for ret in rets]
         inputs = self.tokenizer.encode_attention_paragraphs(texts)
-        texts = torch.tensor(inputs['segments_ids']).to(self.device)
+        text_ids = torch.tensor(inputs['segments_ids']).to(self.device)
         text_weights = torch.tensor(inputs['segments_weights']).to(self.device)
 
         images = [torch.from_numpy(ret.pop('image')).to(self.device, non_blocking=True, dtype=torch.float) for ret in rets]
@@ -1128,7 +1128,7 @@ class BaseSD(DiProcess):
         images = images * 2 - 1  # normalize, [0, 1] -> [-1, 1]
         return dict(
             x=images,
-            text=texts,
+            text_ids=text_ids,
             text_weights=text_weights
         )
 
@@ -1160,11 +1160,11 @@ class BaseSD(DiProcess):
                 mask_images.append(torch.from_numpy(mask_image).to(self.device, non_blocking=True, dtype=torch.float))
 
         inputs = self.tokenizer.encode_attention_paragraphs(texts)
-        texts = torch.tensor(inputs['segments_ids']).to(self.device)
+        text_ids = torch.tensor(inputs['segments_ids']).to(self.device)
         text_weights = torch.tensor(inputs['segments_weights']).to(self.device)
 
         neg_inputs = self.tokenizer.encode_attention_paragraphs(neg_texts)
-        neg_texts = torch.tensor(neg_inputs['segments_ids']).to(self.device)
+        neg_text_ids = torch.tensor(neg_inputs['segments_ids']).to(self.device)
         neg_text_weights = torch.tensor(neg_inputs['segments_weights']).to(self.device)
 
         if images:
@@ -1177,8 +1177,8 @@ class BaseSD(DiProcess):
             mask_images /= 255
 
         return dict(
-            text=texts,
-            neg_text=neg_texts,
+            text_ids=text_ids,
+            neg_text_ids=neg_text_ids,
             text_weights=text_weights,
             neg_text_weights=neg_text_weights,
             x=images,
@@ -1242,7 +1242,7 @@ class BaseSD(DiProcess):
         return images
 
 
-class SD(WithLora, WithControlNet, FromPretrain, BaseSD):
+class SD(WithLora, WithControlNet, FromPretrained, BaseSD):
     """no training, only for prediction
 
     Usage:
