@@ -8,7 +8,7 @@ from einops import rearrange, reduce
 from torch import nn
 
 from utils import torch_utils
-from .. import bundles, attentions, activations
+from .. import bundles, attentions, activations, normalizations
 from ..layers import Linear, Conv, Upsample, Downsample
 from ..embeddings import SinusoidalEmbedding
 
@@ -21,10 +21,6 @@ class Config(bundles.Config):
     LINEAR = 1
     COSINE = 2
     SIGMOID = 3
-
-    SCALE_ATTEND = 1
-    XFORMERS_ATTEND = 2
-    SPLIT_ATTEND = 3
 
     sampler = dict(
         objective=PRED_V,
@@ -117,16 +113,7 @@ def make_beta_schedule(name=Config.LINEAR):
     return d.get(name)
 
 
-def make_attend(name=Config.SCALE_ATTEND):
-    d = {
-        Config.SCALE_ATTEND: attentions.ScaleAttend,
-        Config.XFORMERS_ATTEND: attentions.ScaleAttendWithXformers,
-        Config.SPLIT_ATTEND: attentions.SplitScaleAttend
-    }
-    return d.get(name)
-
-
-make_norm = partial(activations.GroupNorm32, eps=1e-5, affine=True)
+make_norm_fn = partial(normalizations.GroupNorm32, eps=1e-5, affine=True)
 
 
 class Model(nn.ModuleList):
@@ -196,7 +183,7 @@ class Model(nn.ModuleList):
             self,
             lambda module: module.to(dtype),
             include=['cond', 'backbone', 'vae'],
-            exclude=[activations.GroupNorm32]
+            exclude=[normalizations.GroupNorm32]
         )
 
         modules = [self.sampler]
@@ -652,8 +639,8 @@ class ResnetBlock(nn.Module):
         self.use_scale_shift_norm = use_scale_shift_norm
         self.use_checkpoint = use_checkpoint
 
-        self.in_layers = Conv(in_ch, out_ch, 3, p=1, mode='nac', norm=make_norm(groups, in_ch), act=nn.SiLU())
-        self.norm = make_norm(groups, out_ch)
+        self.in_layers = Conv(in_ch, out_ch, 3, p=1, mode='nac', norm=make_norm_fn(groups, in_ch), act=nn.SiLU())
+        self.norm = make_norm_fn(groups, out_ch)
         self.emb_layers = Linear(time_emb_dim, out_ch * 2 if use_scale_shift_norm else out_ch, mode='al', act=nn.SiLU()) if time_emb_dim else None
 
         self.out_layers = Conv(out_ch, out_ch, 3, p=1, mode='adc', act=nn.SiLU(), drop_prob=drop_prob)

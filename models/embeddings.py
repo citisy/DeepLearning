@@ -1,7 +1,8 @@
 import math
+
 import torch
-from torch import nn
 from einops.layers.torch import Rearrange
+from torch import nn
 
 
 class PositionalEmbedding(nn.Module):
@@ -33,38 +34,37 @@ class PositionalEmbedding(nn.Module):
 
 
 class LearnedPositionEmbedding(nn.Embedding):
-    def __init__(self, num_embeddings, embedding_dim, **kwargs):
-        super().__init__(num_embeddings, embedding_dim, **kwargs)
-        self.register_buffer("position_ids", torch.arange(num_embeddings).expand((1, -1)), persistent=False)
+    @property
+    def position_ids(self):
+        # note, support for meta device init
+        return torch.arange(self.num_embeddings).expand((1, -1))
 
     def forward(self, x):
         """make sure x.ndim >= 2 and x.shape[1] is seq_len"""
-        return super().forward(self.position_ids[:, :x.shape[1]])
+        position_ids = self.position_ids.to(x.device)
+        return super().forward(position_ids[:, :x.shape[1]])
 
 
 class SinusoidalEmbedding(nn.Module):
-    """
-    emb_{2i} = sin{x * \theta^{-2d/D}}
-    emb_{2i+1} = cos{x * \theta^{-2d/D}}
-    where, x is seq vec, d is emb position of D
-    """
-
     def __init__(self, embedding_dim, theta=10000., factor=1.):
         super().__init__()
-        weights = torch.zeros(embedding_dim).float()
-        # exp{-d / D * log{\theta}} = \theta ^ {-d / D}
-        div_term = (torch.arange(0, embedding_dim, 2).float() * -(math.log(theta) / embedding_dim)).exp()
-
-        weights[0::2] = torch.sin(div_term)
-        weights[1::2] = torch.cos(div_term)
-
-        self.register_buffer('weights', weights, persistent=False)
         self.embedding_dim = embedding_dim
+        self.theta = theta
         self.factor = factor
 
+    @property
+    def div_term(self):
+        # exp{-d / D * log{\theta}} = \theta ^ {-d / D}
+        div_term = (torch.arange(0, self.embedding_dim, 2).float() * -(math.log(self.theta) / self.embedding_dim)).exp()
+        return div_term
+
     def forward(self, x):
+        dtype = x.dtype
+        div_term = self.div_term.to(x.device)
         x = x * self.factor
-        emb = x[:, None] * self.weights[None, :]
+        emb = x[:, None].float() * div_term[None, :]
+        emb = torch.cat((emb.cos(), emb.sin()), dim=-1)
+        emb = emb.to(dtype)
         return emb
 
 
@@ -87,6 +87,7 @@ class LearnedSinusoidalEmbedding(nn.Module):
 
 class RotaryEmbedding(nn.Module):
     """for qk of rotary attention, not for seq"""
+
     def __init__(self, embedding_dim, theta=10000.):
         super().__init__()
 

@@ -332,7 +332,8 @@ class DataHooks:
         elif input_type == 'text':
             return torch.randint(self.vacab_size, (batch_size, self.seq_len), dtype=torch.int, device=self.device)
 
-    vocab_fn = 'vocab.txt'
+    vocab_fn: str
+    encoder_fn: str
 
     def load_vocab(self):
         loader = os_lib.Loader(stdout_method=self.log)

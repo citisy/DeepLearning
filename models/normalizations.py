@@ -1,8 +1,14 @@
 import torch
 from torch import nn
-import torch.nn.functional as F
+
+from utils import op_utils
+
+make_norm_fn = op_utils.RegisterTables()
+make_norm_fn.add_register()(nn.LayerNorm)
+make_norm_fn.add_register()(nn.GroupNorm)
 
 
+@make_norm_fn.add_register()
 class RMSNorm2D(nn.Module):
     """input: (b, s, d)"""
 
@@ -21,6 +27,7 @@ class RMSNorm2D(nn.Module):
         return n * self.weight
 
 
+@make_norm_fn.add_register()
 class RMSNorm3D(nn.Module):
     """input: (b, c, h, w)"""
 
@@ -39,11 +46,13 @@ class RMSNorm3D(nn.Module):
         return n * self.weight
 
 
+@make_norm_fn.add_register()
 class LayerNorm2d(nn.Module):
     """
     # From https://github.com/facebookresearch/detectron2/blob/main/detectron2/layers/batch_norm.py # noqa
     # Itself from https://github.com/facebookresearch/ConvNeXt/blob/d1fa8f6fef0a165b27399986cc2bdacc92777e40/models/convnext.py#L119  # noqa
     """
+
     def __init__(self, num_channels: int, eps: float = 1e-6) -> None:
         super().__init__()
         self.weight = nn.Parameter(torch.ones(num_channels))
@@ -56,3 +65,15 @@ class LayerNorm2d(nn.Module):
         x = (x - u) / torch.sqrt(s + self.eps)
         x = self.weight[:, None, None] * x + self.bias[:, None, None]
         return x
+
+
+@make_norm_fn.add_register()
+class GroupNorm32(nn.GroupNorm):
+    """forced to use fp32"""
+
+    def forward(self, x):
+        if self.weight.dtype is not torch.float32:
+            # check the weight
+            return super().forward(x)
+        else:
+            return super().forward(x.float()).type(x.dtype)

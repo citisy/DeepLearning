@@ -3,7 +3,7 @@ from torch import nn
 from torch.nn import functional as F
 
 from utils import torch_utils
-from .. import bundles, activations
+from .. import bundles, activations, attentions
 from ..image_classification.ViT import VisionEmbedding
 from ..text_pretrain.transformers import DecoderEmbedding, make_causal_attention_mask, TransformerSequential
 
@@ -42,7 +42,7 @@ class Config(bundles.Config):
     )
 
     openai_text_base = dict(
-        output_size=768,
+        output_size=512,
         hidden_size=512,
         vocab_size=49408,
         max_seq_len=77,
@@ -324,19 +324,13 @@ class TextModel(nn.Module):
         return self.text_model(text_ids, **kwargs)
 
 
-def make_act(name):
-    d = dict(
-        GELU=nn.GELU,
-        FasterGELU=activations.FasterGELU
-    )
-    return d[name]
-
-
 class VisionTransformer(nn.Module):
     def __init__(
             self, image_size, hidden_size, patch_size, output_size=None,
             num_attention_heads=12, num_hidden_layers=12, ff_ratio=4.0,
-            is_proj=True, separate=True, act_type='FasterGELU', use_checkpoint=True
+            is_proj=True, separate=True,
+            act_type='FasterGELU', attend_type='FlashAttend',
+            use_checkpoint=True
     ):
         super().__init__()
 
@@ -345,8 +339,9 @@ class VisionTransformer(nn.Module):
         self.norm1 = nn.LayerNorm(hidden_size)
         self.encoder = TransformerSequential(
             hidden_size, num_attention_heads, int(hidden_size * ff_ratio), norm_first=True,
-            ff_kwargs=dict(act=make_act(act_type)()),
+            attend_fn=attentions.make_attend_fn.get(attend_type),
             fn_kwargs=dict(separate=separate),
+            ff_kwargs=dict(act=activations.make_act_fn.get(act_type)()),
             num_blocks=num_hidden_layers,
             use_checkpoint=use_checkpoint
         )
@@ -382,16 +377,21 @@ class VisionTransformer(nn.Module):
 
 
 class TextTransformer(nn.Module):
-    def __init__(self, vocab_size, hidden_size, output_size=None,
-                 max_seq_len=77, num_attention_heads=8, num_hidden_layers=12, ff_ratio=4.0,
-                 is_proj=True, separate=True, act_type='FasterGELU', use_checkpoint=True):
+    def __init__(
+            self, vocab_size, hidden_size, output_size=None,
+            max_seq_len=77, num_attention_heads=8, num_hidden_layers=12, ff_ratio=4.0,
+            is_proj=True, separate=True,
+            act_type='FasterGELU', attend_type='FlashAttend',
+            use_checkpoint=True
+    ):
         super().__init__()
         self.use_checkpoint = use_checkpoint
         self.embedding = DecoderEmbedding(vocab_size, hidden_size, max_seq_len=max_seq_len)
         self.encoder = TransformerSequential(
             hidden_size, num_attention_heads, int(hidden_size * ff_ratio), norm_first=True,
-            ff_kwargs=dict(act=make_act(act_type)()),
+            attend_fn=attentions.make_attend_fn.get(attend_type),
             fn_kwargs=dict(separate=separate),
+            ff_kwargs=dict(act=activations.make_act_fn.get(act_type)()),
             num_blocks=num_hidden_layers,
             use_checkpoint=use_checkpoint
         )
@@ -445,9 +445,10 @@ class TextTransformer(nn.Module):
         )
 
         h = self.neck(x)
-        pooled_output = self.head(sequence, h)
+        # note, so doubtful that use pooler or pooled?
+        pooler_output = self.head(sequence, h)
 
         return dict(
             last_hidden_state=h,  # have been normalized
-            pooled_output=pooled_output
+            pooler_output=pooler_output
         )

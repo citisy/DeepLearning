@@ -713,10 +713,8 @@ class GPT2(Process):
             **Config.get('117M')
         )
 
-    encoder_fn: str
-
     def get_vocab(self):
-        self.tokenizer = bundled.GPT2Tokenizer.from_pretrained(self.encoder_fn, self.vocab_fn)
+        self.tokenizer = bundled.GPT2Tokenizer.from_pretrained(self.vocab_fn, self.encoder_fn)
 
     def set_optimizer(self, lr=1e-4, betas=(0.5, 0.999), **kwargs):
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=lr, betas=betas)
@@ -804,7 +802,11 @@ class GPT2FromOpenaiPretrain(GPT2, LoadGPT2FromOpenaiPretrain, TextProcessForGpt
 
             from examples.text_pretrain import GPT2FromOpenaiPretrain as Process
 
-            process = Process(pretrain_model='...', vocab_fn='...', encoder_fn='...')
+            process = Process(
+                pretrain_model='...',
+                vocab_fn='xxx/vocab.json',
+                encoder_fn='xxx/merges.txt'
+            )
             process.init()
 
             # if using `117M` pretrain model
@@ -865,7 +867,7 @@ class T5(Process):
         )
 
     def get_vocab(self):
-        self.tokenizer = bundled.T5Tokenizer.from_pretrained(self.vocab_fn)
+        self.tokenizer = bundled.T5Tokenizer.from_pretrained(self.vocab_fn, self.encoder_fn)
 
     def set_optimizer(self, lr=1e-4, betas=(0.5, 0.999), **kwargs):
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=lr, betas=betas)
@@ -943,7 +945,12 @@ class T5FromHFPretrain(T5, LoadT5FromHFPretrain, SimpleTextForT5):
 
             from examples.text_pretrain import T5FromHFPretrain as Process
 
-            process = Process(pretrain_model='xxx/pytorch_model.bin', vocab_fn='xxx/spiece.model', config_version='xxx')
+            process = Process(
+                pretrain_model='xxx/pytorch_model.bin',
+                vocab_fn='xxx/tokenizer.json',
+                encoder_fn='xxx/spiece.model',
+                config_version='xxx'
+            )
             process.init()
 
             # if using `117M` pretrain model

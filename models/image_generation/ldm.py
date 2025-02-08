@@ -7,8 +7,8 @@ from torch import nn
 
 from utils import torch_utils
 from . import VAE, ddpm, ddim, k_diffusion
-from .ddpm import RandomOrLearnedSinusoidalPosEmb, ResnetBlock, make_norm, make_attend, append_dims
-from .. import bundles
+from .ddpm import RandomOrLearnedSinusoidalPosEmb, ResnetBlock, make_norm_fn, append_dims
+from .. import bundles, attentions
 from ..attentions import CrossAttention2D, get_attention_input
 from ..layers import Linear, Conv, Upsample, Downsample
 from ..embeddings import SinusoidalEmbedding
@@ -40,7 +40,7 @@ class Config(ddim.Config):
 
     backbone = dict(
         num_heads=8,
-        attend_type=ddim.Config.SPLIT_ATTEND
+        attend_type='SplitScaleAttend'
     )
     vae = VAE.Config.get('backbone_32x32x4')
 
@@ -444,7 +444,7 @@ class UNetModel(nn.Module):
             self,
             in_ch, context_dim,
             out_ch=4, unit_dim=320, ch_mult=(1, 2, 4, 4),  # for model
-            use_checkpoint=True, attend_type=Config.SCALE_ATTEND,  # for resnet and transformers
+            use_checkpoint=True, attend_type='ScaleAttend',  # for resnet and transformers
             sinusoidal_pos_emb_theta=10000, learned_sinusoidal_cond=False, random_fourier_features=False, learned_sinusoidal_dim=16,  # for time embed
             num_classes=None, adm_in_channels=None,  # for label_emb
             groups=32, num_res_blocks=2,  # for resnet
@@ -536,7 +536,7 @@ class UNetModel(nn.Module):
                 in_ch = out_ch
 
         self.output_blocks = nn.ModuleList(layers)
-        self.out = Conv(in_ch, self.out_channels, 3, mode='nac', act=nn.SiLU(), norm=make_norm(groups, unit_dim))
+        self.out = Conv(in_ch, self.out_channels, 3, mode='nac', act=nn.SiLU(), norm=make_norm_fn(groups, unit_dim))
 
     def make_label_emb(self, num_classes, time_emb_dim, unit_dim, adm_in_channels):
         if self.num_classes is not None:
@@ -566,7 +566,7 @@ class UNetModel(nn.Module):
             return label_emb
 
     def forward(self, x, timesteps=None, context=None, y=None, **kwargs):
-        emb = self.time_embed(timesteps)
+        emb = self.time_embed(timesteps.to(x))
 
         if self.num_classes is not None:
             assert y.shape[0] == x.shape[0], f'Expect {y.shape[0]}, but got {x.shape[0]}'
@@ -609,7 +609,7 @@ class TimestepEmbedSequential(nn.Module):
 
 class TransformerBlock(nn.Module):
     def __init__(self, in_ch, n_heads, head_dim, groups=32,
-                 depth=1, dropout=0., context_dim=None, use_linear=False, use_checkpoint=False, attend_type=Config.SCALE_ATTEND):
+                 depth=1, dropout=0., context_dim=None, use_linear=False, use_checkpoint=False, attend_type='ScaleAttend'):
         super().__init__()
         self.in_channels = in_ch
         self.use_linear = use_linear
@@ -621,7 +621,7 @@ class TransformerBlock(nn.Module):
 
         assert len(context_dim) == depth
 
-        self.norm = make_norm(groups, in_ch, eps=1e-6)  # note, original code use `eps=1e-6`
+        self.norm = make_norm_fn(groups, in_ch, eps=1e-6)  # note, original code use `eps=1e-6`
 
         if use_linear:
             self.proj_in = nn.Linear(in_ch, model_dim)
@@ -665,9 +665,9 @@ class TransformerBlock(nn.Module):
 
 
 class BasicTransformerBlock(nn.Module):
-    def __init__(self, query_dim, n_heads, head_dim, attend_type=Config.SCALE_ATTEND, drop_prob=0., context_dim=None, gated_ff=True):
+    def __init__(self, query_dim, n_heads, head_dim, attend_type='ScaleAttend', drop_prob=0., context_dim=None, gated_ff=True):
         super().__init__()
-        attend_fn = make_attend(attend_type)
+        attend_fn = attentions.make_attend_fn.get(attend_type)
         self.norm1 = nn.LayerNorm(query_dim)
         self.attn1 = CrossAttention2D(query_dim=query_dim, n_heads=n_heads, head_dim=head_dim, attend=attend_fn(), drop_prob=drop_prob, bias=False)  # is a self-attention
         self.attn1.to_out.linear.bias = nn.Parameter(torch.empty(query_dim))  # only to_out module has bias

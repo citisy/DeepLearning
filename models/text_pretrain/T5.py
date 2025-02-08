@@ -1,4 +1,5 @@
 import math
+from functools import partial
 
 import torch
 import torch.nn as nn
@@ -7,8 +8,7 @@ import torch.nn.functional as F
 from utils import torch_utils
 from . import llama
 from .transformers import make_causal_attention_mask, TransformerSequential, EmbeddingSim, PositionWiseFeedForward
-from .. import bundles, attentions
-from functools import partial
+from .. import bundles, attentions, activations
 
 
 class Config(bundles.Config):
@@ -104,6 +104,7 @@ class WeightConverter:
         }
 
         if 'encoder.block.0.layer.1.DenseReluDense.wi.weight' in state_dict:
+            # without gated_act
             convert_dict.update({
                 'encoder.block.{0}.layer.1.DenseReluDense.wi': 'encoder.{0}.ff_res.fn.0.linear',
                 'encoder.block.{0}.layer.1.DenseReluDense.wo': 'encoder.{0}.ff_res.fn.1.linear',
@@ -111,6 +112,7 @@ class WeightConverter:
                 'decoder.block.{0}.layer.2.DenseReluDense.wo': 'decoder.{0}.ff_res.fn.1.linear',
             })
         else:
+            # with gated_act
             convert_dict.update({
                 'encoder.block.{0}.layer.1.DenseReluDense.wi_0': 'encoder.{0}.ff_res.fn.f1.linear',
                 'encoder.block.{0}.layer.1.DenseReluDense.wi_1': 'encoder.{0}.ff_res.fn.f3.linear',
@@ -126,15 +128,18 @@ class WeightConverter:
 
 
 class Model(nn.Module):
-    """
-    refer to: Exploring the Limits of Transfer Learning with a Unified Text-to-Text Transformer
-    https://github.com/google-research/text-to-text-transfer-transformer
+    """refer to
+    paper:
+        - Exploring the Limits of Transfer Learning with a Unified Text-to-Text Transformer
+    code:
+        - https://github.com/google-research/text-to-text-transfer-transformer
+    this code base on version of `transformers`
     """
 
     def __init__(
-            self, vocab_size, eos_id,
+            self, vocab_size=32128, eos_id=1,
             hidden_size=768, num_attention_heads=12,
-            ff_hidden_size=None, is_gated_act=False,
+            ff_hidden_size=None, is_gated_act=False, ff_act_type='ReLU',
             num_hidden_layers=12,
             n_relative_buckets=32, relative_max_distance=128,
             drop_prob=0.1):
@@ -146,9 +151,6 @@ class Model(nn.Module):
 
         self.embedding = nn.Embedding(vocab_size, hidden_size)
 
-        # layer norm without bias for t5
-        make_norm = partial(nn.LayerNorm, bias=False)
-
         fn_kwargs = dict(bias=False)
         attend_kwargs = dict(
             n_relative_buckets=n_relative_buckets,
@@ -156,14 +158,14 @@ class Model(nn.Module):
             n_heads=num_attention_heads
         )
         ff_kwargs = dict(
-            act=nn.ReLU(),
+            act=activations.make_act_fn.get(ff_act_type)(),
             bias=False,
         )
         self.encoder_relative_bias = nn.Embedding(n_relative_buckets, num_attention_heads)
         self.encoder = TransformerSequential(
             hidden_size, num_attention_heads, ff_hidden_size,
             norm_first=True,
-            norm_fn=make_norm,
+            norm_fn=T5LayerNorm,
             drop_prob=drop_prob,
             fn_kwargs=fn_kwargs,
             attend=T5ScaleAttend(
@@ -175,14 +177,14 @@ class Model(nn.Module):
             ff_kwargs=ff_kwargs,
             num_blocks=num_hidden_layers
         )
-        self.encoder_norm = make_norm(hidden_size)
+        self.encoder_norm = T5LayerNorm(hidden_size)
 
         self.decoder_relative_bias = nn.Embedding(n_relative_buckets, num_attention_heads)
         self.decoder = TransformerSequential(
             hidden_size, num_attention_heads, hidden_size * 4,
             is_decode=True,
             norm_first=True,
-            norm_fn=make_norm,
+            norm_fn=T5LayerNorm,
             drop_prob=drop_prob,
             fn_kwargs=fn_kwargs,
             de_fn_kwargs=fn_kwargs,
@@ -196,9 +198,15 @@ class Model(nn.Module):
             ff_kwargs=ff_kwargs,
             num_blocks=num_hidden_layers
         )
-        self.decoder_norm = make_norm(hidden_size)
+        self.decoder_norm = T5LayerNorm(hidden_size)
 
         self.head = EmbeddingSim(self.embedding.weight, use_bias=False)
+
+    def set_encoder_only(self):
+        del self.t5.decoder_relative_bias
+        del self.t5.decoder
+        del self.t5.decoder_norm
+        del self.t5.head
 
     def forward(self, x, y=None, seq_lens=None, attention_mask=None, **kwargs):
         context = self.encode(x, attention_mask=attention_mask)
@@ -265,6 +273,33 @@ class Model(nn.Module):
                 break
 
         return x
+
+
+class T5LayerNorm(nn.Module):
+    """copy from `transformers`"""
+
+    def __init__(self, hidden_size, eps=1e-6):
+        """
+        Construct a layernorm module in the T5 style. No bias and no subtraction of mean.
+        """
+        super().__init__()
+        self.weight = nn.Parameter(torch.ones(hidden_size))
+        self.variance_epsilon = eps
+
+    def forward(self, hidden_states):
+        # T5 uses a layer_norm which only scales and doesn't shift, which is also known as Root Mean
+        # Square Layer Normalization https://arxiv.org/abs/1910.07467 thus varience is calculated
+        # w/o mean and there is no bias. Additionally we want to make sure that the accumulation for
+        # half-precision inputs is done in fp32
+
+        variance = hidden_states.to(torch.float32).pow(2).mean(-1, keepdim=True)
+        hidden_states = hidden_states * torch.rsqrt(variance + self.variance_epsilon)
+
+        # convert into half-precision if necessary
+        if self.weight.dtype in [torch.float16, torch.bfloat16]:
+            hidden_states = hidden_states.to(self.weight.dtype)
+
+        return self.weight * hidden_states
 
 
 class T5ScaleAttend(attentions.ScaleAttend):

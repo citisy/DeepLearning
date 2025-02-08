@@ -7,8 +7,11 @@ from einops import rearrange
 from einops.layers.torch import Rearrange
 from torch import nn
 
-from utils import log_utils
+from utils import log_utils, op_utils
 from .layers import Linear
+
+make_attention_fn = op_utils.RegisterTables()
+make_attend_fn = op_utils.RegisterTables()
 
 
 def get_attention_input(n_heads=None, model_dim=None, head_dim=None):
@@ -60,6 +63,7 @@ def mask(sim, attention_mask=None, use_min=True):
     return sim
 
 
+@make_attention_fn.add_register()
 class CrossAttention2D(nn.Module):
     """cross attention"""
 
@@ -124,6 +128,7 @@ class CrossAttention2D(nn.Module):
         return x
 
 
+@make_attention_fn.add_register()
 class CrossAttention3D(nn.Module):
     """cross attention build by conv function"""
 
@@ -187,6 +192,7 @@ class CrossAttention3D(nn.Module):
         return self.to_out(x)
 
 
+@make_attention_fn.add_register()
 class LinearAttention3D(nn.Module):
     """linear attention build by conv function"""
 
@@ -229,6 +235,7 @@ class LinearAttention3D(nn.Module):
         return self.to_out(x)
 
 
+@make_attend_fn.add_register()
 class ScaleAttend(nn.Module):
     """Scaled Dot-Product Attention
     attn(q, k, v) = softmax(qk'/sqrt(dk))*v"""
@@ -257,6 +264,7 @@ class ScaleAttend(nn.Module):
         return attn
 
 
+@make_attend_fn.add_register()
 class ScaleAttendWithXformers(nn.Module):
     def __init__(self, drop_prob=0., **kwargs):
         super().__init__()
@@ -279,6 +287,7 @@ class ScaleAttendWithXformers(nn.Module):
         return attn
 
 
+@make_attend_fn.add_register()
 class SplitScaleAttend(ScaleAttend):
     """avoid out of memery
     todo: support mask"""
@@ -328,6 +337,7 @@ class SplitScaleAttend(ScaleAttend):
         return r1
 
 
+@make_attend_fn.add_register()
 class LinearAttend(nn.Module):
     """linear attention, to reduce the computation
     refer to: https://arxiv.org/pdf/2006.16236.pdf
@@ -356,6 +366,7 @@ class LinearAttend(nn.Module):
         return context
 
 
+@make_attend_fn.add_register()
 class FlashAttend(nn.Module):
     """requires pytorch > 2.0
     refer to: https://arxiv.org/pdf/2205.14135.pdf
@@ -430,6 +441,7 @@ class FlashAttend(nn.Module):
         return out
 
 
+@make_attend_fn.add_register()
 class MemoryAttendWrapper(nn.Module):
     def __init__(self, mem_kv, base_layer=None, base_layer_fn=ScaleAttend, **base_layer_kwargs):
         super().__init__()
@@ -450,12 +462,14 @@ class MemoryAttendWrapper(nn.Module):
         return mem_x[:b, :, :start_pos + s, :]
 
 
+@make_attend_fn.add_register()
 class MemoryScaleAttend2DWrapper(MemoryAttendWrapper):
     def __init__(self, n_heads, n_mem_size, head_dim, max_batch_size, **base_layer_kwargs):
         mem_kv = torch.zeros(2, max_batch_size, n_heads, n_mem_size, head_dim)
         super().__init__(mem_kv, base_layer_fn=ScaleAttend, **base_layer_kwargs)
 
 
+@make_attend_fn.add_register()
 class DynamicMemoryAttendWrapper(nn.Module):
     """don't alloc the kv memory when the class created
     only when the class called
@@ -482,6 +496,7 @@ class DynamicMemoryAttendWrapper(nn.Module):
         return k, v
 
 
+@make_attend_fn.add_register()
 class LearnedMemoryAttendWrapper(nn.Module):
     """apply learned kv cache"""
 
@@ -506,6 +521,7 @@ class LearnedMemoryAttendWrapper(nn.Module):
         return self.base_layer(q, k, v, **kwargs)
 
 
+@make_attend_fn.add_register()
 class LearnedMemoryScaleAttend2DWrapper(LearnedMemoryAttendWrapper):
     """apply learned kv cache for 2D scale attend
     in(q|k|v): (b n s d)
@@ -517,6 +533,7 @@ class LearnedMemoryScaleAttend2DWrapper(LearnedMemoryAttendWrapper):
         super().__init__(mem_kv, base_layer_fn=ScaleAttend, **base_layer_kwargs)
 
 
+@make_attend_fn.add_register()
 class LearnedMemoryScaleAttend3DWrapper(LearnedMemoryAttendWrapper):
     """apply learned kv cache for 3D scale attend
     in(q|k|v): (b n s d)
@@ -528,6 +545,7 @@ class LearnedMemoryScaleAttend3DWrapper(LearnedMemoryAttendWrapper):
         super().__init__(mem_kv, base_layer_fn=ScaleAttend, **base_layer_kwargs)
 
 
+@make_attend_fn.add_register()
 class LearnedMemoryLinearAttendWrapper(LearnedMemoryAttendWrapper):
     """apply learned kv cache for linear attend
     in(q|k|v): (b n d s)
@@ -539,6 +557,7 @@ class LearnedMemoryLinearAttendWrapper(LearnedMemoryAttendWrapper):
         super().__init__(mem_kv, base_layer_fn=LinearAttend, **base_layer_kwargs)
 
 
+@make_attend_fn.add_register()
 class RotaryAttendWrapper(nn.Module):
     def __init__(self, embedding=None, dim=None, base_layer=None, base_layer_fn=ScaleAttend, **base_layer_kwargs):
         super().__init__()
@@ -564,6 +583,7 @@ class RotaryAttendWrapper(nn.Module):
         return attn
 
 
+@make_attend_fn.add_register()
 class MemoryRotaryAttendWrapper(nn.Module):
     def __init__(self, n_heads, n_mem_size, head_dim, max_batch_size, embedding=None, dim=None,
                  base_layer=None, base_layer_fn=ScaleAttend, **base_layer_kwargs):

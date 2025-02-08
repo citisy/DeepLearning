@@ -1013,6 +1013,10 @@ class FromPretrained(CheckpointHooks):
             self.model.load_state_dict(state_dict, strict=False)
             self.log(f'load pretrain model from {self.pretrain_model}')
 
+    @classmethod
+    def from_pretrained(cls, pretrain_model, **kwargs):
+        raise NotImplemented
+
 
 class BaseSD(DiProcess):
     model_version = 'sd'
@@ -1034,25 +1038,25 @@ class BaseSD(DiProcess):
             from models.image_generation.sdv1 import Model, Config
 
             if not hasattr(self, 'encoder_fn'):
-                self.encoder_fn = 'openai/clip-vit-large-patch14/vocab.json'
+                self.encoder_fn = 'openai/clip-vit-large-patch14/merges.txt'
             if not hasattr(self, 'vocab_fn'):
-                self.vocab_fn = 'openai/clip-vit-large-patch14/merges.txt'
+                self.vocab_fn = 'openai/clip-vit-large-patch14/vocab.json'
 
         elif 'v2' in self.config_version:
             from models.image_generation.sdv2 import Model, Config
 
             if not hasattr(self, 'encoder_fn'):
-                self.encoder_fn = 'laion/CLIP-ViT-H-14-laion2B-s32B-b79K/vocab.json'
+                self.encoder_fn = 'laion/CLIP-ViT-H-14-laion2B-s32B-b79K/merges.txt'
             if not hasattr(self, 'vocab_fn'):
-                self.vocab_fn = 'laion/CLIP-ViT-H-14-laion2B-s32B-b79K/merges.txt'
+                self.vocab_fn = 'laion/CLIP-ViT-H-14-laion2B-s32B-b79K/vocab.json'
 
         elif 'xl' in self.config_version:
             from models.image_generation.sdxl import Model, Config
 
             if not hasattr(self, 'encoder_fn'):
-                self.encoder_fn = 'openai/clip-vit-large-patch14/vocab.json'
+                self.encoder_fn = 'openai/clip-vit-large-patch14/merges.txt'
             if not hasattr(self, 'vocab_fn'):
-                self.vocab_fn = 'openai/clip-vit-large-patch14/merges.txt'
+                self.vocab_fn = 'openai/clip-vit-large-patch14/vocab.json'
 
         else:
             raise
@@ -1078,7 +1082,7 @@ class BaseSD(DiProcess):
 
     def get_vocab(self):
         from data_parse.nl_data_parse.pre_process.bundled import CLIPTokenizer
-        self.tokenizer = CLIPTokenizer.from_pretrained(self.encoder_fn, self.vocab_fn)
+        self.tokenizer = CLIPTokenizer.from_pretrained(self.vocab_fn, self.encoder_fn)
 
     def set_optimizer(self, **kwargs):
         # self.optimizer = optim.Adam(self.model.parameters(), lr=1e-4, betas=(0.9, 0.99))
@@ -1250,7 +1254,12 @@ class SD(WithLora, WithControlNet, FromPretrained, BaseSD):
 
             from examples.image_generation import SD as Process
 
-            process = Process(pretrain_model='...', encoder_fn='...', vocab_fn='...', config_version='...')
+            process = Process(
+                pretrain_model='...',
+                vocab_fn='xxx/vocab.json',
+                encoder_fn='xxx/merges.txt',
+                config_version='...'
+            )
             process.init()
 
             # txt2img
@@ -1322,7 +1331,7 @@ class SD_SimpleTextImage(SD, SimpleTextImage):
                         attn_type=2,
                     ),
                     backbone_config=dict(
-                        attend_type=2,
+                        attend_type='ScaleAttendWithXformers',
                     )
                 ),
 
@@ -1331,8 +1340,8 @@ class SD_SimpleTextImage(SD, SimpleTextImage):
                     alpha=64
                 ),
 
-                encoder_fn='xxx/vocab.json',
-                vocab_fn='xxx/merges.txt',
+                vocab_fn='xxx/vocab.json',
+                encoder_fn='xxx/merges.txt',
 
                 config_version = 'v1.5',
                 pretrain_model='xxx',

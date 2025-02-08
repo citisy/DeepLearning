@@ -105,7 +105,7 @@ class ControlBlock(nn.Module):
             self,
             in_ch, hint_in_ch, context_dim,
             out_ch=4, unit_dim=320, ch_mult=(1, 2, 4, 4),  # for model
-            use_checkpoint=True, attend_type=ldm.Config.SCALE_ATTEND,  # for resnet and transformers
+            use_checkpoint=True, attend_type='ScaleAttend',  # for resnet and transformers
             num_classes=None, adm_in_channels=None,  # for label_emb
             groups=32, num_res_blocks=2,  # for resnet
             num_heads=None, head_dim=None, transformer_depth=1, use_linear_in_transformer=False, attend_layers=(0, 1, 2),  # for transformers

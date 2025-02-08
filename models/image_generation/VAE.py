@@ -5,7 +5,7 @@ import torch.nn.functional as F
 from torch import nn
 
 from utils import torch_utils
-from .. import attentions, activations
+from .. import attentions, activations, normalizations
 from ..layers import Linear, Conv, Residual
 
 
@@ -92,7 +92,7 @@ class Model(nn.Module):
     scale_factor = 1.
     shift_factor = 0.
 
-    def __init__(self, img_ch, backbone_config=Config.backbone_8x8x64, loss_config=Config.loss, **kwargs):
+    def __init__(self, img_ch=3, backbone_config=Config.backbone_8x8x64, loss_config=Config.loss, **kwargs):
         super().__init__()
         self.__dict__.update(kwargs)
 
@@ -147,7 +147,7 @@ def make_attn(in_channels, attn_type=Config.VANILLA, groups=32):
     return attn_dict.get(attn_type, nn.Identity)(in_channels)
 
 
-make_norm = partial(activations.GroupNorm32, eps=1e-6, affine=True)
+make_norm = partial(normalizations.GroupNorm32, eps=1e-6, affine=True)
 
 
 class Swish(nn.Module):
