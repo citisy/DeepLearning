@@ -127,8 +127,8 @@ class Model(nn.Module):
 
     def decode(self, z):
         z = self.post_quant_conv(z)
-        z = self.decoder(z)
         z = z / self.scale_factor + self.shift_factor
+        z = self.decoder(z)
         return z
 
 

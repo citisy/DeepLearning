@@ -203,10 +203,10 @@ class Model(nn.Module):
         self.head = EmbeddingSim(self.embedding.weight, use_bias=False)
 
     def set_encoder_only(self):
-        del self.t5.decoder_relative_bias
-        del self.t5.decoder
-        del self.t5.decoder_norm
-        del self.t5.head
+        del self.decoder_relative_bias
+        del self.decoder
+        del self.decoder_norm
+        del self.head
 
     def forward(self, x, y=None, seq_lens=None, attention_mask=None, **kwargs):
         context = self.encode(x, attention_mask=attention_mask)
