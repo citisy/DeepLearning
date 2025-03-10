@@ -1,8 +1,9 @@
+import os
+
+from utils import converter, log_utils
 from .bundled import *
 from .data_process import *
 from .model_process import *
-from utils import converter, log_utils
-import os
 
 
 class ProcessConfig:
@@ -239,11 +240,7 @@ class Process(
         if not hasattr(self, 'model') or self.model is None:
             self.set_model()
 
-        if not isinstance(self.device, list):
-            # note that, it must be set device before load_state_dict()
-            self.model.to(self.device)
-
-        self.load_pretrained()
+        self.set_model_status()
         self.models[self.model_name] = self.model
 
         # todo: multi device
@@ -265,6 +262,13 @@ class Process(
         self.log(f'{torch.__version__ = }')
         self.log(f'{self.device = }')
         self.log(f'{self.models.keys() = }')
+
+    def set_model_status(self):
+        if not isinstance(self.device, list):
+            # note that, it must be set device before load_state_dict()
+            self.model.to(self.device)
+
+        self.load_pretrained()
 
     def run(self, max_epoch=100, train_batch_size=16, predict_batch_size=None, fit_kwargs=dict(), metric_kwargs=dict()):
         self.init()

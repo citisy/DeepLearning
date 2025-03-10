@@ -60,6 +60,19 @@ class Config(bundles.Config):
         )
     )
 
+    default_model = 'dev'
+
+    @classmethod
+    def make_full_config(cls) -> dict:
+        return {
+            'dev': dict(
+                t5_config=cls.t5_xxl,
+                clip_config=cls.clip,
+                backbone_config=cls.backbone,
+                vae_config=cls.vae,
+            )
+        }
+
 
 class WeightConverter:
     backbone_convert_dict = {
@@ -119,8 +132,14 @@ class Model(nn.Module):
 
     image_size = (768, 768)
 
-    def __init__(self, t5_config=Config.t5_xxl, clip_config=Config.clip, backbone_config=Config.backbone, vae_config=Config.vae):
+    use_half = True
+    low_memory_run = True
+
+    scale_factor = 0.18215
+
+    def __init__(self, t5_config=Config.t5_xxl, clip_config=Config.clip, backbone_config=Config.backbone, vae_config=Config.vae, **kwargs):
         super().__init__()
+        self.__dict__.update(kwargs)
 
         self.t5 = T5.Model(**t5_config)
         self.t5.set_encoder_only()  # only for inference
@@ -197,7 +216,13 @@ class Model(nn.Module):
             return self.post_process(**kwargs)
 
     def post_process(self, x=None, t5_text_ids=None, clip_text_ids=None, **kwargs):
-        x = self.gen_x_t(t5_text_ids.shape[0])
+        # make x_t
+        if x is None or not len(x):  # txt2img
+            x = self.gen_x_t(t5_text_ids.shape[0])
+
+        else:  # img2img
+            x, z0, i0 = self.make_image_cond(x, **kwargs)
+            kwargs.update(i0=i0)
 
         bs, c, H, W = x.shape
         h = H // 2
@@ -221,14 +246,30 @@ class Model(nn.Module):
 
         x = self.vae.decode(x)
 
-        x = x.clamp(-1, 1)
-        x = rearrange(x[0], "c h w -> h w c")
-        x = 127.5 * (x + 1.0)
-
         return x
 
     def gen_x_t(self, batch_size):
-        return torch.randn((batch_size, self.flow_in_ch, *self.flow_in_size[::-1]), device=self.device, dtype=self.dtype)
+        return torch.randn(
+            (batch_size, self.flow_in_ch, *self.flow_in_size[::-1]),
+            device=self.device, dtype=self.dtype,
+            generator=torch.Generator(device=self.device),  # note, necessary
+        )
+
+    def make_image_cond(self, images, i0=None, noise=None, strength=0.75, **kwargs):
+        z, _, _ = self.vae.encode(images)
+        x0 = self.scale_factor * z
+
+        if i0 is None:
+            i0 = int(strength * self.timesteps)
+
+        timestep_seq = self.make_timesteps(i0)
+        t = timestep_seq[0]
+        t = torch.full((x0.shape[0],), t, device=x0.device, dtype=torch.long)
+        xt = self.q_sample(x0, t, noise=noise)
+        return xt, z, i0
+
+    def q_sample(self, x0, t, noise=None):
+        raise NotImplementedError
 
     def make_timesteps(self, image_seq_len, base_shift=0.5, max_shift=1.15, shift=True) -> list[float]:
         def get_lin_function(x1=256., y1=0.5, x2=4096., y2=1.15):
@@ -412,37 +453,14 @@ class FluxRotaryAttendWrapper(nn.Module):
 
     def forward(self, q, k, v, embedding_kwargs=dict(), **attend_kwargs):
         """
-        in(q|k|v): (b n s d)
-        out(attn): (b n s d)
+        in(q|k|v): (b n s*d)
+        out(attn): (b n s*d)
         """
         q = self.embedding(q, **embedding_kwargs)
         k = self.embedding(k, **embedding_kwargs)
         attn = self.base_layer(q, k, v, **attend_kwargs)
         attn = rearrange(attn, "B H L D -> B L (H D)")
         return attn
-
-
-@dataclass
-class ModulationOut:
-    shift: Tensor
-    scale: Tensor
-    gate: Tensor
-
-
-class Modulation(nn.Module):
-    def __init__(self, dim: int, double: bool):
-        super().__init__()
-        self.is_double = double
-        self.multiplier = 6 if double else 3
-        self.lin = nn.Linear(dim, self.multiplier * dim)
-
-    def forward(self, vec: Tensor) -> tuple[ModulationOut, ModulationOut | None]:
-        out = self.lin(nn.functional.silu(vec))[:, None, :].chunk(self.multiplier, dim=-1)
-
-        return (
-            ModulationOut(*out[:3]),
-            ModulationOut(*out[3:]) if self.is_double else None,
-        )
 
 
 class DoubleStreamBlock(nn.Module):
@@ -544,6 +562,29 @@ class CondStreamBlock(nn.Module):
         if self.double:
             x = x + mod2.gate * self.mlp((1 + mod2.scale) * self.norm2(x) + mod2.shift)
         return x
+
+
+@dataclass
+class ModulationOut:
+    shift: Tensor
+    scale: Tensor
+    gate: Tensor
+
+
+class Modulation(nn.Module):
+    def __init__(self, dim: int, double: bool):
+        super().__init__()
+        self.is_double = double
+        self.multiplier = 6 if double else 3
+        self.lin = nn.Linear(dim, self.multiplier * dim)
+
+    def forward(self, vec: Tensor) -> tuple[ModulationOut, ModulationOut | None]:
+        out = self.lin(nn.functional.silu(vec))[:, None, :].chunk(self.multiplier, dim=-1)
+
+        return (
+            ModulationOut(*out[:3]),
+            ModulationOut(*out[3:]) if self.is_double else None,
+        )
 
 
 class Head(nn.Module):

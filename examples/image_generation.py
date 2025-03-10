@@ -761,6 +761,17 @@ class DiProcess(IgProcess):
 
         return model_results
 
+    def add_watermark(self, images, watermark='watermark'):
+        """be safe, add watermark for images
+        see https://github.com/ShieldMnt/invisible-watermark"""
+        from imwatermark import WatermarkEncoder
+
+        wm_encoder = WatermarkEncoder()
+        wm_encoder.set_watermark('bytes', watermark.encode('utf-8'))
+
+        images = [wm_encoder.encode(image, 'dwtDct') for image in images]
+        return images
+
 
 class Ddpm(DiProcess):
     model_version = 'Ddpm'
@@ -832,7 +843,7 @@ class Ddim_CelebAHQ(Dpim, CelebAHQ):
     """
 
 
-class WithLora(Process):
+class WithSDLora(Process):
     use_lora = False
     use_half_lora = False
     lora_wrap: 'models.tuning.lora.ModelWrap'
@@ -917,7 +928,7 @@ class WithLora(Process):
         return state_dict
 
 
-class WithControlNet(Process):
+class WithSDControlNet(Process):
     use_control_net = False
     control_net_wrap: 'models.tuning.control_net.ModelWrap'
     control_net_pretrain_model: str
@@ -994,7 +1005,7 @@ class WithControlNet(Process):
         return model_inputs
 
 
-class FromPretrained(CheckpointHooks):
+class FromSDPretrained(CheckpointHooks):
     config_version = 'v1'  # for config choose
 
     def load_pretrained(self):
@@ -1234,19 +1245,8 @@ class BaseSD(DiProcess):
                     self.add_watermark(items, watermark)
                 r.setdefault(n, []).extend(items)
 
-    def add_watermark(self, images, watermark='watermark'):
-        """be safe, add watermark for images
-        see https://github.com/ShieldMnt/invisible-watermark"""
-        from imwatermark import WatermarkEncoder
 
-        wm_encoder = WatermarkEncoder()
-        wm_encoder.set_watermark('bytes', watermark.encode('utf-8'))
-
-        images = [wm_encoder.encode(image, 'dwtDct') for image in images]
-        return images
-
-
-class SD(WithLora, WithControlNet, FromPretrained, BaseSD):
+class SD(WithSDLora, WithSDControlNet, FromSDPretrained, BaseSD):
     """no training, only for prediction
 
     Usage:
@@ -1352,4 +1352,208 @@ class SD_SimpleTextImage(SD, SimpleTextImage):
                 fit_kwargs=dict(check_period=1000, max_save_weight_num=10),
                 metric_kwargs=dict(is_visualize=True),
             )
+    """
+
+
+class BaseFlux(DiProcess):
+    model_version = 'flux'
+    config_version: str = 'dev'
+
+    in_ch = 3
+    input_size = 768
+
+    model_config: dict = {}
+
+    def set_model(self):
+        from models.image_generation.flux import Model, Config
+
+        model_config = configs.ConfigObjParse.merge_dict(Config.get(self.config_version), self.model_config)
+        with torch.device('meta'):  # fast to init model
+            self.model = Model(**model_config)
+
+        self.model._device = self.device  # explicitly define the device for the model
+
+        self.get_vocab()
+
+    low_memory_run = False
+    use_half = False
+
+    def set_model_status(self):
+        self.load_pretrained()
+        if self.low_memory_run:
+            self.model.set_low_memory_run()
+        else:
+            if not isinstance(self.device, list):
+                # note that, it must be set device before load_state_dict()
+                self.model.to(self.device)
+
+        if self.use_half:
+            self.model.set_half()
+
+    clip_tokenizer: 'CLIPTokenizer'
+    clip_vocab_fn: str
+    clip_encoder_fn: str
+
+    t5_tokenizer: 'T5Tokenizer'
+    t5_vocab_fn: str
+    t5_encoder_fn: str
+
+    def get_vocab(self):
+        from data_parse.nl_data_parse.pre_process.bundled import CLIPTokenizer, T5Tokenizer
+
+        self.clip_tokenizer = CLIPTokenizer.from_pretrained(
+            self.clip_vocab_fn,
+            self.clip_encoder_fn,
+            max_seq_len=77
+        )
+
+        self.t5_tokenizer = T5Tokenizer.from_pretrained(
+            self.t5_vocab_fn,
+            self.t5_encoder_fn,
+            max_seq_len=512
+        )
+
+    def get_model_inputs(self, rets, train=True):
+        if train:
+            raise NotImplementedError
+        else:
+            return self.get_model_val_inputs(rets)
+
+    def get_model_val_inputs(self, rets):
+        texts = []
+        images = []
+        mask_images = []
+        for ret in rets:
+            if 'text' in ret:
+                texts.append(ret['text'])
+
+            if 'image' in ret and ret['image'] is not None:
+                image = ret.pop('image')
+                if image.shape[0] == 4:
+                    image, mask_image = image[:-1], image[-1:]
+                    if 'mask_image' not in ret or ret['mask_image'] is None:
+                        mask_images.append(torch.from_numpy(mask_image).to(self.device, non_blocking=True, dtype=torch.float))
+
+                images.append(torch.from_numpy(image).to(self.device, non_blocking=True, dtype=torch.float))
+
+        inputs = self.clip_tokenizer.encode_paragraphs(texts, auto_pad=False)
+        clip_text_ids = torch.tensor(inputs['segments_ids']).to(self.device)
+
+        inputs = self.t5_tokenizer.encode_paragraphs(texts, auto_pad=False)
+        t5_text_ids = torch.tensor(inputs['segments_ids']).to(self.device)
+
+        if images:
+            images = torch.stack(images)
+            images /= 255.
+            images = images * 2 - 1  # normalize, [0, 1] -> [-1, 1]
+
+        if mask_images:
+            mask_images = torch.stack(mask_images)
+            mask_images /= 255
+
+        return dict(
+            clip_text_ids=clip_text_ids,
+            t5_text_ids=t5_text_ids,
+            x=images,
+        )
+
+    model_input_template = namedtuple('model_inputs', ['text', 'image'], defaults=[None, None])
+
+    def gen_predict_inputs(self, *objs, images=None, start_idx=None, end_idx=None, **kwargs):
+        """
+
+        Args:
+            *objs:
+            images (str|List[str]|np.ndarray|List[np.ndarray]):
+            start_idx:
+            end_idx:
+            **kwargs:
+
+        Returns:
+
+        """
+        pos_texts = objs[0][start_idx: end_idx]
+        b = len(pos_texts)
+
+        images = _load_images(images, b, start_idx, end_idx)
+
+        rets = []
+        for text, image in zip(pos_texts, images):
+            rets.append(self.model_input_template(image=image, text=text)._asdict())
+
+        return rets
+
+    def on_predict_reprocess(self, rets, model_results, add_watermark=True, watermark='watermark', **kwargs):
+        for name, results in model_results.items():
+            r = self.predict_container['model_results'].setdefault(name, dict())
+            for n, items in results.items():
+                items[..., :] = items[..., ::-1]  # note, official model output is Image type, must convert to cv2 type
+                if add_watermark:
+                    self.add_watermark(items, watermark)
+                r.setdefault(n, []).extend(items)
+
+
+class FromFluxPretrained(CheckpointHooks):
+    clip_text_encoder_pretrained: str
+    t5_text_encoder_pretrained: List[str]
+    flux_pretrained: str
+    vae_pretrained: str
+
+    def load_pretrained(self):
+        from models.image_generation.flux import WeightConverter
+
+        t5_tensors = {}
+        for s in self.t5_text_encoder_pretrained:
+            t5_tensors.update(torch_utils.Load.from_file(s))
+
+        state_dicts = {
+            "t5": t5_tensors,
+            "clip": torch_utils.Load.from_file(self.clip_text_encoder_pretrained),
+            "flux": torch_utils.Load.from_file(self.flux_pretrained),
+            "vae": torch_utils.Load.from_file(self.vae_pretrained),
+        }
+
+        state_dict = WeightConverter.from_official(state_dicts)
+        self.model.load_state_dict(state_dict, strict=False, assign=True)
+
+        self.log(f'Loaded pretrain model')
+
+
+class Flux(FromFluxPretrained, BaseFlux):
+    """no training, only for prediction
+
+    Usage:
+        .. code-block:: python
+
+            from examples.image_generation import Flux as Process
+
+            process = Process(
+                clip_vocab_fn='xxx/tokenizer/vocab.json',
+                clip_encoder_fn='xxx/tokenizer/merges.txt',
+
+                t5_vocab_fn='xxx/tokenizer_2/tokenizer.json',
+                t5_encoder_fn='xxx/tokenizer_2/spiece.model',
+
+                clip_text_encoder_pretrained='xxx/text_encoder/model.safetensors',
+                t5_text_encoder_pretrained=[
+                    'xxx/text_encoder_2/model-00001-of-00002.safetensors',
+                    'xxx/text_encoder_2/model-00002-of-00002.safetensors'
+                ],
+                flux_pretrained='xxx/flux1-dev.safetensors',
+                vae_pretrained='xxx/ae.safetensors',
+
+                low_memory_run=True,
+                use_half=True,
+            )
+            process.init()
+
+            # txt2img
+            prompt = 'a painting of a virus monster playing guitar'
+            prompts = ['a painting of a virus monster playing guitar', 'a painting of two virus monster playing guitar']
+
+            # predict one
+            image = process.single_predict(prompt, is_visualize=True)
+
+            # predict batch
+            images = process.batch_predict(prompts, batch_size=2, is_visualize=True)
     """
