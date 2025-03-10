@@ -279,22 +279,31 @@ class FastererRCNN_Voc(OdProcess, Voc):
 
 class YoloV5(OdProcess):
     model_version = 'YoloV5'
+    config_version = 'yolov5l'
 
     def set_model(self):
         """use auto anchors
         from models.object_detection.YoloV5 import Model, Config
-        head_config = Config.auto_anchors(self.get_train_data(), input_size)
+        head_config = Config.auto_anchors(self.get_train_data(), self.input_size)
         self.model = Model(
             self.n_classes,
             in_module_config=dict(in_ch=self.in_ch, input_size=self.input_size),
             head_config=head_config
         )
         """
-        from models.object_detection.YoloV5 import Model
-        self.model = Model(
-            self.n_classes,
-            in_module_config=dict(in_ch=self.in_ch, input_size=self.input_size),
+        from models.object_detection.YoloV5 import Model, Config
+
+        model_config = Config.get(self.config_version)
+        model_config.update(
+            n_classes=self.n_classes
         )
+        in_module_config = model_config['in_module_config']
+        in_module_config.update(
+            in_ch=self.in_ch,
+            input_size=self.input_size
+        )
+
+        self.model = Model(**model_config)
 
     def set_optimizer(self, lr=0.01, momentum=0.937, **kwargs):
         g = [], [], []  # optimizer parameter groups
@@ -318,10 +327,20 @@ class YoloV5(OdProcess):
 
 class Yolov5Aug(OdDataProcess):
     """use Mosaic data augment"""
+    aug = RandomApply([geometry.HFlip()])
 
-    def train_data_augment(self, ret):
-        # note, there do not need to reshape the size of image
-        ret.update(RandomApply([geometry.HFlip()])(**ret))
+    post_aug = Apply([
+        scale.LetterBox(),
+        # pixel_perturbation.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+        channel.HWC2CHW()
+    ])
+
+    def data_augment(self, ret, train=True) -> dict:
+        if train:
+            ret.update(self.aug(**ret))
+        else:
+            ret.update(dst=self.input_size)
+            ret.update(self.post_aug(**ret))
         return ret
 
     mosaic_prob = 0.5
@@ -356,12 +375,12 @@ class Yolov5Aug(OdDataProcess):
             ret = base_process(idx)
 
         ret.update(dst=self.input_size)
-        ret.update(Apply([
-            scale.LetterBox(),
-            # pixel_perturbation.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-            channel.HWC2CHW()
-        ])(**ret))
+        ret.update(self.post_aug(**ret))
 
+        return ret
+
+    def val_data_restore(self, ret):
+        ret = scale.LetterBox().restore(ret)
         return ret
 
 
@@ -389,22 +408,66 @@ class Yolov5Dataset(Yolov5Aug):
     def get_data(self, *args, train=True, **kwargs):
         from data_parse.cv_data_parse.datasets.YoloV5 import Loader, DataRegister
 
-        convert_func = lambda ret: cv_utils.CoordinateConvert.mid_xywh2top_xyxy(
-            ret['bboxes'],
-            wh=(ret['image'].shape[1], ret['image'].shape[0]),
-            blow_up=True
-        )
+        def convert_func(ret):
+            if isinstance(ret['image'], np.ndarray):
+                h, w, c = ret['image'].shape
+                ret['bboxes'] = cv_utils.CoordinateConvert.mid_xywh2top_xyxy(ret['bboxes'], wh=(w, h), blow_up=True)
+
+            return ret
 
         loader = Loader(self.data_dir)
         loader.on_end_convert = convert_func
 
         if train:
-            return loader(set_type=DataRegister.TRAIN, image_type=DataRegister.PATH, generator=False, sub_dir='')[0]
+            return loader(set_type=DataRegister.TRAIN, image_type=DataRegister.ARRAY, generator=False, **kwargs)[0]
         else:
-            return loader(set_type=DataRegister.VAL, image_type=DataRegister.PATH, generator=False, sub_dir='')[0]
+            return loader(set_type=DataRegister.VAL, image_type=DataRegister.ARRAY, generator=False, **kwargs)[0]
 
 
 class YoloV5_yolov5(YoloV5, Yolov5Dataset):
+    """
+    Usage:
+        .. code-block:: python
+
+        from examples.object_detection import YoloV5_yolov5 as Process
+
+        max_epoch = 21
+        train_batch_size = 32
+        predict_batch_size = None
+        check_period = 3
+        process = Process(
+            # use_wandb=True,
+            model_version='xxx',
+            dataset_version='xxx',
+            data_dir='xxx',
+            classes=[...],
+        )
+
+        process.init()
+
+        ####### train ###########
+        process.fit(
+            max_epoch=max_epoch, batch_size=train_batch_size, check_period=check_period,
+            data_get_kwargs=dict(...),
+            dataloader_kwargs=dict(num_workers=min(train_batch_size, 16)),
+            metric_kwargs=dict(is_visualize=True, max_vis_num=8),
+        )
+        process.save(process.default_model_path)
+
+        ######## val ##########
+        process.load(f'{process.work_dir}/last.pth')
+
+        r = process.metric(
+            batch_size=predict_batch_size or train_batch_size,
+            num_workers=16,
+            is_visualize=True,
+            max_vis_num=8,
+            data_get_kwargs=dict(...),
+        )
+        for k, v in r.items():
+            print(k)
+            print(v)
+    """
     def __init__(self, classes=None, **kwargs):
         kwargs.setdefault('n_classes', len(classes))
         super().__init__(**kwargs)

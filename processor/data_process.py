@@ -254,7 +254,7 @@ class DataHooks:
             train_dataset = self.train_dataset_ins(
                 train_data,
                 augment_func=self.train_data_augment,
-                complex_augment_func=self.__dict__.get('complex_data_augment')
+                complex_augment_func=getattr(self, 'complex_data_augment')
             )
         else:
             train_dataset = train_data

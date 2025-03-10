@@ -558,6 +558,7 @@ class Head(nn.Module):
 class AutoAnchor:
     def __init__(self, iter_data, img_size=640,
                  thr=4.0, min_bpr=0.98, mutation_prob=0.9, sigma=0.1, device=None,
+                 is_ref_bboxes=True,
                  verbose=True, stdout_method=print):
         self.stdout_method = stdout_method if verbose else os_lib.FakeIo()
         self.img_size = img_size
@@ -572,22 +573,25 @@ class AutoAnchor:
         bboxes = np.concatenate(bboxes)
         ref_bboxes_wh = bboxes[:, -2:]
 
-        ori_image_wh = []
-        for ret in tqdm(iter_data, desc=visualize.TextVisualize.highlight_str('Load auto-anchor data')):
-            if 'image_size' in ret:
-                ori_image_wh.append(ret['image_size'][:2][::-1])
-            else:
-                image = ret['image']
-                if not isinstance(image, np.ndarray):
-                    image = cv2.imread(image)
-                ori_image_wh.append(image.shape[:2][::-1])
+        if is_ref_bboxes:
+            ori_image_wh = []
+            for ret in tqdm(iter_data, desc=visualize.TextVisualize.highlight_str('Load auto-anchor data')):
+                if 'image_size' in ret:
+                    ori_image_wh.append(ret['image_size'][:2][::-1])
+                else:
+                    image = ret['image']
+                    if not isinstance(image, np.ndarray):
+                        image = cv2.imread(image)
+                    ori_image_wh.append(image.shape[:2][::-1])
 
-        ori_image_wh = np.array(ori_image_wh)
-        scale_image_wh = img_size * ori_image_wh / ori_image_wh.max(1, keepdims=True)
-        scale_image_wh = np.concatenate([np.repeat(scale_image_wh[i][None, :], len(ret['bboxes']), axis=0) for i, ret in enumerate(iter_data)])
-        self.scale_image_wh = scale_image_wh
-        self.abs_bboxes_wh = scale_image_wh * ref_bboxes_wh
-        self.ref_bboxes_wh = ref_bboxes_wh
+            ori_image_wh = np.array(ori_image_wh)
+            scale_image_wh = img_size * ori_image_wh / ori_image_wh.max(1, keepdims=True)
+            scale_image_wh = np.concatenate([np.repeat(scale_image_wh[i][None, :], len(ret['bboxes']), axis=0) for i, ret in enumerate(iter_data)])
+            self.scale_image_wh = scale_image_wh
+            self.abs_bboxes_wh = scale_image_wh * ref_bboxes_wh
+        else:
+            self.scale_image_wh = np.ones_like(ref_bboxes_wh)
+            self.abs_bboxes_wh = ref_bboxes_wh
 
     def run(self, anchors, stride):
         anchors = np.array(anchors)
