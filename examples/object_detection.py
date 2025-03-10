@@ -1,16 +1,15 @@
 import cv2
 import copy
-import math
 import numpy as np
 import torch
 from torch import optim, nn
 from metrics import object_detection
-from data_parse.cv_data_parse.data_augmentation import crop, scale, geometry, channel, RandomApply, Apply, complex
+from data_parse.cv_data_parse.data_augmentation import scale, geometry, channel, RandomApply, Apply, complex
 from data_parse import DataRegister
 from pathlib import Path
-from data_parse.cv_data_parse.base import DataVisualizer
+from data_parse.cv_data_parse.datasets.base import DataVisualizer
 from processor import Process, DataHooks, bundled, BaseImgDataset
-from utils import configs, cv_utils, torch_utils
+from utils import configs, cv_utils
 
 
 class OdDataset(BaseImgDataset):
@@ -216,7 +215,7 @@ class Voc(OdDataProcess):
     cls_alias: dict
 
     def get_data(self, *args, train=True, **kwargs):
-        from data_parse.cv_data_parse.Voc import Loader
+        from data_parse.cv_data_parse.datasets.Voc import Loader
 
         loader = Loader(self.data_dir)
         self.cls_alias = loader.classes
@@ -388,7 +387,7 @@ class Yolov5Dataset(Yolov5Aug):
     input_size = 640  # special input_size from official yolov5
 
     def get_data(self, *args, train=True, **kwargs):
-        from data_parse.cv_data_parse.YoloV5 import Loader, DataRegister
+        from data_parse.cv_data_parse.datasets.YoloV5 import Loader, DataRegister
 
         convert_func = lambda ret: cv_utils.CoordinateConvert.mid_xywh2top_xyxy(
             ret['bboxes'],

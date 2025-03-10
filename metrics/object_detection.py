@@ -1,5 +1,5 @@
 import numpy as np
-from typing import List, Iterable, Iterator
+from typing import List, Iterable
 from tqdm import tqdm
 from utils import os_lib
 
@@ -922,7 +922,7 @@ class EasyMetric:
 
         """
         from utils import os_lib
-        from data_parse.cv_data_parse.base import DataVisualizer
+        from data_parse.cv_data_parse.datasets.base import DataVisualizer
 
         image_dir = image_dir if image_dir is not None else f'{data_dir}/images'
         save_res_dir = save_res_dir if save_res_dir is not None else f'{data_dir}/visuals/false_samples'
@@ -1009,7 +1009,7 @@ class EasyMetric:
         """
 
         from utils import os_lib
-        from data_parse.cv_data_parse.base import DataVisualizer
+        from data_parse.cv_data_parse.datasets.base import DataVisualizer
 
         image_dir = image_dir if image_dir is not None else f'{data_dir}/images'
         save_res_dir = save_res_dir if save_res_dir is not None else f'{data_dir}/visuals/diff_samples'

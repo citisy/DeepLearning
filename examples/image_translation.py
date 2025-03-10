@@ -1,11 +1,11 @@
 import itertools
 import torch
-from torch import optim, nn
-from data_parse.cv_data_parse.data_augmentation import crop, scale, geometry, channel, RandomApply, Apply, complex, pixel_perturbation
+from torch import optim
+from data_parse.cv_data_parse.data_augmentation import scale, channel, Apply, pixel_perturbation
 from data_parse import DataRegister
-from processor import Process, DataHooks
+from processor import DataHooks
 from .image_generation import GanProcess, GanOptimizer
-from utils import configs, cv_utils, os_lib, log_utils
+from utils import os_lib
 
 
 class Facade(DataHooks):
@@ -19,7 +19,7 @@ class Facade(DataHooks):
     in_ch = 3
 
     def get_data(self, *args, train=True, **kwargs):
-        from data_parse.cv_data_parse.cmp_facade import Loader
+        from data_parse.cv_data_parse.datasets.cmp_facade import Loader
         loader = Loader(self.data_dir)
 
         if train:

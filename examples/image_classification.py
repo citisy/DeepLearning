@@ -5,7 +5,7 @@ import numpy as np
 import torch
 from torch import optim
 
-from data_parse.cv_data_parse.base import DataVisualizer, DataRegister
+from data_parse.cv_data_parse.datasets.base import DataVisualizer, DataRegister
 from data_parse.cv_data_parse.data_augmentation import scale, geometry, channel, RandomApply, Apply, pixel_perturbation
 from processor import Process, DataHooks, bundled
 
@@ -93,7 +93,7 @@ class Mnist(DataHooks):
     out_features = 10
 
     def get_data(self, *args, train=True, **kwargs):
-        from data_parse.cv_data_parse.Mnist import Loader
+        from data_parse.cv_data_parse.datasets.Mnist import Loader
 
         loader = Loader(self.data_dir)
         if train:
@@ -129,7 +129,7 @@ class Cifar(DataHooks):
     out_features = 10
 
     def get_data(self, *args, train=True, **kwargs):
-        from data_parse.cv_data_parse.Cifar import Loader
+        from data_parse.cv_data_parse.datasets.Cifar import Loader
 
         loader = Loader(self.data_dir)
         if train:
@@ -147,7 +147,7 @@ class ImageNet(DataHooks):
     out_features = 2
 
     def get_data(self, *args, train=True, **kwargs):
-        from data_parse.cv_data_parse.ImageNet import Loader
+        from data_parse.cv_data_parse.datasets.ImageNet import Loader
 
         convert_class = {7: 0, 40: 1}
 

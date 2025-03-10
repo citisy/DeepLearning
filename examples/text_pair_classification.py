@@ -11,7 +11,7 @@ class MNLI(TextPairProcessForBert):
     n_classes = 3
 
     def get_data(self, *args, train=True, task='matched', **kwargs):
-        from data_parse.nl_data_parse.MNLI import Loader, DataRegister
+        from data_parse.nl_data_parse.datasets.MNLI import Loader, DataRegister
         loader = Loader(self.data_dir)
 
         if train:
@@ -29,7 +29,7 @@ class QQP(TextPairProcessForBert):
     n_classes = 2
 
     def get_data(self, *args, train=True, **kwargs):
-        from data_parse.nl_data_parse.QQP import Loader, DataRegister
+        from data_parse.nl_data_parse.datasets.QQP import Loader, DataRegister
         loader = Loader(self.data_dir)
 
         if train:
@@ -47,7 +47,7 @@ class QNLI(TextPairProcessForBert):
     n_classes = 2
 
     def get_data(self, *args, train=True, **kwargs):
-        from data_parse.nl_data_parse.QNLI import Loader, DataRegister
+        from data_parse.nl_data_parse.datasets.QNLI import Loader, DataRegister
         loader = Loader(self.data_dir)
         if train:
             return loader.load(set_type=DataRegister.TRAIN, max_size=self.train_data_num, generator=False)[0]
@@ -64,7 +64,7 @@ class MRPC(TextPairProcessForBert):
     n_classes = 2
 
     def get_data(self, *args, train=True, **kwargs):
-        from data_parse.nl_data_parse.MRPC import Loader, DataRegister
+        from data_parse.nl_data_parse.datasets.MRPC import Loader, DataRegister
         loader = Loader(self.data_dir)
         if train:
             return loader.load(set_type=DataRegister.TRAIN, max_size=self.train_data_num, generator=False)[0]
@@ -81,7 +81,7 @@ class RTE(TextPairProcessForBert):
     n_classes = 2
 
     def get_data(self, *args, train=True, **kwargs):
-        from data_parse.nl_data_parse.RTE import Loader, DataRegister
+        from data_parse.nl_data_parse.datasets.RTE import Loader, DataRegister
         loader = Loader(self.data_dir)
         if train:
             return loader.load(set_type=DataRegister.TRAIN, max_size=self.train_data_num, generator=False)[0]

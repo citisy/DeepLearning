@@ -10,7 +10,7 @@ from torch import optim
 from torch.utils.data import Dataset
 
 from data_parse import DataRegister
-from data_parse.cv_data_parse.base import DataVisualizer
+from data_parse.cv_data_parse.datasets.base import DataVisualizer
 from data_parse.cv_data_parse.data_augmentation import crop, scale, geometry, channel, RandomApply, Apply, pixel_perturbation, Lambda
 from processor import Process, DataHooks, bundled, model_process, BatchIterImgDataset, CheckpointHooks
 from utils import os_lib, torch_utils, configs
@@ -193,7 +193,7 @@ class Mnist(DataHooks):
     in_ch = 3
 
     def get_train_data(self):
-        from data_parse.cv_data_parse.Mnist import Loader
+        from data_parse.cv_data_parse.datasets.Mnist import Loader
 
         loader = Loader(self.data_dir)
         return loader(set_type=DataRegister.TRAIN, image_type=DataRegister.ARRAY, generator=False)[0]
@@ -357,7 +357,7 @@ class Lsun(DataProcess):
     in_ch = 3
 
     def get_train_data(self, *args, **kwargs):
-        from data_parse.cv_data_parse.lsun import Loader
+        from data_parse.cv_data_parse.datasets.lsun import Loader
 
         loader = Loader(self.data_dir)
 
@@ -376,7 +376,7 @@ class CelebA(DataProcess):
     in_ch = 3
 
     def get_train_data(self, *args, **kwargs):
-        from data_parse.cv_data_parse.CelebA import ZipLoader as Loader
+        from data_parse.cv_data_parse.datasets.CelebA import ZipLoader as Loader
 
         loader = Loader(self.data_dir)
         iter_data = loader.load(
@@ -413,7 +413,7 @@ class IterCelebA(DataProcess):
                 saver([[batch_rets]], task='img_align_celeba_bind')
                 batch_rets = []
         """
-        from data_parse.cv_data_parse.SimpleGridImage import Loader
+        from data_parse.cv_data_parse.datasets.SimpleGridImage import Loader
 
         loader = Loader(self.data_dir, image_suffix='.jpg')
         return lambda: loader.load(generator=False, task='img_align_celeba_bind', size=(178, 218), max_size=self.train_data_num)[0]
@@ -428,7 +428,7 @@ class CelebAHQ(DataProcess):
     in_ch = 3
 
     def get_train_data(self, *args, **kwargs):
-        from data_parse.cv_data_parse.CelebAHQ import ZipLoader as Loader
+        from data_parse.cv_data_parse.datasets.CelebAHQ import ZipLoader as Loader
 
         loader = Loader(self.data_dir)
         iter_data = loader.load(
@@ -776,6 +776,15 @@ class DiProcess(IgProcess):
             )
 
         return model_results
+
+    def on_predict_reprocess(self, rets, model_results, add_watermark=True, watermark='watermark', **kwargs):
+        for name, results in model_results.items():
+            r = self.predict_container['model_results'].setdefault(name, dict())
+            for n, items in results.items():
+                items[..., :] = items[..., ::-1]  # note, official model output is Image type, must convert to cv2 type
+                if add_watermark:
+                    self.add_watermark(items, watermark)
+                r.setdefault(n, []).extend(items)
 
     def add_watermark(self, images, watermark='watermark'):
         """be safe, add watermark for images
@@ -1246,15 +1255,6 @@ class BaseSD(DiProcess):
 
         return rets
 
-    def on_predict_reprocess(self, rets, model_results, add_watermark=True, watermark='watermark', **kwargs):
-        for name, results in model_results.items():
-            r = self.predict_container['model_results'].setdefault(name, dict())
-            for n, items in results.items():
-                items[..., :] = items[..., ::-1]  # note, official model output is Image type, must convert to cv2 type
-                if add_watermark:
-                    self.add_watermark(items, watermark)
-                r.setdefault(n, []).extend(items)
-
 
 class SD(WithSDLora, WithSDControlNet, FromSDPretrained, BaseSD):
     """no training, only for prediction
@@ -1306,7 +1306,7 @@ class SimpleTextImage(DataProcess):
     in_ch = 3
 
     def get_train_data(self, *args, task='images', text_task='texts', **kwargs):
-        from data_parse.cv_data_parse.SimpleTextImage import Loader
+        from data_parse.cv_data_parse.datasets.SimpleTextImage import Loader
 
         loader = Loader(self.data_dir, image_suffix='.png')
         iter_data = loader.load(
@@ -1473,15 +1473,6 @@ class BaseFlux(DiProcess):
             rets.append(self.model_input_template(image=image, text=text)._asdict())
 
         return rets
-
-    def on_predict_reprocess(self, rets, model_results, add_watermark=True, watermark='watermark', **kwargs):
-        for name, results in model_results.items():
-            r = self.predict_container['model_results'].setdefault(name, dict())
-            for n, items in results.items():
-                items[..., :] = items[..., ::-1]  # note, official model output is Image type, must convert to cv2 type
-                if add_watermark:
-                    self.add_watermark(items, watermark)
-                r.setdefault(n, []).extend(items)
 
 
 class FromFluxPretrained(CheckpointHooks):

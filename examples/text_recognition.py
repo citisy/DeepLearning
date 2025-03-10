@@ -1,11 +1,11 @@
 import cv2
 import torch
-from torch import optim, nn
+from torch import optim
 from metrics import text_generation
-from data_parse.cv_data_parse.data_augmentation import crop, scale, geometry, channel, RandomApply, Apply, complex, pixel_perturbation
+from data_parse.cv_data_parse.data_augmentation import crop, scale, channel, RandomApply, Apply, pixel_perturbation
 from data_parse import DataRegister
 from pathlib import Path
-from data_parse.cv_data_parse.base import DataVisualizer
+from data_parse.cv_data_parse.datasets.base import DataVisualizer
 from processor import Process, DataHooks, bundled, BaseImgDataset, MixDataset, IterImgDataset
 from utils import os_lib
 
@@ -130,13 +130,13 @@ class MJSynth(DataProcess):
     max_seq_len = 25
 
     def make_vocab(self):
-        from data_parse.cv_data_parse.MJSynth import Loader
+        from data_parse.cv_data_parse.datasets.MJSynth import Loader
         vocab = [' '] + Loader.lower_char_list
         self.save_vocab(vocab)
         return vocab
 
     def get_data(self, *args, train=True, **kwargs):
-        from data_parse.cv_data_parse.MJSynth import Loader
+        from data_parse.cv_data_parse.datasets.MJSynth import Loader
 
         loader = Loader(self.data_dir)
         if train:
@@ -166,12 +166,12 @@ class SynthText(DataProcess):
     max_seq_len = 25
 
     def make_vocab(self):
-        from data_parse.cv_data_parse.SynthOcrText import Loader
+        from data_parse.cv_data_parse.datasets.SynthOcrText import Loader
         loader = Loader(self.data_dir, verbose=False)
         return loader.get_char_list()
 
     def get_data(self, *args, train=True, **kwargs):
-        from data_parse.cv_data_parse.SynthOcrText import Loader
+        from data_parse.cv_data_parse.datasets.SynthOcrText import Loader
 
         loader = Loader(self.data_dir, verbose=False)
         if train:
@@ -199,10 +199,10 @@ class MixMJSynthSynthText(DataProcess):
     max_seq_len = 25
 
     def make_vocab(self):
-        from data_parse.cv_data_parse.MJSynth import Loader
+        from data_parse.cv_data_parse.datasets.MJSynth import Loader
         loader1 = Loader(self.data_dir1)
 
-        from data_parse.cv_data_parse.SynthOcrText import Loader
+        from data_parse.cv_data_parse.datasets.SynthOcrText import Loader
         loader2 = Loader(self.data_dir2, verbose=False)
 
         char_set = set(loader1.char_list)
@@ -211,7 +211,7 @@ class MixMJSynthSynthText(DataProcess):
         return list(char_set)
 
     def get_data(self, *args, train=True, **kwargs):
-        from data_parse.cv_data_parse.MJSynth import Loader
+        from data_parse.cv_data_parse.datasets.MJSynth import Loader
 
         loader1 = Loader(self.data_dir1)
         if train:
@@ -221,7 +221,7 @@ class MixMJSynthSynthText(DataProcess):
                 max_size=num,
             )[0]
 
-            from data_parse.cv_data_parse.SynthOcrText import Loader
+            from data_parse.cv_data_parse.datasets.SynthOcrText import Loader
 
             loader2 = Loader(self.data_dir2, verbose=False)
             num = int(self.train_data_num * self.dataset_ratio[1])

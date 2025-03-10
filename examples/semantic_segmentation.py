@@ -8,7 +8,7 @@ import torch
 from PIL import Image
 from torch import optim
 
-from data_parse.cv_data_parse.base import DataVisualizer
+from data_parse.cv_data_parse.datasets.base import DataVisualizer
 from data_parse.cv_data_parse.data_augmentation import scale, geometry, channel, RandomApply, Apply, pixel_perturbation
 from processor import Process, DataHooks, bundled, BaseImgDataset
 from utils import visualize, configs, torch_utils, os_lib
@@ -225,7 +225,7 @@ class Voc(SegDataProcess):
     ])
 
     def get_data(self, *args, train=True, **kwargs):
-        from data_parse.cv_data_parse.Voc import Loader, DataRegister, SEG_CLS
+        from data_parse.cv_data_parse.datasets.Voc import Loader, DataRegister, SEG_CLS
 
         loader = Loader(self.data_dir)
         if train:

@@ -146,7 +146,7 @@ class EasyMetric:
 
     def det_checkout_false_sample(self, gt_iter_data, det_iter_data, data_dir='checkout_data', image_dir=None, save_res_dir=None):
         from utils import os_lib, visualize
-        from data_parse.cv_data_parse.base import DataVisualizer
+        from data_parse.cv_data_parse.datasets.base import DataVisualizer
 
         image_dir = image_dir if image_dir is not None else f'{data_dir}/images'
         save_res_dir = save_res_dir if save_res_dir is not None else f'{data_dir}/visuals/false_samples'
@@ -184,7 +184,7 @@ class EasyMetric:
         return ret
 
     def rec_checkout_false_sample(self, gt_iter_data, det_iter_data, data_dir='checkout_data', image_dir=None, save_res_dir=None):
-        from utils import nlp_utils, os_lib, visualize
+        from utils import os_lib, visualize
 
         image_dir = image_dir if image_dir is not None else f'{data_dir}/images'
         save_res_dir = save_res_dir if save_res_dir is not None else f'{data_dir}/visuals/false_samples'

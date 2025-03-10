@@ -1,12 +1,11 @@
-import os
 import re
 import torch
 import numpy as np
 import pandas as pd
-from typing import List, Optional
+from typing import List
 from utils import math_utils, os_lib, torch_utils
-from processor import Process, DataHooks, BaseDataset, ModelHooks, CheckpointHooks, IterIterDataset
-from data_parse.nl_data_parse.pre_process import spliter, bundled, dict_maker, cleaner, snack
+from processor import Process, DataHooks, BaseDataset, CheckpointHooks, IterIterDataset
+from data_parse.nl_data_parse.pre_process import bundled, dict_maker, cleaner, snack
 
 
 class RandomChoiceTextPairsDataset(BaseDataset):
@@ -274,7 +273,7 @@ class SimpleTextForBert(TextProcessForBert):
     data_dir: str
 
     def get_data(self, *args, train=True, **kwargs):
-        from data_parse.nl_data_parse.SimpleText import Loader, DataRegister
+        from data_parse.nl_data_parse.datasets.SimpleText import Loader, DataRegister
         loader = Loader(self.data_dir)
 
         if train:
@@ -289,7 +288,7 @@ class SimpleTextPairForBert(TextPairProcessForBert):
     data_dir: str
 
     def get_data(self, *args, train=True, **kwargs):
-        from data_parse.nl_data_parse.SimpleTextPair import Loader, DataRegister
+        from data_parse.nl_data_parse.datasets.SimpleTextPair import Loader, DataRegister
         loader = Loader(self.data_dir)
 
         if train:
@@ -305,7 +304,7 @@ class LargeSimpleTextForBert(DataProcessForBert):
     is_chunk = False
 
     def get_data(self, *args, train=True, batch_size=None, **kwargs):
-        from data_parse.nl_data_parse.SimpleText import Loader, DataRegister
+        from data_parse.nl_data_parse.datasets.SimpleText import Loader, DataRegister
         import multiprocessing
 
         def gen_func():
@@ -361,7 +360,7 @@ class SOP(DataProcessForBert):
     is_chunk = False
 
     def get_data(self, *args, train=True, **kwargs):
-        from data_parse.nl_data_parse.SimpleText import Loader, DataRegister
+        from data_parse.nl_data_parse.datasets.SimpleText import Loader, DataRegister
         loader = Loader(self.data_dir)
 
         if train:
@@ -689,7 +688,7 @@ class SimpleTextForGpt(TextProcessForGpt):
     data_dir: str
 
     def get_data(self, *args, train=True, **kwargs):
-        from data_parse.nl_data_parse.SimpleText import Loader, DataRegister
+        from data_parse.nl_data_parse.datasets.SimpleText import Loader, DataRegister
         loader = Loader(self.data_dir)
 
         if train:
@@ -842,7 +841,7 @@ class SimpleTextForT5(DataHooks):
     tokenizer: bundled.T5Tokenizer
 
     def get_data(self, *args, train=True, **kwargs):
-        from data_parse.nl_data_parse.SimpleText import Loader, DataRegister
+        from data_parse.nl_data_parse.datasets.SimpleText import Loader, DataRegister
         loader = Loader(self.data_dir)
 
         if train:
