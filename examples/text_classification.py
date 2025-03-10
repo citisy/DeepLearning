@@ -42,7 +42,6 @@ class Bert(BertFull):
 
     def set_model(self):
         from models.text_classification.bert import Model
-        self.get_vocab()
         self.model = Model(self.tokenizer.vocab_size, pad_id=self.tokenizer.pad_id, out_features=self.n_classes)
 
     def set_optimizer(self, lr=5e-5, **kwargs):

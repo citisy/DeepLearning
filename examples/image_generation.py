@@ -701,6 +701,22 @@ def _load_images(images, b, start_idx, end_idx):
 
 
 class DiProcess(IgProcess):
+    low_memory_run = False
+    use_half = False
+
+    def set_model_status(self):
+        self.load_pretrained()
+        if self.low_memory_run:
+            self.model.set_low_memory_run()
+            self.model._device = self.device  # explicitly define the device for the model
+
+        else:
+            if not isinstance(self.device, list):
+                self.model.to(self.device)
+
+        if self.use_half:
+            self.model.set_half()
+
     def set_optimizer(self, lr=1e-4, betas=(0.9, 0.99), **kwargs):
         super().set_optimizer(lr=lr, betas=betas, **kwargs)
 
@@ -1038,8 +1054,6 @@ class BaseSD(DiProcess):
     encoder_fn: str
     vocab_fn: str
     tokenizer: 'CLIPTokenizer'
-    low_memory_run = False
-    use_half = False
     train_cond = False
 
     model_config: dict = {}
@@ -1072,8 +1086,6 @@ class BaseSD(DiProcess):
         else:
             raise
 
-        self.get_vocab()
-
         if 'v2' in self.config_version:
             # note, special pad_id for laion clip model
             self.tokenizer.pad_id = 0
@@ -1082,16 +1094,14 @@ class BaseSD(DiProcess):
             pass
 
         model_config = configs.ConfigObjParse.merge_dict(Config.get(self.config_version), self.model_config)
-        model_config.setdefault('use_half', self.use_half)
-        model_config.setdefault('low_memory_run', self.low_memory_run)
-        self.model = Model(
-            img_ch=self.in_ch,
-            image_size=self.input_size,
-            **model_config
-        )
-        self.model._device = self.device  # explicitly define the device for the model
+        with torch.device('meta'):  # fast to init model
+            self.model = Model(
+                img_ch=self.in_ch,
+                image_size=self.input_size,
+                **model_config
+            )
 
-    def get_vocab(self):
+    def set_tokenizer(self):
         from data_parse.nl_data_parse.pre_process.bundled import CLIPTokenizer
         self.tokenizer = CLIPTokenizer.from_pretrained(self.vocab_fn, self.encoder_fn)
 
@@ -1371,25 +1381,6 @@ class BaseFlux(DiProcess):
         with torch.device('meta'):  # fast to init model
             self.model = Model(**model_config)
 
-        self.model._device = self.device  # explicitly define the device for the model
-
-        self.get_vocab()
-
-    low_memory_run = False
-    use_half = False
-
-    def set_model_status(self):
-        self.load_pretrained()
-        if self.low_memory_run:
-            self.model.set_low_memory_run()
-        else:
-            if not isinstance(self.device, list):
-                # note that, it must be set device before load_state_dict()
-                self.model.to(self.device)
-
-        if self.use_half:
-            self.model.set_half()
-
     clip_tokenizer: 'CLIPTokenizer'
     clip_vocab_fn: str
     clip_encoder_fn: str
@@ -1398,7 +1389,7 @@ class BaseFlux(DiProcess):
     t5_vocab_fn: str
     t5_encoder_fn: str
 
-    def get_vocab(self):
+    def set_tokenizer(self):
         from data_parse.nl_data_parse.pre_process.bundled import CLIPTokenizer, T5Tokenizer
 
         self.clip_tokenizer = CLIPTokenizer.from_pretrained(

@@ -7,6 +7,7 @@ from data_parse import DataRegister
 from pathlib import Path
 from data_parse.cv_data_parse.base import DataVisualizer
 from processor import Process, DataHooks, bundled, BaseImgDataset, MixDataset, IterImgDataset
+from utils import os_lib
 
 
 class TrProcess(Process):
@@ -108,10 +109,15 @@ class DataProcess(DataHooks):
         return ret
 
     word_dict: dict
+    vocab_fn: str
 
-    def get_vocab(self):
-        vocab = super().get_vocab()
+    def set_tokenizer(self):
+        vocab = os_lib.loader.auto_load(self.vocab_fn)
         self.word_dict = {c: i for i, c in enumerate(vocab)}
+
+    def save_vocab(self, vocab):
+        saver = os_lib.Saver(stdout_method=self.log)
+        saver.auto_save(vocab, f'{self.work_dir}/{self.vocab_fn}')
 
 
 class MJSynth(DataProcess):
@@ -243,7 +249,6 @@ class CRNN(TrProcess):
     def set_model(self):
         from models.text_recognition.crnn import Model
 
-        self.get_vacab()
         self.model = Model(
             in_ch=self.in_ch,
             input_size=self.input_size,

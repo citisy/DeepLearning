@@ -139,12 +139,6 @@ class Model(nn.ModuleList):
         self.make_sampler(**configs)
         self.make_diffuse(**configs)
 
-        if self.use_half:
-            self.set_half()
-
-        if self.low_memory_run:
-            self.set_low_memory_run()
-
     _device = None
     _dtype = None
 

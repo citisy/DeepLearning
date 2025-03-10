@@ -237,10 +237,11 @@ class Process(
         else:
             self.device = torch.device('cpu')
 
+        self.set_tokenizer()
+
         if not hasattr(self, 'model') or self.model is None:
             self.set_model()
 
-        self.set_model_status()
         self.models[self.model_name] = self.model
 
         # todo: multi device
@@ -252,7 +253,7 @@ class Process(
         #     self.model.to(self.device)
         #     self.optimizer = nn.DataParallel(self.optimizer, device_ids=device_ids)
 
-        try_init_components = [self.set_ema]
+        try_init_components = [self.set_model_status, self.set_ema]
         for components in try_init_components:
             try:
                 components()

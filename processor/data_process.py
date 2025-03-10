@@ -332,29 +332,5 @@ class DataHooks:
         elif input_type == 'text':
             return torch.randint(self.vacab_size, (batch_size, self.seq_len), dtype=torch.int, device=self.device)
 
-    vocab_fn: str
-    encoder_fn: str
-
-    def load_vocab(self):
-        loader = os_lib.Loader(stdout_method=self.log)
-        if os.path.exists(self.vocab_fn):
-            fp = self.vocab_fn
-        else:
-            fp = f'{self.work_dir}/{self.vocab_fn}'
-        return loader.auto_load(fp)
-
-    def save_vocab(self, vocab):
-        saver = os_lib.Saver(stdout_method=self.log)
-        saver.auto_save(vocab, f'{self.work_dir}/{self.vocab_fn}')
-
-    def make_vocab(self):
-        raise NotImplemented
-
-    def get_vocab(self):
-        try:
-            vocab = self.load_vocab()
-        except OSError:
-            self.log(f'Not found vocab file: {self.vocab_fn}, prepare to make vocab')
-            vocab = self.make_vocab()
-
-        return vocab
+    def set_tokenizer(self):
+        pass

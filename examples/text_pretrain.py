@@ -119,6 +119,10 @@ class DataProcessForBert(DataHooks):
 
         return True
 
+    def save_vocab(self, vocab):
+        saver = os_lib.Saver(stdout_method=self.log)
+        saver.auto_save(vocab, f'{self.work_dir}/{self.vocab_fn}')
+
 
 class TextProcessForBert(DataProcessForBert):
     def make_vocab(self):
@@ -385,11 +389,11 @@ class Bert(Process):
     use_scaler = True
     scheduler_strategy = 'step'  # step
     tokenizer: bundled.BertTokenizer
+    vocab_fn: str
     max_seq_len: int
 
     def set_model(self):
         from models.text_pretrain.bert import Model
-        self.get_vocab()
         self.model = Model(
             self.tokenizer.vocab_size,
             pad_id=self.tokenizer.pad_id,
@@ -397,9 +401,8 @@ class Bert(Process):
             is_seq_cls=self.is_seq_cls, is_token_cls=self.is_token_cls
         )
 
-    def get_vocab(self):
-        vocab = super().get_vocab()
-        self.tokenizer = bundled.BertTokenizer(vocab, max_seq_len=self.max_seq_len)
+    def set_tokenizer(self):
+        self.tokenizer = bundled.BertTokenizer.from_pretrained(self.vocab_fn, max_seq_len=self.max_seq_len)
 
     def set_optimizer(self, lr=1e-4, betas=(0.5, 0.999), **kwargs):
         # todo, use the optimizer config from paper(lr=1e-4, betas=(0.9, 0.999), weight_decay=0.1), the training is failed
@@ -701,19 +704,20 @@ class GPT2(Process):
     use_scaler = True
     scheduler_strategy = 'step'  # step
     tokenizer: bundled.GPT2Tokenizer
+    vocab_fn: str
+    encoder_fn: str
     max_seq_len: int
     max_gen_len = 20
 
     def set_model(self):
         from models.text_pretrain.gpt2 import Model, Config
-        self.get_vocab()
         self.model = Model(
             self.tokenizer.vocab_size,
             pad_id=self.tokenizer.pad_id,
             **Config.get('117M')
         )
 
-    def get_vocab(self):
+    def set_tokenizer(self):
         self.tokenizer = bundled.GPT2Tokenizer.from_pretrained(self.vocab_fn, self.encoder_fn)
 
     def set_optimizer(self, lr=1e-4, betas=(0.5, 0.999), **kwargs):
@@ -854,19 +858,20 @@ class T5(Process):
     use_scaler = True
     scheduler_strategy = 'step'  # step
     tokenizer: bundled.T5Tokenizer
+    vocab_fn: str
+    encoder_fn: str
     max_seq_len: int
     max_gen_len = 20
 
     def set_model(self):
         from models.text_pretrain.T5 import Model, Config
-        self.get_vocab()
         self.model = Model(
             self.tokenizer.vocab_size,
             eos_id=self.tokenizer.eos_id,
             **Config.get(self.config_version)
         )
 
-    def get_vocab(self):
+    def set_tokenizer(self):
         self.tokenizer = bundled.T5Tokenizer.from_pretrained(self.vocab_fn, self.encoder_fn)
 
     def set_optimizer(self, lr=1e-4, betas=(0.5, 0.999), **kwargs):
@@ -874,7 +879,7 @@ class T5(Process):
 
     def get_model_inputs(self, rets, train=True):
         paragraphs = [ret['text'] for ret in rets]
-        inputs = self.tokenizer.encode(paragraphs)
+        inputs = self.tokenizer.encode_paragraphs(paragraphs)
         inputs = torch_utils.Converter.arrays_to_tensors(inputs, self.device)
         return dict(
             x=inputs['segments_ids'],
