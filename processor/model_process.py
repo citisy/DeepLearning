@@ -618,9 +618,9 @@ class ModelHooks:
         if check_period and total_nums % check_period < batch_size:
             self.trace({'total_nums': total_nums}, (bundled.LOGGING, bundled.WANDB))
 
-            ckpt = self._check_train(loop_objs, max_save_weight_num, total_nums)
+            ckpt = self._check_train(loop_objs, max_save_weight_num, total_nums, **kwargs)
             if is_metric:
-                self._check_metric(loop_objs, ckpt, total_nums, max_save_weight_num)
+                self._check_metric(loop_objs, ckpt, total_nums, max_save_weight_num, **kwargs)
 
             self.log_trace(bundled.LOGGING)
             self.log_trace(bundled.WANDB)
@@ -630,9 +630,9 @@ class ModelHooks:
         self.trace({'epoch': epoch}, (bundled.LOGGING, bundled.WANDB))
 
         if check_period and epoch % check_period == check_period - 1:
-            state_dict = self._check_train(loop_objs, max_save_weight_num, epoch)
+            state_dict = self._check_train(loop_objs, max_save_weight_num, epoch, **kwargs)
             if is_metric:
-                self._check_metric(loop_objs, state_dict, epoch, max_save_weight_num)
+                self._check_metric(loop_objs, state_dict, epoch, max_save_weight_num, **kwargs)
 
         self.log_trace(bundled.LOGGING)
         self.log_trace(bundled.WANDB)
@@ -680,8 +680,8 @@ class ModelHooks:
 
         return state_dict
 
-    def _check_metric(self, loop_objs, state_dict, check_num, max_save_weight_num, **kwargs):
-        results = self.metric(epoch=loop_objs['epoch'], **loop_objs.get('metric_kwargs', {}))
+    def _check_metric(self, loop_objs, state_dict, check_num, max_save_weight_num, metric_kwargs=dict(), **kwargs):
+        results = self.metric(epoch=loop_objs['epoch'], **metric_kwargs)
         scores = {}
         for name, result in results.items():
             for k, v in result.items():
@@ -869,9 +869,11 @@ class ModelHooks:
         for i in tqdm(range(0, len(objs[0]), batch_size), desc=visualize.TextVisualize.highlight_str('Predict')):
             loop_inputs = self.gen_predict_inputs(*objs, start_idx=i, end_idx=i + batch_size, **kwargs)
             loop_inputs = self.on_predict_step_start(loop_inputs, **kwargs)
-            model_results = self.on_predict_step(loop_inputs, **kwargs)
             loop_objs.update(
                 loop_inputs=loop_inputs,
+            )
+            model_results = self.on_predict_step(loop_objs, **kwargs)
+            loop_objs.update(
                 model_results=model_results,
             )
             self.on_predict_reprocess(loop_objs, **kwargs)
@@ -897,14 +899,14 @@ class ModelHooks:
     def gen_predict_inputs(self, *objs, start_idx=None, end_idx=None, **kwargs) -> List[dict]:
         raise NotImplementedError
 
-    def on_predict_step_start(self, rets, **kwargs):
+    def on_predict_step_start(self, loop_inputs, **kwargs):
         """preprocess the model inputs"""
         if hasattr(self, 'predict_data_augment'):
-            rets = [self.predict_data_augment(ret) for ret in rets]
-        return rets
+            loop_inputs = [self.predict_data_augment(ret) for ret in loop_inputs]
+        return loop_inputs
 
-    def on_predict_step(self, rets, **kwargs):
-        return self.on_val_step(rets, **kwargs)
+    def on_predict_step(self, loop_inputs, **kwargs):
+        return self.on_val_step(loop_inputs, **kwargs)
 
     def on_predict_reprocess(self, loop_objs, process_results=dict(), **kwargs):
         """prepare true and pred label for `visualize()`
