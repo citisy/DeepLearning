@@ -271,15 +271,9 @@ class ModelHooks:
 
         self.train_start_container: dict = {}
         self.train_end_container: dict = {}
-        self.train_container: dict = {}
         self.val_start_container: dict = {}
         self.val_end_container: dict = {}
-        self.val_container: dict = {}
-        self.predict_container: dict = {}
         self.checkpoint_container: dict = {}
-
-        self.counters = dict()
-
 
     model: nn.Module
 
@@ -419,9 +413,10 @@ class ModelHooks:
                 val_dataloader:
 
         """
-        self.on_train_start(**kwargs)
-        self.on_train(**kwargs)
-        self.on_train_end(**kwargs)
+        loop_objs, process_kwargs = self.on_train_start(**kwargs)
+        kwargs.update(process_kwargs)
+        self.on_train(loop_objs, **kwargs)
+        return self.on_train_end(**kwargs)
 
     init_wandb: bundled.LogHooks.init_wandb
     work_dir: str
@@ -441,25 +436,21 @@ class ModelHooks:
     def on_train_start(
             self, batch_size=None, max_epoch=None,
             train_dataloader=None, val_dataloader=None, check_period=None,
-            metric_kwargs=dict(), data_get_kwargs=dict(), dataloader_kwargs=dict(), **kwargs):
+            metric_kwargs=dict(), data_get_kwargs=dict(), dataloader_kwargs=dict(),
+            **kwargs
+    ):
         assert batch_size, 'please set batch_size'
         assert max_epoch, 'please set max_epoch'
         self.log(f'{batch_size = }')
 
-        self.train_container = dict()
         metric_kwargs = metric_kwargs.copy()
         metric_kwargs.setdefault('batch_size', batch_size)
         metric_kwargs.setdefault('dataloader_kwargs', {})
         metric_kwargs['dataloader_kwargs'] = configs.ConfigObjParse.merge_dict(dataloader_kwargs, metric_kwargs['dataloader_kwargs'])
 
-        _counters = ['epoch', 'total_nums', 'total_steps', 'check_nums']
-        for c in _counters:
-            self.counters.setdefault(c, 0)
-
         dataloader_kwargs.setdefault('batch_size', batch_size)
         if train_dataloader is None:
             train_dataloader = self.get_train_dataloader(data_get_kwargs=data_get_kwargs, dataloader_kwargs=dataloader_kwargs)
-        self.train_container['train_dataloader'] = train_dataloader
 
         if check_period:
             if val_dataloader is None:
@@ -467,10 +458,6 @@ class ModelHooks:
             metric_kwargs.setdefault('val_dataloader', val_dataloader)
             s = 'epochs' if self.check_strategy == EPOCH else 'nums'
             self.log(f'check_strategy = `{self.check_strategy}`, it will be check the training result in every {check_period} {s}')
-
-        self.train_container['metric_kwargs'] = metric_kwargs
-        self.train_container['end_flag'] = False
-        self.train_container['last_check_time'] = time.time()
 
         for item in ('optimizer', 'stopper', 'scaler', 'scheduler'):
             if not hasattr(self, item) or getattr(self, item) is None:
@@ -482,6 +469,22 @@ class ModelHooks:
         self.load_pretrained_checkpoint()
         self.set_mode(train=True)
 
+        loop_objs = dict(
+            end_flag=False,
+            last_check_time=time.time(),
+        )
+
+        _counters = ['epoch', 'total_nums', 'total_steps', 'check_nums']
+        for c in _counters:
+            loop_objs.setdefault(c, 0)
+
+        process_kwargs = dict(
+            train_dataloader=train_dataloader,
+            metric_kwargs=metric_kwargs,
+        )
+
+        return loop_objs, process_kwargs
+
     register_logger: bundled.LogHooks.register_logger
     log_methods: dict
     check_strategy: Annotated[
@@ -489,38 +492,51 @@ class ModelHooks:
         'every epoch or every step to run training check, like saving checkpoint, run the metric step, etc'
     ] = EPOCH
 
-    def on_train(self, max_epoch=100, **kwargs):
-        for i in range(self.counters['epoch'], max_epoch):
-            self.on_train_epoch_start(**kwargs)
-            pbar = tqdm(self.train_container['train_dataloader'], desc=visualize.TextVisualize.highlight_str(f'Train {i}/{max_epoch}'))
+    def on_train(self, loop_objs, **kwargs):
+        max_epoch = kwargs['max_epoch']
+        train_dataloader = kwargs['train_dataloader']
+
+        for i in range(loop_objs['epoch'], max_epoch):
+            self.on_train_epoch_start(loop_objs, **kwargs)
+            pbar = tqdm(train_dataloader, desc=visualize.TextVisualize.highlight_str(f'Train {i}/{max_epoch}'))
             self.register_logger('pbar', pbar.set_postfix)
 
-            for rets in pbar:
-                self.on_train_step_start(rets, **kwargs)
-                outputs = self.on_train_step(rets, **kwargs)
-                self.on_backward(outputs, **kwargs)
-                if self.on_train_step_end(rets, outputs, **kwargs):
+            for loop_inputs in pbar:
+                loop_objs.update(
+                    loop_inputs=loop_inputs,
+                )
+
+                self.on_train_step_start(loop_objs, **kwargs)
+                model_results = self.on_train_step(loop_objs, **kwargs)
+
+                loop_objs.update(
+                    model_results=model_results,
+                )
+
+                self.on_backward(loop_objs, **kwargs)
+                if self.on_train_step_end(loop_objs, **kwargs):
                     break
 
-            if self.on_train_epoch_end(**kwargs):
+            if self.on_train_epoch_end(loop_objs, **kwargs):
                 break
 
-    def on_train_epoch_start(self, _counters=('per_epoch_nums',), **kwargs):
+    def on_train_epoch_start(self, loop_objs, _counters=('per_epoch_nums',), **kwargs):
         for c in _counters:
-            self.counters[c] = 0
+            loop_objs[c] = 0
 
-    def on_train_step_start(self, rets, **kwargs):
+    def on_train_step_start(self, loop_objs, **kwargs):
         pass
 
-    def on_train_step(self, rets, **kwargs) -> dict:
+    def on_train_step(self, loop_objs, **kwargs) -> dict:
         """logic of model training step, and expected to return a dict of model output
         must return a dict included:
             loss: loss to backward
         """
         raise NotImplementedError
 
-    def on_backward(self, outputs, accumulate=None, batch_size=None, **kwargs):
-        loss = outputs['loss']
+    def on_backward(self, loop_objs, accumulate=None, batch_size=None, **kwargs):
+        model_results = loop_objs['model_results']
+        loss = model_results['loss']
 
         if self.use_scaler:
             self.scaler.scale(loss).backward()
@@ -528,7 +544,7 @@ class ModelHooks:
             loss.backward()
 
         if accumulate:
-            if self.counters['total_nums'] % accumulate < batch_size:
+            if loop_objs['total_nums'] % accumulate < batch_size:
                 self._backward()
         else:
             self._backward()
@@ -547,25 +563,28 @@ class ModelHooks:
 
         self.optimizer.zero_grad()
 
-    def on_train_step_end(self, rets, outputs, more_log=False, ignore_non_loss=False, **kwargs) -> bool:
-        self.counters['total_nums'] += len(rets)
-        self.counters['total_steps'] += 1
-        self.counters['per_epoch_nums'] += len(rets)
-        self.counters['check_nums'] += len(rets)
+    def on_train_step_end(self, loop_objs, more_log=False, ignore_non_loss=False, **kwargs) -> bool:
+        loop_inputs = loop_objs['loop_inputs']
+        model_results = loop_objs['model_results']
+
+        loop_objs['total_nums'] += len(loop_inputs)
+        loop_objs['total_steps'] += 1
+        loop_objs['per_epoch_nums'] += len(loop_inputs)
+        loop_objs['check_nums'] += len(loop_inputs)
 
         losses = {}
-        for k, v in outputs.items():
+        for k, v in model_results.items():
             if k.startswith('loss'):
                 v = v.item()
                 n = f'check_{k}'
                 if ignore_non_loss and np.isnan(v):
                     pass
                 else:
-                    self.counters[n] = self.counters.get(n, 0) + v
+                    loop_objs[n] = loop_objs.get(n, 0) + v
                     losses[k] = v
-                    losses[f'mean_{k}'] = self.counters[n] / self.counters['check_nums']
+                    losses[f'mean_{k}'] = loop_objs[n] / loop_objs['check_nums']
 
-        self.train_container['losses'] = losses
+        loop_objs['losses'] = losses
 
         mem_info = {
             'cpu_info': log_utils.MemoryInfo.get_process_mem_info(),
@@ -582,43 +601,43 @@ class ModelHooks:
             self.scheduler.step()
 
         if self.check_strategy == STEP:
-            self._check_on_train_step_end(**kwargs)
+            self._check_on_train_step_end(loop_objs, **kwargs)
 
-        return self.train_container.get('end_flag', False)  # cancel the training when end_flag is True
+        return loop_objs.get('end_flag', False)  # cancel the training when end_flag is True
 
-    def on_train_epoch_end(self, **kwargs) -> bool:
-        self.counters['epoch'] += 1
+    def on_train_epoch_end(self, loop_objs, **kwargs) -> bool:
+        loop_objs['epoch'] += 1
         if self.use_scheduler and self.scheduler_strategy == EPOCH:
             self.scheduler.step()
         if self.check_strategy == EPOCH:
-            self._check_on_train_epoch_end(**kwargs)
-        return self.train_container.get('end_flag', False)  # cancel the training when end_flag is True
+            self._check_on_train_epoch_end(loop_objs, **kwargs)
+        return loop_objs.get('end_flag', False)  # cancel the training when end_flag is True
 
-    def _check_on_train_step_end(self, check_period=None, batch_size=None, max_save_weight_num=None, is_metric=True, **kwargs):
-        total_nums = self.counters['total_nums']
+    def _check_on_train_step_end(self, loop_objs, check_period=None, batch_size=None, max_save_weight_num=None, is_metric=True, **kwargs):
+        total_nums = loop_objs['total_nums']
         if check_period and total_nums % check_period < batch_size:
             self.trace({'total_nums': total_nums}, (bundled.LOGGING, bundled.WANDB))
 
-            ckpt = self._check_train(max_save_weight_num, total_nums)
+            ckpt = self._check_train(loop_objs, max_save_weight_num, total_nums)
             if is_metric:
-                self._check_metric(ckpt, total_nums, max_save_weight_num)
+                self._check_metric(loop_objs, ckpt, total_nums, max_save_weight_num)
 
             self.log_trace(bundled.LOGGING)
             self.log_trace(bundled.WANDB)
 
-    def _check_on_train_epoch_end(self, check_period=None, max_save_weight_num=None, is_metric=True, **kwargs):
-        epoch = self.counters['epoch'] - 1  # epoch in counters is the next epoch, not the last
+    def _check_on_train_epoch_end(self, loop_objs, check_period=None, max_save_weight_num=None, is_metric=True, **kwargs):
+        epoch = loop_objs['epoch'] - 1  # epoch in counters is the next epoch, not the last
         self.trace({'epoch': epoch}, (bundled.LOGGING, bundled.WANDB))
 
         if check_period and epoch % check_period == check_period - 1:
-            state_dict = self._check_train(max_save_weight_num, epoch)
+            state_dict = self._check_train(loop_objs, max_save_weight_num, epoch)
             if is_metric:
-                self._check_metric(state_dict, epoch, max_save_weight_num)
+                self._check_metric(loop_objs, state_dict, epoch, max_save_weight_num)
 
         self.log_trace(bundled.LOGGING)
         self.log_trace(bundled.WANDB)
 
-    def _check_train(self, max_save_weight_num, check_num):
+    def _check_train(self, loop_objs, max_save_weight_num, check_num, **kwargs):
         """
 
         Args:
@@ -631,23 +650,23 @@ class ModelHooks:
         Returns:
 
         """
-        losses = self.train_container.get('losses')
+        losses = loop_objs.get('losses')
         if losses is not None:
             for k, v in losses.items():
                 self.trace({f'loss/{k}': v}, (bundled.LOGGING, bundled.WANDB))
                 if np.isnan(v) or np.isinf(v):
-                    self.train_container['end_flag'] = True
+                    loop_objs['end_flag'] = True
                     self.log(f'Train will be stop soon, got {v} value from {k}')
 
-            for k in self.counters:
+            for k in loop_objs:
                 if k.startswith('check_'):
-                    self.counters[k] = 0
+                    loop_objs[k] = 0
 
-        last_check_time = self.train_container.get('last_check_time')
+        last_check_time = loop_objs.get('last_check_time')
         if last_check_time is not None:
             now = time.time()
             self.trace({'time_consume': (now - last_check_time) / 60}, (bundled.LOGGING, bundled.WANDB))
-            self.train_container['last_check_time'] = now
+            loop_objs['last_check_time'] = now
 
         state_dict = self.state_dict()
 
@@ -661,8 +680,8 @@ class ModelHooks:
 
         return state_dict
 
-    def _check_metric(self, state_dict, check_num, max_save_weight_num):
-        results = self.metric(**self.train_container.get('metric_kwargs', {}))
+    def _check_metric(self, loop_objs, state_dict, check_num, max_save_weight_num, **kwargs):
+        results = self.metric(epoch=loop_objs['epoch'], **loop_objs.get('metric_kwargs', {}))
         scores = {}
         for name, result in results.items():
             for k, v in result.items():
@@ -679,7 +698,7 @@ class ModelHooks:
                 if not isinstance(max_save_weight_num, int) or max_save_weight_num > 0:
                     self._save_checkpoint('best', max_save_weight_num, state_dict)
 
-            self.train_container['end_flag'] = self.train_container['end_flag'] or self.stopper(check_num, score)
+            loop_objs['end_flag'] = loop_objs['end_flag'] or self.stopper(check_num, score)
 
     def register_save_checkpoint(self, func, **kwargs):
         self.checkpoint_container.update({func: kwargs})
@@ -751,16 +770,25 @@ class ModelHooks:
             suggest to include mainly the following parameters:
 
         """
-        self.on_val_start(**kwargs)
+        loop_objs, process_kwargs = self.on_val_start(**kwargs)
+        kwargs.update(process_kwargs)
 
-        for rets in tqdm(self.val_container['val_dataloader'], desc=visualize.TextVisualize.highlight_str('Val')):
-            self.on_val_step_start(rets, **kwargs)
-            model_results = self.on_val_step(rets, **kwargs)
-            self.on_val_reprocess(rets, model_results, **kwargs)
-            self.on_val_step_end(rets, model_results, **kwargs)
+        for loop_inputs in tqdm(kwargs['val_dataloader'], desc=visualize.TextVisualize.highlight_str('Val')):
+            loop_objs.update(
+                loop_inputs=loop_inputs,
+            )
 
-        self.on_val_end(**kwargs)
-        return self.val_container
+            self.on_val_step_start(loop_objs, **kwargs)
+
+            model_results = self.on_val_step(loop_objs, **kwargs)
+            loop_objs.update(
+                model_results=model_results,
+            )
+
+            self.on_val_reprocess(loop_objs, **kwargs)
+            self.on_val_step_end(loop_objs, **kwargs)
+
+        return self.on_val_end(**kwargs)
 
     def register_val_start(self, func, **kwargs):
         self.val_start_container.update({func: kwargs})
@@ -768,26 +796,33 @@ class ModelHooks:
     def register_end_start(self, func, **kwargs):
         self.val_end_container.update({func: kwargs})
 
-    def on_val_start(self, val_dataloader=None, batch_size=None, data_get_kwargs=dict(), dataloader_kwargs=dict(), **kwargs):
+    def on_val_start(self, val_dataloader=None, batch_size=None, data_get_kwargs=dict(), dataloader_kwargs=dict(), epoch=-1, **kwargs):
         assert batch_size, 'please set batch_size'
-        self.val_container = {}
         dataloader_kwargs.setdefault('batch_size', batch_size)
         if val_dataloader is None:
             val_dataloader = self.get_val_dataloader(data_get_kwargs=data_get_kwargs, dataloader_kwargs=dataloader_kwargs)
-        self.val_container['val_dataloader'] = val_dataloader
 
         self.set_mode(train=False)
-        self.counters['vis_num'] = 0
-        self.counters.setdefault('epoch', -1)
-        self.val_container['model_results'] = dict()
+
+        loop_objs = dict(
+            vis_num=0,
+            epoch=epoch
+        )
+
+        process_kwargs = dict(
+            val_dataloader=val_dataloader,
+            process_results=dict(),
+        )
 
         for func, params in self.val_start_container.items():
             func(**params)
 
-    def on_val_step_start(self, rets, **kwargs):
+        return loop_objs, process_kwargs
+
+    def on_val_step_start(self, loop_objs, **kwargs):
         pass
 
-    def on_val_step(self, rets, **kwargs) -> dict:
+    def on_val_step(self, loop_objs, **kwargs) -> dict:
         """logic of validating step, expected to return a dict of model output included preds
         must return a dict included:
             outputs: original model output
@@ -796,27 +831,29 @@ class ModelHooks:
         """
         raise NotImplementedError
 
-    def on_val_reprocess(self, rets, model_results, **kwargs):
+    def on_val_reprocess(self, loop_objs, **kwargs):
         """prepare true and pred label for `visualize()` or `metric()`
         reprocess data will be cached in val_container"""
 
-    def on_val_step_end(self, rets, model_results, is_visualize=False, batch_size=16, max_vis_num=None, **kwargs):
+    def on_val_step_end(self, loop_objs, is_visualize=False, batch_size=16, max_vis_num=None, **kwargs):
         """visualize the model outputs usually"""
         if is_visualize:
             max_vis_num = max_vis_num or float('inf')
-            n = min(batch_size, max_vis_num - self.counters['vis_num'])
+            n = min(batch_size, max_vis_num - loop_objs['vis_num'])
             if n > 0:
-                self.visualize(rets, model_results, n, **kwargs)
-                self.counters['vis_num'] += n
+                self.visualize(loop_objs, n, **kwargs)
+                loop_objs['vis_num'] += n
 
-    def visualize(self, rets, model_results, n, **kwargs):
+    def visualize(self, loop_objs, n, **kwargs):
         """logic of predict results visualizing"""
         pass
 
-    def on_val_end(self, **kwargs):
+    def on_val_end(self, process_results=dict(), **kwargs):
         """save the results usually"""
         for func, params in self.val_end_container.items():
-            func(**params)
+            func(process_results=process_results, **params, **kwargs)
+
+        return process_results
 
     model_input_template: 'namedtuple'
 
@@ -826,14 +863,19 @@ class ModelHooks:
 
     @torch.no_grad()
     def batch_predict(self, *objs, batch_size=16, **kwargs):
-        self.on_predict_start(**kwargs)
+        loop_objs, process_kwargs = self.on_predict_start(**kwargs)
+        kwargs.update(process_kwargs)
 
         for i in tqdm(range(0, len(objs[0]), batch_size), desc=visualize.TextVisualize.highlight_str('Predict')):
-            rets = self.gen_predict_inputs(*objs, start_idx=i, end_idx=i + batch_size, **kwargs)
-            rets = self.on_predict_step_start(rets, **kwargs)
-            model_results = self.on_predict_step(rets, **kwargs)
-            self.on_predict_reprocess(rets, model_results, **kwargs)
-            self.on_predict_step_end(rets, model_results, **kwargs)
+            loop_inputs = self.gen_predict_inputs(*objs, start_idx=i, end_idx=i + batch_size, **kwargs)
+            loop_inputs = self.on_predict_step_start(loop_inputs, **kwargs)
+            model_results = self.on_predict_step(loop_inputs, **kwargs)
+            loop_objs.update(
+                loop_inputs=loop_inputs,
+                model_results=model_results,
+            )
+            self.on_predict_reprocess(loop_objs, **kwargs)
+            self.on_predict_step_end(loop_objs, **kwargs)
 
         return self.on_predict_end(**kwargs)
 
@@ -843,11 +885,14 @@ class ModelHooks:
         raise NotImplementedError
 
     def on_predict_start(self, **kwargs):
-        self.predict_container = dict()
         self.set_mode(train=False)
-        self.counters['vis_num'] = 0
-        self.counters["total_nums"] = -1
-        self.predict_container['model_results'] = dict()
+        loop_objs = dict(
+            vis_num=0
+        )
+        process_kwargs = dict(
+            process_results=dict(),
+        )
+        return loop_objs, process_kwargs
 
     def gen_predict_inputs(self, *objs, start_idx=None, end_idx=None, **kwargs) -> List[dict]:
         raise NotImplementedError
@@ -861,14 +906,16 @@ class ModelHooks:
     def on_predict_step(self, rets, **kwargs):
         return self.on_val_step(rets, **kwargs)
 
-    def on_predict_reprocess(self, rets, model_results, **kwargs):
+    def on_predict_reprocess(self, loop_objs, process_results=dict(), **kwargs):
         """prepare true and pred label for `visualize()`
         reprocess data will be cached in predict_container"""
-        self.predict_container['model_results'].setdefault(self.model_name, []).extend(model_results[self.model_name]['preds'])
+        model_results = loop_objs['model_results']
+        process_results.setdefault(self.model_name, []).extend(model_results[self.model_name]['preds'])
 
-    def on_predict_step_end(self, rets, model_results, **kwargs):
+    def on_predict_step_end(self, loop_objs, **kwargs):
         """visualize the model outputs usually"""
+        return self.on_val_step_end(loop_objs, **kwargs)
 
-    def on_predict_end(self, **kwargs) -> List:
+    def on_predict_end(self, process_results=dict(), **kwargs):
         """visualize results and the return the results"""
-        return self.predict_container['model_results'][self.model_name]
+        return process_results[self.model_name]

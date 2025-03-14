@@ -11,30 +11,31 @@ from processor import Process, DataHooks, bundled
 
 
 class ClsProcess(Process):
-    def get_model_inputs(self, rets, train=True):
-        images = [torch.from_numpy(ret.pop('image')).to(self.device, non_blocking=True, dtype=torch.float) for ret in rets]
+    def get_model_inputs(self, loop_inputs, train=True):
+        images = [torch.from_numpy(ret.pop('image')).to(self.device, non_blocking=True, dtype=torch.float) for ret in loop_inputs]
         images = torch.stack(images)
         # images = images / 255
         inputs = dict(x=images)
 
         if train:
-            _class = [torch.tensor(ret['_class']).to(self.device) for ret in rets]
+            _class = [torch.tensor(ret['_class']).to(self.device) for ret in loop_inputs]
             _class = torch.stack(_class)
             inputs.update(true_label=_class)
 
         return inputs
 
-    def on_train_step(self, rets, **kwargs) -> dict:
-        inputs = self.get_model_inputs(rets)
+    def on_train_step(self, loop_objs, **kwargs) -> dict:
+        loop_inputs = loop_objs['loop_inputs']
+        inputs = self.get_model_inputs(loop_inputs)
         output = self.model(**inputs)
         return output
 
     def metric(self, **predict_kwargs):
         from metrics import classification
-        container = self.predict(**predict_kwargs)
+        process_results = self.predict(**predict_kwargs)
 
         metric_results = {}
-        for name, results in container['model_results'].items():
+        for name, results in process_results.items():
             trues = np.array(results['trues'])
             preds = np.array(results['preds'])
             result = classification.top_metric.f_measure(trues, preds)
@@ -47,8 +48,9 @@ class ClsProcess(Process):
 
         return metric_results
 
-    def on_val_step(self, rets, **kwargs) -> dict:
-        inputs = self.get_model_inputs(rets, train=False)
+    def on_val_step(self, loop_objs, **kwargs) -> dict:
+        loop_inputs = loop_objs['loop_inputs']
+        inputs = self.get_model_inputs(loop_inputs, train=False)
         model_results = {}
         for name, model in self.models.items():
             outputs = model(**inputs)
@@ -60,17 +62,22 @@ class ClsProcess(Process):
 
         return model_results
 
-    def on_val_reprocess(self, rets, model_results, **kwargs):
+    def on_val_reprocess(self, loop_objs, process_results=dict(), **kwargs):
+        model_results = loop_objs['model_results']
+        loop_inputs = loop_objs['loop_inputs']
         for name, results in model_results.items():
-            r = self.val_container['model_results'].setdefault(name, dict())
-            r.setdefault('trues', []).extend([ret['_class'] for ret in rets])
+            r = process_results.setdefault(name, dict())
+            r.setdefault('trues', []).extend([ret['_class'] for ret in loop_inputs])
             r.setdefault('preds', []).extend(results['preds'])
 
-    def visualize(self, rets, model_results, n, **kwargs):
+    def visualize(self, loop_objs, n, **kwargs):
+        model_results = loop_objs['model_results']
+        loop_inputs = loop_objs['loop_inputs']
+
         for name, results in model_results.items():
             vis_rets = []
             for i in range(n):
-                ret = rets[i]
+                ret = loop_inputs[i]
                 _p = results['preds'][i]
                 _id = Path(ret['_id'])
                 vis_rets.append(dict(
@@ -78,7 +85,7 @@ class ClsProcess(Process):
                     image=ret['ori_image']
                 ))
 
-            DataVisualizer(f'{self.cache_dir}/{self.counters["epoch"]}/{name}', verbose=False, pbar=False)(vis_rets)
+            DataVisualizer(f'{self.cache_dir}/{loop_objs["epoch"]}/{name}', verbose=False, pbar=False)(vis_rets)
             self.get_log_trace(bundled.WANDB).setdefault(f'val_image/{name}', []).extend(
                 [self.wandb.Image(cv2.cvtColor(ret['image'], cv2.COLOR_BGR2RGB), caption=ret['_id']) for ret in vis_rets]
             )

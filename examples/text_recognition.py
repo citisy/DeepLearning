@@ -14,27 +14,28 @@ class TrProcess(Process):
     def set_optimizer(self, lr=0.0005, **kwargs):
         self.optimizer = optim.Adam(self.model.parameters(), lr=lr)
 
-    def get_model_inputs(self, rets, train=True):
-        images = [torch.from_numpy(ret.pop('image')).to(self.device, non_blocking=True, dtype=torch.float) for ret in rets]
+    def get_model_inputs(self, loop_inputs, train=True):
+        images = [torch.from_numpy(ret.pop('image')).to(self.device, non_blocking=True, dtype=torch.float) for ret in loop_inputs]
         images = torch.stack(images)
         inputs = dict(x=images)
         if train:
             inputs.update(
-                true_label=[ret['text'] for ret in rets]
+                true_label=[ret['text'] for ret in loop_inputs]
             )
 
         return inputs
 
-    def on_train_step(self, rets, **kwargs) -> dict:
-        inputs = self.get_model_inputs(rets)
+    def on_train_step(self, loop_objs, **kwargs) -> dict:
+        loop_inputs = loop_objs['loop_inputs']
+        inputs = self.get_model_inputs(loop_inputs)
         output = self.model(**inputs)
         return output
 
     def metric(self, **kwargs):
-        container = self.predict(**kwargs)
+        process_results = self.predict(**kwargs)
 
         metric_results = {}
-        for name, results in container['model_results'].items():
+        for name, results in process_results.items():
             result = text_generation.top_metric.f_measure(results['trues'], results['preds'])
 
             result.update(
@@ -45,8 +46,9 @@ class TrProcess(Process):
 
         return metric_results
 
-    def on_val_step(self, rets, **kwargs) -> dict:
-        inputs = self.get_model_inputs(rets, train=False)
+    def on_val_step(self, loop_objs, **kwargs) -> dict:
+        loop_inputs = loop_objs['loop_inputs']
+        inputs = self.get_model_inputs(loop_inputs, train=False)
 
         model_results = {}
         for name, model in self.models.items():
@@ -59,17 +61,23 @@ class TrProcess(Process):
 
         return model_results
 
-    def on_val_reprocess(self, rets, model_results, **kwargs):
+    def on_val_reprocess(self, loop_objs, process_results=dict(), **kwargs):
+        model_results = loop_objs['model_results']
+        loop_inputs = loop_objs['loop_inputs']
+
         for name, results in model_results.items():
-            r = self.val_container['model_results'].setdefault(name, dict())
-            r.setdefault('trues', []).extend([ret['text'] for ret in rets])
+            r = process_results.setdefault(name, dict())
+            r.setdefault('trues', []).extend([ret['text'] for ret in loop_inputs])
             r.setdefault('preds', []).extend(results['preds'])
 
-    def visualize(self, rets, model_results, n, **kwargs):
+    def visualize(self, loop_objs, n, **kwargs):
+        model_results = loop_objs['model_results']
+        loop_inputs = loop_objs['loop_inputs']
+
         for name, results in model_results.items():
             vis_rets = []
             for i in range(n):
-                ret = rets[i]
+                ret = loop_inputs[i]
                 _p = results['preds'][i]
                 _id = Path(ret['_id'])
                 vis_rets.append(dict(
@@ -77,7 +85,7 @@ class TrProcess(Process):
                     image=ret['ori_image']
                 ))
 
-            DataVisualizer(f'{self.cache_dir}/{self.counters["epoch"]}/{name}', verbose=False, pbar=False)(vis_rets)
+            DataVisualizer(f'{self.cache_dir}/{loop_objs["epoch"]}/{name}', verbose=False, pbar=False)(vis_rets)
             self.get_log_trace(bundled.WANDB).setdefault(f'val_image/{name}', []).extend(
                 [self.wandb.Image(cv2.cvtColor(ret['image'], cv2.COLOR_BGR2RGB), caption=ret['_id']) for ret in vis_rets]
             )
@@ -297,7 +305,6 @@ class Svtr(TrProcess):
 
     def set_model(self):
         from models.text_recognition.svtr import Model
-        self.get_vacab()
         self.model = Model(
             in_ch=self.in_ch,
             input_size=self.input_size,

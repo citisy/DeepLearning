@@ -321,8 +321,8 @@ class DataHooks:
     def data_augment(self, ret, train=True) -> dict:
         return ret
 
-    def get_model_inputs(self, rets, train=True):
-        return rets
+    def get_model_inputs(self, loop_inputs, train=True):
+        return loop_inputs
 
     def gen_example_data(self, batch_size=1, input_type='image_norm', **kwargs):
         if input_type == 'image':

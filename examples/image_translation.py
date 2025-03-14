@@ -71,11 +71,11 @@ class Pix2pix(GanProcess):
         optimizer_d = optim.Adam(self.model.net_d.parameters(), lr=lr_d, betas=betas_d)
         self.optimizer = GanOptimizer(optimizer_d, optimizer_g)
 
-    def get_model_inputs(self, rets, train=True):
-        images_a = [torch.from_numpy(ret.pop('image')).to(self.device, non_blocking=True, dtype=torch.float) for ret in rets]
+    def get_model_inputs(self, loop_inputs, train=True):
+        images_a = [torch.from_numpy(ret.pop('image')).to(self.device, non_blocking=True, dtype=torch.float) for ret in loop_inputs]
         images_a = torch.stack(images_a)
 
-        images_b = [torch.from_numpy(ret.pop('label_mask')).to(self.device, non_blocking=True, dtype=torch.float) for ret in rets]
+        images_b = [torch.from_numpy(ret.pop('label_mask')).to(self.device, non_blocking=True, dtype=torch.float) for ret in loop_inputs]
         images_b = torch.stack(images_b)
 
         return dict(
@@ -83,8 +83,9 @@ class Pix2pix(GanProcess):
             real_b=images_b
         )
 
-    def on_train_step(self, rets, **kwargs) -> dict:
-        inputs = self.get_model_inputs(rets)
+    def on_train_step(self, loop_objs, **kwargs) -> dict:
+        loop_objs = self.get_model_inputs(loop_objs)
+        inputs = self.get_model_inputs(loop_objs)
         real_a = inputs['real_a']
         real_b = inputs['real_b']
         fake_b = self.model.net_g(real_a)
@@ -106,13 +107,15 @@ class Pix2pix(GanProcess):
         }
 
     def on_val_start(self, val_dataloader=None, dataloader_kwargs=dict(), **kwargs):
-        super().on_val_start(**kwargs)
+        loop_objs, process_kwargs = super().on_val_start(**kwargs)
         if val_dataloader is None:
             val_dataloader = self.get_val_dataloader(**dataloader_kwargs)
-        self.val_container['val_dataloader'] = val_dataloader
+        process_kwargs['val_dataloader'] = val_dataloader
+        return loop_objs, process_kwargs
 
-    def on_val_step(self, rets, **kwargs) -> dict:
-        inputs = self.get_model_inputs(rets)
+    def on_val_step(self, loop_objs, **kwargs) -> dict:
+        loop_inputs = loop_objs['loop_inputs']
+        inputs = self.get_model_inputs(loop_inputs)
         real_a = inputs['real_a']
         real_b = inputs['real_b']
 
@@ -180,18 +183,19 @@ class CycleGan(GanProcess):
             self.log(s)
 
     def on_train_start(self, **kwargs):
-        super().on_train_start(**kwargs)
-        self.train_container['fake_a_cacher'] = os_lib.MemoryCacher(max_size=50, verbose=False)
-        self.train_container['fake_b_cacher'] = os_lib.MemoryCacher(max_size=50, verbose=False)
+        loop_objs, process_kwargs = super().on_train_start(**kwargs)
+        loop_objs['fake_a_cacher'] = os_lib.MemoryCacher(max_size=50, verbose=False)
+        loop_objs['fake_b_cacher'] = os_lib.MemoryCacher(max_size=50, verbose=False)
+        return loop_objs, process_kwargs
 
     lambda_a = 10
     lambda_b = 10
 
-    def get_model_inputs(self, rets, train=True):
-        images_a = [torch.from_numpy(ret.pop('image')).to(self.device, non_blocking=True, dtype=torch.float) for ret in rets]
+    def get_model_inputs(self, loop_inputs, train=True):
+        images_a = [torch.from_numpy(ret.pop('image')).to(self.device, non_blocking=True, dtype=torch.float) for ret in loop_inputs]
         images_a = torch.stack(images_a)
 
-        images_b = [torch.from_numpy(ret.pop('label_mask')).to(self.device, non_blocking=True, dtype=torch.float) for ret in rets]
+        images_b = [torch.from_numpy(ret.pop('label_mask')).to(self.device, non_blocking=True, dtype=torch.float) for ret in loop_inputs]
         images_b = torch.stack(images_b)
 
         return dict(
@@ -199,7 +203,8 @@ class CycleGan(GanProcess):
             real_b=images_b
         )
 
-    def on_train_step(self, rets, **kwargs) -> dict:
+    def on_train_step(self, loop_objs, **kwargs) -> dict:
+        loop_inputs = loop_objs['loop_inputs']
         optimizer_d, optimizer_g = self.optimizer.optimizer_d, self.optimizer.optimizer_g
 
         net_g_a = self.model.net_g_a
@@ -207,7 +212,7 @@ class CycleGan(GanProcess):
         net_d_a = self.model.net_d_a
         net_d_b = self.model.net_d_b
 
-        inputs = self.get_model_inputs(rets)
+        inputs = self.get_model_inputs(loop_inputs)
         real_a = inputs['real_a']
         real_b = inputs['real_b']
 
@@ -219,8 +224,8 @@ class CycleGan(GanProcess):
         optimizer_g.step()
 
         optimizer_d.zero_grad()
-        loss_d_a = self.model.loss_d(real_a, fake_a, net_d_b, self.train_container['fake_a_cacher'])
-        loss_d_b = self.model.loss_d(real_b, fake_b, net_d_a, self.train_container['fake_b_cacher'])
+        loss_d_a = self.model.loss_d(real_a, fake_a, net_d_b, loop_objs['fake_a_cacher'])
+        loss_d_b = self.model.loss_d(real_b, fake_b, net_d_a, loop_objs['fake_b_cacher'])
         loss_d = loss_d_a + loss_d_b
         loss_d.backward()
         optimizer_d.step()
@@ -231,13 +236,15 @@ class CycleGan(GanProcess):
         }
 
     def on_val_start(self, val_dataloader=None, dataloader_kwargs=dict(), **kwargs):
-        super().on_val_start(**kwargs)
+        loop_objs, process_kwargs = super().on_val_start(**kwargs)
         if val_dataloader is None:
             val_dataloader = self.get_val_dataloader(**dataloader_kwargs)
-        self.val_container['val_dataloader'] = val_dataloader
+        process_kwargs['val_dataloader'] = val_dataloader
+        return loop_objs, process_kwargs
 
-    def on_val_step(self, rets, **kwargs) -> dict:
-        inputs = self.get_model_inputs(rets)
+    def on_val_step(self, loop_objs, **kwargs) -> dict:
+        loop_inputs = loop_objs['loop_inputs']
+        inputs = self.get_model_inputs(loop_inputs)
         real_a = inputs['real_a']
         real_b = inputs['real_b']
 

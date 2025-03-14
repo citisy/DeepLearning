@@ -43,13 +43,13 @@ class SegProcess(Process):
     def set_optimizer(self, lr=0.001, momentum=0.9, weight_decay=1e-4, **kwargs):
         self.optimizer = optim.SGD(self.model.parameters(), lr=lr, momentum=momentum, weight_decay=weight_decay)
 
-    def get_model_inputs(self, rets, train=True):
-        images = [torch.from_numpy(ret.pop('image')).to(self.device, non_blocking=True, dtype=torch.float) for ret in rets]
+    def get_model_inputs(self, loop_inputs, train=True):
+        images = [torch.from_numpy(ret.pop('image')).to(self.device, non_blocking=True, dtype=torch.float) for ret in loop_inputs]
         images = torch.stack(images)
         # images = images / 255
 
         effective_areas = []
-        for ret in rets:
+        for ret in loop_inputs:
             h, w = images.shape[-2:]
             pad_info = ret['crop.Pad']
             t = pad_info.get('t', 0)
@@ -63,14 +63,15 @@ class SegProcess(Process):
             effective_areas=effective_areas
         )
         if train:
-            label_masks = [torch.from_numpy(ret.pop('label_mask')).to(self.device, non_blocking=True, dtype=torch.long) for ret in rets]
+            label_masks = [torch.from_numpy(ret.pop('label_mask')).to(self.device, non_blocking=True, dtype=torch.long) for ret in loop_inputs]
             label_masks = torch.stack(label_masks)
             r.update(label_masks=label_masks)
 
         return r
 
-    def on_train_step(self, rets, **kwargs) -> dict:
-        inputs = self.get_model_inputs(rets)
+    def on_train_step(self, loop_objs, **kwargs) -> dict:
+        loop_inputs = loop_objs['loop_inputs']
+        inputs = self.get_model_inputs(loop_inputs)
 
         with torch.cuda.amp.autocast(True):
             output = self.model(**inputs)
@@ -80,10 +81,10 @@ class SegProcess(Process):
     def metric(self, *args, **kwargs):
         from metrics import multi_classification
 
-        container = self.predict(*args, **kwargs)
+        process_results = self.predict(*args, **kwargs)
 
         metric_results = {}
-        for name, results in container['model_results'].items():
+        for name, results in process_results.items():
             # ignore background
             pred = np.concatenate([i.flatten() for i in results['preds']]) - 1
             true = np.concatenate([i.flatten() for i in results['trues']]) - 1
@@ -98,15 +99,16 @@ class SegProcess(Process):
 
         return metric_results
 
-    def on_val_step(self, rets, **kwargs) -> dict:
-        inputs = self.get_model_inputs(rets, train=False)
+    def on_val_step(self, loop_objs, **kwargs) -> dict:
+        loop_inputs = loop_objs['loop_inputs']
+        inputs = self.get_model_inputs(loop_inputs, train=False)
         model_results = {}
         for name, model in self.models.items():
             outputs = model(**inputs)
             outputs = outputs.cpu().numpy().astype(np.uint8)
 
             preds = []
-            for (output, ret) in zip(outputs, rets):
+            for (output, ret) in zip(outputs, loop_inputs):
                 output = configs.ConfigObjParse.merge_dict(ret, {'image': output})
                 output = self.val_data_restore(output)
                 preds.append(output['image'])
@@ -118,18 +120,24 @@ class SegProcess(Process):
 
         return model_results
 
-    def on_val_reprocess(self, rets, model_results, **kwargs):
+    def on_val_reprocess(self, loop_objs, process_results=dict(), **kwargs):
+        model_results = loop_objs['model_results']
+        loop_inputs = loop_objs['loop_inputs']
+
         for name, results in model_results.items():
-            r = self.val_container['model_results'].setdefault(name, dict())
-            r.setdefault('trues', []).extend([ret['ori_label_mask'] for ret in rets])
+            r = process_results.setdefault(name, dict())
+            r.setdefault('trues', []).extend([ret['ori_label_mask'] for ret in loop_inputs])
             r.setdefault('preds', []).extend(results['preds'])
 
-    def visualize(self, rets, model_results, n, **kwargs):
+    def visualize(self, loop_objs, n, **kwargs):
+        model_results = loop_objs['model_results']
+        loop_inputs = loop_objs['loop_inputs']
+
         for name, results in model_results.items():
             vis_trues = []
             vis_preds = []
             for i in range(n):
-                gt_ret = rets[i]
+                gt_ret = loop_inputs[i]
                 pred = results['preds'][i]
 
                 true_image = None
@@ -152,7 +160,7 @@ class SegProcess(Process):
                     image=pred_image
                 ))
 
-            visualizer = DataVisualizer(f'{self.cache_dir}/{self.counters.get("epoch", "")}/{name}', verbose=False, pbar=False)
+            visualizer = DataVisualizer(f'{self.cache_dir}/{loop_objs.get("epoch", "")}/{name}', verbose=False, pbar=False)
             cache_image = visualizer(vis_trues, vis_preds, return_image=True)
             self.get_log_trace(bundled.WANDB).setdefault(f'val_image/{name}', []).extend(
                 [self.wandb.Image(cv2.cvtColor(img, cv2.COLOR_BGR2RGB), caption=Path(str(r['_id'])).stem)
@@ -175,16 +183,18 @@ class SegProcess(Process):
             ))
         return rets
 
-    def on_predict_reprocess(self, rets, model_results, **kwargs):
+    def on_predict_reprocess(self, loop_objs, process_results=dict(), **kwargs):
+        model_results = loop_objs['model_results']
         for name, results in model_results.items():
-            r = self.predict_container['model_results'].setdefault(name, dict())
+            r = process_results.setdefault(name, dict())
             r.setdefault('preds', []).extend(results['preds'])
 
-    def on_predict_step_end(self, rets, model_results, **kwargs):
-        self.visualize(rets, model_results, len(rets), **kwargs)
+    def on_predict_step_end(self, loop_objs, **kwargs):
+        model_results = loop_objs['model_results']
+        self.visualize(loop_objs, len(model_results), **kwargs)
 
-    def on_predict_end(self, **kwargs) -> List:
-        return self.predict_container['model_results'][self.model_name]['preds']
+    def on_predict_end(self, process_results=dict(), **kwargs) -> List:
+        return process_results[self.model_name]['preds']
 
 
 class SegDataProcess(DataHooks):

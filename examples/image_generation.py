@@ -10,8 +10,8 @@ from torch import optim
 from torch.utils.data import Dataset
 
 from data_parse import DataRegister
-from data_parse.cv_data_parse.datasets.base import DataVisualizer
 from data_parse.cv_data_parse.data_augmentation import crop, scale, geometry, channel, RandomApply, Apply, pixel_perturbation, Lambda
+from data_parse.cv_data_parse.datasets.base import DataVisualizer
 from processor import Process, DataHooks, bundled, model_process, BatchIterImgDataset, CheckpointHooks
 from utils import os_lib, torch_utils, configs
 
@@ -44,9 +44,8 @@ class IgProcess(Process):
     fid_cls_model: 'nn.Module'
 
     def on_train_start(self, **kwargs):
-
-        super().on_train_start(**kwargs)
-        self.train_container['metric_kwargs'].update(
+        loop_objs, process_kwargs = super().on_train_start(**kwargs)
+        loop_objs['metric_kwargs'].update(
             real_x=[],
         )
 
@@ -57,6 +56,7 @@ class IgProcess(Process):
                 self.fid_cls_model = image_generation.get_default_cls_model(device=self.device)
 
         self.register_val_start(set_fid_cls_model)
+        return loop_objs, process_kwargs
 
     def metric(self, real_x=None, **kwargs):
         from metrics import image_generation
@@ -77,91 +77,106 @@ class IgProcess(Process):
 
         return metric_results
 
-    def on_val_reprocess(self, rets, model_results, **kwargs):
-        for name, results in model_results.items():
-            r = self.val_container['model_results'].setdefault(name, dict())
-            for n, items in results.items():
-                r.setdefault(n, []).extend(items)
+    def on_val_reprocess(self, loop_objs, process_results=dict(), **kwargs):
+        model_results = loop_objs['model_results']
+        for model_name, results in model_results.items():
+            r = process_results.setdefault(model_name, dict())
+            for data_name, items in results.items():
+                r.setdefault(data_name, []).extend(items)
 
-    def on_val_step_end(self, rets, outputs, **kwargs):
-        """visualize will work on on_val_end() instead of here,
-        because to combine small images into a large image"""
+    def on_val_step_end(self, loop_objs, is_visualize=False, save_samples=True, save_to_one_dir=True, **kwargs):
+        model_results = loop_objs['model_results']
 
-    def on_val_end(self, save_samples=False, save_synth=True, num_synth_per_image=64, is_visualize=False, max_vis_num=None, **kwargs):
-        # {name1: {name2: items}}
-        _max_vis_num = float('inf')
-        for name, results in self.val_container['model_results'].items():
-            for name2, items in results.items():
-                results[name2] = np.stack(items)
-                _max_vis_num = len(items)
+        if is_visualize and save_samples:
+            sub_dir, sub_name = self._make_save_obj(save_to_one_dir)
+            for model_name, results in model_results.items():
+                for data_name, items in results.items():
+                    for i, image in enumerate(items):
+                        cache_dir = f'{self.cache_dir}/{sub_dir}/{model_name}'
+                        image_save_stem = f'{sub_name}{data_name}.{i}'
+                        self.visualize_one(image, cache_dir, model_name, image_save_stem, **kwargs)
 
-        if is_visualize:
-            for i in range(0, self.val_data_num, num_synth_per_image):
-                max_vis_num = min(_max_vis_num, max_vis_num or float('inf'))
-                n = min(num_synth_per_image, max_vis_num - self.counters['vis_num'])
-                if n > 0:
-                    self.visualize(None, self.val_container['model_results'], n,
-                                   save_samples=save_samples, save_synth=save_synth,
-                                   sub_dir=self.counters["total_nums"], **kwargs)
-                    self.counters['vis_num'] += n
-
-    def visualize(self, rets, model_results, n, save_samples=False, save_synth=True,
-                  sub_dir='', sub_name='', verbose=False, **kwargs):
-        vis_num = self.counters['vis_num']
-        for name, results in model_results.items():
-            cache_dir = f'{self.cache_dir}/{sub_dir}/{name}'
-
-            if save_synth:
-                vis_rets = []
-                for name2, images in results.items():
-                    vis_rets.append([{'image': image, '_id': f'{sub_name}{name2}.{vis_num}.jpg'} for image in images[vis_num:vis_num + n]])
-
-                vis_rets = [r for r in zip(*vis_rets)]
-                cache_image = DataVisualizer(cache_dir, verbose=verbose, pbar=False, stdout_method=self.log)(*vis_rets, return_image=True)
-                self.get_log_trace(bundled.WANDB).setdefault(f'val_image/{name}', []).extend(
-                    [self.wandb.Image(cv2.cvtColor(img, cv2.COLOR_BGR2RGB), caption=Path(r['_id']).stem) for img, r in zip(cache_image, vis_rets[0])]
-                )
-
-            if save_samples:
-                cache_dir = f'{cache_dir}/samples'
-                os_lib.mk_dir(cache_dir)
-                saver = os_lib.Saver(verbose=verbose, stdout_method=self.log)
-                for name2, images in results.items():
-                    for i in range(vis_num, vis_num + n):
-                        image = images[i]
-                        saver.save_img(image, f'{cache_dir}/{sub_name}{name2}.{i}.jpg')
-
-                        self.get_log_trace(bundled.WANDB).setdefault(f'val_image/{name}/samples', []).append(
-                            self.wandb.Image(cv2.cvtColor(image, cv2.COLOR_BGR2RGB), caption=f'{sub_name}{name2}.{i}')
-                        )
-
-    def on_predict_reprocess(self, rets, model_results, **kwargs):
-        for name, results in model_results.items():
-            r = self.predict_container['model_results'].setdefault(name, dict())
-            for n, items in results.items():
-                r.setdefault(n, []).extend(items)
-
-    def on_predict_end(self, is_visualize=False, save_samples=True, save_synth=True, num_synth_per_image=64, save_to_one_dir=True, **kwargs):
-        results = [image for image in self.predict_container['model_results'][self.model_name]['fake_x']]
-        if is_visualize:
+    def on_val_end(self, process_results=dict(), save_samples=False, save_synth=True, num_synth_per_image=64, is_visualize=False, max_vis_num=None, **kwargs):
+        if is_visualize and save_synth:
+            results = [image for image in process_results[self.model_name]['fake_x']]
             max_vis_num = len(results)
-            date = str(datetime.now().isoformat(timespec='seconds', sep=' '))
-            if save_to_one_dir:
-                sub_dir = ''
-                sub_name = date + '.'
-            else:
-                sub_dir = date
-                sub_name = ''
+            vis_num = 0
 
             for i in range(0, self.val_data_num, num_synth_per_image):
-                n = min(num_synth_per_image, max_vis_num - self.counters['vis_num'])
+                n = min(num_synth_per_image, max_vis_num - vis_num)
                 if n > 0:
-                    self.visualize(None, self.predict_container['model_results'], n,
-                                   save_samples=save_samples, save_synth=save_synth,
-                                   sub_dir=sub_dir, sub_name=sub_name, verbose=True, **kwargs)
-                    self.counters['vis_num'] += n
+                    self.visualize_synth(process_results, n, vis_num=vis_num, **kwargs)
+                vis_num += n
 
-        return results
+    def _make_save_obj(self, save_to_one_dir):
+        date = str(datetime.now().isoformat(timespec='seconds', sep=' '))
+        if save_to_one_dir:
+            sub_dir = ''
+            sub_name = date + '.'
+        else:
+            sub_dir = date
+            sub_name = ''
+
+        return sub_dir, sub_name
+
+    def on_predict_reprocess(
+            self, loop_objs, process_results=dict(),
+            return_outputs=True, add_watermark=False, **kwargs
+    ):
+        if add_watermark:
+            model_results = loop_objs['model_results']
+            for model_name, results in model_results.items():
+                for data_name, items in results.items():
+                    results[data_name] = self.add_watermark(items, **kwargs)
+
+        if return_outputs:
+            self.on_val_reprocess(loop_objs, process_results=process_results, **kwargs)
+
+    def add_watermark(self, images, watermark='watermark', **kwargs):
+        """be safe, add watermark for images
+        see https://github.com/ShieldMnt/invisible-watermark"""
+        from imwatermark import WatermarkEncoder
+
+        wm_encoder = WatermarkEncoder()
+        wm_encoder.set_watermark('bytes', watermark.encode('utf-8'))
+
+        images = [wm_encoder.encode(image, 'dwtDct') for image in images]
+        return images
+
+    def visualize_one(self, image, cache_dir, model_name='', image_save_stem='', verbose=False, **kwargs):
+        cache_dir = f'{cache_dir}/samples'
+        os_lib.mk_dir(cache_dir)
+        saver = os_lib.Saver(verbose=verbose, stdout_method=self.log)
+        saver.save_img(image, f'{cache_dir}/{image_save_stem}.jpg')
+
+        self.get_log_trace(bundled.WANDB).setdefault(f'val_image/{model_name}/samples', []).append(
+            self.wandb.Image(cv2.cvtColor(image, cv2.COLOR_BGR2RGB), caption=f'{image_save_stem}')
+        )
+
+    def on_predict_end(
+            self,
+            return_outputs=True, process_results=dict(),
+            **kwargs
+    ):
+        if return_outputs:
+            results = [image for image in process_results[self.model_name]['fake_x']]
+            self.on_val_end(process_results=process_results, **kwargs)
+            return results
+
+    def visualize_synth(self, model_results, n, vis_num=0, save_to_one_dir=True, verbose=False, **kwargs):
+        sub_dir, sub_name = self._make_save_obj(save_to_one_dir)
+        for model_name, results in model_results.items():
+            cache_dir = f'{self.cache_dir}/{sub_dir}/{model_name}'
+            vis = DataVisualizer(cache_dir, verbose=verbose, pbar=False, stdout_method=self.log)
+            vis_rets = []
+            for data_name, images in results.items():
+                vis_rets.append([{'image': image, '_id': f'{sub_name}{data_name}.{vis_num}.jpg'} for image in images[vis_num:vis_num + n]])
+
+            vis_rets = [r for r in zip(*vis_rets)]
+            cache_image = vis(*vis_rets, return_image=True)
+            self.get_log_trace(bundled.WANDB).setdefault(f'val_image/{model_name}', []).extend(
+                [self.wandb.Image(cv2.cvtColor(img, cv2.COLOR_BGR2RGB), caption=Path(r['_id']).stem) for img, r in zip(cache_image, vis_rets[0])]
+            )
 
 
 class GanProcess(IgProcess):
@@ -178,7 +193,7 @@ class GanProcess(IgProcess):
             self.log(f'net {key} module info:')
             self.log(s)
 
-    def on_backward(self, output, **kwargs):
+    def on_backward(self, loop_objs, **kwargs):
         """loss backward has been completed in `on_train_step()` already"""
         if self.use_ema:
             self.ema.step()
@@ -232,8 +247,9 @@ class WGAN(GanProcess):
         optimizer_g = optim.Adam(self.model.net_g.parameters(), lr=lr_g, betas=betas_g)
         self.optimizer = GanOptimizer(optimizer_d, optimizer_g)
 
-    def on_train_step(self, rets, batch_size=16, **kwargs) -> dict:
-        images = [torch.from_numpy(ret.pop('image')).to(self.device, non_blocking=True, dtype=torch.float) for ret in rets]
+    def on_train_step(self, loop_objs, batch_size=16, **kwargs) -> dict:
+        loop_inputs = loop_objs['loop_inputs']
+        images = [torch.from_numpy(ret.pop('image')).to(self.device, non_blocking=True, dtype=torch.float) for ret in loop_inputs]
         images = torch.stack(images)
 
         loss_d = self.model.loss_d(images)
@@ -242,19 +258,19 @@ class WGAN(GanProcess):
         self.optimizer.optimizer_d.zero_grad()
 
         # note that, to avoid G so strong, training G once while training D iter_gap times
-        if 0 < self.counters['total_nums'] < 1000 or self.counters['total_nums'] % 20000 < batch_size:
+        if 0 < loop_objs['total_nums'] < 1000 or loop_objs['total_nums'] % 20000 < batch_size:
             iter_gap = 3000
         else:
             iter_gap = 150
 
         loss_g = torch.tensor(0, device=self.device)
-        if self.counters['total_nums'] % iter_gap < batch_size:
+        if loop_objs['total_nums'] % iter_gap < batch_size:
             loss_g = self.model.loss_g(images)
             loss_g.backward()
             self.optimizer.optimizer_g.step()
             self.optimizer.optimizer_g.zero_grad()
 
-        real_x = self.train_container['metric_kwargs']['real_x']
+        real_x = loop_objs['metric_kwargs']['real_x']
         if len(real_x) < self.val_data_num:
             images = images.data.mul(255).clamp_(0, 255).permute(0, 2, 3, 1).to("cpu", torch.uint8).numpy()
             real_x.extend(list(images)[:self.val_data_num - len(real_x)])
@@ -283,10 +299,11 @@ class WGAN(GanProcess):
             for i in range(0, num_batch, batch_size):
                 yield val_noise[i: i + batch_size]
 
-        super().on_val_start(val_dataloader=gen(), **kwargs)
+        return super().on_val_start(val_dataloader=gen(), **kwargs)
 
-    def on_val_step(self, rets, **kwargs) -> dict:
-        noise_x = rets
+    def on_val_step(self, loop_objs, **kwargs) -> dict:
+        loop_inputs = loop_objs['loop_inputs']
+        noise_x = loop_inputs
         model_results = {}
         for name, model in self.models.items():
             fake_x = model.net_g(noise_x)
@@ -479,15 +496,16 @@ class StyleGan(GanProcess):
     per_pp_step = 32
     min_pp_step = 5000
 
-    def on_train_step(self, rets, **kwargs) -> dict:
-        images = [torch.from_numpy(ret.pop('image')).to(self.device, non_blocking=True, dtype=torch.float) for ret in rets]
+    def on_train_step(self, loop_objs, **kwargs) -> dict:
+        loop_inputs = loop_objs['loop_inputs']
+        images = [torch.from_numpy(ret.pop('image')).to(self.device, non_blocking=True, dtype=torch.float) for ret in loop_inputs]
         images = torch.stack(images)
 
         # train discriminator
         self.optimizer.optimizer_d.zero_grad()
         loss_d = self.model.loss_d(
             images,
-            use_gp=self.counters['total_steps'] % self.per_gp_step == 0
+            use_gp=loop_objs['total_steps'] % self.per_gp_step == 0
         )
         loss_d.backward()
         self.optimizer.optimizer_d.step()
@@ -496,12 +514,12 @@ class StyleGan(GanProcess):
         self.optimizer.optimizer_g.zero_grad()
         loss_g = self.model.loss_g(
             images,
-            use_pp=(self.counters['total_steps'] > self.min_pp_step and self.counters['total_steps'] % self.per_pp_step == 0)
+            use_pp=(loop_objs['total_steps'] > self.min_pp_step and loop_objs['total_steps'] % self.per_pp_step == 0)
         )
         loss_g.backward()
         self.optimizer.optimizer_g.step()
 
-        real_x = self.train_container['metric_kwargs']['real_x']
+        real_x = loop_objs['metric_kwargs']['real_x']
         if len(real_x) < self.val_data_num:
             images = images.data.mul(255).clamp_(0, 255).permute(0, 2, 3, 1).to("cpu", torch.uint8).numpy()
             real_x.extend(list(images)[:self.val_data_num - len(real_x)])
@@ -544,10 +562,11 @@ class StyleGan(GanProcess):
                 w_style = w_styles[i: i + batch_size]
                 yield noise_x, w_style
 
-        super().on_val_start(val_dataloader=gen(), **kwargs)
+        return super().on_val_start(val_dataloader=gen(), **kwargs)
 
-    def on_val_step(self, rets, vis_batch_size=64, **kwargs) -> dict:
-        noise_x, w_style = rets
+    def on_val_step(self, loop_objs, vis_batch_size=64, **kwargs) -> dict:
+        loop_inputs = loop_objs['loop_inputs']
+        noise_x, w_style = loop_inputs
         model_results = {}
         for name, model in self.models.items():
             fake_x = model.net_g(w_style, noise_x)
@@ -635,12 +654,13 @@ class VAE(IgProcess):
             image_size=self.input_size,
         )
 
-    def on_train_step(self, rets, **kwargs):
-        images = [torch.from_numpy(ret.pop('image')).to(self.device, non_blocking=True, dtype=torch.float) for ret in rets]
+    def on_train_step(self, loop_objs, **kwargs):
+        loop_inputs = loop_objs['loop_inputs']
+        images = [torch.from_numpy(ret.pop('image')).to(self.device, non_blocking=True, dtype=torch.float) for ret in loop_inputs]
         images = torch.stack(images)
         output = self.model(images)
 
-        real_x = self.train_container['metric_kwargs']['real_x']
+        real_x = loop_objs['metric_kwargs']['real_x']
         if len(real_x) < self.val_data_num:
             images = images.data.mul(255).clamp_(0, 255).permute(0, 2, 3, 1).to("cpu", torch.uint8).numpy()
             real_x.extend(list(images)[:self.val_data_num - len(real_x)])
@@ -650,15 +670,16 @@ class VAE(IgProcess):
     def get_val_data(self, *args, **kwargs):
         """use real_x"""
 
-    def on_val_start(self, val_dataloader=None, batch_size=16, dataloader_kwargs=dict(), **kwargs):
+    def on_val_start(self, val_dataloader=None, batch_size=16, dataloader_kwargs=dict(), real_x=[], **kwargs):
         def gen():
             for i in range(0, self.val_data_num, batch_size):
-                yield self.train_container['metric_kwargs']['real_x'][i: i + batch_size]
+                yield real_x[i: i + batch_size]
 
         super().on_val_start(val_dataloader=gen(), **kwargs)
 
-    def on_val_step(self, rets, **kwargs) -> dict:
-        images = [torch.from_numpy(ret).to(self.device, non_blocking=True, dtype=torch.float) for ret in rets]
+    def on_val_step(self, loop_objs, **kwargs) -> dict:
+        loop_inputs = loop_objs['loop_inputs']
+        images = [torch.from_numpy(ret).to(self.device, non_blocking=True, dtype=torch.float) for ret in loop_inputs]
         real_x = torch.stack(images).permute(0, 3, 1, 2)
         model_results = {}
         for name, model in self.models.items():
@@ -720,9 +741,9 @@ class DiProcess(IgProcess):
     def set_optimizer(self, lr=1e-4, betas=(0.9, 0.99), **kwargs):
         super().set_optimizer(lr=lr, betas=betas, **kwargs)
 
-    def get_model_inputs(self, rets, train=True):
+    def get_model_inputs(self, loop_inputs, train=True):
         if train:
-            images = [torch.from_numpy(ret.pop('image')).to(self.device, non_blocking=True, dtype=torch.float) for ret in rets]
+            images = [torch.from_numpy(ret.pop('image')).to(self.device, non_blocking=True, dtype=torch.float) for ret in loop_inputs]
             images = torch.stack(images)
             images = images * 2 - 1  # normalize, [0, 1] -> [-1, 1]
             model_inputs = dict(
@@ -730,16 +751,17 @@ class DiProcess(IgProcess):
             )
         else:
             model_inputs = dict(
-                x=rets
+                x=loop_inputs
             )
         return model_inputs
 
-    def on_train_step(self, rets, **kwargs) -> dict:
-        model_inputs = self.get_model_inputs(rets, train=True)
+    def on_train_step(self, loop_objs, **kwargs) -> dict:
+        loop_inputs = loop_objs['loop_inputs']
+        model_inputs = self.get_model_inputs(loop_inputs, train=True)
         with torch.cuda.amp.autocast(True):
             output = self.model(**model_inputs)
 
-        real_x = self.train_container['metric_kwargs']['real_x']
+        real_x = loop_objs['metric_kwargs']['real_x']
         if len(real_x) < self.val_data_num:
             images = model_inputs['x']
             images = (images + 1) * 0.5
@@ -761,8 +783,9 @@ class DiProcess(IgProcess):
 
         super().on_val_start(val_dataloader=gen(), batch_size=batch_size, **kwargs)
 
-    def on_val_step(self, rets, model_kwargs=dict(), **kwargs) -> dict:
-        model_inputs = self.get_model_inputs(rets, train=False)
+    def on_val_step(self, loop_objs, model_kwargs=dict(), **kwargs) -> dict:
+        loop_inputs = loop_objs['loop_inputs']
+        model_inputs = self.get_model_inputs(loop_inputs, train=False)
 
         model_results = {}
         for name, model in self.models.items():
@@ -777,25 +800,14 @@ class DiProcess(IgProcess):
 
         return model_results
 
-    def on_predict_reprocess(self, rets, model_results, add_watermark=True, watermark='watermark', **kwargs):
-        for name, results in model_results.items():
-            r = self.predict_container['model_results'].setdefault(name, dict())
-            for n, items in results.items():
+    def on_predict_reprocess(self, loop_objs, **kwargs):
+        model_results = loop_objs['model_results']
+        for model_name, results in model_results.items():
+            for data_name, items in results.items():
                 items[..., :] = items[..., ::-1]  # note, official model output is Image type, must convert to cv2 type
-                if add_watermark:
-                    self.add_watermark(items, watermark)
-                r.setdefault(n, []).extend(items)
+                results[data_name] = items
 
-    def add_watermark(self, images, watermark='watermark'):
-        """be safe, add watermark for images
-        see https://github.com/ShieldMnt/invisible-watermark"""
-        from imwatermark import WatermarkEncoder
-
-        wm_encoder = WatermarkEncoder()
-        wm_encoder.set_watermark('bytes', watermark.encode('utf-8'))
-
-        images = [wm_encoder.encode(image, 'dwtDct') for image in images]
-        return images
+        return super().on_predict_reprocess(loop_objs, **kwargs)
 
 
 class Ddpm(DiProcess):
@@ -938,7 +950,7 @@ class WithSDLora(Process):
             state_dict = WeightLoader.auto_load(self.lora_pretrain_model)
             state_dict = WeightConverter.from_official_lora(state_dict)
             self.lora_wrap.load_state_dict(state_dict, strict=True)
-            self.log(f'Load lora pretrain model from {self.lora_pretrain_model}')
+            self.log(f'Loaded lora pretrain model from {self.lora_pretrain_model}')
 
     def save_lora_weight(self, save_name='lora.safetensors'):
         from collections import OrderedDict
@@ -989,7 +1001,7 @@ class WithSDControlNet(Process):
             state_dict = torch_utils.Load.from_file(self.control_net_pretrain_model)
             state_dict = WeightConverter.from_official_controlnet(state_dict)
             self.control_net_wrap.load_state_dict(state_dict, strict=False)
-            self.log(f'Load control_net pretrain model from {self.control_net_pretrain_model}')
+            self.log(f'Loaded control_net pretrain model from {self.control_net_pretrain_model}')
 
     control_aug = Apply([
         Lambda(lambda image, **kwargs: cv2.Canny(image, 100, 200)),
@@ -1014,10 +1026,10 @@ class WithSDControlNet(Process):
             ret['control_image'] = self.control_aug(image=ret['control_image'], dst=self.input_size)['image']
         return ret
 
-    def get_model_val_inputs(self, rets):
-        model_inputs = super().get_model_val_inputs(rets)
+    def get_model_val_inputs(self, loop_inputs):
+        model_inputs = super().get_model_val_inputs(loop_inputs)
         control_images = []
-        for ret in rets:
+        for ret in loop_inputs:
             if 'control_image' in ret and ret['control_image'] is not None:
                 control_image = ret.pop('control_image')
                 control_images.append(torch.from_numpy(control_image).to(self.device, non_blocking=True, dtype=torch.float))
@@ -1114,12 +1126,37 @@ class BaseSD(DiProcess):
         from data_parse.nl_data_parse.pre_process.bundled import CLIPTokenizer
         self.tokenizer = CLIPTokenizer.from_pretrained(self.vocab_fn, self.encoder_fn)
 
+    def get_model_inputs(self, loop_inputs, train=True):
+        if train:
+            return self.get_model_train_inputs(loop_inputs)
+        else:
+            return self.get_model_val_inputs(loop_inputs)
+
+
+class SDTrainer(BaseSD):
     def set_optimizer(self, **kwargs):
         # self.optimizer = optim.Adam(self.model.parameters(), lr=1e-4, betas=(0.9, 0.99))
         # todo, found that, it will take device 0 when `optimizer.step()`, even thought only choose device 1
         # it's bug for `bnb.optim.AdamW8bit`, found no resolution to fix yet
         self.optimizer = torch_utils.make_optimizer_cls('AdamW8bit')(self.model.parameters(), lr=1e-4)
 
+    def get_model_train_inputs(self, loop_inputs):
+        texts = [ret['text'] for ret in loop_inputs]
+        inputs = self.tokenizer.encode_attention_paragraphs(texts)
+        text_ids = torch.tensor(inputs['segments_ids']).to(self.device)
+        text_weights = torch.tensor(inputs['segments_weights']).to(self.device)
+
+        images = [torch.from_numpy(ret.pop('image')).to(self.device, non_blocking=True, dtype=torch.float) for ret in loop_inputs]
+        images = torch.stack(images)
+        images = images * 2 - 1  # normalize, [0, 1] -> [-1, 1]
+        return dict(
+            x=images,
+            text_ids=text_ids,
+            text_weights=text_weights
+        )
+
+
+class SDPredictor(BaseSD):
     def get_val_data(self, *args, pos_text_fn='prompts.txt', neg_text_fn='neg_prompts.txt', **kwargs) -> Optional[Iterable | Dataset | List[Dataset]]:
         pos_texts = os_lib.loader.load_txt(f'{self.data_dir}/{pos_text_fn}')
         neg_texts = os_lib.loader.load_txt(f'{self.data_dir}/{neg_text_fn}')
@@ -1145,33 +1182,12 @@ class BaseSD(DiProcess):
             ret.update(self.val_aug(**ret))
         return ret
 
-    def get_model_inputs(self, rets, train=True):
-        if train:
-            return self.get_model_train_inputs(rets)
-        else:
-            return self.get_model_val_inputs(rets)
-
-    def get_model_train_inputs(self, rets):
-        texts = [ret['text'] for ret in rets]
-        inputs = self.tokenizer.encode_attention_paragraphs(texts)
-        text_ids = torch.tensor(inputs['segments_ids']).to(self.device)
-        text_weights = torch.tensor(inputs['segments_weights']).to(self.device)
-
-        images = [torch.from_numpy(ret.pop('image')).to(self.device, non_blocking=True, dtype=torch.float) for ret in rets]
-        images = torch.stack(images)
-        images = images * 2 - 1  # normalize, [0, 1] -> [-1, 1]
-        return dict(
-            x=images,
-            text_ids=text_ids,
-            text_weights=text_weights
-        )
-
-    def get_model_val_inputs(self, rets):
+    def get_model_val_inputs(self, loop_inputs):
         texts = []
         neg_texts = []
         images = []
         mask_images = []
-        for ret in rets:
+        for ret in loop_inputs:
             if 'text' in ret:
                 texts.append(ret['text'])
 
@@ -1256,7 +1272,7 @@ class BaseSD(DiProcess):
         return rets
 
 
-class SD(WithSDLora, WithSDControlNet, FromSDPretrained, BaseSD):
+class SD(WithSDLora, WithSDControlNet, FromSDPretrained, SDTrainer, SDPredictor):
     """no training, only for prediction
 
     Usage:
@@ -1365,6 +1381,29 @@ class SD_SimpleTextImage(SD, SimpleTextImage):
     """
 
 
+class FromFluxPretrained(CheckpointHooks):
+    clip_text_encoder_pretrained: List[str] | str
+    t5_text_encoder_pretrained: List[str] | str
+    flux_pretrained: List[str] | str
+    vae_pretrained: List[str] | str
+
+    def load_pretrained(self):
+        from models.image_generation.flux import WeightConverter
+        from models.bundles import WeightLoader
+
+        state_dicts = {
+            "t5": WeightLoader.auto_load(self.t5_text_encoder_pretrained),
+            "clip": WeightLoader.auto_load(self.clip_text_encoder_pretrained),
+            "flux": WeightLoader.auto_load(self.flux_pretrained),
+            "vae": WeightLoader.auto_load(self.vae_pretrained),
+        }
+
+        state_dict = WeightConverter.from_official(state_dicts)
+        self.model.load_state_dict(state_dict, strict=False, assign=True)
+
+        self.log(f'Loaded pretrain model')
+
+
 class BaseFlux(DiProcess):
     model_version = 'flux'
     config_version: str = 'dev'
@@ -1404,17 +1443,31 @@ class BaseFlux(DiProcess):
             max_seq_len=512
         )
 
-    def get_model_inputs(self, rets, train=True):
+    def get_model_inputs(self, loop_inputs, train=True):
         if train:
             raise NotImplementedError
         else:
-            return self.get_model_val_inputs(rets)
+            return self.get_model_val_inputs(loop_inputs)
 
-    def get_model_val_inputs(self, rets):
+
+class FluxPredictor(BaseFlux):
+    val_aug = Apply([
+        scale.Rectangle(),
+        channel.BGR2RGB(),
+        channel.HWC2CHW(),
+    ])
+
+    def val_data_augment(self, ret) -> dict:
+        if 'image' in ret and ret['image'] is not None:
+            ret.update(dst=self.input_size)
+            ret.update(self.val_aug(**ret))
+        return ret
+
+    def get_model_val_inputs(self, loop_inputs):
         texts = []
         images = []
         mask_images = []
-        for ret in rets:
+        for ret in loop_inputs:
             if 'text' in ret:
                 texts.append(ret['text'])
 
@@ -1475,33 +1528,7 @@ class BaseFlux(DiProcess):
         return rets
 
 
-class FromFluxPretrained(CheckpointHooks):
-    clip_text_encoder_pretrained: str
-    t5_text_encoder_pretrained: List[str]
-    flux_pretrained: str
-    vae_pretrained: str
-
-    def load_pretrained(self):
-        from models.image_generation.flux import WeightConverter
-
-        t5_tensors = {}
-        for s in self.t5_text_encoder_pretrained:
-            t5_tensors.update(torch_utils.Load.from_file(s))
-
-        state_dicts = {
-            "t5": t5_tensors,
-            "clip": torch_utils.Load.from_file(self.clip_text_encoder_pretrained),
-            "flux": torch_utils.Load.from_file(self.flux_pretrained),
-            "vae": torch_utils.Load.from_file(self.vae_pretrained),
-        }
-
-        state_dict = WeightConverter.from_official(state_dicts)
-        self.model.load_state_dict(state_dict, strict=False, assign=True)
-
-        self.log(f'Loaded pretrain model')
-
-
-class Flux(FromFluxPretrained, BaseFlux):
+class Flux(FromFluxPretrained, FluxPredictor):
     """no training, only for prediction
 
     Usage:

@@ -1,15 +1,18 @@
-import cv2
 import copy
+from pathlib import Path
+from typing import List
+
+import cv2
 import numpy as np
 import torch
 from torch import optim, nn
-from metrics import object_detection
-from data_parse.cv_data_parse.data_augmentation import scale, geometry, channel, RandomApply, Apply, complex
+
 from data_parse import DataRegister
-from pathlib import Path
+from data_parse.cv_data_parse.data_augmentation import scale, geometry, channel, RandomApply, Apply, complex
 from data_parse.cv_data_parse.datasets.base import DataVisualizer
+from metrics import object_detection
 from processor import Process, DataHooks, bundled, BaseImgDataset
-from utils import configs, cv_utils
+from utils import configs, cv_utils, os_lib
 
 
 class OdDataset(BaseImgDataset):
@@ -38,8 +41,8 @@ class OdProcess(Process):
     in_ch: int = 3
     input_size: int
 
-    def get_model_inputs(self, rets, train=True):
-        images = [torch.from_numpy(ret.pop('image')).to(self.device, non_blocking=True, dtype=torch.float) for ret in rets]
+    def get_model_inputs(self, loop_inputs, train=True):
+        images = [torch.from_numpy(ret.pop('image')).to(self.device, non_blocking=True, dtype=torch.float) for ret in loop_inputs]
         images = torch.stack(images)
 
         # note that, if the images have the same shape, minmax after stack if possible
@@ -49,28 +52,29 @@ class OdProcess(Process):
         r = dict(x=images)
         if train:
             r.update(
-                gt_boxes=[torch.from_numpy(ret['bboxes']).to(self.device) for ret in rets],
-                gt_cls=[torch.from_numpy(ret['classes']).to(self.device) for ret in rets]
+                gt_boxes=[torch.from_numpy(ret['bboxes']).to(self.device) for ret in loop_inputs],
+                gt_cls=[torch.from_numpy(ret['classes']).to(self.device) for ret in loop_inputs]
             )
 
         return r
 
-    def on_train_step(self, rets, **kwargs) -> dict:
-        inputs = self.get_model_inputs(rets, train=True)
+    def on_train_step(self, loop_objs, **kwargs) -> dict:
+        loop_inputs = loop_objs['loop_inputs']
+        inputs = self.get_model_inputs(loop_inputs, train=True)
 
         # note that, amp method can make the model run in dtype of half
         # even though input has dtype of torch.half and weight has dtype of torch.float
         # so that, it would run in lower memory and cost less time
-        with torch.cuda.amp.autocast(True):
+        with torch.amp.autocast('cuda', enabled=True):
             output = self.model(**inputs)
 
         return output
 
-    def metric(self, **kwargs):
-        container = self.predict(**kwargs)
+    def metric(self, *args, **kwargs):
+        process_results = self.predict(**kwargs)
 
         metric_results = {}
-        for name, results in container['model_results'].items():
+        for name, results in process_results.items():
             gt_rets = results['trues']
             det_rets = results['preds']
             df = object_detection.EasyMetric(verbose=False).quick_metric(gt_rets, det_rets, save_path=f'{self.work_dir}/result.csv')
@@ -98,8 +102,9 @@ class OdProcess(Process):
 
         return metric_results
 
-    def on_val_step(self, rets, **kwargs) -> dict:
-        inputs = self.get_model_inputs(rets, train=False)
+    def on_val_step(self, loop_objs, **kwargs) -> dict:
+        loop_inputs = loop_objs['loop_inputs']
+        inputs = self.get_model_inputs(loop_inputs, train=False)
 
         model_results = {}
         for name, model in self.models.items():
@@ -107,7 +112,7 @@ class OdProcess(Process):
             outputs = [{k: v.to('cpu').numpy() for k, v in t.items()} for t in outputs]
 
             preds = []
-            for (output, ret) in zip(outputs, rets):
+            for (output, ret) in zip(outputs, loop_inputs):
                 output = configs.ConfigObjParse.merge_dict(ret, output)
                 output = self.val_data_restore(output)
                 preds.append(dict(
@@ -123,12 +128,15 @@ class OdProcess(Process):
 
         return model_results
 
-    def on_val_reprocess(self, rets, model_results, **kwargs):
+    def on_val_reprocess(self, loop_objs, process_results=dict(), **kwargs):
+        loop_inputs = loop_objs['loop_inputs']
+        model_results = loop_objs['model_results']
+
         for name, results in model_results.items():
-            r = self.val_container['model_results'].setdefault(name, dict())
+            r = process_results.setdefault(name, dict())
             trues = r.setdefault('trues', [])
             preds = r.setdefault('preds', [])
-            for ret, pred in zip(rets, results['preds']):
+            for ret, pred in zip(loop_inputs, results['preds']):
                 trues.append(dict(
                     _id=ret['_id'],
                     bboxes=ret['ori_bboxes'],
@@ -137,12 +145,15 @@ class OdProcess(Process):
                 pred['_id'] = ret['_id']
                 preds.append(pred)
 
-    def visualize(self, rets, model_results, n, **kwargs):
+    def visualize(self, loop_objs, n, **kwargs):
+        loop_inputs = loop_objs['loop_inputs']
+        model_results = loop_objs['model_results']
+
         for name, results in model_results.items():
             vis_trues = []
             vis_preds = []
             for i in range(n):
-                true = rets[i]
+                true = loop_inputs[i]
                 pred = results['preds'][i]
 
                 vis_trues.append(dict(
@@ -156,7 +167,7 @@ class OdProcess(Process):
                 vis_preds.append(pred)
 
             cls_alias = self.__dict__.get('cls_alias')
-            cache_image = DataVisualizer(f'{self.cache_dir}/{self.counters["epoch"]}/{name}', verbose=False, pbar=False)(
+            cache_image = DataVisualizer(f'{self.cache_dir}/{loop_objs["epoch"]}/{name}', verbose=False, pbar=False)(
                 vis_trues, vis_preds, return_image=True, cls_alias=cls_alias
             )
             self.get_log_trace(bundled.WANDB).setdefault(f'val_image/{name}', []).extend(
@@ -195,6 +206,16 @@ class OdProcess(Process):
             classes=classes,
             confs=confs
         )
+
+    def gen_predict_inputs(self, *objs, start_idx=None, end_idx=None, **kwargs) -> List[dict]:
+        images = objs[0][start_idx: end_idx]
+        images = [os_lib.loader.load_img(image, channel_fixed_3=True) if isinstance(image, str) else image for image in images]
+        rets = []
+        for image in images:
+            rets.append(dict(
+                image=image
+            ))
+        return rets
 
 
 class OdDataProcess(DataHooks):
@@ -468,6 +489,7 @@ class YoloV5_yolov5(YoloV5, Yolov5Dataset):
             print(k)
             print(v)
     """
+
     def __init__(self, classes=None, **kwargs):
         kwargs.setdefault('n_classes', len(classes))
         super().__init__(**kwargs)

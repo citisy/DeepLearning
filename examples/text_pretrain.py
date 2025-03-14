@@ -1,11 +1,13 @@
 import re
-import torch
+from typing import List
+
 import numpy as np
 import pandas as pd
-from typing import List
-from utils import math_utils, os_lib, torch_utils
-from processor import Process, DataHooks, BaseDataset, CheckpointHooks, IterIterDataset
+import torch
+
 from data_parse.nl_data_parse.pre_process import bundled, dict_maker, cleaner, snack
+from processor import Process, DataHooks, BaseDataset, CheckpointHooks, IterIterDataset
+from utils import math_utils, os_lib, torch_utils
 
 
 class RandomChoiceTextPairsDataset(BaseDataset):
@@ -408,9 +410,9 @@ class Bert(Process):
         # in RoBERTa, beta_2=0.98
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=lr, betas=betas)
 
-    def get_model_inputs(self, rets, train=True):
-        segments = [ret['segment'] for ret in rets]
-        segment_pair_tags = [ret['segment_pair_tags'] for ret in rets]
+    def get_model_inputs(self, loop_inputs, train=True):
+        segments = [ret['segment'] for ret in loop_inputs]
+        segment_pair_tags = [ret['segment_pair_tags'] for ret in loop_inputs]
         lens = [len(seg) for seg in segments]
         r = self.tokenizer.encode_segments(segments, segment_pair_tags)
         r = torch_utils.Converter.arrays_to_tensors(r, self.device)
@@ -422,10 +424,10 @@ class Bert(Process):
         )
 
         if train:
-            seq_cls_tags = torch.tensor([ret['_class'] for ret in rets]).to(self.device) if self.is_seq_cls else None
+            seq_cls_tags = torch.tensor([ret['_class'] for ret in loop_inputs]).to(self.device) if self.is_seq_cls else None
             token_cls_tags = None
             if self.is_token_cls:
-                token_cls_tags = [ret['mask_tag'] for ret in rets]
+                token_cls_tags = [ret['mask_tag'] for ret in loop_inputs]
                 token_cls_tags = snack.align(
                     token_cls_tags, max_seq_len=self.max_seq_len,
                     start_obj=self.tokenizer.skip_id, end_obj=self.tokenizer.skip_id, pad_obj=self.tokenizer.skip_id
@@ -439,8 +441,9 @@ class Bert(Process):
 
         return inputs
 
-    def on_train_step(self, rets, **kwargs) -> dict:
-        inputs = self.get_model_inputs(rets)
+    def on_train_step(self, loop_objs, **kwargs) -> dict:
+        loop_inputs = loop_objs['loop_inputs']
+        inputs = self.get_model_inputs(loop_inputs)
         with torch.cuda.amp.autocast(True):
             output = self.model(**inputs)
 
@@ -456,10 +459,10 @@ class Bert(Process):
 
         """
         from metrics import classification
-        container = self.predict(**kwargs)
+        process_results = self.predict(**kwargs)
 
         metric_results = {}
-        for name, results in container['model_results'].items():
+        for name, results in process_results.items():
             result = {}
             if self.is_seq_cls:
                 seq_cls_trues = np.array(results['seq_cls_trues'])
@@ -504,8 +507,9 @@ class Bert(Process):
 
         return metric_results
 
-    def on_val_step(self, rets, **kwargs) -> dict:
-        model_inputs = self.get_model_inputs(rets, train=False)
+    def on_val_step(self, loop_objs, **kwargs) -> dict:
+        loop_inputs = loop_objs['loop_inputs']
+        model_inputs = self.get_model_inputs(loop_inputs, train=False)
 
         model_results = {}
         for name, model in self.models.items():
@@ -530,20 +534,23 @@ class Bert(Process):
                     token_cls_preds=token_cls_preds,
                     token_cls_trues=token_cls_trues,
                     pred_segment=self.tokenizer.numeralizer.decode(token_cls_preds),
-                    true_segment=[ret['segment'] for ret in rets]
+                    true_segment=[ret['segment'] for ret in loop_inputs]
                 )
 
             model_results[name] = ret
 
         return model_results
 
-    def on_val_reprocess(self, rets, model_results, **kwargs):
+    def on_val_reprocess(self, loop_objs, process_results=dict(), **kwargs):
+        model_results = loop_objs['model_results']
+        loop_inputs = loop_objs['loop_inputs']
+
         for name, results in model_results.items():
-            r = self.val_container['model_results'].setdefault(name, dict())
-            r.setdefault('texts', []).extend([ret['ori_text'] for ret in rets])
+            r = process_results.setdefault(name, dict())
+            r.setdefault('texts', []).extend([ret['ori_text'] for ret in loop_inputs])
 
             if self.is_seq_cls:
-                r.setdefault('seq_cls_trues', []).extend([ret['_class'] for ret in rets])
+                r.setdefault('seq_cls_trues', []).extend([ret['_class'] for ret in loop_inputs])
                 r.setdefault('seq_cls_preds', []).extend(results['seq_cls_preds'])
 
             if self.is_token_cls:
@@ -553,10 +560,10 @@ class Bert(Process):
     def on_val_step_end(self, *args, **kwargs):
         """do not visualize"""
 
-    def on_val_end(self, is_visualize=False, max_vis_num=None, **kwargs):
+    def on_val_end(self, process_results=dict(), is_visualize=False, max_vis_num=None, epoch=-1, **kwargs):
         # todo: make a file to be submitted to https://gluebenchmark.com directly
         if is_visualize:
-            for name, results in self.val_container['model_results'].items():
+            for name, results in process_results.items():
                 data = []
                 vis_num = max_vis_num or len(results['texts'])
                 for i in range(vis_num):
@@ -578,7 +585,7 @@ class Bert(Process):
 
                     data.append(d)
                 df = pd.DataFrame(data)
-                os_lib.Saver(stdout_method=self.log).auto_save(df, f'{self.cache_dir}/{self.counters["epoch"]}/{name}.csv', index=False)
+                os_lib.Saver(stdout_method=self.log).auto_save(df, f'{self.cache_dir}/{epoch}/{name}.csv', index=False)
 
     def gen_predict_inputs(self, *objs, start_idx=None, end_idx=None, **kwargs):
         rets = []
@@ -588,9 +595,10 @@ class Bert(Process):
         rets = self.val_data_preprocess(rets)
         return rets
 
-    def on_predict_reprocess(self, rets, model_results, **kwargs):
+    def on_predict_reprocess(self, loop_objs, process_results=dict(), **kwargs):
+        model_results = loop_objs['model_results']
         for name, results in model_results.items():
-            self.predict_container['model_results'].setdefault(name, []).extend(results['pred_segment'])
+            process_results.setdefault(name, []).extend(results['pred_segment'])
 
 
 class LoadBertFromHFPretrain(CheckpointHooks):
@@ -722,8 +730,8 @@ class GPT2(Process):
     def set_optimizer(self, lr=1e-4, betas=(0.5, 0.999), **kwargs):
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=lr, betas=betas)
 
-    def get_model_inputs(self, rets, train=True):
-        segments = [ret['segment'] for ret in rets]
+    def get_model_inputs(self, loop_inputs, train=True):
+        segments = [ret['segment'] for ret in loop_inputs]
         r = self.tokenizer.encode_segments(segments)
         return dict(
             x=torch.tensor(r['segments_ids'], device=self.device, dtype=torch.long),
@@ -738,8 +746,9 @@ class GPT2(Process):
 
         return output
 
-    def on_val_step(self, rets, **kwargs) -> dict:
-        inputs = self.get_model_inputs(rets, train=False)
+    def on_val_step(self, loop_objs, **kwargs) -> dict:
+        loop_inputs = loop_objs['loop_inputs']
+        inputs = self.get_model_inputs(loop_inputs, train=False)
         seq_lens = inputs['seq_lens']
         max_gen_len = inputs['max_gen_len']
 
@@ -771,9 +780,10 @@ class GPT2(Process):
         rets = self.val_data_preprocess(rets)
         return rets
 
-    def on_predict_reprocess(self, rets, model_results, **kwargs):
+    def on_predict_reprocess(self, loop_objs, process_results=dict(), **kwargs):
+        model_results = loop_objs['model_results']
         for name, results in model_results.items():
-            self.predict_container['model_results'].setdefault(name, []).extend(results['pred_segment'])
+            process_results.setdefault(name, []).extend(results['pred_segment'])
 
 
 class LoadGPT2FromOpenaiPretrain(CheckpointHooks):
@@ -876,8 +886,8 @@ class T5(Process):
     def set_optimizer(self, lr=1e-4, betas=(0.5, 0.999), **kwargs):
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=lr, betas=betas)
 
-    def get_model_inputs(self, rets, train=True):
-        paragraphs = [ret['text'] for ret in rets]
+    def get_model_inputs(self, loop_inputs, train=True):
+        paragraphs = [ret['text'] for ret in loop_inputs]
         inputs = self.tokenizer.encode_paragraphs(paragraphs)
         inputs = torch_utils.Converter.arrays_to_tensors(inputs, self.device)
         return dict(
@@ -887,15 +897,17 @@ class T5(Process):
             max_gen_len=self.max_gen_len
         )
 
-    def on_train_step(self, rets, **kwargs) -> dict:
-        inputs = self.get_model_inputs(rets)
+    def on_train_step(self, loop_objs, **kwargs) -> dict:
+        loop_inputs = loop_objs['loop_inputs']
+        inputs = self.get_model_inputs(loop_inputs)
         with torch.cuda.amp.autocast(True):
             output = self.model(**inputs)
 
         return output
 
-    def on_val_step(self, rets, **kwargs) -> dict:
-        inputs = self.get_model_inputs(rets, train=False)
+    def on_val_step(self, loop_objs, **kwargs) -> dict:
+        loop_inputs = loop_objs['loop_inputs']
+        inputs = self.get_model_inputs(loop_inputs, train=False)
         inputs.pop('seq_lens')
         inputs.pop('max_gen_len')
 
@@ -926,9 +938,10 @@ class T5(Process):
         rets = self.val_data_preprocess(rets)
         return rets
 
-    def on_predict_reprocess(self, rets, model_results, **kwargs):
+    def on_predict_reprocess(self, loop_objs, process_results=dict(), **kwargs):
+        model_results = loop_objs['model_results']
         for name, results in model_results.items():
-            self.predict_container['model_results'].setdefault(name, []).extend(results['pred_segment'])
+            process_results.setdefault(name, []).extend(results['pred_segment'])
 
 
 class LoadT5FromHFPretrain(CheckpointHooks):
