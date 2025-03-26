@@ -728,8 +728,8 @@ class DiProcess(IgProcess):
     def set_model_status(self):
         self.load_pretrained()
         if self.low_memory_run:
-            self.model.set_low_memory_run()
             self.model._device = self.device  # explicitly define the device for the model
+            self.model.set_low_memory_run()
 
         else:
             if not isinstance(self.device, list):
@@ -1072,9 +1072,6 @@ class BaseSD(DiProcess):
     in_ch = 3
     input_size = 512
 
-    encoder_fn: str
-    vocab_fn: str
-    tokenizer: 'CLIPTokenizer'
     train_cond = False
 
     model_config: dict = {}

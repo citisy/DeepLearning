@@ -109,8 +109,6 @@ class DataProcessForBert(DataHooks):
     is_token_cls: bool
     is_seq_cls: bool
 
-    tokenizer: bundled.BertTokenizer
-
     def _filter_func(self, x):
         if re.search('[0-9]', x):
             return False
@@ -389,8 +387,6 @@ class Bert(Process):
     is_seq_cls = True
     use_scaler = True
     scheduler_strategy = 'step'  # step
-    tokenizer: bundled.BertTokenizer
-    vocab_fn: str
     max_seq_len: int
 
     def set_model(self):
@@ -674,8 +670,6 @@ class TextProcessForGpt(DataHooks):
     train_data_num = None
     val_data_num = None
 
-    tokenizer: bundled.GPT2Tokenizer
-
     def data_preprocess(self, iter_data, train=True):
         paragraphs = [ret['text'] for ret in iter_data]
         # ['hello world!'] -> [['hello', ' world', '!']]
@@ -710,9 +704,6 @@ class GPT2(Process):
     model_version = 'GPT2'
     use_scaler = True
     scheduler_strategy = 'step'  # step
-    tokenizer: bundled.GPT2Tokenizer
-    vocab_fn: str
-    encoder_fn: str
     max_seq_len: int
     max_gen_len = 20
 
@@ -848,8 +839,6 @@ class SimpleTextForT5(DataHooks):
     train_data_num = None
     val_data_num = None
 
-    tokenizer: bundled.T5Tokenizer
-
     def get_data(self, *args, train=True, **kwargs):
         from data_parse.nl_data_parse.datasets.SimpleText import Loader, DataRegister
         loader = Loader(self.data_dir)
@@ -866,9 +855,6 @@ class T5(Process):
     config_version = 'small'
     use_scaler = True
     scheduler_strategy = 'step'  # step
-    tokenizer: bundled.T5Tokenizer
-    vocab_fn: str
-    encoder_fn: str
     max_seq_len: int
     max_gen_len = 20
 

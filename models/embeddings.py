@@ -51,16 +51,22 @@ class SinusoidalEmbedding(nn.Module):
         self.embedding_dim = embedding_dim
         self.theta = theta
         self.factor = factor
+        self._register()
 
-    @property
-    def div_term(self):
+    def _register(self):
         # exp{-d / D * log{\theta}} = \theta ^ {-d / D}
         div_term = (torch.arange(0, self.embedding_dim, 2).float() * -(math.log(self.theta) / self.embedding_dim)).exp()
-        return div_term
+        self.register_buffer('div_term', div_term, persistent=False)
+
+    def _apply(self, fn, recurse=True):
+        """apply for meta load"""
+        if self.div_term.is_meta:
+            self._register()
+        return super()._apply(fn, recurse)
 
     def forward(self, x):
         dtype = x.dtype
-        div_term = self.div_term.to(x.device)
+        div_term = self.div_term
         x = x * self.factor
         emb = x[:, None].float() * div_term[None, :]
         emb = torch.cat((emb.cos(), emb.sin()), dim=-1)

@@ -332,5 +332,9 @@ class DataHooks:
         elif input_type == 'text':
             return torch.randint(self.vacab_size, (batch_size, self.seq_len), dtype=torch.int, device=self.device)
 
+    tokenizer: Optional
+    vocab_fn: Annotated[str, 'for tokenizer']
+    encoder_fn: Annotated[str, 'for tokenizer']
+
     def set_tokenizer(self):
         pass

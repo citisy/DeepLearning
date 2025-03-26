@@ -37,13 +37,26 @@ class WeightLoader:
         return file_name
 
     @classmethod
-    def auto_load(cls, save_path, save_name='', **kwargs):
-        try:
-            file_name = cls.get_file_name(save_path, save_name, **kwargs)
-            state_dict = torch_utils.Load.from_file(file_name)
-        except ValueError:
-            state_dict = cls.auto_download(save_path, save_name=save_name, **kwargs)
-        return state_dict
+    def auto_load(cls, save_path: str | list, save_name: str | list = '', **kwargs):
+        if not isinstance(save_path, str):
+            state_dict = {}
+            for _save_path in save_path:
+                state_dict.update(cls.auto_load(_save_path, save_name=save_name, **kwargs))
+            return state_dict
+
+        elif not isinstance(save_name, str):
+            state_dict = {}
+            for _save_name in save_name:
+                state_dict.update(cls.auto_load(save_path, save_name=_save_name, **kwargs))
+            return state_dict
+
+        else:
+            try:
+                file_name = cls.get_file_name(save_path, save_name, **kwargs)
+                state_dict = torch_utils.Load.from_file(file_name)
+            except ValueError:
+                state_dict = cls.auto_download(save_path, save_name=save_name, **kwargs)
+            return state_dict
 
     @classmethod
     def auto_download(cls, save_path, **kwargs):
