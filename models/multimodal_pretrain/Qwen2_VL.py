@@ -358,15 +358,15 @@ class Model(nn.Module):
     def decode(
             self,
             input_ids=None,
-            pixel_values=None, image_grid_thw=None,
-            pixel_values_videos=None, video_grid_thw=None,
+            image_pixel_values=None, image_grid_thw=None,
+            video_pixel_values=None, video_grid_thw=None,
             start_pos=0, vlm_past_kvs=None,
             **kwargs
     ):
         inputs_embeds = self.make_input_embeds(
             input_ids,
-            pixel_values=pixel_values if start_pos == 0 else None, image_grid_thw=image_grid_thw,
-            pixel_values_videos=pixel_values_videos if start_pos == 0 else None, video_grid_thw=video_grid_thw,
+            image_pixel_values=image_pixel_values if start_pos == 0 else None, image_grid_thw=image_grid_thw,
+            video_pixel_values=video_pixel_values if start_pos == 0 else None, video_grid_thw=video_grid_thw,
         )
 
         # calculate RoPE index once per generation in the pre-fill stage only
@@ -398,33 +398,33 @@ class Model(nn.Module):
 
     def make_input_embeds(
             self, input_ids,
-            pixel_values=None, image_grid_thw=None,
-            pixel_values_videos=None, video_grid_thw=None,
+            image_pixel_values=None, image_grid_thw=None,
+            video_pixel_values=None, video_grid_thw=None,
             **kwargs
     ):
         inputs_embeds = self.vlm.embed_tokens(input_ids)
 
-        if pixel_values is not None:
-            inputs_embeds = self.make_image_embeds(input_ids, pixel_values, image_grid_thw, inputs_embeds, **kwargs)
+        if image_pixel_values is not None:
+            inputs_embeds = self.make_image_embeds(input_ids, image_pixel_values, image_grid_thw, inputs_embeds, **kwargs)
 
-        if pixel_values_videos is not None:
-            inputs_embeds = self.make_video_embeds(input_ids, pixel_values_videos, video_grid_thw, inputs_embeds, **kwargs)
+        if video_pixel_values is not None:
+            inputs_embeds = self.make_video_embeds(input_ids, video_pixel_values, video_grid_thw, inputs_embeds, **kwargs)
 
         return inputs_embeds
 
-    def make_image_embeds(self, input_ids, pixel_values, image_grid_thw, inputs_embeds, **kwargs):
+    def make_image_embeds(self, input_ids, image_pixel_values, image_grid_thw, inputs_embeds, **kwargs):
         """for image inputs
-        pixel_values: [b, w, h]
+        image_pixel_values: [b, w, h]
         image_grid_thw: [b, gw, gh]
         """
-        image_embeds = self.vit(pixel_values, grid_thw=image_grid_thw, **kwargs)
+        image_embeds = self.vit(image_pixel_values, grid_thw=image_grid_thw, **kwargs)
         image_mask = (input_ids == self.image_token_id).unsqueeze(-1).expand_as(inputs_embeds)
         inputs_embeds = inputs_embeds.masked_scatter(image_mask, image_embeds)
         return inputs_embeds
 
-    def make_video_embeds(self, input_ids, pixel_values_videos, video_grid_thw, inputs_embeds, **kwargs):
+    def make_video_embeds(self, input_ids, video_pixel_values, video_grid_thw, inputs_embeds, **kwargs):
         """for video inputs"""
-        video_embeds = self.vit(pixel_values_videos, grid_thw=video_grid_thw, **kwargs)
+        video_embeds = self.vit(video_pixel_values, grid_thw=video_grid_thw, **kwargs)
         video_mask = (input_ids == self.video_token_id).unsqueeze(-1).expand_as(inputs_embeds)
         inputs_embeds = inputs_embeds.masked_scatter(video_mask, video_embeds)
         return inputs_embeds
