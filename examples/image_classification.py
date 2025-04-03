@@ -1,13 +1,29 @@
 from pathlib import Path
+from typing import List
 
 import cv2
 import numpy as np
 import torch
 from torch import optim
 
-from data_parse.cv_data_parse.datasets.base import DataVisualizer, DataRegister
 from data_parse.cv_data_parse.data_augmentation import scale, geometry, channel, RandomApply, Apply, pixel_perturbation
+from data_parse.cv_data_parse.datasets.base import DataVisualizer, DataRegister
 from processor import Process, DataHooks, bundled
+from utils import os_lib
+
+
+def _load_images(images, b, start_idx, end_idx):
+    if images:
+        if not isinstance(images, (list, tuple)):
+            # base on one image
+            images = [images for _ in range(b)]
+        else:
+            images = images[start_idx: end_idx]
+        images = [os_lib.loader.load_img(image) if isinstance(image, str) else image for image in images]
+    else:
+        images = [None] * b
+
+    return images
 
 
 class ClsProcess(Process):
@@ -89,6 +105,18 @@ class ClsProcess(Process):
             self.get_log_trace(bundled.WANDB).setdefault(f'val_image/{name}', []).extend(
                 [self.wandb.Image(cv2.cvtColor(ret['image'], cv2.COLOR_BGR2RGB), caption=ret['_id']) for ret in vis_rets]
             )
+
+    def gen_predict_inputs(self, *objs, start_idx=None, end_idx=None, **kwargs) -> List[dict]:
+        images = objs[0][start_idx: end_idx]
+        b = len(images)
+
+        images = _load_images(images, b, start_idx, end_idx)
+
+        rets = []
+        for image in images:
+            rets.append(dict(image=image))
+
+        return rets
 
 
 class Mnist(DataHooks):
@@ -192,17 +220,22 @@ class ImageNet(DataHooks):
             return iter_data
 
     train_aug = Apply([
-        scale.RuderJitter((256, 257)),
         RandomApply([
             geometry.HFlip(),
             geometry.VFlip(),
         ]),
+        scale.RuderJitter((256, 257)),
     ])
 
     val_aug = scale.LetterBox()
 
     post_aug = Apply([
         pixel_perturbation.MinMax(),
+        pixel_perturbation.Normalize(
+            mean=[0.485, 0.456, 0.406],
+            std=[0.229, 0.224, 0.225]
+        ),
+        channel.BGR2RGB(),
         channel.HWC2CHW()
     ])
 
@@ -446,6 +479,22 @@ class MobileNetV1_ImageNet(ClsProcess, ImageNet):
 
     def set_model(self):
         from models.image_classification.MobileNetV1 import Model
+        self.model = Model(self.in_ch, self.input_size, self.out_features)
+
+
+class MobileNetV3_ImageNet(ClsProcess, ImageNet):
+    """
+    Usage:
+        .. code-block:: python
+
+            from examples.image_classification import MobileNetV3_ImageNet as Process
+
+            Process().run(train_batch_size=32, predict_batch_size=32)
+    """
+    model_version = 'MobileNetV1'
+
+    def set_model(self):
+        from models.image_classification.MobileNetV3 import Model
         self.model = Model(self.in_ch, self.input_size, self.out_features)
 
 
