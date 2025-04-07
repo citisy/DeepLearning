@@ -4,13 +4,14 @@ from dataclasses import dataclass
 from functools import partial
 
 import torch
+import torch.nn.functional as F
 from einops import rearrange, repeat
-from torch import Tensor
-from torch import nn
+from torch import Tensor, nn
 
 from utils import torch_utils
 from . import VAE
-from .. import bundles, normalizations, attentions
+from .k_diffusion import EpsScaling, EulerSampler, Schedule, extract
+from .. import attentions, bundles, normalizations
 from ..embeddings import SinusoidalEmbedding
 from ..layers import Linear
 from ..multimodal_pretrain import CLIP
@@ -135,8 +136,6 @@ class Model(nn.Module):
     use_half = True
     low_memory_run = True
 
-    scale_factor = 0.18215
-
     def __init__(self, t5_config=Config.t5_xxl, clip_config=Config.clip, backbone_config=Config.backbone, vae_config=Config.vae, **kwargs):
         super().__init__()
         self.__dict__.update(kwargs)
@@ -151,6 +150,8 @@ class Model(nn.Module):
 
         self.vae = VAE.Model(**vae_config)
         self.vae.set_inference_only()
+
+        self.sampler = FluxSampler(schedule=FluxSchedule, scaling=FluxScaling, schedule_config=dict(num_steps=20))
 
     _device = None
     _dtype = None
@@ -188,8 +189,10 @@ class Model(nn.Module):
 
         self.t5.encode = wrap1(self.t5, self.t5.encode)
         self.clip.encode = wrap1(self.clip, self.clip.encode)
+        self.vae.encode = wrap1(self.vae, self.vae.encode)
         self.vae.decode = wrap1(self.vae, self.vae.decode)
-        self.flow = wrap1(self.backbone, self.flow)
+        self.sampler.forward = wrap1(self.backbone, self.sampler.forward)
+        self.sampler.to(self.device)
 
     def set_half(self):
         # note, vanilla sdxl vae can not convert to fp16, but bf16
@@ -207,7 +210,8 @@ class Model(nn.Module):
         self.clip.encode = partial(torch_utils.ModuleManager.assign_dtype_run, self.clip, self.clip.encode, dtype, force_effect_module=True)
         self.vae.encode = partial(torch_utils.ModuleManager.assign_dtype_run, self.vae, self.vae.encode, dtype, force_effect_module=False)
         self.vae.decode = partial(torch_utils.ModuleManager.assign_dtype_run, self.vae, self.vae.decode, dtype, force_effect_module=False)
-        self.flow = partial(torch_utils.ModuleManager.assign_dtype_run, self.backbone, self.flow, dtype, force_effect_module=False)
+        self.sampler.forward = partial(torch_utils.ModuleManager.assign_dtype_run, self.backbone, self.sampler.forward, dtype, force_effect_module=False)
+        self.sampler.to(self.dtype)
 
     def forward(self, **kwargs):
         if self.training:
@@ -215,38 +219,59 @@ class Model(nn.Module):
         else:
             return self.post_process(**kwargs)
 
-    def post_process(self, x=None, t5_text_ids=None, clip_text_ids=None, **kwargs):
-        # make x_t
+    def post_process(self, x=None, t5_text_ids=None, clip_text_ids=None, mask_x=None, **kwargs):
         if x is None or not len(x):  # txt2img
             x = self.gen_x_t(t5_text_ids.shape[0])
+            z0 = None
 
         else:  # img2img
-            x, z0, i0 = self.make_image_cond(x, **kwargs)
+            x, z0, i0 = self.make_image_cond(x, noise=self.gen_x_t(t5_text_ids.shape[0]), **kwargs)
             kwargs.update(i0=i0)
 
         bs, c, H, W = x.shape
-        h = H // 2
-        w = W // 2
-
-        x = rearrange(x, "b c (h ph) (w pw) -> b (h w) (c ph pw)", ph=2, pw=2)
-
-        img_ids = torch.zeros(h, w, 3)
-        img_ids[..., 1] = img_ids[..., 1] + torch.arange(h)[:, None]
-        img_ids[..., 2] = img_ids[..., 2] + torch.arange(w)[None, :]
-        img_ids = repeat(img_ids, "h w c -> b (h w) c", b=bs)
-        img_ids = img_ids.to(x.device)
 
         txt = self.t5.encode(t5_text_ids)
         txt_ids = torch.zeros(bs, txt.shape[1], 3, device=x.device)
         vec = self.clip.encode(clip_text_ids)['pooler_output']
 
-        timesteps = self.make_timesteps(x.shape[1])
-        x = self.flow(x, img_ids, txt, txt_ids, vec, timesteps)
-        x = rearrange(x, "b (h w) (c ph pw) -> b c (h ph) (w pw)", h=h, w=w, ph=2, pw=2)
+        z = self.sampler(self.flow, x, txt=txt, txt_ids=txt_ids, vec=vec, **kwargs)
 
-        x = self.vae.decode(x)
+        if x is not None and len(x) and mask_x is not None and len(mask_x):
+            # todo: apply for different conditioning_key
+            mask_x = F.interpolate(mask_x, size=z.shape[-2:])
+            z = z0 * mask_x + z * (1 - mask_x)
 
-        return x
+        images = self.vae.decode(z)
+
+        return images
+
+    def flow(self, img, t_vec, txt, txt_ids, vec, img_cond=None, **kwargs):
+        bs, c, H, W = img.shape
+        h = H // 2
+        w = W // 2
+
+        img = rearrange(img, "b c (h ph) (w pw) -> b (h w) (c ph pw)", ph=2, pw=2)
+
+        img_ids = torch.zeros(h, w, 3)
+        img_ids[..., 1] = img_ids[..., 1] + torch.arange(h)[:, None]
+        img_ids[..., 2] = img_ids[..., 2] + torch.arange(w)[None, :]
+        img_ids = repeat(img_ids, "h w c -> b (h w) c", b=bs)
+        img_ids = img_ids.to(img.device)
+
+        guidance_vec = torch.full((img.shape[0],), self.guidance, device=img.device, dtype=img.dtype)
+        t_vec = torch.full((img.shape[0],), t_vec[0], dtype=img.dtype, device=img.device)
+
+        img = self.backbone(
+            img=torch.cat((img, img_cond), dim=-1) if img_cond is not None else img,
+            img_ids=img_ids,
+            txt=txt,
+            txt_ids=txt_ids,
+            y=vec,
+            timesteps=t_vec,
+            guidance=guidance_vec,
+        )
+        img = rearrange(img, "b (h w) (c ph pw) -> b c (h ph) (w pw)", h=h, w=w, ph=2, pw=2)
+        return img
 
     def gen_x_t(self, batch_size):
         return torch.randn(
@@ -257,56 +282,68 @@ class Model(nn.Module):
 
     def make_image_cond(self, images, i0=None, noise=None, strength=0.75, **kwargs):
         z, _, _ = self.vae.encode(images)
-        x0 = self.scale_factor * z
+        x0 = z
 
         if i0 is None:
-            i0 = int(strength * self.timesteps)
+            i0 = int(strength * self.sampler.num_steps)
 
-        timestep_seq = self.make_timesteps(i0)
-        t = timestep_seq[0]
+        timestep_seq = self.sampler.make_timesteps(i0)
+        t = timestep_seq[-1]
         t = torch.full((x0.shape[0],), t, device=x0.device, dtype=torch.long)
-        xt = self.q_sample(x0, t, noise=noise)
+        xt = self.sampler.q_sample(x0, t, noise=noise)
         return xt, z, i0
 
-    def q_sample(self, x0, t, noise=None):
-        raise NotImplementedError
 
-    def make_timesteps(self, image_seq_len, base_shift=0.5, max_shift=1.15, shift=True) -> list[float]:
-        def get_lin_function(x1=256., y1=0.5, x2=4096., y2=1.15):
-            k = (y2 - y1) / (x2 - x1)
-            b = y1 - k * x1
-            return lambda x: k * x + b
+class FluxSampler(EulerSampler):
+    def p_sample(self, diffuse_func, x_t, t, prev_t=None, **diffuse_kwargs):
+        # todo: add more sample methods
+        t = torch.full((x_t.shape[0],), t, device=x_t.device, dtype=torch.long)
+        prev_t = torch.full((x_t.shape[0],), prev_t, device=x_t.device, dtype=torch.long)
 
-        # extra step for zero
-        timesteps = torch.linspace(1, 0, self.timesteps + 1)
+        sigma = extract(self.schedule.sigmas, t, x_t.shape)
+        next_sigma = extract(self.schedule.sigmas, prev_t, x_t.shape)
 
-        # shifting the schedule to favor high timesteps for higher signal images
-        if shift:
-            # estimate mu based on linear estimation between two points
-            mu = get_lin_function(y1=base_shift, y2=max_shift)(image_seq_len)
-            sigma = 1.0
-            timesteps = math.exp(mu) / (math.exp(mu) + (1 / timesteps - 1) ** sigma)
+        gamma = torch.where(
+            torch.logical_and(self.s_tmin <= sigma, sigma <= self.s_tmax),
+            min(self.s_churn / (self.schedule.num_steps - 1), 2 ** 0.5 - 1),
+            0.
+        ).to(sigma)
 
-        return timesteps.tolist()
+        sigma_hat = sigma * (gamma + 1.0)
 
-    def flow(self, img, img_ids, txt, txt_ids, vec, timesteps, img_cond=None):
-        # this is ignored for schnell
-        guidance_vec = torch.full((img.shape[0],), self.guidance, device=img.device, dtype=img.dtype)
-        for t_curr, t_prev in zip(timesteps[:-1], timesteps[1:]):
-            t_vec = torch.full((img.shape[0],), t_curr, dtype=img.dtype, device=img.device)
-            pred = self.backbone(
-                img=torch.cat((img, img_cond), dim=-1) if img_cond is not None else img,
-                img_ids=img_ids,
-                txt=txt,
-                txt_ids=txt_ids,
-                y=vec,
-                timesteps=t_vec,
-                guidance=guidance_vec,
-            )
+        if torch.any(gamma > 0):
+            eps = torch.randn_like(x_t) * self.s_noise
+            x_t = x_t + eps * (sigma_hat ** 2 - sigma ** 2) ** 0.5
 
-            img = img + (t_prev - t_curr) * pred
+        possible_sigma = self.schedule.sigmas[self.sigma_to_idx(sigma_hat)]
+        c_skip, c_out, c_in, c_noise = self.scaling(possible_sigma)
+        c_skip, c_out, c_in = c_skip[:, None, None, None], c_out[:, None, None, None], c_in[:, None, None, None]
 
-        return img
+        d = diffuse_func(c_in * x_t, c_noise, **diffuse_kwargs) * c_out + x_t * c_skip
+
+        d = (x_t - d) / sigma_hat
+        dt = next_sigma - sigma_hat
+        x_t = x_t + d * dt
+        return x_t, None
+
+    def predict_x_t(self, x_0, t, noise):
+        sigma = extract(self.schedule.sigmas, t, x_0.shape)
+        return x_0 * (1 - sigma) + noise * sigma
+
+
+class FluxScaling(EpsScaling):
+    def make_c_in(self, sigma):
+        return torch.ones_like(sigma, device=sigma.device)
+
+
+class FluxSchedule(Schedule):
+    def make_sigmas(self):
+        mu = 1.15
+        sigma = 1.
+        timesteps = (torch.arange(1, self.timesteps + 1, 1) / self.timesteps)
+        sigmas = math.exp(mu) / (math.exp(mu) + (1 / timesteps - 1) ** sigma)
+        sigmas = torch.cat([sigmas.new_zeros([1]), sigmas])
+        return sigmas
 
 
 class Flux(nn.Module):
@@ -371,7 +408,7 @@ class Flux(nn.Module):
 
         self.head = Head(self.hidden_size, 1, self.out_channels)
 
-    def forward(self, img, img_ids, txt, txt_ids, timesteps, y, guidance) -> Tensor:
+    def forward(self, img, timesteps, img_ids, txt, txt_ids, y, guidance) -> Tensor:
         # running on sequences img
         img = self.img_in(img)
         txt = self.txt_in(txt)

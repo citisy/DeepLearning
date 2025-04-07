@@ -306,6 +306,12 @@ class Sampler(nn.Module):
         elif self.objective == Config.PRED_V:
             register_buffer('loss_weight', maybe_clipped_snr / (snr + 1))
 
+    def _apply(self, fn, recurse=True):
+        """apply for meta load"""
+        if self.betas.is_meta:
+            self.make_schedule()
+        return super()._apply(fn, recurse)
+
     @property
     def num_steps(self):
         return self.timesteps

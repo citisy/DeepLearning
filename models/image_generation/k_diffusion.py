@@ -1,11 +1,13 @@
-import torch
-from torch import nn, einsum
-import torch.nn.functional as F
-import numpy as np
 import math
-from .ddpm import extract, append_dims
+
+import numpy as np
+import torch
+import torch.nn.functional as F
+from einops import reduce
+from torch import nn
+
+from .ddpm import extract
 from .. import bundles
-from einops import rearrange, repeat, reduce
 
 
 class Config(bundles.Config):
@@ -48,7 +50,15 @@ class Schedule(nn.Module):
         sigmas = self.make_sigmas()
         st = self.make_st()
 
-        self.register_buffer('sigmas', sigmas * st)
+        self.register_buffer('sigmas', sigmas * st, persistent=False)
+
+    def _apply(self, fn, recurse=True):
+        """apply for meta load"""
+        if self.sigmas.is_meta:
+            sigmas = self.make_sigmas()
+            st = self.make_st()
+            self.register_buffer('sigmas', sigmas * st)
+        return super()._apply(fn, recurse)
 
     def make_timesteps(self, i0=None):
         # note, must start with self.timesteps
