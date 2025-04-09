@@ -2,14 +2,12 @@ from functools import partial
 from typing import Optional
 
 import torch
-from einops.layers.torch import Rearrange
 from torch import nn
 from torch.nn import functional as F
 
 from utils import torch_utils
-from .. import bundles, attentions, embeddings, activations, normalizations
-from ..layers import Linear
-from ..text_pretrain import llama, transformers
+from .. import activations, attentions, bundles, embeddings, normalizations
+from ..text_pretrain import llama, qwen2, transformers
 
 
 class Config(bundles.Config):
@@ -674,11 +672,11 @@ class Vlm(nn.Module):
 
         self.blocks = transformers.TransformerSequential(
             hidden_size, num_heads, ff_hidden_size,
-            attention_fn=VisionSdpaAttention,
+            attention_fn=qwen2.QwenSdpaAttention,
             fn_kwargs=dict(
                 n_kv_heads=num_kv_heads,
             ),
-            attend_fn=VisionSdpaAttendWrapper,
+            attend_fn=qwen2.QwenSdpaAttendWrapper,
             attend_fn_kwargs=dict(
                 embedding=self.rot_embedding,
                 base_layer_fn=make_base_attend_fn(base_attend_name),
@@ -742,66 +740,6 @@ class Vlm(nn.Module):
         hidden_states = self.norm(hidden_states)
 
         return hidden_states
-
-
-class VisionSdpaAttention(nn.Module):
-    """cross attention"""
-
-    def __init__(self, n_heads=None, model_dim=None, head_dim=None, n_kv_heads=None,
-                 drop_prob=0., attend=None, out_layer=None, **fn_kwargs):
-        super().__init__()
-        n_heads, model_dim, head_dim = attentions.get_attention_input(n_heads, model_dim, head_dim)
-        query_dim = model_dim
-        context_dim = n_kv_heads * head_dim
-
-        # note, mainly differences, [model_dim, ...] not [..., model_dim]
-        self.to_qkv = nn.ModuleList([
-            nn.Linear(model_dim, query_dim, bias=True, **fn_kwargs),
-            nn.Linear(model_dim, context_dim, bias=True, **fn_kwargs),
-            nn.Linear(model_dim, context_dim, bias=True, **fn_kwargs),
-        ])
-
-        self.q_view_in = Rearrange('b s (n dk)-> b n s dk', n=n_heads)
-        self.kv_view_in = Rearrange('b s (n dk)-> b n s dk', n=n_kv_heads)
-
-        self.view_out = Rearrange('b n s dk -> b s (n dk)')
-        self.to_out = Linear(model_dim, query_dim, mode='l', bias=False, **fn_kwargs) if out_layer is None else out_layer
-
-        self.attend = VisionSdpaAttendWrapper() if attend is None else attend
-
-    def forward(self, q, k=None, v=None, attention_mask=None, **attend_kwargs):
-        q, k, v = attentions.get_qkv(q, k, v)
-        q, k, v = [m(x) for m, x in zip(self.to_qkv, (q, k, v))]
-
-        q = self.q_view_in(q).contiguous()
-        k = self.kv_view_in(k).contiguous()
-        v = self.kv_view_in(v).contiguous()
-
-        x = self.attend(q, k, v, attention_mask=attention_mask, **attend_kwargs)
-        x = self.view_out(x)
-
-        x = self.to_out(x)
-        return x
-
-
-class VisionSdpaAttendWrapper(attentions.RotaryAttendWrapper):
-    """vision scaled-dot-product-attention"""
-
-    def forward(self, q, k, v, attention_mask=None, embedding_kwargs=dict(), **attend_kwargs):
-        """
-        in(q|k|v): (b n s d)
-        out(attn): (b n s d)
-        """
-        q, k, v = [self.view_in(x).contiguous() for x in (q, k, v)]
-        q = self.embedding(q, **embedding_kwargs)
-        k = self.embedding(k, **embedding_kwargs)
-        q, k, v = [self.view_out(x).contiguous() for x in (q, k, v)]
-        ratio = q.shape[1] // k.shape[1]
-        # note, mainly difference from `RotaryAttendWrapper`.
-        k = k.repeat_interleave(ratio, dim=1)
-        v = v.repeat_interleave(ratio, dim=1)
-        attn = self.base_layer(q, k, v, attention_mask=attention_mask, **attend_kwargs)
-        return attn
 
 
 class MRotaryEmbedding(RotaryEmbedding2D):

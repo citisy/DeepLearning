@@ -50,7 +50,7 @@ class OutModule(nn.Sequential):
 class Conv(nn.Sequential):
     def __init__(self, in_ch, out_ch, k, s=1, p=None,
                  is_act=True, act=None,
-                 is_norm=True, norm=None,
+                 is_norm=True, norm=None, norm_fn=None,
                  is_drop=True, drop_prob=0.5,
                  mode='cna', detail_name=True, **conv_kwargs):
         """
@@ -93,7 +93,8 @@ class Conv(nn.Sequential):
                         norm_ch = in_ch
                     else:
                         norm_ch = out_ch
-                    norm = nn.BatchNorm2d(norm_ch)
+                    norm_fn = norm_fn or nn.BatchNorm2d
+                    norm = norm_fn(norm_ch)
                 layers['norm'] = norm
             elif m == 'a' and is_act:
                 layers['act'] = act or nn.ReLU(inplace=True)

@@ -32,16 +32,16 @@ class WeightConverter:
         convert_dict = {
             'tok_embeddings': 'embedding',
 
-            'layers.{0}.attention.wq': 'encoder.{0}.attn_res.fn.to_qkv.0',
-            'layers.{0}.attention.wk': 'encoder.{0}.attn_res.fn.to_qkv.1',
-            'layers.{0}.attention.wv': 'encoder.{0}.attn_res.fn.to_qkv.2',
-            'layers.{0}.attention.wo': 'encoder.{0}.attn_res.fn.to_out.linear',
-            'layers.{0}.attention_norm': 'encoder.{0}.attn_res.norm',
+            'layers.{0}.attention.wq': 'decoder.{0}.attn_res.fn.to_qkv.0',
+            'layers.{0}.attention.wk': 'decoder.{0}.attn_res.fn.to_qkv.1',
+            'layers.{0}.attention.wv': 'decoder.{0}.attn_res.fn.to_qkv.2',
+            'layers.{0}.attention.wo': 'decoder.{0}.attn_res.fn.to_out.linear',
+            'layers.{0}.attention_norm': 'decoder.{0}.attn_res.norm',
 
-            'layers.{0}.feed_forward.w1': 'encoder.{0}.ff_res.fn.f1.linear',
-            'layers.{0}.feed_forward.w2': 'encoder.{0}.ff_res.fn.f2.linear',
-            'layers.{0}.feed_forward.w3': 'encoder.{0}.ff_res.fn.f3.linear',
-            'layers.{0}.ffn_norm': 'encoder.{0}.ff_res.norm',
+            'layers.{0}.feed_forward.w1': 'decoder.{0}.ff_res.fn.f1.linear',
+            'layers.{0}.feed_forward.w2': 'decoder.{0}.ff_res.fn.f2.linear',
+            'layers.{0}.feed_forward.w3': 'decoder.{0}.ff_res.fn.f3.linear',
+            'layers.{0}.ffn_norm': 'decoder.{0}.ff_res.norm',
 
             'output': 'head',
 
@@ -66,7 +66,7 @@ class Model(nn.Module):
         rotary_embedding = embeddings.RotaryEmbedding(hidden_size // num_attention_heads)
         ff_hidden_size = int(hidden_size * 4 * 2 / 3)
         ff_hidden_size = multiple_of * ((ff_hidden_size + multiple_of - 1) // multiple_of)
-        self.encoder = TransformerSequential(
+        self.decoder = TransformerSequential(
             hidden_size, num_attention_heads, ff_hidden_size,
             norm_first=True, drop_prob=drop_prob,
             attend_fn=attentions.MemoryRotaryAttendWrapper,
@@ -138,10 +138,10 @@ class Model(nn.Module):
             prev_pos = cur_pos
         return x
 
-    def decode(self, x, start_pos=0, **encoder_kwargs):
+    def decode(self, x, start_pos=0, **decoder_kwargs):
         x = self.embedding(x)
         attention_mask = make_causal_attention_mask(x, start_pos=start_pos)
-        x = self.encoder(x, attention_mask=attention_mask, start_pos=start_pos, **encoder_kwargs)
+        x = self.decoder(x, attention_mask=attention_mask, start_pos=start_pos, **decoder_kwargs)
         x = self.norm(x)
         x = self.head(x)
         return x

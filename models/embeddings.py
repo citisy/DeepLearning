@@ -96,13 +96,25 @@ class RotaryEmbedding(nn.Module):
 
     def __init__(self, embedding_dim, theta=10000.):
         super().__init__()
+        self.embedding_dim = embedding_dim
+        self.theta = theta
 
+        div_term = self.make_div_term()
+        self.register_buffer('div_term', div_term, persistent=False)
+
+    def _apply(self, fn, recurse=True):
+        """apply for meta load"""
+        if self.div_term.is_meta:
+            div_term = self.make_div_term()
+            self.register_buffer('div_term', div_term, persistent=False)
+        return super()._apply(fn, recurse)
+
+    def make_div_term(self):
         # exp{-d / D * log{\theta}} = \theta ^ {-d / D} = 1 / (\theta ^ {d / D})
         # equal to
-        # div_term = 1.0 / (theta ** (torch.arange(0, embedding_dim, 2)[: (embedding_dim // 2)].float() / embedding_dim))
-        # but will
-        div_term = (torch.arange(0, embedding_dim, 2).float() * -(math.log(theta) / embedding_dim)).exp()
-        self.register_buffer('div_term', div_term, persistent=False)
+        # div_term = 1.0 / (self.theta ** (torch.arange(0, self.embedding_dim, 2)[: (self.embedding_dim // 2)].float() / self.embedding_dim))
+        div_term = (torch.arange(0, self.embedding_dim, 2).float() * -(math.log(self.theta) / self.embedding_dim)).exp()
+        return div_term
 
     def make_weights(self, seq_len):
         position = torch.arange(0, seq_len).float()
@@ -131,9 +143,9 @@ class RotaryEmbedding(nn.Module):
         # weights = torch.view_as_real(weights)
         # cos = weights[..., 0]
         # sin = weights[..., 1]
-        # x = x.float()
-        # _x = torch.stack((-x[..., 1::2], x[..., ::2]), dim=-1).flatten(-2, -1)
-        # y = (x * cos) + (_x * sin)
+        # _x = x.float()
+        # _x = torch.stack((-x[..., 1::2], _x[..., ::2]), dim=-1).flatten(-2, -1)
+        # y = (_x * cos) + (_x * sin)
         y = torch.view_as_complex(x.float().reshape(*x.shape[:-1], -1, 2))
         y = torch.view_as_real(y * weights).flatten(3)
         return y.type_as(x)

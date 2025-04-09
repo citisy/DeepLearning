@@ -163,10 +163,19 @@ class PositionWiseFeedForward(nn.Sequential):
 def make_causal_attention_mask(x, start_pos=0):
     """
     e.g.:
-        x.shape=(b, 3, -1) -> mask.shape=(b, 1, 3, 3)
-        [[1, 0, 0],
-        [1, 1, 0],
-        [1, 1, 1]
+        x.shape=(b, 3, -1)
+
+        start_pos=0 -> mask.shape=(b, 1, 3, 3)
+        and mask[0, 0] would like that:
+            [[1, 0, 0],
+            [1, 1, 0],
+            [1, 1, 1]]
+
+        start_pos=1 -> mask.shape=(b, 1, 3, 4)
+        and mask[0, 0] would like that:
+            [[1, 1, 0, 0],
+            [1, 1, 1, 0],
+            [1, 1, 1, 1]]
 
     """
     batch_size, seq_len = x.shape[:2]

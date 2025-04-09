@@ -114,12 +114,12 @@ class WeightConverter:
         convert_dict = {
             'model.wte:0': 'embedding.token.weight',
             'model.wpe:0': 'embedding.position.weight',
-            'model.h{0}.ln_1': 'encoder.{0}.attn_res.norm',
-            'model.h{0}.attn.c_attn': 'encoder.{0}.attn_res.fn.to_qkv',
-            'model.h{0}.attn.c_proj': 'encoder.{0}.attn_res.fn.to_out.linear',
-            'model.h{0}.ln_2': 'encoder.{0}.ff_res.norm',
-            'model.h{0}.mlp.c_fc': 'encoder.{0}.ff_res.fn.0.linear',
-            'model.h{0}.mlp.c_proj': 'encoder.{0}.ff_res.fn.1.linear',
+            'model.h{0}.ln_1': 'decoder.{0}.attn_res.norm',
+            'model.h{0}.attn.c_attn': 'decoder.{0}.attn_res.fn.to_qkv',
+            'model.h{0}.attn.c_proj': 'decoder.{0}.attn_res.fn.to_out.linear',
+            'model.h{0}.ln_2': 'decoder.{0}.ff_res.norm',
+            'model.h{0}.mlp.c_fc': 'decoder.{0}.ff_res.fn.0.linear',
+            'model.h{0}.mlp.c_proj': 'decoder.{0}.ff_res.fn.1.linear',
             'model.ln_f': 'norm',
         }
 
@@ -136,12 +136,12 @@ class WeightConverter:
         convert_dict = {
             'wte': 'embedding.token',
             'wpe': 'embedding.position',
-            'h.{0}.ln_1': 'encoder.{0}.attn_res.norm',
-            'h.{0}.attn.c_attn': 'encoder.{0}.attn_res.fn.to_qkv',
-            'h.{0}.attn.c_proj': 'encoder.{0}.attn_res.fn.to_out.linear',
-            'h.{0}.ln_2': 'encoder.{0}.ff_res.norm',
-            'h.{0}.mlp.c_fc': 'encoder.{0}.ff_res.fn.0.linear',
-            'h.{0}.mlp.c_proj': 'encoder.{0}.ff_res.fn.1.linear',
+            'h.{0}.ln_1': 'decoder.{0}.attn_res.norm',
+            'h.{0}.attn.c_attn': 'decoder.{0}.attn_res.fn.to_qkv',
+            'h.{0}.attn.c_proj': 'decoder.{0}.attn_res.fn.to_out.linear',
+            'h.{0}.ln_2': 'decoder.{0}.ff_res.norm',
+            'h.{0}.mlp.c_fc': 'decoder.{0}.ff_res.fn.0.linear',
+            'h.{0}.mlp.c_proj': 'decoder.{0}.ff_res.fn.1.linear',
             'ln_f': 'norm',
         }
 
@@ -158,7 +158,7 @@ class Model(nn.Module):
         self.pad_id = pad_id
         self.n_layer = n_layer
         self.embedding = DecoderEmbedding(vocab_size, hidden_size, pad_id, max_seq_len=max_seq_len)
-        self.encoder = TransformerSequential(
+        self.decoder = TransformerSequential(
             hidden_size, num_attention_heads, hidden_size * 4,
             norm_first=True, drop_prob=drop_prob,
             fn_kwargs=dict(separate=False),
@@ -201,10 +201,10 @@ class Model(nn.Module):
                 x[index][j + 1] = next_id
         return x
 
-    def decode(self, sequence, **encoder_kwargs):
+    def decode(self, sequence, **decoder_kwargs):
         x = self.embedding(sequence)
         mask = make_causal_attention_mask(x)
-        x = self.encoder(x, attention_mask=mask, **encoder_kwargs)
+        x = self.decoder(x, attention_mask=mask, **decoder_kwargs)
         x = self.norm(x)
         x = self.embedding_sim(x)
         return x

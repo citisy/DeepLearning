@@ -968,3 +968,26 @@ class T5FromHFPretrain(T5, LoadT5FromHFPretrain, SimpleTextForT5):
             # studies have shown that owning a dog is good for you .
     """
     dataset_version = 'huggingface_pretrain'
+
+
+class Qwen2(Process):
+    def set_model(self):
+        from models.text_pretrain.qwen2 import Model
+
+        with torch.device('meta'):
+            self.model = Model()
+
+    def set_tokenizer(self):
+        from data_parse.nl_data_parse.pre_process.bundled import Qwen2Tokenizer
+
+        self.tokenizer = Qwen2Tokenizer.from_pretrained(
+            vocab_fn=self.vocab_fn,
+            encoder_fn=self.encoder_fn
+        )
+
+    def load_pretrain(self):
+        from models.text_pretrain.qwen2 import WeightLoader, WeightConverter
+
+        state_dict = WeightLoader.auto_load(self.pretrain_model)
+        state_dict = WeightConverter.from_official(state_dict)
+        self.model.load_state_dict(state_dict, strict=False, assign=True)
