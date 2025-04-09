@@ -1,10 +1,11 @@
-import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from .transformers import make_causal_attention_mask, TransformerSequential
-from .. import bundles, attentions, normalizations, embeddings, layers
+
+from data_parse.nl_data_parse.pre_process.decoder import beam_search
 from utils import torch_utils
+from .transformers import TransformerSequential, make_causal_attention_mask
+from .. import attentions, bundles, embeddings, layers, normalizations
 
 
 class Config(bundles.Config):
@@ -52,7 +53,7 @@ class WeightConverter:
 
 
 class Model(nn.Module):
-    eos_id = None
+    eos_ids = []
     pad_id = None
 
     def __init__(self, vocab_size, hidden_size,
@@ -101,42 +102,16 @@ class Model(nn.Module):
         logits = logits.transpose(1, 2)  # seq first -> class first
         return F.cross_entropy(logits, trues)
 
-    def post_process(self, x, seq_lens=None, max_gen_len=100, top_k=1, **decode_kwargs):
-        assert seq_lens is not None
-        batch_size = len(x)
-        prev_pos = 0
-        min_pos = min(seq_lens)
-        eos_flag = [False] * batch_size
-        for cur_pos in range(min_pos, min_pos + max_gen_len):
-            logits = self.decode(x[:, prev_pos: cur_pos], start_pos=prev_pos, **decode_kwargs)
-            # add next preds
-            x = torch.cat([x, torch.zeros((batch_size, 1)).to(x)], dim=-1)
-            for index in range(batch_size):
-                if eos_flag[index]:
-                    continue
-
-                if x[index][cur_pos] != 0:
-                    continue
-
-                preds = logits[index, -1]
-                preds = torch.softmax(preds / 0.6, dim=-1)
-                arg = torch.argsort(preds, descending=True)
-                keep = arg[:top_k]
-                preds = preds[keep]
-                preds = preds / preds.sum()
-
-                # random sampling
-                next_id = keep[preds.multinomial(1)[0]]
-                x[index][cur_pos] = next_id
-
-                if next_id == self.eos_id:
-                    eos_flag[index] = True
-
-            if all(eos_flag):
-                break
-
-            prev_pos = cur_pos
-        return x
+    def post_process(
+            self,
+            x, content_generator=True, seq_lens=None,
+            **decode_kwargs
+    ):
+        if content_generator:
+            preds = beam_search(x, seq_lens, self.decode, eos_ids=self.eos_ids, **decode_kwargs)
+            return preds
+        else:
+            return self.decode(x, **decode_kwargs)
 
     def decode(self, x, start_pos=0, **decoder_kwargs):
         x = self.embedding(x)

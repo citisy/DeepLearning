@@ -5,6 +5,18 @@ from einops.layers.torch import Rearrange
 from torch import nn
 
 
+class EmbeddingSim(nn.Module):
+    """as a linear layer"""
+
+    def __init__(self, weight):
+        super().__init__()
+        self.register_buffer('weight', weight, persistent=False)
+
+    def forward(self, x):
+        y = x.matmul(self.weight.transpose(1, 0).detach())
+        return y
+
+
 class PositionalEmbedding(nn.Module):
     """
     emb_{2i} = sin{n * \theta^{-2d/D}}

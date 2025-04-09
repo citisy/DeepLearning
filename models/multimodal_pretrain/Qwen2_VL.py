@@ -8,6 +8,8 @@ from torch.nn import functional as F
 from utils import torch_utils
 from .. import activations, attentions, bundles, embeddings, normalizations
 from ..text_pretrain import llama, qwen2, transformers
+from data_parse.nl_data_parse.pre_process.decoder import beam_search
+
 
 
 class Config(bundles.Config):
@@ -291,67 +293,28 @@ class Model(nn.Module):
             outputs['loss'] = self.loss(trues, preds)
             return outputs
         else:
-            return self.post_process(
-                input_ids,
-                **kwargs
-            )
+            return {'preds': self.post_process(input_ids, **kwargs)}
 
     def post_process(
             self,
-            x, seq_lens=None, max_gen_len=100, top_k=1,
+            x, content_generator=True, seq_lens=None,
             **decode_kwargs
     ):
-        assert seq_lens is not None
-        batch_size = len(x)
-        eos_flag = [False] * batch_size
+        if content_generator:
+            vlm_past_kvs = [dict(
+                # (b, n, s, d)
+                k=torch.empty((x.shape[0], self.decoder.num_heads, 0, self.decoder.hidden_size // self.decoder.num_heads), dtype=self.decoder.dtype, device=self.decoder.device),
+                v=torch.empty((x.shape[0], self.decoder.num_heads, 0, self.decoder.hidden_size // self.decoder.num_heads), dtype=self.decoder.dtype, device=self.decoder.device)
+            ) for i in range(self.decoder.num_blocks)]
 
-        vlm_past_kvs = [dict(
-            # (b, n, s, d)
-            k=torch.empty((x.shape[0], self.vlm.num_heads, 0, self.vlm.hidden_size // self.vlm.num_heads), dtype=self.vlm.dtype, device=self.vlm.device),
-            v=torch.empty((x.shape[0], self.vlm.num_heads, 0, self.vlm.hidden_size // self.vlm.num_heads), dtype=self.vlm.dtype, device=self.vlm.device)
-        ) for i in range(self.vit.num_blocks)]
+            preds = beam_search(x, seq_lens, self.decode, eos_ids=self.eos_ids, vlm_past_kvs=vlm_past_kvs, **decode_kwargs)
 
-        prev_pos = 0
-        min_pos = min(seq_lens)
+            del vlm_past_kvs
+            torch_utils.ModuleManager.torch_gc()
 
-        for cur_pos in range(min_pos, min_pos + max_gen_len):
-            logits = self.decode(
-                x[:, prev_pos: cur_pos],
-                start_pos=prev_pos, vlm_past_kvs=vlm_past_kvs,
-                **decode_kwargs
-            )
-
-            x = torch.cat([x, torch.zeros((batch_size, 1)).to(x)], dim=-1)
-
-            for index in range(batch_size):
-                if eos_flag[index]:
-                    continue
-
-                if x[index][cur_pos] != 0:
-                    continue
-
-                preds = logits[index, -1]
-                arg = torch.argsort(preds, descending=True)
-                keep = arg[:top_k]
-                preds = preds[keep]
-                preds = preds / preds.sum()
-
-                # random sampling
-                next_id = keep[preds.multinomial(1)[0]]
-                x[index][cur_pos] = next_id
-
-                if next_id in self.eos_ids:
-                    eos_flag[index] = True
-
-            if all(eos_flag):
-                break
-
-            prev_pos = cur_pos
-
-        del vlm_past_kvs
-        torch_utils.ModuleManager.torch_gc()
-
-        return x
+            return preds
+        else:
+            return self.decode(x, **decode_kwargs)
 
     def decode(
             self,
@@ -564,7 +527,7 @@ class PatchEmbedding3D(nn.Module):
         self.in_channels = in_ch
         self.temporal_patch_size = temporal_patch_size
 
-        kernel_size = [temporal_patch_size, patch_size, patch_size]
+        kernel_size = (temporal_patch_size, patch_size, patch_size)
         self.fn = nn.Conv3d(in_ch, dim, kernel_size, stride=kernel_size, bias=bias)
 
     def forward(self, x):

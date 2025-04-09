@@ -4,6 +4,7 @@ import torch
 from einops.layers.torch import Rearrange
 from torch import nn
 
+from data_parse.nl_data_parse.pre_process.decoder import beam_search
 from utils import torch_utils
 from .. import attentions, bundles, embeddings, normalizations
 from ..layers import Linear
@@ -11,14 +12,6 @@ from ..text_pretrain import llama, transformers
 
 
 class Config(bundles.Config):
-    LayerNorm = 'LayerNorm'
-    RMSNorm2D = 'RMSNorm2D'
-
-    ScaleAttend = 'ScaleAttend'
-    FlashAttend = 'FlashAttend'
-    DynamicMemoryScaleAttend = 'DynamicMemoryScaleAttend'
-    DynamicMemoryFlashAttend = 'DynamicMemoryFlashAttend'
-
     _0_5b_decoder = dict(
         hidden_size=896,
         ff_hidden_size=4864,
@@ -113,8 +106,8 @@ class Model(nn.Module):
 
         self.decoder = Decoder(**decoder_config)
         self.embedding = nn.Embedding(self.decoder.vocab_size, self.decoder.hidden_size, self.padding_idx)
-        self.head = nn.Linear(self.decoder.hidden_size, self.decoder.vocab_size, bias=False)
-        self.head.weight = self.embedding.weight
+        # not sure if it affects the training yet
+        self.head = embeddings.EmbeddingSim(self.embedding.weight)
 
     def _apply(self, fn, recurse=True):
         """apply for meta load"""
@@ -122,68 +115,32 @@ class Model(nn.Module):
             self.head.weight = self.embedding.weight
         return super()._apply(fn, recurse)
 
-    def forward(self, x, **kwargs):
+    def forward(self, input_ids, **kwargs):
         if self.training:
             raise NotImplementedError()
         else:
-            return {'preds': self.post_process(x, **kwargs)}
+            return {'preds': self.post_process(input_ids, **kwargs)}
 
     def post_process(
             self,
-            x, seq_lens=None, max_gen_len=100, top_k=1,
+            x, content_generator=True, seq_lens=None,
             **decode_kwargs
     ):
-        assert seq_lens is not None
-        batch_size = len(x)
-        eos_flag = [False] * batch_size
+        if content_generator:
+            past_kvs = [dict(
+                # (b, n, s, d)
+                k=torch.empty((x.shape[0], self.decoder.num_heads, 0, self.decoder.hidden_size // self.decoder.num_heads), dtype=self.decoder.dtype, device=self.decoder.device),
+                v=torch.empty((x.shape[0], self.decoder.num_heads, 0, self.decoder.hidden_size // self.decoder.num_heads), dtype=self.decoder.dtype, device=self.decoder.device)
+            ) for i in range(self.decoder.num_blocks)]
 
-        past_kvs = [dict(
-            # (b, n, s, d)
-            k=torch.empty((x.shape[0], self.decoder.num_heads, 0, self.decoder.hidden_size // self.decoder.num_heads), dtype=self.decoder.dtype, device=self.decoder.device),
-            v=torch.empty((x.shape[0], self.decoder.num_heads, 0, self.decoder.hidden_size // self.decoder.num_heads), dtype=self.decoder.dtype, device=self.decoder.device)
-        ) for i in range(self.decoder.num_blocks)]
+            preds = beam_search(x, seq_lens, self.decode, eos_ids=self.eos_ids, past_kvs=past_kvs, **decode_kwargs)
 
-        prev_pos = 0
-        min_pos = min(seq_lens)
+            del past_kvs
+            torch_utils.ModuleManager.torch_gc()
 
-        for cur_pos in range(min_pos, min_pos + max_gen_len):
-            logits = self.decode(
-                x[:, prev_pos: cur_pos],
-                start_pos=prev_pos, past_kvs=past_kvs,
-                **decode_kwargs
-            )
-
-            x = torch.cat([x, torch.zeros((batch_size, 1)).to(x)], dim=-1)
-
-            for index in range(batch_size):
-                if eos_flag[index]:
-                    continue
-
-                if x[index][cur_pos] != 0:
-                    continue
-
-                preds = logits[index, -1]
-                arg = torch.argsort(preds, descending=True)
-                keep = arg[:top_k]
-                preds = preds[keep]
-                preds = preds / preds.sum()
-
-                # random sampling
-                next_id = keep[preds.multinomial(1)[0]]
-                x[index][cur_pos] = next_id
-
-                if next_id in self.eos_ids:
-                    eos_flag[index] = True
-
-            if all(eos_flag):
-                break
-
-            prev_pos = cur_pos
-
-        del past_kvs
-        torch_utils.ModuleManager.torch_gc()
-
-        return x
+            return preds
+        else:
+            return self.decode(x, **decode_kwargs)
 
     def decode(self, x, start_pos=0, **decoder_kwargs):
         x = self.embedding(x)
@@ -197,7 +154,7 @@ class Decoder(nn.Module):
     def __init__(
             self,
             vocab_size=151936,
-            hidden_size=3584,ff_hidden_size=18944,
+            hidden_size=3584, ff_hidden_size=18944,
             num_heads=28, num_blocks=28, num_kv_heads=4,
             use_checkpoint=False
     ):

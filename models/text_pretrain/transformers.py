@@ -186,21 +186,3 @@ def make_causal_attention_mask(x, start_pos=0):
     ])
     mask = mask[None, None].repeat(batch_size, 1, 1, 1)  # (b, 1, s, s+p)
     return mask
-
-
-class EmbeddingSim(nn.Module):
-    """as a linear layer"""
-
-    def __init__(self, weight, use_bias=True):
-        super().__init__()
-        self.weight = weight
-        self.use_bias = use_bias
-        if use_bias:
-            num_embeddings = weight.shape[0]
-            self.bias = nn.Parameter(torch.zeros(num_embeddings))
-
-    def forward(self, x):
-        y = x.matmul(self.weight.transpose(1, 0).detach())
-        if self.use_bias:
-            y += self.bias
-        return y

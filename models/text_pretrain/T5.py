@@ -1,14 +1,14 @@
 import math
-from functools import partial
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from data_parse.nl_data_parse.pre_process.decoder import beam_search
 from utils import torch_utils
 from . import llama
-from .transformers import make_causal_attention_mask, TransformerSequential, EmbeddingSim, PositionWiseFeedForward
-from .. import bundles, attentions, activations
+from .transformers import PositionWiseFeedForward, TransformerSequential, make_causal_attention_mask
+from .. import activations, attentions, bundles, embeddings
 
 
 class Config(bundles.Config):
@@ -200,7 +200,7 @@ class Model(nn.Module):
         )
         self.decoder_norm = T5LayerNorm(hidden_size)
 
-        self.head = EmbeddingSim(self.embedding.weight, use_bias=False)
+        self.head = embeddings.EmbeddingSim(self.embedding.weight)
 
     def set_encoder_only(self):
         del self.decoder_relative_bias
@@ -243,36 +243,16 @@ class Model(nn.Module):
         x = self.head(x)
         return x
 
-    def post_process(self, x, seq_lens=None, max_gen_len=100, top_k=1, **decode_kwargs):
-        assert seq_lens is not None
-        batch_size = len(x)
-        eos_flag = [False] * batch_size
-        for i in range(max_gen_len):
-            logits = self.decode(x, **decode_kwargs)
-            x = torch.cat([x, torch.zeros((batch_size, 1)).to(x)], dim=-1)
-
-            for index in range(batch_size):
-                if eos_flag[index]:
-                    continue
-
-                j = seq_lens[index] + i - 1
-                preds = logits[index, j]
-                arg = torch.argsort(preds, descending=True)
-                keep = arg[:top_k]
-                preds = preds[keep]
-                preds = preds / preds.sum()
-
-                # random sampling
-                next_id = keep[preds.multinomial(1)[0]]
-                x[index][j + 1] = next_id
-
-                if next_id == self.eos_id:
-                    eos_flag[index] = True
-
-            if all(eos_flag):
-                break
-
-        return x
+    def post_process(
+            self,
+            x, content_generator=True, seq_lens=None,
+            **decode_kwargs
+    ):
+        if content_generator:
+            preds = beam_search(x, seq_lens, self.decode, eos_ids=self.eos_ids, **decode_kwargs)
+            return preds
+        else:
+            return self.decode(x, **decode_kwargs)
 
 
 class T5LayerNorm(nn.Module):

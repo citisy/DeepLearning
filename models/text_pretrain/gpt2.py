@@ -1,9 +1,11 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from .. import bundles
-from .transformers import DecoderEmbedding, make_causal_attention_mask, TransformerSequential, EmbeddingSim
-from utils import torch_utils, math_utils
+
+from data_parse.nl_data_parse.pre_process.decoder import beam_search
+from utils import math_utils, torch_utils
+from .transformers import DecoderEmbedding, TransformerSequential, make_causal_attention_mask
+from .. import bundles, embeddings
 
 
 class Config(bundles.Config):
@@ -165,7 +167,7 @@ class Model(nn.Module):
             num_blocks=n_layer
         )
         self.norm = nn.LayerNorm(hidden_size)
-        self.embedding_sim = EmbeddingSim(self.embedding.token.weight, use_bias=False)
+        self.embedding_sim = embeddings.EmbeddingSim(self.embedding.token.weight)
 
     def forward(self, x, **kwargs):
         if self.training:
@@ -181,25 +183,16 @@ class Model(nn.Module):
         logits = logits.transpose(1, 2)  # seq first -> class first
         return F.cross_entropy(logits, trues)
 
-    def post_process(self, x, seq_lens=None, max_gen_len=100, top_k=1, **decode_kwargs):
-        assert seq_lens is not None
-        batch_size = len(x)
-        for i in range(max_gen_len):
-            logits = self.decode(x, **decode_kwargs)
-            # add next preds
-            x = torch.cat([x, torch.zeros((batch_size, 1)).to(x)], dim=-1)
-            for index in range(batch_size):
-                j = seq_lens[index] + i - 1
-                preds = logits[index, j]
-                arg = torch.argsort(preds, descending=True)
-                keep = arg[:top_k]
-                preds = preds[keep]
-                preds = preds / preds.sum()
-
-                # random sampling
-                next_id = keep[preds.multinomial(1)[0]]
-                x[index][j + 1] = next_id
-        return x
+    def post_process(
+            self,
+            x, content_generator=True, seq_lens=None,
+            **decode_kwargs
+    ):
+        if content_generator:
+            preds = beam_search(x, seq_lens, self.decode, **decode_kwargs)
+            return preds
+        else:
+            return self.decode(x, **decode_kwargs)
 
     def decode(self, sequence, **decoder_kwargs):
         x = self.embedding(sequence)
