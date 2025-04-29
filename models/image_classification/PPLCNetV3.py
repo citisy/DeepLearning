@@ -10,27 +10,34 @@ from ..layers import Conv
 
 
 class Config(bundles.Config):
-    det_block = {
-        # k, in_c, out_c, s, use_se
-        "blocks2": [[3, 16, 32, 1, False]],
-        "blocks3": [[3, 32, 64, 2, False], [3, 64, 64, 1, False]],
-        "blocks4": [[3, 64, 128, 2, False], [3, 128, 128, 1, False]],
-        "blocks5": [[3, 128, 256, 2, False], [5, 256, 256, 1, False], [5, 256, 256, 1, False],
-                    [5, 256, 256, 1, False], [5, 256, 256, 1, False]],
-        "blocks6": [[5, 256, 512, 2, True], [5, 512, 512, 1, True],
-                    [5, 512, 512, 1, False], [5, 512, 512, 1, False]]
-    }
+    det_backbone = dict(
+        det=True,
+        block_config={
+            # k, in_c, out_c, s, use_se
+            "blocks2": [[3, 16, 32, 1, False]],
+            "blocks3": [[3, 32, 64, 2, False], [3, 64, 64, 1, False]],
+            "blocks4": [[3, 64, 128, 2, False], [3, 128, 128, 1, False]],
+            "blocks5": [[3, 128, 256, 2, False], [5, 256, 256, 1, False], [5, 256, 256, 1, False],
+                        [5, 256, 256, 1, False], [5, 256, 256, 1, False]],
+            "blocks6": [[5, 256, 512, 2, True], [5, 512, 512, 1, True],
+                        [5, 512, 512, 1, False], [5, 512, 512, 1, False]]
+        }
+    )
 
-    rec_block = {
-        # k, in_c, out_c, s, use_se
-        "blocks2": [[3, 16, 32, 1, False]],
-        "blocks3": [[3, 32, 64, 1, False], [3, 64, 64, 1, False]],
-        "blocks4": [[3, 64, 128, (2, 1), False], [3, 128, 128, 1, False]],
-        "blocks5": [[3, 128, 256, (1, 2), False], [5, 256, 256, 1, False],
-                    [5, 256, 256, 1, False], [5, 256, 256, 1, False], [5, 256, 256, 1, False]],
-        "blocks6": [[5, 256, 512, (2, 1), True], [5, 512, 512, 1, True],
-                    [5, 512, 512, (2, 1), False], [5, 512, 512, 1, False]]
-    }
+    rec_backbone = dict(
+        det=False,
+        scale=0.95,
+        block_config={
+            # k, in_c, out_c, s, use_se
+            "blocks2": [[3, 16, 32, 1, False]],
+            "blocks3": [[3, 32, 64, 1, False], [3, 64, 64, 1, False]],
+            "blocks4": [[3, 64, 128, (2, 1), False], [3, 128, 128, 1, False]],
+            "blocks5": [[3, 128, 256, (1, 2), False], [5, 256, 256, 1, False],
+                        [5, 256, 256, 1, False], [5, 256, 256, 1, False], [5, 256, 256, 1, False]],
+            "blocks6": [[5, 256, 512, (2, 1), True], [5, 512, 512, 1, True],
+                        [5, 512, 512, (2, 1), False], [5, 512, 512, 1, False]]
+        }
+    )
 
     default_model = 'det'
 
@@ -38,14 +45,11 @@ class Config(bundles.Config):
     def make_full_config(cls) -> dict:
         return {
             'det': dict(
-                det=True,
-                block_config=cls.det_block
+                backbone_config=cls.det_backbone,
             ),
 
             'rec': dict(
-                det=False,
-                scale=0.95,
-                block_config=cls.rec_block
+                backbone_config=cls.rec_backbone,
             )
         }
 
@@ -56,7 +60,7 @@ class Backbone(nn.Module):
             scale=1.0,
             conv_kxk_num=4,
             det=True,
-            block_config=Config.det_block,
+            block_config={},
             **kwargs
     ):
         super().__init__()

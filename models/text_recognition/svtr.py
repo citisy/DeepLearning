@@ -58,7 +58,7 @@ class Model(BaseTextRecModel):
             in_ch=in_ch,
             neck_out_features=neck_out_features,
             max_seq_len=max_seq_len,
-            out_features=out_features,
+            out_features=out_features + 1,  # 1 gives the blank or unknown char
             **kwargs
         )
 

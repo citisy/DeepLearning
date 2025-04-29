@@ -18,7 +18,7 @@ class BaseTextRecModel(nn.Module):
 
         self.in_channels = in_ch
         self.input_size = input_size
-        self.out_features = out_features + 1  # 1 gives the blank or unknown char
+        self.out_features = out_features
         self.max_seq_len = max_seq_len
 
         if not char2id:

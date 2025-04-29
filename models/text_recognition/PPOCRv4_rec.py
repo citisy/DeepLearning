@@ -2,8 +2,8 @@ import torch
 import torch.nn as nn
 from einops.layers.torch import Rearrange
 
-from models.image_classification import PPLCNetV3
-from utils import math_utils, torch_utils
+from ..image_classification import PPLCNetV3, PPHGNet
+from utils import math_utils, torch_utils, converter
 from . import BaseTextRecModel
 from .. import activations, bundles
 from ..layers import Conv
@@ -11,6 +11,16 @@ from ..text_pretrain.transformers import TransformerSequential
 
 
 class Config(bundles.Config):
+    student_backbone = dict(
+        name='models.image_classification.PPLCNetV3.Backbone',
+        **PPLCNetV3.Config.rec_backbone
+    )
+
+    teacher_backbone = dict(
+        name='models.image_classification.PPHGNet.Backbone',
+        **PPHGNet.Config.rec_small_backbone
+    )
+
     neck = dict(
         depth=2,
         out_ch=120,
@@ -21,11 +31,21 @@ class Config(bundles.Config):
         out_ch=6625
     )
 
+    default_model = 'student'
+
     @classmethod
     def make_full_config(cls) -> dict:
         return {
-            '': dict(
-                backbone_config=PPLCNetV3.Config.get('rec'),
+            # infer
+            'student': dict(
+                backbone_config=cls.student_backbone,
+                neck_config=cls.neck,
+                head_config=cls.head
+            ),
+
+            # server infer
+            'teacher': dict(
+                backbone_config=cls.teacher_backbone,
                 neck_config=cls.neck,
                 head_config=cls.head
             )
@@ -33,8 +53,9 @@ class Config(bundles.Config):
 
 
 class WeightConverter:
+
     @staticmethod
-    def from_paddle(state_dict):
+    def _convert(state_dict):
         info = []
         for k in state_dict.keys():
             if (
@@ -52,11 +73,15 @@ class WeightConverter:
 
         key_types, value_types = math_utils.transpose(info)
         state_dict = torch_utils.Converter.tensors_from_paddle_to_torch(state_dict, key_types, value_types)
+        return state_dict
+
+    @classmethod
+    def from_student(cls, state_dict):
+        state_dict = cls._convert(state_dict)
 
         convert_dict = {
-            'backbone.conv1.bn': 'backbone.conv1.norm',
+            '{0}.bn': '{0}.norm',
             'backbone.{0}.act.lab': 'backbone.{0}.act.1',
-            'backbone.{0}.bn': 'backbone.{0}.norm',
             'backbone.{0}.conv1': 'backbone.{0}.ex.0.conv',
             'backbone.{0}.conv2': 'backbone.{0}.ex.1.conv',
 
@@ -76,14 +101,26 @@ class WeightConverter:
         state_dict['neck.encoder.conv4.conv.weight'] = torch.repeat_interleave(state_dict['neck.encoder.conv4.conv.weight'], 3, 2)
         return state_dict
 
+    @classmethod
+    def from_teacher(cls, state_dict):
+        state_dict = cls._convert(state_dict)
+
+        convert_dict = {
+            '{0}.bn': '{0}.norm',
+        }
+        state_dict = torch_utils.Converter.convert_keys(state_dict, convert_dict)
+
+        return state_dict
+
 
 class Model(BaseTextRecModel):
     def __init__(
             self,
-            backbone_config=PPLCNetV3.Config.get('rec'), neck_config=Config.neck, head_config=Config.head,
+            backbone_config=Config.student_backbone, neck_config=Config.neck, head_config=Config.head,
             **kwargs
     ):
-        backbone = PPLCNetV3.Backbone(**backbone_config)
+        backbone_name = backbone_config.pop('name')
+        backbone = converter.DataInsConvert.str_to_instance(backbone_name)(**backbone_config)
         neck = SequenceEncoder(in_ch=backbone.out_channels, **neck_config)
         head = CTCHead(in_ch=neck.out_channels, **head_config)
         super().__init__(

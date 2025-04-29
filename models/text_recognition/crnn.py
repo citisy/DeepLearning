@@ -1,20 +1,21 @@
 import torch
-from torch import nn
-import torch.nn.functional as F
 from einops.layers.torch import Rearrange
-from ..layers import Conv, Linear, ConvInModule, OutModule
-from . import BaseTextRecModel
+from torch import nn
+
 from data_parse.nl_data_parse.pre_process import decoder
+from . import BaseTextRecModel
+from ..layers import Conv
 
 
 class Model(BaseTextRecModel):
     """refer to: [An End-to-End Trainable Neural Network for Image-based Sequence Recognition and Its Application to Scene Text Recognition](https://arxiv.org/abs/1507.05717)"""
-    def __init__(self, in_ch=3, neck_in_features=64, neck_out_features=512, **kwargs):
+    def __init__(self, out_features, in_ch=3, neck_in_features=64, neck_out_features=512, **kwargs):
         super().__init__(
             backbone=Backbone(in_ch),
             neck=Neck(neck_in_features, neck_out_features),
             in_ch=in_ch,
             neck_out_features=neck_out_features,
+            out_features=out_features + 1,  # 1 gives the blank or unknown char
             **kwargs
         )
 
