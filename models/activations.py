@@ -107,3 +107,16 @@ class MetaAconC(nn.Module):
         dpx = (self.p1 - self.p2) * x
         return dpx * torch.sigmoid(beta * dpx) + self.p2 * x
 
+
+@make_act_fn.add_register()
+class Swish(nn.Module):
+    def __init__(self, inplace=True):
+        super(Swish, self).__init__()
+        self.inplace = inplace
+
+    def forward(self, x):
+        if self.inplace:
+            x.mul_(torch.sigmoid(x))
+            return x
+        else:
+            return x * torch.sigmoid(x)

@@ -100,7 +100,11 @@ class DataProcess(DataHooks):
     ], probs=[0.2])
 
     post_aug = Apply([
-        scale.LetterBox(pad_type=(crop.RIGHT, crop.CENTER)),
+        scale.LetterBox(
+            pad_type=(crop.RIGHT, crop.DOWN),
+            fill=(0, 0, 0),
+            interpolation=1
+        ),
         channel.Keep3Dims(),
         # pixel_perturbation.MinMax(),
         # pixel_perturbation.Normalize(0.5, 0.5),

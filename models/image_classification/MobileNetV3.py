@@ -2,7 +2,7 @@ from functools import partial
 
 from torch import nn
 
-from utils import torch_utils
+from utils import torch_utils, math_utils
 from . import BaseImgClsModel
 from .. import bundles
 from ..layers import Conv, Linear
@@ -129,22 +129,6 @@ class Backbone(nn.Sequential):
         self.out_channels = out_ch
 
 
-def _make_divisible(v: float, divisor: int, min_value=None) -> int:
-    """
-    This function is taken from the original tf repo.
-    It ensures that all layers have a channel number that is divisible by 8
-    It can be seen here:
-    https://github.com/tensorflow/models/blob/master/research/slim/nets/mobilenet/mobilenet.py
-    """
-    if min_value is None:
-        min_value = divisor
-    new_v = max(min_value, int(v + divisor / 2) // divisor * divisor)
-    # Make sure that round down does not go down by more than 10%.
-    if new_v < 0.9 * v:
-        new_v += divisor
-    return new_v
-
-
 class InvertedResidual(nn.Module):
     def __init__(self, in_ch, k, hidden_ch, out_ch, use_se, act_type, stride, dilation):
         super().__init__()
@@ -161,7 +145,7 @@ class InvertedResidual(nn.Module):
         stride = 1 if dilation > 1 else stride
         layers.append(Conv(hidden_ch, hidden_ch, k, stride, dilation=dilation, groups=hidden_ch, bias=False, mode='cna', norm_fn=make_norm_fn(), act=act, detail_name=False))
         if use_se:
-            squeeze_ch = _make_divisible(hidden_ch // 4, 8)
+            squeeze_ch = math_utils.make_divisible(hidden_ch // 4, 8)
             layers.append(SqueezeExcitation(hidden_ch, squeeze_ch))
 
         layers.append(Conv(hidden_ch, out_ch, 1, bias=False, mode='cn', norm_fn=make_norm_fn(), detail_name=False))

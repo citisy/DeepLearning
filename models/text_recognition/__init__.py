@@ -10,7 +10,7 @@ class BaseTextRecModel(nn.Module):
     def __init__(
             self,
             in_ch=3, input_size=None, out_features=None,
-            char2id={}, max_seq_len=25,
+            char2id=None, id2char=None, max_seq_len=25,
             in_module=None, backbone=None, neck=None, head=None,
             neck_out_features=None
     ):
@@ -20,14 +20,20 @@ class BaseTextRecModel(nn.Module):
         self.input_size = input_size
         self.out_features = out_features + 1  # 1 gives the blank or unknown char
         self.max_seq_len = max_seq_len
+
+        if not char2id:
+            char2id = {v: k for k, v in id2char.items()}
         self.char2id = char2id
-        self.id2char = {v: k for k, v in char2id.items()}
+
+        if not id2char:
+            id2char = {v: k for k, v in char2id.items()}
+        self.id2char = id2char
 
         self.input = in_module if in_module is not None else nn.Identity()
         self.backbone = backbone
         self.neck = neck
         self.head = head if head is not None else nn.Linear(neck_out_features, self.out_features)
-        ModuleManager.initialize_layers(self)
+        # ModuleManager.initialize_layers(self)
 
     def forward(self, x, true_label=None):
         x = self.input(x)

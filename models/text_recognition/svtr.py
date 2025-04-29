@@ -1,26 +1,52 @@
-import torch
-from torch import nn
-import numpy as np
 import math
+
+import numpy as np
+import torch
 import torch.nn.functional as F
 from einops.layers.torch import Rearrange
-from ..layers import Conv, Linear, ConvInModule, OutModule
-from . import BaseTextRecModel
+from torch import nn
+
 from data_parse.nl_data_parse.pre_process import decoder
+from . import BaseTextRecModel
+from .. import bundles
+from ..layers import Conv, Linear
 
-CONV_MIX = 0
-GLOBAL_MIX = 1
-LOCAL_MIX = 2
 
-in_module_config = dict(out_ch=64, drop_prob=0, n_layer=2)
-backbone_config = dict(in_ch_list=(64, 128, 256), num_heads_list=(2, 4, 8), mixer_list=None, n_layers=(3, 6, 3))
+class Config(bundles.Config):
+    CONV_MIX = 0
+    GLOBAL_MIX = 1
+    LOCAL_MIX = 2
+
+    in_module = dict(
+        out_ch=64,
+        drop_prob=0,
+        n_layer=2
+    )
+    backbone = dict(
+        in_ch_list=(64, 128, 256),
+        num_heads_list=(2, 4, 8),
+        mixer_list=None,
+        n_layers=(3, 6, 3)
+    )
+
+    @classmethod
+    def make_full_config(cls) -> dict:
+        return {
+            '': dict(
+                in_module_config=cls.in_module,
+                backbone_config=cls.backbone
+            )
+        }
 
 
 class Model(BaseTextRecModel):
-    """refer to: [SVTR: Scene Text Recognition with a Single Visual Model](https://arxiv.org/abs/2205.00159)"""
+    """refer to: [SVTR: Scene Text Recognition with a Single Visual Model](https://arxiv.org/pdf/2205.00159)"""
 
-    def __init__(self, input_size, in_ch=3, neck_out_features=192, max_seq_len=25, out_features=None,
-                 in_module_config=in_module_config, backbone_config=backbone_config, **kwargs):
+    def __init__(
+            self,
+            input_size, out_features, in_ch=3, neck_out_features=192, max_seq_len=25,
+            in_module_config=Config.in_module, backbone_config=Config.backbone, **kwargs
+    ):
         in_module = Embedding(in_ch, input_size, **in_module_config)
         backbone = Backbone(in_module.output_size, neck_out_features, max_seq_len, **backbone_config)
         super().__init__(
@@ -81,9 +107,10 @@ class Embedding(nn.Module):
 
         self.output_size = (input_size[0] // (2 ** n_layer), input_size[1] // (2 ** n_layer))
         self.pos_embed = nn.Parameter(torch.zeros([1, self.output_size[0] * self.output_size[1], out_ch], dtype=torch.float32), requires_grad=True)
-        truncated_normal_(self.pos_embed)
-
         self.drop = nn.Dropout(drop_prob)
+
+    def initialize_layers(self):
+        truncated_normal_(self.pos_embed)
 
     def forward(self, x):
         x = self.patch_embed(x)
@@ -94,7 +121,7 @@ class Embedding(nn.Module):
 
 class Backbone(nn.Sequential):
     def __init__(self, input_size, out_ch, max_seq_len, in_ch_list=(64, 128, 256), num_heads_list=(2, 4, 8), mixer_list=None, n_layers=(3, 6, 3)):
-        mixer_list = mixer_list or [LOCAL_MIX] * 6 + [GLOBAL_MIX] * 6
+        mixer_list = mixer_list or [Config.LOCAL_MIX] * 6 + [Config.GLOBAL_MIX] * 6
         w, h = input_size
         layers = []
         n = 0
@@ -114,7 +141,7 @@ class Backbone(nn.Sequential):
         super().__init__(*layers)
 
     def initialize_layers(self):
-        # note that, it is very useful to raise the score
+        # note that, it is very useful to improve accuracy
         self.apply(self._initialize_layers)
 
     def _initialize_layers(self, m):
@@ -167,12 +194,12 @@ class DropPath(nn.Module):
 
 
 class Mixing(nn.Module):
-    def __init__(self, in_ch, input_size, num_heads, mixer=GLOBAL_MIX, local_k=(11, 7), drop_prob=0.):
+    def __init__(self, in_ch, input_size, num_heads, mixer=Config.GLOBAL_MIX, local_k=(11, 7), drop_prob=0.):
         super().__init__()
         self.mixer = mixer
         w, h = input_size
 
-        if mixer == CONV_MIX:
+        if mixer == Config.CONV_MIX:
             self.mixing = nn.Sequential(
                 Rearrange('b (h w) c -> b c h w', h=h, w=w),
                 Conv(in_ch, in_ch, 3, 1, groups=num_heads, mode='c'),
@@ -189,7 +216,7 @@ class Mixing(nn.Module):
             self.proj = nn.Linear(in_ch, in_ch)
             self.proj_drop = nn.Dropout(drop_prob)
 
-            if mixer == LOCAL_MIX:
+            if mixer == Config.LOCAL_MIX:
                 wk, hk = local_k
                 mask = torch.full([h * w, h + hk - 1, w + wk - 1], -float('inf'), dtype=torch.float32)
                 # only focus on wk * hk areas
@@ -200,7 +227,7 @@ class Mixing(nn.Module):
                 self.mask = nn.Parameter(mask[None, None], requires_grad=False)
 
     def forward(self, x):
-        if self.mixer == CONV_MIX:
+        if self.mixer == Config.CONV_MIX:
             x = self.mixing(x)
         else:
             _, n, c = x.size()
@@ -210,7 +237,7 @@ class Mixing(nn.Module):
             q, k, v = qkv[0] * self.scale, qkv[1], qkv[2]
             attn = (q.matmul(k.permute(0, 1, 3, 2)))
 
-            if self.mixer == LOCAL_MIX:
+            if self.mixer == Config.LOCAL_MIX:
                 attn += self.mask
 
             attn = F.softmax(attn, dim=-1)
@@ -265,7 +292,9 @@ class Head(nn.Sequential):
     def __init__(self, in_features, out_features):
         self.in_features = in_features
         self.out_features = out_features
-        super().__init__(nn.Linear(self.in_features, self.out_features))
+        super().__init__(
+            nn.Linear(self.in_features, self.out_features)
+        )
 
     def initialize_layers(self):
         self.apply(self._initialize_layers)

@@ -150,11 +150,6 @@ def make_attn(in_channels, attn_type=Config.VANILLA, groups=32):
 make_norm = partial(normalizations.GroupNorm32, eps=1e-6, affine=True)
 
 
-class Swish(nn.Module):
-    def forward(self, x):
-        return x * torch.sigmoid(x)
-
-
 class ResBlock(Residual):
     def __init__(self, in_ch, out_ch=None, conv_shortcut=False, time_emb_ch=512, drop_prob=0.):
         out_ch = in_ch if out_ch is None else out_ch
@@ -181,13 +176,13 @@ class ResFn(nn.Module):
         super().__init__()
         self.conv1 = Conv(in_ch, out_ch, 3, mode='nac',
                           norm=make_norm(groups, in_ch),
-                          act=Swish())
+                          act=activations.Swish())
         if time_emb_ch > 0:
-            self.time_emb_proj = Linear(time_emb_ch, out_ch, mode='la', act=Swish())
+            self.time_emb_proj = Linear(time_emb_ch, out_ch, mode='la', act=activations.Swish())
 
         self.conv2 = Conv(out_ch, out_ch, 3, mode='nadc',
                           norm=make_norm(groups, out_ch),
-                          act=Swish(), drop_prob=drop_prob)
+                          act=activations.Swish(), drop_prob=drop_prob)
 
     def forward(self, x, time_emb=None):
         h = x
@@ -248,7 +243,7 @@ class Encoder(nn.Module):
         self.neck = NeckBlock(in_ch, time_emb_ch, attn_type, drop_prob)
 
         out_ch = 2 * z_ch if double_z else z_ch
-        self.head = Conv(in_ch, out_ch, 3, mode='nac', norm=make_norm(groups, in_ch), act=Swish())
+        self.head = Conv(in_ch, out_ch, 3, mode='nac', norm=make_norm(groups, in_ch), act=activations.Swish())
         self.out_channels = out_ch
         self.down_scale = 2 ** (num_layers - 1)
 
