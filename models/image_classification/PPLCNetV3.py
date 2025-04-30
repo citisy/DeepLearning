@@ -12,6 +12,7 @@ from ..layers import Conv
 class Config(bundles.Config):
     det_backbone = dict(
         det=True,
+        scale=0.75,
         block_config={
             # k, in_c, out_c, s, use_se
             "blocks2": [[3, 16, 32, 1, False]],
@@ -52,6 +53,15 @@ class Config(bundles.Config):
                 backbone_config=cls.rec_backbone,
             )
         }
+
+
+class WeightConverter:
+    backbone_convert_dict = {
+        '{0}.bn': '{0}.norm',
+        'backbone.{0}.act.lab': 'backbone.{0}.act.1',
+        'backbone.{0}.conv1': 'backbone.{0}.ex.0.conv',
+        'backbone.{0}.conv2': 'backbone.{0}.ex.1.conv',
+    }
 
 
 class Backbone(nn.Module):

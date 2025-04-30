@@ -190,7 +190,8 @@ class ConvT(nn.Sequential):
             k (int or tuple): kernel size
             s: stride
             p: padding size, None for full padding
-            act (nn.Module): activation function
+            act (nn.Module): activation function, default: nn.ReLU
+            norm (nn.Module): normalization function, default: nn.BatchNorm2d
             mode (str):
                 'c' gives convolution function, 'n' gives normalization function, 'a' gives activate function
                 e.g. 'cna' gives conv - norm - act

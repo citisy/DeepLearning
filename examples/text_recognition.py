@@ -103,8 +103,9 @@ class DataProcess(DataHooks):
         scale.LetterBox(
             pad_type=(crop.RIGHT, crop.DOWN),
             fill=(0, 0, 0),
-            interpolation=1
+            interpolation=4
         ),
+        # scale.Proportion(interpolation=4, choice_type=scale.SHORTEST),    # val step use this
         channel.Keep3Dims(),
         # pixel_perturbation.MinMax(),
         # pixel_perturbation.Normalize(0.5, 0.5),

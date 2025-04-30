@@ -55,7 +55,7 @@ class Config(bundles.Config):
 class WeightConverter:
 
     @staticmethod
-    def _convert(state_dict):
+    def pre_convert(state_dict):
         info = []
         for k in state_dict.keys():
             if (
@@ -75,41 +75,53 @@ class WeightConverter:
         state_dict = torch_utils.Converter.tensors_from_paddle_to_torch(state_dict, key_types, value_types)
         return state_dict
 
-    @classmethod
-    def from_student(cls, state_dict):
-        state_dict = cls._convert(state_dict)
-
-        convert_dict = {
-            '{0}.bn': '{0}.norm',
-            'backbone.{0}.act.lab': 'backbone.{0}.act.1',
-            'backbone.{0}.conv1': 'backbone.{0}.ex.0.conv',
-            'backbone.{0}.conv2': 'backbone.{0}.ex.1.conv',
-
-            'head.ctc_encoder': 'neck',
-            'head.ctc_encoder.encoder.svtr_block.{0}.norm1': 'neck.encoder.svtr_block.{0}.attn_res.norm',
-            'head.ctc_encoder.encoder.svtr_block.{0}.mixer.qkv': 'neck.encoder.svtr_block.{0}.attn_res.fn.to_qkv',
-            'head.ctc_encoder.encoder.svtr_block.{0}.mixer.proj': 'neck.encoder.svtr_block.{0}.attn_res.fn.to_out.linear',
-            'head.ctc_encoder.encoder.svtr_block.{0}.norm2': 'neck.encoder.svtr_block.{0}.ff_res.norm',
-            'head.ctc_encoder.encoder.svtr_block.{0}.mlp.fc1': 'neck.encoder.svtr_block.{0}.ff_res.fn.0.linear',
-            'head.ctc_encoder.encoder.svtr_block.{0}.mlp.fc2': 'neck.encoder.svtr_block.{0}.ff_res.fn.1.linear',
-
-            'head.ctc_head.fc': 'head.fc'
-        }
-        state_dict = torch_utils.Converter.convert_keys(state_dict, convert_dict)
-
+    @staticmethod
+    def post_convert(state_dict):
         # note, the official checkpoint is not correct, so we need to fix it
         state_dict['neck.encoder.conv4.conv.weight'] = torch.repeat_interleave(state_dict['neck.encoder.conv4.conv.weight'], 3, 2)
         return state_dict
 
+    neck_convert_dict = {
+        'head.ctc_encoder': 'neck',
+        'head.ctc_encoder.encoder.svtr_block.{0}.norm1': 'neck.encoder.svtr_block.{0}.attn_res.norm',
+        'head.ctc_encoder.encoder.svtr_block.{0}.mixer.qkv': 'neck.encoder.svtr_block.{0}.attn_res.fn.to_qkv',
+        'head.ctc_encoder.encoder.svtr_block.{0}.mixer.proj': 'neck.encoder.svtr_block.{0}.attn_res.fn.to_out.linear',
+        'head.ctc_encoder.encoder.svtr_block.{0}.norm2': 'neck.encoder.svtr_block.{0}.ff_res.norm',
+        'head.ctc_encoder.encoder.svtr_block.{0}.mlp.fc1': 'neck.encoder.svtr_block.{0}.ff_res.fn.0.linear',
+        'head.ctc_encoder.encoder.svtr_block.{0}.mlp.fc2': 'neck.encoder.svtr_block.{0}.ff_res.fn.1.linear',
+    }
+
+    head_convert_dict = {
+        'head.ctc_head.fc': 'head.fc'
+    }
+
+    @classmethod
+    def from_student(cls, state_dict):
+        # https://paddleocr.bj.bcebos.com/PP-OCRv4/chinese/ch_PP-OCRv4_rec_train.tar
+        state_dict = cls.pre_convert(state_dict)
+
+        convert_dict = {
+            **PPLCNetV3.WeightConverter.backbone_convert_dict,
+            **cls.neck_convert_dict,
+            **cls.head_convert_dict
+        }
+        state_dict = torch_utils.Converter.convert_keys(state_dict, convert_dict)
+        state_dict = cls.post_convert(state_dict)
+        return state_dict
+
     @classmethod
     def from_teacher(cls, state_dict):
-        state_dict = cls._convert(state_dict)
+        # https://paddleocr.bj.bcebos.com/PP-OCRv4/chinese/ch_PP-OCRv4_rec_server_train.tar
+        state_dict = cls.pre_convert(state_dict)
 
         convert_dict = {
             '{0}.bn': '{0}.norm',
+
+            **cls.neck_convert_dict,
+            **cls.head_convert_dict
         }
         state_dict = torch_utils.Converter.convert_keys(state_dict, convert_dict)
-
+        state_dict = cls.post_convert(state_dict)
         return state_dict
 
 
