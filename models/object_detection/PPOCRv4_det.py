@@ -4,10 +4,10 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
-from utils import math_utils, torch_utils
+from utils import converter, math_utils, torch_utils
 from .. import bundles
-from ..image_classification import PPLCNetV3
-from ..layers import Conv, ConvT
+from ..image_classification import PPLCNetV3, PPHGNet
+from ..layers import Conv, ConvT, Cache
 
 
 class Config(bundles.Config):
@@ -16,13 +16,31 @@ class Config(bundles.Config):
         **PPLCNetV3.Config.det_backbone
     )
 
-    neck = dict(
+    teacher_backbone = dict(
+        name='models.image_classification.PPHGNet.Backbone',
+        **PPHGNet.Config.det_small_backbone
+    )
+
+    student_neck = dict(
+        name='models.object_detection.PPOCRv4_det.RSEFPN',
         in_ches=[12, 18, 42, 360],
         out_ch=96
     )
 
-    head = dict(
+    teacher_neck = dict(
+        name='models.object_detection.PPOCRv4_det.LKPAN',
+        in_ches=[256, 512, 768, 1024],
+        out_ch=256
+    )
+
+    student_head = dict(
+        name='models.object_detection.PPOCRv4_det.DBHead',
         k=50
+    )
+
+    teacher_head = dict(
+        name='models.object_detection.PPOCRv4_det.PFHeadLocal',
+        k=50,
     )
 
     default_model = 'student'
@@ -32,8 +50,14 @@ class Config(bundles.Config):
         return {
             'student': dict(
                 backbone_config=cls.student_backbone,
-                neck_config=cls.neck,
-                head_config=cls.head
+                neck_config=cls.student_neck,
+                head_config=cls.student_head
+            ),
+
+            'teacher': dict(
+                backbone_config=cls.teacher_backbone,
+                neck_config=cls.teacher_neck,
+                head_config=cls.teacher_head
             )
         }
 
@@ -62,16 +86,16 @@ class WeightConverter:
         return state_dict
 
     head_convert_dict = {
-        'head.binarize.conv1': 'head.binarize.0.conv',
-        'head.binarize.conv_bn1': 'head.binarize.0.norm',
-        'head.binarize.conv2': 'head.binarize.1.conv',
-        'head.binarize.conv_bn2': 'head.binarize.1.norm',
-        'head.binarize.conv3': 'head.binarize.2.conv',
-        'head.thresh.conv1': 'head.thresh.0.conv',
-        'head.thresh.conv_bn1': 'head.thresh.0.norm',
-        'head.thresh.conv2': 'head.thresh.1.conv',
-        'head.thresh.conv_bn2': 'head.thresh.1.norm',
-        'head.thresh.conv3': 'head.thresh.2.conv'
+        'head.binarize.conv1': 'head.binarize.blocks.0.conv',
+        'head.binarize.conv_bn1': 'head.binarize.blocks.0.norm',
+        'head.binarize.conv2': 'head.binarize.blocks.1.conv',
+        'head.binarize.conv_bn2': 'head.binarize.blocks.1.norm',
+        'head.binarize.conv3': 'head.binarize.blocks.3.conv',
+        'head.thresh.conv1': 'head.thresh.blocks.0.conv',
+        'head.thresh.conv_bn1': 'head.thresh.blocks.0.norm',
+        'head.thresh.conv2': 'head.thresh.blocks.1.conv',
+        'head.thresh.conv_bn2': 'head.thresh.blocks.1.norm',
+        'head.thresh.conv3': 'head.thresh.blocks.3.conv'
     }
 
     @classmethod
@@ -93,7 +117,11 @@ class WeightConverter:
         state_dict = cls._convert(state_dict)
 
         convert_dict = {
-            '{0}.bn': '{0}.norm',
+            'neck.incl{0}.bn': 'neck.incl{0}.conv1x1_return_channel.norm',
+            'neck.incl{0}.conv1x1_return_channel': 'neck.incl{0}.conv1x1_return_channel.conv',
+
+            **PPHGNet.WeightConverter.backbone_convert_dict,
+            **cls.head_convert_dict,
         }
         state_dict = torch_utils.Converter.convert_keys(state_dict, convert_dict)
 
@@ -102,15 +130,18 @@ class WeightConverter:
 
 class Model(nn.Module):
     def __init__(
-            self, backbone_config=Config.student_backbone, neck_config=Config.neck, head_config=Config.head,
+            self, backbone_config=Config.student_backbone, neck_config=Config.student_neck, head_config=Config.student_head,
             **kwargs
     ):
         super().__init__()
         self.__dict__.update(kwargs)
 
-        self.backbone = PPLCNetV3.Backbone(**backbone_config)
-        self.neck = RSEFPN(**neck_config)
-        self.head = DBHead(in_ch=self.neck.out_channels, **head_config)
+        backbone_name = backbone_config.pop('name')
+        self.backbone = converter.DataInsConvert.str_to_instance(backbone_name)(**backbone_config)
+        neck_name = neck_config.pop('name')
+        self.neck = converter.DataInsConvert.str_to_instance(neck_name)(**neck_config)
+        head_name = head_config.pop('name')
+        self.head = converter.DataInsConvert.str_to_instance(head_name)(in_ch=self.neck.out_channels, **head_config)
 
     def forward(self, x):
         x = self.backbone(x)
@@ -267,30 +298,248 @@ class DBHead(nn.Module):
         params(dict): super parameters for build DB network
     """
 
-    def __init__(self, in_ch, k=50):
+    def __init__(self, in_ch, k=50, return_f=False):
         super().__init__()
         self.k = k
-        self.binarize = Head(in_ch)
+        self.binarize = Head(in_ch, return_f=return_f)
         self.thresh = Head(in_ch)
 
     def step_function(self, x, y):
         return torch.reciprocal(1 + torch.exp(-self.k * (x - y)))
 
     def forward(self, x):
-        shrink_maps = self.binarize(x)
+        shrink_maps, _ = self.binarize(x)
         if not self.training:
             return shrink_maps
 
-        threshold_maps = self.thresh(x)
+        threshold_maps, _ = self.thresh(x)
         binary_maps = self.step_function(shrink_maps, threshold_maps)
         y = torch.cat([shrink_maps, threshold_maps, binary_maps], dim=1)
         return y
 
 
-class Head(nn.Sequential):
-    def __init__(self, in_ch):
-        super().__init__(
+class Head(nn.Module):
+    def __init__(self, in_ch, return_f=False):
+        super().__init__()
+        self.blocks = nn.ModuleList([
             Conv(in_ch, in_ch // 4, 3, bias=False, mode='cna'),
             ConvT(in_ch // 4, in_ch // 4, 2, 2, mode='cna'),
+            Cache() if return_f else nn.Identity(),
             ConvT(in_ch // 4, 1, 2, 2, mode='ca', act=nn.Sigmoid())
+        ])
+
+    def forward(self, x):
+        features = []
+        for m in self.blocks:
+            if isinstance(m, Cache):
+                x, features = m(x, features)
+            else:
+                x = m(x)
+
+        return x, features
+
+
+class LKPAN(nn.Module):
+    def __init__(self, in_ches, out_ch):
+        super().__init__()
+        self.out_channels = out_ch
+
+        self.ins_conv = nn.ModuleList()
+        self.inp_conv = nn.ModuleList()
+        # pan head
+        self.pan_head_conv = nn.ModuleList()
+        self.pan_lat_conv = nn.ModuleList()
+
+        for i in range(len(in_ches)):
+            self.ins_conv.append(
+                nn.Conv2d(in_ches[i], out_ch, 1, bias=False)
+            )
+
+            self.inp_conv.append(
+                nn.Conv2d(out_ch, out_ch // 4, 9, padding=4, bias=False)
+            )
+
+            if i > 0:
+                self.pan_head_conv.append(
+                    nn.Conv2d(out_ch // 4, out_ch // 4, 3, padding=1, stride=2, bias=False)
+                )
+
+            self.pan_lat_conv.append(
+                nn.Conv2d(out_ch // 4, out_ch // 4, 9, padding=4, bias=False)
+            )
+
+        self.incl1 = IntraCLBlock(out_ch // 4, reduce_factor=2)
+        self.incl2 = IntraCLBlock(out_ch // 4, reduce_factor=2)
+        self.incl3 = IntraCLBlock(out_ch // 4, reduce_factor=2)
+        self.incl4 = IntraCLBlock(out_ch // 4, reduce_factor=2)
+
+    def forward(self, x):
+        c2, c3, c4, c5 = x
+
+        in5 = self.ins_conv[3](c5)
+        in4 = self.ins_conv[2](c4)
+        in3 = self.ins_conv[1](c3)
+        in2 = self.ins_conv[0](c2)
+
+        out4 = in4 + F.upsample(in5, scale_factor=2, mode="nearest")  # 1/16
+        out3 = in3 + F.upsample(out4, scale_factor=2, mode="nearest")  # 1/8
+        out2 = in2 + F.upsample(out3, scale_factor=2, mode="nearest")  # 1/4
+
+        f5 = self.inp_conv[3](in5)
+        f4 = self.inp_conv[2](out4)
+        f3 = self.inp_conv[1](out3)
+        f2 = self.inp_conv[0](out2)
+
+        pan3 = f3 + self.pan_head_conv[0](f2)
+        pan4 = f4 + self.pan_head_conv[1](pan3)
+        pan5 = f5 + self.pan_head_conv[2](pan4)
+
+        p2 = self.pan_lat_conv[0](f2)
+        p3 = self.pan_lat_conv[1](pan3)
+        p4 = self.pan_lat_conv[2](pan4)
+        p5 = self.pan_lat_conv[3](pan5)
+
+        p5 = F.upsample(p5, scale_factor=8, mode="nearest")
+        p4 = F.upsample(p4, scale_factor=4, mode="nearest")
+        p3 = F.upsample(p3, scale_factor=2, mode="nearest")
+
+        fuse = torch.cat([p5, p4, p3, p2], dim=1)
+        return fuse
+
+
+class IntraCLBlock(nn.Module):
+    def __init__(self, in_ch=96, reduce_factor=4):
+        super().__init__()
+        hidden_ch = in_ch // reduce_factor
+
+        self.conv1x1_reduce_channel = nn.Conv2d(
+            in_ch,
+            hidden_ch,
+            kernel_size=1,
+            stride=1,
+            padding=0
         )
+
+        self.v_layer_7x1 = nn.Conv2d(
+            hidden_ch,
+            hidden_ch,
+            kernel_size=(7, 1),
+            stride=(1, 1),
+            padding=(3, 0)
+        )
+        self.v_layer_5x1 = nn.Conv2d(
+            hidden_ch,
+            hidden_ch,
+            kernel_size=(5, 1),
+            stride=(1, 1),
+            padding=(2, 0)
+        )
+        self.v_layer_3x1 = nn.Conv2d(
+            hidden_ch,
+            hidden_ch,
+            kernel_size=(3, 1),
+            stride=(1, 1),
+            padding=(1, 0)
+        )
+
+        self.q_layer_1x7 = nn.Conv2d(
+            hidden_ch,
+            hidden_ch,
+            kernel_size=(1, 7),
+            stride=(1, 1),
+            padding=(0, 3)
+        )
+        self.q_layer_1x5 = nn.Conv2d(
+            hidden_ch,
+            hidden_ch,
+            kernel_size=(1, 5),
+            stride=(1, 1),
+            padding=(0, 2)
+        )
+        self.q_layer_1x3 = nn.Conv2d(
+            hidden_ch,
+            hidden_ch,
+            kernel_size=(1, 3),
+            stride=(1, 1),
+            padding=(0, 1)
+        )
+
+        # base
+        self.c_layer_7x7 = nn.Conv2d(
+            hidden_ch,
+            hidden_ch,
+            kernel_size=(7, 7),
+            stride=(1, 1),
+            padding=(3, 3)
+        )
+        self.c_layer_5x5 = nn.Conv2d(
+            hidden_ch,
+            hidden_ch,
+            kernel_size=(5, 5),
+            stride=(1, 1),
+            padding=(2, 2)
+        )
+        self.c_layer_3x3 = nn.Conv2d(
+            hidden_ch,
+            hidden_ch,
+            kernel_size=(3, 3),
+            stride=(1, 1),
+            padding=(1, 1)
+        )
+
+        self.conv1x1_return_channel = Conv(hidden_ch, in_ch, 1, 1, mode='cna')
+
+    def forward(self, x):
+        x_new = self.conv1x1_reduce_channel(x)
+
+        x_7_c = self.c_layer_7x7(x_new)
+        x_7_v = self.v_layer_7x1(x_new)
+        x_7_q = self.q_layer_1x7(x_new)
+        x_7 = x_7_c + x_7_v + x_7_q
+
+        x_5_c = self.c_layer_5x5(x_7)
+        x_5_v = self.v_layer_5x1(x_7)
+        x_5_q = self.q_layer_1x5(x_7)
+        x_5 = x_5_c + x_5_v + x_5_q
+
+        x_3_c = self.c_layer_3x3(x_5)
+        x_3_v = self.v_layer_3x1(x_5)
+        x_3_q = self.q_layer_1x3(x_5)
+        x_3 = x_3_c + x_3_v + x_3_q
+
+        x_relation = self.conv1x1_return_channel(x_3)
+        return x + x_relation
+
+
+class PFHeadLocal(DBHead):
+    def __init__(self, in_ch, k=50):
+        super().__init__(in_ch, k, return_f=True)
+        self.up_conv = nn.Upsample(scale_factor=2, mode="nearest")
+        self.cbn_layer = LocalModule(in_ch // 4, in_ch // 4)
+
+    def forward(self, x):
+        shrink_maps, features = self.binarize(x)
+        f = features[0]
+        base_maps = shrink_maps
+        cbn_maps = self.cbn_layer(self.up_conv(f), shrink_maps)
+        cbn_maps = F.sigmoid(cbn_maps)
+        if not self.training:
+            return 0.5 * (base_maps + cbn_maps)
+
+        threshold_maps, _ = self.thresh(x)
+        binary_maps = self.step_function(shrink_maps, threshold_maps)
+        y = torch.cat([cbn_maps, threshold_maps, binary_maps], dim=1)
+        return y
+
+
+class LocalModule(nn.Module):
+    def __init__(self, in_c, mid_c, use_distance=True):
+        super().__init__()
+        self.last_3 = Conv(in_c + 1, mid_c, 3, 1, 1, bias=False, mode='cna')
+        self.last_1 = nn.Conv2d(mid_c, 1, 1, 1, 0)
+
+    def forward(self, x, init_map):
+        outf = torch.cat([init_map, x], dim=1)
+        # last Conv
+        out = self.last_1(self.last_3(outf))
+        return out

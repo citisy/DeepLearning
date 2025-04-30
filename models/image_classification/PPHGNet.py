@@ -84,6 +84,12 @@ class Config(bundles.Config):
         }
 
 
+class WeightConverter:
+    backbone_convert_dict = {
+        '{0}.bn': '{0}.norm',
+    }
+
+
 class Backbone(nn.Module):
     def __init__(
             self,

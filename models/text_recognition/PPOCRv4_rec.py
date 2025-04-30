@@ -115,8 +115,7 @@ class WeightConverter:
         state_dict = cls.pre_convert(state_dict)
 
         convert_dict = {
-            '{0}.bn': '{0}.norm',
-
+            **PPHGNet.WeightConverter.backbone_convert_dict,
             **cls.neck_convert_dict,
             **cls.head_convert_dict
         }
