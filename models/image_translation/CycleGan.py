@@ -34,9 +34,9 @@ class Model(nn.ModuleList):
 
         ModuleManager.initialize_layers(self)
 
-        self.gan_loss_fn = nn.MSELoss()
-        self.cycle_l1_loss_fn = torch.nn.L1Loss()
-        self.idt_l1_loss_fn = torch.nn.L1Loss()
+        self.gan_criterion = nn.MSELoss()
+        self.cycle_l1_criterion = torch.nn.L1Loss()
+        self.idt_l1_criterion = torch.nn.L1Loss()
 
         self.lambda_identity = lambda_identity
         self.real_label = torch.tensor(real_label)
@@ -51,21 +51,21 @@ class Model(nn.ModuleList):
             # 1. real_x -> net_g_y -> idt_y, real_x -> loss_idt_y
             # loss_idt_y = ||net_g_y(real_x) - real_x|| * lambda_x * lambda_identity
             idt_y = net_g_y(real_x)
-            loss_idt_y = self.idt_l1_loss_fn(idt_y, real_x) * lambda_x * self.lambda_identity
+            loss_idt_y = self.idt_l1_criterion(idt_y, real_x) * lambda_x * self.lambda_identity
 
         else:
             loss_idt_y = 0
 
-        # 2. real_x -> net_g_x -> fake_y -> net_d_x -> pred_real, real_label -> gan_loss_fn -> loss_g_x
+        # 2. real_x -> net_g_x -> fake_y -> net_d_x -> pred_real, real_label -> gan_criterion -> loss_g_x
         # loss_g_x = net_d(net_g_x(real_x)) - 1
         fake_y = net_g_x(real_x)
         pred_real = net_d_x(fake_y)
-        loss_g_x = self.gan_loss_fn(pred_real, self.real_label.to(pred_real).expand_as(pred_real))
+        loss_g_x = self.gan_criterion(pred_real, self.real_label.to(pred_real).expand_as(pred_real))
 
         # 3. real_x -> net_g_x -> fake_y -> net_g_y -> rec_x, real_x -> loss_cycle_x
         # loss_cycle_x = ||net_g_y(net_g_x(real_x)) - real_x|| * lambda_x
         rec_x = net_g_y(fake_y)
-        loss_cycle_x = self.cycle_l1_loss_fn(rec_x, real_x) * lambda_x
+        loss_cycle_x = self.cycle_l1_criterion(rec_x, real_x) * lambda_x
 
         return (fake_y, rec_x), (loss_idt_y, loss_g_x, loss_cycle_x)
 
@@ -75,7 +75,7 @@ class Model(nn.ModuleList):
         # 1. real_x -> net_d_y -> pred_real, real_label -> loss_d_real
         # loss_d_real = net_d_y(real_x) - 1
         pred_real = net_d_y(real_x)
-        loss_d_real = self.gan_loss_fn(pred_real, self.real_label.to(pred_real).expand_as(pred_real))
+        loss_d_real = self.gan_criterion(pred_real, self.real_label.to(pred_real).expand_as(pred_real))
 
         cacher.cache_batch(real_x)
         if random.uniform(0, 1) > 0.5:
@@ -87,7 +87,7 @@ class Model(nn.ModuleList):
         # 2. fake_x_old -> net_d_y -> pred_fake, fake_label -> loss_d_fake
         # loss_d_fake = net_d_y(fake_x_old) - 0
         pred_fake = net_d_y(fake_x_old.detach())
-        loss_d_fake = self.gan_loss_fn(pred_fake, self.fake_label.to(pred_fake).expand_as(pred_fake))
+        loss_d_fake = self.gan_criterion(pred_fake, self.fake_label.to(pred_fake).expand_as(pred_fake))
 
         loss_d_x = (loss_d_real + loss_d_fake) * 0.5
 

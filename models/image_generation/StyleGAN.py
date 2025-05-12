@@ -61,7 +61,7 @@ class Model(nn.ModuleList):
         self.net_s = StyleMap(net_g_in_ch, **net_s_config)
         self.net_g = Generator(net_g_in_ch, out_ch=img_ch, num_layers=self.num_layers, **net_g_config)
         self.net_d = Discriminator(img_ch, num_layers=self.num_layers, **net_d_config)
-        self.disc_loss_fn = HingeGanLoss()
+        self.disc_criterion = HingeGanLoss()
 
         self.pl_mean = None
 
@@ -85,7 +85,7 @@ class Model(nn.ModuleList):
         real_x.requires_grad_(True)
         real_y, real_q_loss = self.net_d(real_x)
 
-        loss = self.disc_loss_fn(real_y, fake_y)
+        loss = self.disc_criterion(real_y, fake_y)
 
         if use_gp:
             # gradient penalty

@@ -144,7 +144,7 @@ class Model(nn.Module):
         hook_layers = torch_utils.ModuleManager.get_module_by_key(self.backbone, Cache, is_return_last_module=True)
         hook_features = [layer[0].features for layer in hook_layers[::-1]]
         self.head = Head(out_ch, hook_features, **head_config)
-        self.loss_fn = nn.BCELoss(size_average=True)
+        self.criterion = nn.BCELoss(size_average=True)
 
     def forward(self, x, label_masks=None):
         x = self.backbone(x)
@@ -159,10 +159,10 @@ class Model(nn.Module):
             )
 
     def loss(self, preds, hidden_states, label_masks=None):
-        losses = [self.loss_fn(preds, label_masks)]
+        losses = [self.criterion(preds, label_masks)]
         for hidden_state in hidden_states:
             hidden_state = F.sigmoid(hidden_state)
-            losses.append(self.loss_fn(hidden_state, label_masks))
+            losses.append(self.criterion(hidden_state, label_masks))
 
         loss = torch.cat(losses).sum()
         return dict(

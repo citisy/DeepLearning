@@ -131,7 +131,7 @@ class Model(nn.Module):
         # note, officially use `vlm.embed_tokens.weight`!!!
         self.head.weight = self.vlm.embed_tokens.weight
 
-        self.loss_fn = nn.CrossEntropyLoss()
+        self.criterion = nn.CrossEntropyLoss()
 
         self.rope_deltas = None
 
@@ -399,7 +399,7 @@ class Model(nn.Module):
         # Flatten the tokens
         shift_logits = shift_logits.view(-1, self.config.vocab_size)
         shift_labels = shift_labels.view(-1)
-        loss = self.loss_fn(shift_logits, shift_labels)
+        loss = self.criterion(shift_logits, shift_labels)
         return loss
 
 
