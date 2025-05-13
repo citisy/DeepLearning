@@ -1,18 +1,19 @@
 import copy
 from pathlib import Path
-from typing import List
+from typing import Iterable, List, Optional
 
 import cv2
 import numpy as np
 import torch
 from torch import optim, nn
+from torch.utils.data import Dataset
 
 from data_parse import DataRegister
-from data_parse.cv_data_parse.data_augmentation import scale, geometry, channel, RandomApply, Apply, complex
+from data_parse.cv_data_parse.data_augmentation import pixel_perturbation, scale, geometry, channel, RandomApply, Apply, complex
 from data_parse.cv_data_parse.datasets.base import DataVisualizer
 from metrics import object_detection
 from processor import Process, DataHooks, bundled, BaseImgDataset
-from utils import configs, cv_utils, os_lib
+from utils import configs, cv_utils, os_lib, torch_utils
 
 
 class OdDataset(BaseImgDataset):
@@ -493,3 +494,207 @@ class YoloV5_yolov5(YoloV5, Yolov5Dataset):
     def __init__(self, classes=None, **kwargs):
         kwargs.setdefault('n_classes', len(classes))
         super().__init__(**kwargs)
+
+
+class PPOCRv4Det(Process):
+    model_version = 'PPOCRv4_det'
+    config_version = 'teacher'
+
+    pretrained_model: str
+
+    def set_model(self):
+        from models.object_detection.PPOCRv4_det import Model, Config
+
+        self.model = Model(**Config.get(self.config_version))
+
+    def load_pretrained(self):
+        if hasattr(self, 'pretrained_model'):
+            from models.object_detection.PPOCRv4_det import WeightConverter
+
+            state_dict = torch_utils.Load.from_file(self.pretrained_model)
+            if self.config_version == 'teacher':
+                state_dict = WeightConverter.from_teacher(state_dict)
+            else:
+                state_dict = WeightConverter.from_student(state_dict)
+            self.model.load_state_dict(state_dict, strict=False)
+
+    def metric(self, *args, **kwargs):
+        process_results = self.predict(**kwargs)
+
+        ap = object_detection.AP(iou_method=object_detection.PolygonIou().iou)
+        metric_results = {}
+        for name, results in process_results.items():
+            gt_rets = results['trues']
+            det_rets = results['preds']
+            gt_segs = [ret['segmentations'] for ret in gt_rets]
+            det_segs = [ret['segmentations'] for ret in det_rets]
+            rets = ap.mAP_thres(gt_segs, det_segs)['']
+
+            metric_results[name] = dict(
+                result=rets,
+                score=rets['ap']
+            )
+
+        return metric_results
+
+    def get_model_inputs(self, loop_inputs, train=True):
+        images = [torch.from_numpy(ret.pop('image')).to(self.device, non_blocking=True, dtype=torch.float) for ret in loop_inputs]
+        images = torch.stack(images)
+
+        r = dict(x=images)
+        if train:
+            if self.config_version == 'teacher':
+                label_threshold_map = []
+                label_threshold_mask = []
+                label_shrink_map = []
+                label_shrink_mask = []
+                for ret in loop_inputs:
+                    image = ret['image']
+                    segmentations = ret['segmentations']
+
+                    tmp = pixel_perturbation.ShrinkMap()(image, segmentations)
+                    label_threshold_map.append(tmp['mapping'])
+                    label_threshold_mask.append(tmp['mask'])
+
+                    tmp = pixel_perturbation.BorderMap()(image, segmentations)
+                    label_shrink_map.append(tmp['mapping'])
+                    label_shrink_mask.append(tmp['mask'])
+
+                label_threshold_map = torch.stack([torch.from_numpy(i) for i in label_threshold_map])
+                label_threshold_mask = torch.stack([torch.from_numpy(i) for i in label_threshold_mask])
+                label_shrink_map = torch.stack([torch.from_numpy(i) for i in label_shrink_map])
+                label_shrink_mask = torch.stack([torch.from_numpy(i) for i in label_shrink_mask])
+
+                r.update(
+                    label_list=(
+                        label_threshold_map,
+                        label_threshold_mask,
+                        label_shrink_map,
+                        label_shrink_mask,
+                    )
+                )
+
+        return r
+
+    def on_val_step(self, loop_objs, **kwargs) -> dict:
+        loop_inputs = loop_objs['loop_inputs']
+        inputs = self.get_model_inputs(loop_inputs, train=False)
+
+        model_results = {}
+        for name, model in self.models.items():
+            outputs = model(**inputs)
+            outputs = [{k: v.to('cpu').numpy() if isinstance(v, torch.Tensor) else v for k, v in t.items()} for t in outputs]
+
+            preds = []
+            for (output, ret) in zip(outputs, loop_inputs):
+                output = configs.ConfigObjParse.merge_dict(ret, output)
+                output = self.val_data_restore(output)
+                preds.append(dict(
+                    segmentations=output['segmentations'],
+                ))
+
+            model_results[name] = dict(
+                outputs=outputs,
+                preds=preds,
+            )
+
+        return model_results
+
+    def on_val_reprocess(self, loop_objs, process_results=dict(), **kwargs):
+        loop_inputs = loop_objs['loop_inputs']
+        model_results = loop_objs['model_results']
+
+        for name, results in model_results.items():
+            r = process_results.setdefault(name, dict())
+            trues = r.setdefault('trues', [])
+            preds = r.setdefault('preds', [])
+            for ret, pred in zip(loop_inputs, results['preds']):
+                trues.append(dict(
+                    _id=ret['_id'],
+                    segmentations=ret['ori_segmentations'],
+                ))
+                pred['_id'] = ret['_id']
+                preds.append(pred)
+
+
+class IcdarDataset(BaseImgDataset):
+    def process_one(self, idx):
+        ret = copy.deepcopy(self.iter_data[idx])
+        if isinstance(ret['image'], str):
+            ret['image_path'] = ret['image']
+            ret['image'] = cv2.imread(ret['image'])
+
+        ret['ori_image'] = ret['image']
+        ret['ori_segmentations'] = ret['segmentations']
+        ret['idx'] = idx
+
+        if self.augment_func:
+            ret = self.augment_func(ret)
+
+        return ret
+
+
+class Icdar(DataHooks):
+    train_dataset_ins = IcdarDataset
+    val_dataset_ins = IcdarDataset
+
+    dataset_version = 'Icdar'
+    data_dir = 'data/icdar2015'
+    train_data_num = None
+    val_data_num = None
+
+    input_size = 960
+    in_ch = 3
+
+    def get_data(self, *args, train=True, **kwargs) -> Optional[Iterable | Dataset | List[Dataset]]:
+        from data_parse.cv_data_parse.datasets.Icdar import Loader
+
+        loader = Loader(self.data_dir)
+
+        if train:
+            return loader(
+                set_type=DataRegister.TRAIN, image_type=DataRegister.PATH, generator=False,
+                task='',
+                max_size=self.train_data_num
+            )[0]
+
+        else:
+            return loader(
+                set_type=DataRegister.VAL, image_type=DataRegister.PATH, generator=False,
+                task='',
+                max_size=self.val_data_num,
+            )[0]
+
+    aug = RandomApply([
+        pixel_perturbation.GaussNoise()
+    ])
+
+    post_aug = Apply([
+        scale.LetterBox(
+            fill=(0, 0, 0),
+            interpolation=1
+        ),
+        # channel.Keep3Dims(),
+        pixel_perturbation.MinMax(),
+        pixel_perturbation.Normalize(
+            [0.485, 0.456, 0.406],
+            [0.229, 0.224, 0.225]
+        ),
+        channel.HWC2CHW()
+    ])
+
+    def data_augment(self, ret, train=True) -> dict:
+        if train:
+            ret.update(self.aug(**ret))
+
+        ret.update(dst=self.input_size)
+        ret.update(self.post_aug(**ret))
+        return ret
+
+    def val_data_restore(self, ret):
+        ret = scale.LetterBox().restore(ret)
+        return ret
+
+
+class PPOCRv4Det_Icdar(PPOCRv4Det, Icdar):
+    pass

@@ -6,98 +6,195 @@ from utils import os_lib
 
 class Area:
     @staticmethod
-    def real_areas(box):
-        """Area(box) = (x2 - x1) * (y2 - y1)
+    def areas(boxes):
+        """Area(boxes) = (x2 - x1) * (y2 - y1)
 
         Args:
-            box(np.array): shape=(N, 4), 4 means xyxy.
+            boxes(np.array): shape=(N, 4), 4 means xyxy.
 
         Returns:
-            real_areas(np.array): shape=(N, )
+            rectangle_areas(np.array): shape=(N, )
         """
-        return (box[:, 2] - box[:, 0]) * (box[:, 3] - box[:, 1])
+        return (boxes[:, 2] - boxes[:, 0]) * (boxes[:, 3] - boxes[:, 1])
 
     @staticmethod
-    def intersection_areas(box1, box2):
-        """Area(box1 & box2)
+    def intersection_areas(boxes1, boxes2):
+        """Area(boxes1 & boxes2)
 
         Args:
-            box1(np.array): shape=(N, 4), 4 means xyxy.
-            box2(np.array): shape=(M ,4), 4 means xyxy.
+            boxes1(np.array): shape=(N, 4), 4 means xyxy.
+            boxes2(np.array): shape=(M ,4), 4 means xyxy.
 
         Returns:
             intersection_box(np.array): shape=(N, M)
         """
-        # box1[:, None, 2:]: (N, 2) -> (N, 1, 2)
+        # boxes1[:, None, 2:]: (N, 2) -> (N, 1, 2)
         # minimum((N, 1, 2), (M, 2)) -> broadcast ->  minimum((N, M, 2), (N, M, 2)) -> (N, M, 2)
-        return (np.minimum(box1[:, None, 2:], box2[:, 2:]) - np.maximum(box1[:, None, :2], box2[:, :2])).clip(0).prod(2)
+        return (np.minimum(boxes1[:, None, 2:], boxes2[:, 2:]) - np.maximum(boxes1[:, None, :2], boxes2[:, :2])).clip(0).prod(2)
 
     @classmethod
-    def union_areas(cls, box1, box2, inter=None):
-        """Area(box1 | box2)
+    def union_areas(cls, boxes1, boxes2, inter=None):
+        """Area(boxes1 | boxes2)
 
         Arguments:
-            box1(np.array): shape=(N, 4), 4 means xyxy.
-            box2(np.array): shape=(M ,4), 4 means xyxy.
+            boxes1(np.array): shape=(N, 4), 4 means xyxy.
+            boxes2(np.array): shape=(M, 4), 4 means xyxy.
 
         Returns:
             union_areas(np.array): shape=(N, M)
         """
-        area1 = cls.real_areas(box1)
-        area2 = cls.real_areas(box2)
+        area1 = cls.areas(boxes1)
+        area2 = cls.areas(boxes2)
         if inter is None:
-            inter = cls.intersection_areas(box1, box2)
+            inter = cls.intersection_areas(boxes1, boxes2)
 
         xv, yv = np.meshgrid(area1, area2)
         return xv.T + yv.T - inter
 
     @staticmethod
-    def outer_areas(box1, box2):
+    def outer_areas(boxes1, boxes2):
         """outer rectangle area
+        Area(boxes1 | boxes2) - Area(boxes1 & boxes2)
 
         Args:
-            box1(np.array): shape=(N, 4), 4 means xyxy.
-            box2(np.array): shape=(M ,4), 4 means xyxy.
+            boxes1(np.array): shape=(N, 4), 4 means xyxy.
+            boxes2(np.array): shape=(M ,4), 4 means xyxy.
 
         Returns:
             outer_areas(np.array): shape=(N, M)
         """
-        return (np.maximum(box1[:, None, 2:], box2[:, 2:]) - np.minimum(box1[:, None, :2], box2[:, :2])).clip(0).prod(2)
+        return (np.maximum(boxes1[:, None, 2:], boxes2[:, 2:]) - np.minimum(boxes1[:, None, :2], boxes2[:, :2])).clip(0).prod(2)
 
+
+class Area1D(Area):
     @staticmethod
-    def intersection_areas1D(box1, box2):
-        b1_x1, b1_y1, b1_x2, b1_y2 = box1.T
-        b2_x1, b2_y1, b2_x2, b2_y2 = box2.T
+    def intersection_areas(boxes1, boxes2):
+        """boxes1 and boxes2 must have the same shape
+
+        Args:
+            boxes1: shape=(N, 4), 4 means xyxy.
+            boxes2: shape=(N, 4), 4 means xyxy.
+
+        Returns:
+            intersection_box(np.array): shape=(N, )
+        """
+        b1_x1, b1_y1, b1_x2, b1_y2 = boxes1.T
+        b2_x1, b2_y1, b2_x2, b2_y2 = boxes2.T
 
         return (np.minimum(b1_x2, b2_x2) - np.maximum(b1_x1, b2_x1)).clip(0) * (np.minimum(b1_y2, b2_y2) - np.maximum(b1_y1, b2_y1)).clip(0)
 
     @classmethod
-    def union_areas1D(cls, box1, box2, inter=None):
-        area1 = cls.real_areas(box1)
-        area2 = cls.real_areas(box2)
+    def union_areas(cls, boxes1, boxes2, inter=None):
+        """boxes1 and boxes2 must have the same shape
+
+        Args:
+            boxes1: shape=(N, 4), 4 means xyxy.
+            boxes2: shape=(N, 4), 4 means xyxy.
+
+        Returns:
+            intersection_box(np.array): shape=(N, )
+        """
+        area1 = cls.areas(boxes1)
+        area2 = cls.areas(boxes2)
         if inter is None:
-            inter = cls.intersection_areas1D(box1, box2)
+            inter = cls.intersection_areas(boxes1, boxes2)
 
         return area1 + area2 - inter
 
     @staticmethod
-    def outer_areas1D(box1, box2):
+    def outer_areas(boxes1, boxes2):
         """outer rectangle area
 
         Args:
-            box1(np.array): shape=(N, 4), 4 means xyxy.
-            box2(np.array): shape=(M ,4), 4 means xyxy.
+            boxes1(np.array): shape=(N, 4), 4 means xyxy.
+            boxes2(np.array): shape=(N, 4), 4 means xyxy.
 
         Returns:
-            outer_areas(np.array): shape=(N, M)
+            outer_areas(np.array): shape=(N, )
         """
-        b1_x1, b1_y1, b1_x2, b1_y2 = box1.T
-        b2_x1, b2_y1, b2_x2, b2_y2 = box2.T
+        b1_x1, b1_y1, b1_x2, b1_y2 = boxes1.T
+        b2_x1, b2_y1, b2_x2, b2_y2 = boxes2.T
         return (np.maximum(b1_x2, b2_x2) - np.minimum(b1_x1, b2_x1)).clip(0) * (np.maximum(b1_y2, b2_y2) - np.minimum(b1_y1, b2_y1)).clip(0)
 
 
+class PolygonArea:
+    @staticmethod
+    def areas(segmentations):
+        """Shoelace Formula
+        Area(boxes) = 0.5 * sum(x_i * y_(i+1) - y_i * x_(i+1))
+
+        Args:
+            segmentations(np.array): shape=(N, K, 2), 2 means xy.
+
+        Returns:
+            rectangle_areas(np.array): shape=(N, )
+        """
+        k, m, _ = segmentations.shape
+
+        x = segmentations[:, :, 0]
+        y = segmentations[:, :, 1]
+
+        x_shifted = np.roll(x, -1, axis=1)
+        y_shifted = np.roll(y, -1, axis=1)
+
+        term1 = x * y_shifted
+        term2 = y * x_shifted
+
+        area = 0.5 * np.abs(np.sum(term1 - term2, axis=1))
+        return area
+
+    @staticmethod
+    def intersection_areas(segmentations1, segmentations2):
+        """Area(segmentations1 & segmentations2)
+
+        Args:
+            segmentations1: shape=(N, K1, 2), 2 means xy.
+            segmentations2: shape=(M, K2, 2), 2 means xy.
+
+        Returns:
+            intersection_areas(np.array): shape=(N, M)
+        """
+        from shapely.geometry import Polygon
+
+        areas = np.zeros((segmentations1.shape[0], segmentations2.shape[0]))
+        for i, points1 in enumerate(segmentations1):
+            for j, points2 in enumerate(segmentations2):
+                polygon1 = Polygon(points1)
+                polygon2 = Polygon(points2)
+
+                intersection = polygon1.intersection(polygon2)
+                areas[i, j] = intersection.area
+
+        return areas
+
+    @staticmethod
+    def union_areas(segmentations1, segmentations2, *args, **kwargs):
+        """Area(segmentations1 | segmentations2)
+
+        Args:
+            segmentations1: shape=(N, K1, 2), 2 means xy.
+            segmentations2: shape=(M, K2, 2), 2 means xy.
+
+        Returns:
+            intersection_areas(np.array): shape=(N, M)
+        """
+        from shapely.geometry import Polygon
+
+        areas = np.zeros((segmentations1.shape[0], segmentations2.shape[0]))
+        for i, points1 in enumerate(segmentations1):
+            for j, points2 in enumerate(segmentations2):
+                polygon1 = Polygon(points1)
+                polygon2 = Polygon(points2)
+
+                intersection = polygon1.union(polygon2)
+                areas[i, j] = intersection.area
+
+        return areas
+
+
 class Overlap:
-    """only judge whether 2 object is overlap or not"""
+    """only judge whether 2 object is overlap or not,
+    for ConfusionMatrix of classification"""
 
     @staticmethod
     def point_in_line(points, lines):
@@ -179,10 +276,10 @@ class Overlap:
 
     @staticmethod
     def box(boxes1, boxes2):
-        """box1 = (xa1, ya1, xa2, ya2), box2 = (xb1, yb1, xb2, yb2)
+        """boxes1 = (xa1, ya1, xa2, ya2), boxes2 = (xb1, yb1, xb2, yb2)
         2 boxes do not overlap means that
-           point 'a1' at the right or down of box2 (xa1 > xb2 | ya1 > yb2)
-        or point 'a2' at the left or top of box2 (xa2 < xb1 | ya2 < yb1)
+           point 'a1' at the right or down of boxes2 (xa1 > xb2 | ya1 > yb2)
+        or point 'a2' at the left or top of boxes2 (xa2 < xb1 | ya2 < yb1)
 
         Args:
             boxes1: (n, 4)
@@ -199,7 +296,16 @@ class Overlap:
 
 
 class Iou:
-    def __init__(self, alpha=1, eps=1e-6):
+    """
+    Arguments:
+        boxes1(np.array): shape=(N, 4), 4 means xyxy.
+        boxes2(np.array): shape=(M ,4), 4 means xyxy.
+
+    Returns:
+        iou_mat(np.array): shape=(N, M)
+    """
+
+    def __init__(self, area_method=Area, alpha=1, eps=1e-6):
         """
 
         Args:
@@ -211,129 +317,109 @@ class Iou:
                 when run in low computational accuracy mode
                 e.g. np.array(1e-12, dtype=np.float16) -> array(0., dtype=float16)
         """
+        self.area_method = area_method
         self.alpha = alpha
         self.eps = eps
 
-    @staticmethod
-    def iou(box1, box2, inter=None, union=None):
+    def iou(self, boxes1, boxes2, inter=None, union=None):
         """vanilla iou
-        Area(box1 & box2) / Area(box1 | box2)
+        Area(boxes1 & boxes2) / Area(boxes1 | boxes2)
         See Also `torchvision.ops.box_iou`
 
-        Arguments:
-            box1(np.array): shape=(N, 4), 4 means xyxy.
-            box2(np.array): shape=(M ,4), 4 means xyxy.
 
-        Returns:
-            iou_mat(np.array): shape=(N, M)
         """
-        box1, box2 = np.array(box1), np.array(box2)
+        boxes1, boxes2 = np.array(boxes1), np.array(boxes2)
 
         if inter is None:
-            inter = Area.intersection_areas(box1, box2)
+            inter = self.area_method.intersection_areas(boxes1, boxes2)
 
         if union is None:
-            union = Area.union_areas(box1, box2, inter)
+            union = self.area_method.union_areas(boxes1, boxes2, inter)
 
-        return inter / (union + 1E-12)
+        return inter / (union + self.eps)
 
-    def u_iou(self, box1, box2, inter=None):
+    def u_iou(self, boxes1, boxes2, inter=None):
         """unidirectional iou
-        Area(box1 & box2) / Area(box2)
-
-        Args:
-            box1(np.array): shape=(N, 4), 4 means xyxy.
-            box2(np.array): shape=(M ,4), 4 means xyxy.
-
-        Returns:
-            iou_box2(np.array): shape=(N, M)
+        Area(boxes1 & boxes2) / Area(boxes2)
 
         >>> a = np.array([[1, 1, 4, 4]])
         >>> b = np.array([[2, 2, 5, 5]])
         >>> Iou.u_iou(a, b) # ((4 - 2) * (4 - 2)) / (5 - 2) * (5 - 2)
         [[0.44444444]]
         """
-        area2 = Area.real_areas(box2)  # (M,)
+        area2 = self.area_method.areas(boxes2)  # (M,)
         if inter is None:
-            inter = Area.intersection_areas(box1, box2)
+            inter = self.area_method.intersection_areas(boxes1, boxes2)
 
         return inter / (area2 + self.eps)
 
-    def b_iou(self, box1, box2, inter=None):
+    def b_iou(self, boxes1, boxes2, inter=None):
         """Bidirectional iou
-        Area(box1 & box2) / min{Area(box1), Area(box2)}"""
-        box1, box2 = np.array(box1), np.array(box2)
+        Area(boxes1 & boxes2) / min{Area(boxes1), Area(boxes2)}"""
+        boxes1, boxes2 = np.array(boxes1), np.array(boxes2)
 
         if inter is None:
-            inter = Area.intersection_areas(box1, box2)
+            inter = self.area_method.intersection_areas(boxes1, boxes2)
 
-        u_iou1 = self.u_iou(box1, box2, inter=inter)
-        u_iou2 = self.u_iou(box2, box1, inter=inter.T).T
+        u_iou1 = self.u_iou(boxes1, boxes2, inter=inter)
+        u_iou2 = self.u_iou(boxes2, boxes1, inter=inter.T).T
         return np.maximum(u_iou1, u_iou2)
 
-    def m_iou(self, box1, box2, inter=None):
+    def m_iou(self, boxes1, boxes2, inter=None):
         """mean iou
-        (u_iou(box1, box2) + u_iou(box2, box1).T) / 2
-
-        Args:
-            box1(np.array): shape=(N, 4), 4 means xyxy.
-            box2(np.array): shape=(M ,4), 4 means xyxy.
-
-        Returns:
-            iou_box(np.array): shape=(N, M)
-
+        (u_iou(boxes1, boxes2) + u_iou(boxes2, boxes1).T) / 2
         """
-        box1, box2 = np.array(box1), np.array(box2)
+        boxes1, boxes2 = np.array(boxes1), np.array(boxes2)
 
         if inter is None:
-            inter = Area.intersection_areas(box1, box2)
+            inter = self.area_method.intersection_areas(boxes1, boxes2)
 
-        u_iou1 = self.u_iou(box1, box2, inter=inter)
-        u_iou2 = self.u_iou(box2, box1, inter=inter.T).T
+        u_iou1 = self.u_iou(boxes1, boxes2, inter=inter)
+        u_iou2 = self.u_iou(boxes2, boxes1, inter=inter.T).T
 
         return (u_iou1 + u_iou2) / 2
 
-    def g_iou(self, box1, box2):
+    def g_iou(self, boxes1, boxes2):
         """generalized iou, https://arxiv.org/pdf/1902.09630.pdf
-        iou - (c - Area(box1 & box2)) / c
+        iou - (c - Area(boxes1 & boxes2)) / c
         See Also `torchvision.ops.generalized_box_iou`
         """
-        outer = Area.outer_areas(box1, box2)
-        inter = Area.intersection_areas(box1, box2)
-        union = Area.union_areas(box1, box2)
-        iou = self.iou(box1, box2, inter=inter, union=union)
+        outer = self.area_method.outer_areas(boxes1, boxes2)
+        inter = self.area_method.intersection_areas(boxes1, boxes2)
+        union = self.area_method.union_areas(boxes1, boxes2)
+        iou = self.iou(boxes1, boxes2, inter=inter, union=union)
 
         return iou - (outer - union) / outer
 
-    def d_iou(self, box1, box2, iou=None):
+    def d_iou(self, boxes1, boxes2, iou=None):
         """distance iou, https://arxiv.org/pdf/1911.08287.pdf
         iou - d ^ 2 / c ^ 2
         See Also `torchvision.ops.distance_box_iou`
         """
-        box1_center = (box1[:, 2:] - box1[:, :2]) / 2
-        box2_center = (box2[:, 2:] - box2[:, :2]) / 2
+        boxes1_center = (boxes1[:, 2:] - boxes1[:, :2]) / 2
+        boxes2_center = (boxes2[:, 2:] - boxes2[:, :2]) / 2
 
-        d = np.linalg.norm(box1_center[:, None, :] - box2_center, axis=2) ** 2
-        c = np.linalg.norm((np.maximum(box1[:, None, 2:], box2[:, 2:]) - np.minimum(box1[:, None, :2], box2[:, :2])).clip(0), axis=2) ** 2 + self.eps
+        d = np.linalg.norm(boxes1_center[:, None, :] - boxes2_center, axis=2) ** 2
+        c = np.linalg.norm((np.maximum(boxes1[:, None, 2:], boxes2[:, 2:]) - np.minimum(boxes1[:, None, :2], boxes2[:, :2])).clip(0), axis=2) ** 2 + self.eps
 
         if iou is None:
-            iou = self.iou(box1, box2)
+            iou = self.iou(boxes1, boxes2)
 
         return iou - d / c
 
-    def c_iou(self, box1, box2, a=None, v=None):
+    def c_iou(self, boxes1, boxes2, a=None, v=None):
         """complete iou, https://arxiv.org/pdf/1911.08287.pdf
         diou - av
         See Also `torchvision.ops.complete_box_iou`
         """
-        iou = self.iou(box1, box2)
-        diou = self.d_iou(box1, box2, iou=iou)
+        iou = self.iou(boxes1, boxes2)
+        diou = self.d_iou(boxes1, boxes2, iou=iou)
 
         if v is None:
-            box1_wh = box1[:, 2:] - box1[:, :2]
-            box2_wh = box2[:, 2:] - box2[:, :2]
-            b1 = np.arctan(box1_wh[:, 0] / box1_wh[:, 1])
-            b2 = np.arctan(box2_wh[:, 0] / box2_wh[:, 1])
+            boxes1_wh = boxes1[:, 2:] - boxes1[:, :2]
+            boxes2_wh = boxes2[:, 2:] - boxes2[:, :2]
+            b1 = np.arctan(boxes1_wh[:, 0] / boxes1_wh[:, 1])
+            b2 = np.arctan(boxes2_wh[:, 0] / boxes2_wh[:, 1])
 
             v = 4 / np.pi ** 2 * ((b1[:, None] - b2) ** 2)
 
@@ -342,45 +428,23 @@ class Iou:
 
         return diou - a * v
 
-    @staticmethod
-    def iou1D(box1, box2, inter=None, union=None):
-        """box1 and box2 must have the same shape
 
-        Args:
-            box1: (N, 4)
-            box2: (N, 4)
-            inter:
-            union:
+class Iou1D(Iou):
+    """
+    Arguments:
+        boxes1(np.array): shape=(N, 4), 4 means xyxy.
+        boxes2(np.array): shape=(N ,4), 4 means xyxy.
 
-        Returns:
-            iou_mat(np.array): shape=(N, )
-        """
+    Returns:
+        iou_mat(np.array): shape=(N, N)
+    """
 
-        if inter is None:
-            inter = Area.intersection_areas1D(box1, box2)
+    def __init__(self, alpha=1, eps=1e-6):
+        super().__init__(Area1D, alpha, eps)
 
-        if union is None:
-            union = Area.union_areas1D(box1, box2, inter)
-
-        return inter / union
-
-    def u_iou1D(self, box1, box2):
-        area2 = Area.real_areas(box2)
-        inter = Area.intersection_areas1D(box1, box2)
-
-        return inter / (area2 + self.eps)
-
-    def g_iou1D(self, box1, box2):
-        outer = Area.outer_areas1D(box1, box2)
-        inter = Area.intersection_areas1D(box1, box2)
-        union = Area.union_areas1D(box1, box2)
-        iou = self.iou1D(box1, box2, inter=inter, union=union)
-
-        return iou - (outer - union) / outer
-
-    def d_iou1D(self, box1, box2, iou=None):
-        b1_x1, b1_y1, b1_x2, b1_y2 = box1.T
-        b2_x1, b2_y1, b2_x2, b2_y2 = box2.T
+    def d_iou(self, boxes1, boxes2, iou=None):
+        b1_x1, b1_y1, b1_x2, b1_y2 = boxes1.T
+        b2_x1, b2_y1, b2_x2, b2_y2 = boxes2.T
 
         cw = np.maximum(b1_x2, b2_x2) - np.minimum(b1_x1, b2_x1)  # outer width
         ch = np.maximum(b1_y2, b2_y2) - np.minimum(b1_y1, b2_y1)  # outer height
@@ -388,17 +452,17 @@ class Iou:
         d = ((b2_x1 - b1_x1 + b2_x2 - b1_x2) ** 2 + (b2_y1 - b1_y1 + b2_y2 - b1_y2) ** 2) / 4
 
         if iou is None:
-            iou = self.iou1D(box1, box2)
+            iou = self.iou(boxes1, boxes2)
 
         return iou - d / c
 
-    def c_iou1D(self, box1, box2, a=None, v=None):
-        iou = self.iou1D(box1, box2)
-        d_iou = self.d_iou1D(box1, box2, iou=iou)
+    def c_iou(self, boxes1, boxes2, a=None, v=None):
+        iou = self.iou(boxes1, boxes2)
+        d_iou = self.d_iou(boxes1, boxes2, iou=iou)
 
         if v is None:
-            b1_x1, b1_y1, b1_x2, b1_y2 = box1.T
-            b2_x1, b2_y1, b2_x2, b2_y2 = box2.T
+            b1_x1, b1_y1, b1_x2, b1_y2 = boxes1.T
+            b2_x1, b2_y1, b2_x2, b2_y2 = boxes2.T
             w1, h1 = b1_x2 - b1_x1, b1_y2 - b1_y1
             w2, h2 = b2_x2 - b2_x1, b2_y2 - b2_y1
 
@@ -410,10 +474,23 @@ class Iou:
         return d_iou - a * v
 
 
+class PolygonIou(Iou):
+    """
+    Arguments:
+        segmentations1: shape=(N, K1, 2), 2 means xy.
+        segmentations2: shape=(M, K2, 2), 2 means xy.
+
+    Returns:
+        iou_mat(np.array): shape=(N, N)
+    """
+
+    def __init__(self, alpha=1, eps=1e-6):
+        super().__init__(PolygonArea, alpha, eps)
+
+
 class ConfusionMatrix:
     def __init__(self, iou_method=None, **iou_method_kwarg):
-        self.iou_method = iou_method or Iou().iou
-        self.iou_method_kwarg = iou_method_kwarg
+        self.iou_method = iou_method or Iou(**iou_method_kwarg).iou
 
     def tp(self, gt_box, det_box, conf=None, _class=None, iou=None, iou_thres=0.5):
         """
@@ -448,7 +525,7 @@ class ConfusionMatrix:
                     gt_box = gt_box + (true_class * offset)[:, None]
                     det_box = det_box + (pred_class * offset)[:, None]
 
-            iou = self.iou_method(gt_box, det_box, **self.iou_method_kwarg)
+            iou = self.iou_method(gt_box, det_box)
 
         tp = np.zeros((det_box.shape[0],), dtype=bool)
         idx = np.where((iou >= iou_thres))
@@ -694,7 +771,7 @@ class AP:
         assert len(det_boxes)
 
         _results, _ = self.pr.get_pr(gt_boxes, det_boxes, confs, classes, iou_thres=iou_thres)
-        return self.ap_thres(_results, confs)
+        return self._ap_thres(_results, confs)
 
     def mAP_thres_range(self, gt_boxes, det_boxes, confs, classes=None, thres_range=np.arange(0.5, 1, 0.05)):
         """AP@thres_range for all objection
@@ -716,7 +793,7 @@ class AP:
 
         for iou_thres in thres_range:
             _results, ious = self.pr.get_pr(gt_boxes, det_boxes, confs, classes, ious=ious, iou_thres=iou_thres)
-            results = self.ap_thres(_results, confs)
+            results = self._ap_thres(_results, confs)
 
             for k, v in results.items():
                 tmp = _ret.setdefault(k, {})
@@ -734,7 +811,7 @@ class AP:
 
         return ret
 
-    def ap_thres(self, _results, confs=None):
+    def _ap_thres(self, _results, confs=None):
         results = {}
 
         if confs is not None:

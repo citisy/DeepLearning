@@ -142,16 +142,20 @@ class Model(nn.Module):
         self.neck = converter.DataInsConvert.str_to_instance(neck_name)(**neck_config)
         head_name = head_config.pop('name')
         self.head = converter.DataInsConvert.str_to_instance(head_name)(in_ch=self.neck.out_channels, **head_config)
+        self.criterion = DBLoss()
 
-    def forward(self, x):
+    def forward(self, x, label_list=()):
         x = self.backbone(x)
         x = self.neck(x)
-        pred = self.head(x)
+        outputs = self.head(x)
 
         if self.training:
-            raise NotImplementedError
+            return self.loss(outputs, label_list)
         else:
-            return self.post_process(pred)
+            return self.post_process(outputs['preds'])
+
+    def loss(self, x, label_list=()):
+        return self.criterion(x, label_list)
 
     thresh = 0.3
     min_size = 3
@@ -161,13 +165,13 @@ class Model(nn.Module):
     def post_process(self, preds):
         preds = preds.cpu().numpy()
         masks = (preds > self.thresh).astype(np.uint8)
-        bboxes = []
+        results = []
         for mask, pred in zip(masks, preds):
             mask = mask[0]
             pred = pred[0]
             outs = cv2.findContours(mask, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
             contours = outs[0]
-            _bboxes = []
+            segmentations = []
             for contour in contours:
                 points, sside = self.get_mini_boxes(contour)
                 if sside < self.min_size:
@@ -182,10 +186,13 @@ class Model(nn.Module):
                 points, sside = self.get_mini_boxes(points)
                 if sside < self.min_size + 2:
                     continue
-                _bboxes.append(points)
-            _bboxes = np.array(_bboxes).astype(int)
-            bboxes.append(_bboxes)
-        return bboxes
+                segmentations.append(points)
+            segmentations = np.array(segmentations).astype(int)
+            results.append(dict(
+                segmentations=segmentations,
+                mask=mask
+            ))
+        return results
 
     def get_mini_boxes(self, contour):
         bounding_box = cv2.minAreaRect(contour)
@@ -225,8 +232,8 @@ class Model(nn.Module):
         return cv2.mean(bitmap[ymin:ymax + 1, xmin:xmax + 1], mask)[0]
 
     def unclip(self, box):
-        from shapely.geometry import Polygon
-        import pyclipper
+        from shapely.geometry import Polygon    # pip install shapely
+        import pyclipper  # pip install pyclipper
 
         unclip_ratio = self.unclip_ratio
         poly = Polygon(box)
@@ -261,18 +268,18 @@ class RSEFPN(nn.Module):
         in3 = self.ins_conv[1](c3)
         in2 = self.ins_conv[0](c2)
 
-        out4 = in4 + F.upsample(in5, scale_factor=2, mode="nearest")  # 1/16
-        out3 = in3 + F.upsample(out4, scale_factor=2, mode="nearest")  # 1/8
-        out2 = in2 + F.upsample(out3, scale_factor=2, mode="nearest")  # 1/4
+        out4 = in4 + F.interpolate(in5, scale_factor=2, mode="nearest")  # 1/16
+        out3 = in3 + F.interpolate(out4, scale_factor=2, mode="nearest")  # 1/8
+        out2 = in2 + F.interpolate(out3, scale_factor=2, mode="nearest")  # 1/4
 
         p5 = self.inp_conv[3](in5)
         p4 = self.inp_conv[2](out4)
         p3 = self.inp_conv[1](out3)
         p2 = self.inp_conv[0](out2)
 
-        p5 = F.upsample(p5, scale_factor=8, mode="nearest")
-        p4 = F.upsample(p4, scale_factor=4, mode="nearest")
-        p3 = F.upsample(p3, scale_factor=2, mode="nearest")
+        p5 = F.interpolate(p5, scale_factor=8, mode="nearest")
+        p4 = F.interpolate(p4, scale_factor=4, mode="nearest")
+        p3 = F.interpolate(p3, scale_factor=2, mode="nearest")
 
         fuse = torch.cat([p5, p4, p3, p2], dim=1)
         return fuse
@@ -309,13 +316,21 @@ class DBHead(nn.Module):
 
     def forward(self, x):
         shrink_maps, _ = self.binarize(x)
-        if not self.training:
-            return shrink_maps
+        if self.training:
+            # why only use in training steps?
+            threshold_maps, _ = self.thresh(x)
+            binary_maps = self.step_function(shrink_maps, threshold_maps)
+            y = torch.cat([shrink_maps, threshold_maps, binary_maps], dim=1)
+            outputs = {
+                "preds": y,
+            }
+        else:
+            y = shrink_maps
+            outputs = {
+                "preds": y,
+            }
 
-        threshold_maps, _ = self.thresh(x)
-        binary_maps = self.step_function(shrink_maps, threshold_maps)
-        y = torch.cat([shrink_maps, threshold_maps, binary_maps], dim=1)
-        return y
+        return outputs
 
 
 class Head(nn.Module):
@@ -381,9 +396,9 @@ class LKPAN(nn.Module):
         in3 = self.ins_conv[1](c3)
         in2 = self.ins_conv[0](c2)
 
-        out4 = in4 + F.upsample(in5, scale_factor=2, mode="nearest")  # 1/16
-        out3 = in3 + F.upsample(out4, scale_factor=2, mode="nearest")  # 1/8
-        out2 = in2 + F.upsample(out3, scale_factor=2, mode="nearest")  # 1/4
+        out4 = in4 + F.interpolate(in5, scale_factor=2, mode="nearest")  # 1/16
+        out3 = in3 + F.interpolate(out4, scale_factor=2, mode="nearest")  # 1/8
+        out2 = in2 + F.interpolate(out3, scale_factor=2, mode="nearest")  # 1/4
 
         f5 = self.inp_conv[3](in5)
         f4 = self.inp_conv[2](out4)
@@ -399,9 +414,9 @@ class LKPAN(nn.Module):
         p4 = self.pan_lat_conv[2](pan4)
         p5 = self.pan_lat_conv[3](pan5)
 
-        p5 = F.upsample(p5, scale_factor=8, mode="nearest")
-        p4 = F.upsample(p4, scale_factor=4, mode="nearest")
-        p3 = F.upsample(p3, scale_factor=2, mode="nearest")
+        p5 = F.interpolate(p5, scale_factor=8, mode="nearest")
+        p4 = F.interpolate(p4, scale_factor=4, mode="nearest")
+        p3 = F.interpolate(p3, scale_factor=2, mode="nearest")
 
         fuse = torch.cat([p5, p4, p3, p2], dim=1)
         return fuse
@@ -523,17 +538,28 @@ class PFHeadLocal(DBHead):
         base_maps = shrink_maps
         cbn_maps = self.cbn_layer(self.up_conv(f), shrink_maps)
         cbn_maps = F.sigmoid(cbn_maps)
-        if not self.training:
-            return 0.5 * (base_maps + cbn_maps)
 
-        threshold_maps, _ = self.thresh(x)
-        binary_maps = self.step_function(shrink_maps, threshold_maps)
-        y = torch.cat([cbn_maps, threshold_maps, binary_maps], dim=1)
-        return y
+        if self.training:
+            # why only training steps use multi maps
+            threshold_maps, _ = self.thresh(x)
+            binary_maps = self.step_function(shrink_maps, threshold_maps)
+            y = torch.cat([cbn_maps, threshold_maps, binary_maps], dim=1)
+            outputs = {
+                "preds": y,
+                "distance_maps": cbn_maps,
+                "cbn_maps": binary_maps
+            }
+        else:
+            y = 0.5 * (base_maps + cbn_maps)
+            outputs = {
+                "preds": y,
+            }
+
+        return outputs
 
 
 class LocalModule(nn.Module):
-    def __init__(self, in_c, mid_c, use_distance=True):
+    def __init__(self, in_c, mid_c):
         super().__init__()
         self.last_3 = Conv(in_c + 1, mid_c, 3, 1, 1, bias=False, mode='cna')
         self.last_1 = nn.Conv2d(mid_c, 1, 1, 1, 0)
@@ -543,3 +569,143 @@ class LocalModule(nn.Module):
         # last Conv
         out = self.last_1(self.last_3(outf))
         return out
+
+
+class DBLoss(nn.Module):
+    """Differentiable Binarization (DB) Loss Function"""
+
+    def __init__(
+            self,
+            main_loss_type="DiceLoss",
+            alpha=5,
+            beta=10,
+            ohem_ratio=3,
+            eps=1e-6,
+            **kwargs,
+    ):
+        super().__init__()
+        self.alpha = alpha
+        self.beta = beta
+
+        self.dice_loss = DiceLoss(eps=eps)
+        self.l1_loss = MaskL1Loss(eps=eps)
+        self.bce_loss = BalanceLoss(
+            loss_type=main_loss_type,
+            negative_ratio=ohem_ratio,
+            eps=eps
+        )
+
+    def forward(self, outputs, label_list):
+        predict_maps = outputs["maps"]
+        (
+            label_threshold_map,
+            label_threshold_mask,
+            label_shrink_map,
+            label_shrink_mask,
+        ) = label_list
+        shrink_maps = predict_maps[:, 0, :, :]
+        threshold_maps = predict_maps[:, 1, :, :]
+        binary_maps = predict_maps[:, 2, :, :]
+
+        loss_shrink_maps = self.bce_loss(
+            shrink_maps, label_shrink_map, label_shrink_mask
+        )
+        loss_threshold_maps = self.l1_loss(
+            threshold_maps, label_threshold_map, label_threshold_mask
+        )
+        loss_binary_maps = self.dice_loss(
+            binary_maps, label_shrink_map, label_shrink_mask
+        )
+        loss_shrink_maps = self.alpha * loss_shrink_maps
+        loss_threshold_maps = self.beta * loss_threshold_maps
+
+        # CBN loss
+        if "cbn_maps" in outputs.keys():
+            cbn_maps = outputs["cbn_maps"]
+            cbn_loss = self.bce_loss(
+                cbn_maps[:, 0, :, :], label_shrink_map, label_shrink_mask
+            )
+        else:
+            cbn_loss = torch.tensor([0.0]).to(loss_shrink_maps)
+
+        loss_all = loss_shrink_maps + loss_threshold_maps + loss_binary_maps + cbn_loss
+        losses = {
+            "loss": loss_all,
+            "loss.shrink_maps": loss_shrink_maps,
+            "loss.threshold_maps": loss_threshold_maps,
+            "loss.binary_maps": loss_binary_maps,
+            "loss.cbn": cbn_loss,
+        }
+        return losses
+
+
+class DiceLoss(nn.Module):
+    def __init__(self, eps=1e-6):
+        super().__init__()
+        self.eps = eps
+
+    def forward(self, preds, gt, mask, weights=None):
+        if weights is not None:
+            mask = weights * mask
+        intersection = torch.sum(preds * gt * mask)
+
+        union = torch.sum(preds * mask) + torch.sum(gt * mask) + self.eps
+        loss = 1 - 2.0 * intersection / union
+        assert loss <= 1
+        return loss
+
+
+class MaskL1Loss(nn.Module):
+    def __init__(self, eps=1e-6):
+        super().__init__()
+        self.eps = eps
+
+    def forward(self, preds, gt, mask):
+        loss = (torch.abs(preds - gt) * mask).sum() / (mask.sum() + self.eps)
+        loss = torch.mean(loss)
+        return loss
+
+
+class BalanceLoss(nn.Module):
+    """The BalanceLoss for Differentiable Binarization text detection"""
+
+    loss_fn_mapping = {
+        "CrossEntropy": nn.CrossEntropyLoss,
+        "Euclidean": nn.MSELoss,
+        "DiceLoss": DiceLoss,
+        "BCELoss": nn.BCELoss,
+        "MaskL1Loss": MaskL1Loss,
+    }
+
+    def __init__(
+            self,
+            loss_type="DiceLoss",
+            negative_ratio=3,
+            eps=1e-6,
+            **loss_kwargs,
+    ):
+        super().__init__()
+        self.negative_ratio = negative_ratio
+        self.eps = eps
+
+        self.criterion = self.loss_fn_mapping[loss_type](**loss_kwargs)
+
+    def forward(self, preds, gt, mask=None):
+        loss = self.criterion(preds, gt, mask=mask)
+
+        positive = gt * mask
+        negative = (1 - gt) * mask
+
+        positive_count = int(positive.sum())
+        negative_count = int(min(negative.sum(), positive_count * self.negative_ratio))
+        positive_loss = positive * loss
+        negative_loss = negative * loss
+        negative_loss = torch.reshape(negative_loss, shape=[-1])
+        if negative_count > 0:
+            sort_loss = negative_loss.sort(descending=True)
+            negative_loss = sort_loss[:negative_count]
+            balance_loss = (positive_loss.sum() + negative_loss.sum()) / (positive_count + negative_count + self.eps)
+        else:
+            balance_loss = positive_loss.sum() / (positive_count + self.eps)
+
+        return balance_loss

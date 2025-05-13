@@ -134,14 +134,16 @@ class Backbone(nn.Module):
             x = stage(x)
             if self.det and i in self.out_indices:
                 out.append(x)
+
         if self.det:
             return out
 
-        if self.training:
-            x = F.adaptive_avg_pool2d(x, [1, 40])
         else:
-            x = F.avg_pool2d(x, [3, 2])
-        return x
+            if self.training:
+                x = F.adaptive_avg_pool2d(x, [1, 40])
+            else:
+                x = F.avg_pool2d(x, [3, 2])
+            return x
 
 
 class HG_Stage(nn.Module):
