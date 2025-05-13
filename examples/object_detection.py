@@ -13,7 +13,7 @@ from data_parse.cv_data_parse.data_augmentation import pixel_perturbation, scale
 from data_parse.cv_data_parse.datasets.base import DataVisualizer
 from metrics import object_detection
 from processor import Process, DataHooks, bundled, BaseImgDataset
-from utils import configs, cv_utils, os_lib, torch_utils
+from utils import configs, cv_utils, os_lib, torch_utils, log_utils
 
 
 class OdDataset(BaseImgDataset):
@@ -517,6 +517,16 @@ class PPOCRv4Det(Process):
             else:
                 state_dict = WeightConverter.from_student(state_dict)
             self.model.load_state_dict(state_dict, strict=False)
+            # so silly that, import paddle will clear the logger settings, so reinit the logger
+            log_utils.logger_init()
+
+    def on_train_step(self, loop_objs, **kwargs) -> dict:
+        loop_inputs = loop_objs['loop_inputs']
+        inputs = self.get_model_inputs(loop_inputs, train=True)
+
+        output = self.model(**inputs)
+
+        return output
 
     def metric(self, *args, **kwargs):
         process_results = self.predict(**kwargs)
@@ -538,41 +548,47 @@ class PPOCRv4Det(Process):
         return metric_results
 
     def get_model_inputs(self, loop_inputs, train=True):
+        r = dict()
+        if train:
+            label_threshold_map = []
+            label_threshold_mask = []
+            label_shrink_map = []
+            label_shrink_mask = []
+            for ret in loop_inputs:
+                image = ret['image']
+                segmentations = ret['segmentations']
+
+                tmp = Apply([
+                    channel.CHW2HWC(),
+                    pixel_perturbation.BorderMap()
+                ])(image=image, segmentations=segmentations)
+                label_threshold_map.append(tmp['mapping'])
+                label_threshold_mask.append(tmp['mask'])
+
+                tmp = Apply([
+                    channel.CHW2HWC(),
+                    pixel_perturbation.ShrinkMap()
+                ])(image=image, segmentations=segmentations)
+                label_shrink_map.append(tmp['mapping'])
+                label_shrink_mask.append(tmp['mask'])
+
+            label_threshold_map = torch.stack([torch.from_numpy(i) for i in label_threshold_map]).to(self.device, non_blocking=True, dtype=torch.float)
+            label_threshold_mask = torch.stack([torch.from_numpy(i) for i in label_threshold_mask]).to(self.device, non_blocking=True, dtype=torch.float)
+            label_shrink_map = torch.stack([torch.from_numpy(i) for i in label_shrink_map]).to(self.device, non_blocking=True, dtype=torch.float)
+            label_shrink_mask = torch.stack([torch.from_numpy(i) for i in label_shrink_mask]).to(self.device, non_blocking=True, dtype=torch.float)
+
+            r.update(
+                label_list=(
+                    label_threshold_map,
+                    label_threshold_mask,
+                    label_shrink_map,
+                    label_shrink_mask,
+                )
+            )
+
         images = [torch.from_numpy(ret.pop('image')).to(self.device, non_blocking=True, dtype=torch.float) for ret in loop_inputs]
         images = torch.stack(images)
-
-        r = dict(x=images)
-        if train:
-            if self.config_version == 'teacher':
-                label_threshold_map = []
-                label_threshold_mask = []
-                label_shrink_map = []
-                label_shrink_mask = []
-                for ret in loop_inputs:
-                    image = ret['image']
-                    segmentations = ret['segmentations']
-
-                    tmp = pixel_perturbation.ShrinkMap()(image, segmentations)
-                    label_threshold_map.append(tmp['mapping'])
-                    label_threshold_mask.append(tmp['mask'])
-
-                    tmp = pixel_perturbation.BorderMap()(image, segmentations)
-                    label_shrink_map.append(tmp['mapping'])
-                    label_shrink_mask.append(tmp['mask'])
-
-                label_threshold_map = torch.stack([torch.from_numpy(i) for i in label_threshold_map])
-                label_threshold_mask = torch.stack([torch.from_numpy(i) for i in label_threshold_mask])
-                label_shrink_map = torch.stack([torch.from_numpy(i) for i in label_shrink_map])
-                label_shrink_mask = torch.stack([torch.from_numpy(i) for i in label_shrink_mask])
-
-                r.update(
-                    label_list=(
-                        label_threshold_map,
-                        label_threshold_mask,
-                        label_shrink_map,
-                        label_shrink_mask,
-                    )
-                )
+        r.update(x=images)
 
         return r
 
@@ -653,14 +669,14 @@ class Icdar(DataHooks):
 
         if train:
             return loader(
-                set_type=DataRegister.TRAIN, image_type=DataRegister.PATH, generator=False,
+                set_type=DataRegister.TRAIN, image_type=DataRegister.ARRAY, generator=False,
                 task='',
                 max_size=self.train_data_num
             )[0]
 
         else:
             return loader(
-                set_type=DataRegister.VAL, image_type=DataRegister.PATH, generator=False,
+                set_type=DataRegister.VAL, image_type=DataRegister.ARRAY, generator=False,
                 task='',
                 max_size=self.val_data_num,
             )[0]
