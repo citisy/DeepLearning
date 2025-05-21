@@ -613,6 +613,7 @@ class AutoAnchor:
             new_bpr, new_aat = self.pr(new_anchors, jitter_abs_bboxes_wh)
             self.stdout_method(f'jitter bpr = {new_bpr}, aat = {new_aat}')
             if new_bpr > bpr:  # replace anchors
+                self.stdout_method('replace anchors...')
                 new_anchors = new_anchors.reshape(anchors.shape)
                 a = anchors.prod(-1).mean(-1)
                 da = a[-1] - a[0]  # delta a

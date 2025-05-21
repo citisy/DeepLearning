@@ -9,10 +9,10 @@ from collections import OrderedDict
 
 class Module(nn.Module):
     def __init__(self, base_layer: nn.Module, r=8, multiplier=1.0, alpha=1, drop_prob=0.):
+        self.__dict__.update(base_layer.__dict__)
         self.r = r
         self.scale = multiplier * alpha / r
 
-        self.__dict__.update(base_layer.__dict__)
         self.ori_forward = base_layer.forward
         self.dropout = nn.Dropout(drop_prob)
 
@@ -36,6 +36,7 @@ class Module(nn.Module):
     def dewrap(self):
         del self.down
         del self.up
+        del self.ori_forward
         torch_utils.ModuleManager.torch_gc()
 
 

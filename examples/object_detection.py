@@ -197,7 +197,7 @@ class OdProcess(Process):
         classes = np.concatenate(classes)
         confs = np.concatenate(confs)
 
-        keep = cv_utils.non_max_suppression(bboxes, confs, object_detection.Iou.iou)
+        keep = cv_utils.non_max_suppression(bboxes, confs, object_detection.Iou().iou)
         bboxes = bboxes[keep]
         classes = classes[keep]
         confs = confs[keep]

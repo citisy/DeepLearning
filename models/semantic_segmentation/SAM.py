@@ -166,12 +166,28 @@ class Model(nn.Module):
             return self.post_process(x, **kwargs)
 
     def post_process(self, x, points=None, effective_areas=None, multimask_output=True, **kwargs):
-        b = x.shape[0]
+        """
+
+        Args:
+            x:
+            points:
+                shape: (b, n, 2), 2 gives (x, y), n gives num of grid points
+                if none, use average grid points
+            effective_areas:
+                shape: (b, 4), 4 gives (x1, y1, x2, y2)
+                if none, use the whole area of images
+            multimask_output:
+                if True, return all the classes mask
+                if False, only return the first mask, it also means that cannot separate overlapping objects
+            **kwargs:
+
+        """
+        b, c, h, w = x.shape[0]
         features = self.image_encoder(x)
 
         if points is None:
             if effective_areas is None:
-                effective_areas = [(0, self.input_size, 0, self.input_size)] * b
+                effective_areas = [(0, w, 0, h)] * b
             points = self.make_points(effective_areas)
 
         label_masks = []

@@ -177,7 +177,7 @@ class CrossAttention3D(nn.Module):
         self.attend = ScaleAttend(drop_prob=drop_prob) if attend is None else attend
 
     def forward(self, q, k=None, v=None, **attend_kwargs):
-        b, c, h, w = q.shape
+        b, h, w, c = q.shape
         if self.separate:
             q, k, v = get_qkv(q, k, v)
             q, k, v = [m(x) for m, x in zip(self.to_qkv, (q, k, v))]
