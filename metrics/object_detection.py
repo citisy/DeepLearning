@@ -120,6 +120,25 @@ class Area1D(Area):
 class PolygonArea:
     @staticmethod
     def areas(segmentations):
+        """Area(boxes) = 0.5 * sum(x_i * y_(i+1) - y_i * x_(i+1))
+
+        Args:
+            segmentations(List[np.array]): shape=N * (K, 2), 2 means xy.
+
+        Returns:
+            rectangle_areas(np.array): shape=(N, )
+        """
+        from shapely.geometry import Polygon
+
+        areas = np.zeros((len(segmentations), ))
+        for i, points in enumerate(segmentations):
+            polygon = Polygon(points)
+            areas[i] = polygon.area
+
+        return areas
+
+    @staticmethod
+    def areas_fast(segmentations):
         """Shoelace Formula
         Area(boxes) = 0.5 * sum(x_i * y_(i+1) - y_i * x_(i+1))
 
@@ -148,15 +167,15 @@ class PolygonArea:
         """Area(segmentations1 & segmentations2)
 
         Args:
-            segmentations1: shape=(N, K1, 2), 2 means xy.
-            segmentations2: shape=(M, K2, 2), 2 means xy.
+            segmentations1(List[np.array]): shape=N * (K1, 2), 2 means xy.
+            segmentations2(List[np.array]): shape=M * (K2, 2), 2 means xy.
 
         Returns:
             intersection_areas(np.array): shape=(N, M)
         """
         from shapely.geometry import Polygon
 
-        areas = np.zeros((segmentations1.shape[0], segmentations2.shape[0]))
+        areas = np.zeros((len(segmentations1), len(segmentations2)))
         for i, points1 in enumerate(segmentations1):
             for j, points2 in enumerate(segmentations2):
                 polygon1 = Polygon(points1)
@@ -172,15 +191,15 @@ class PolygonArea:
         """Area(segmentations1 | segmentations2)
 
         Args:
-            segmentations1: shape=(N, K1, 2), 2 means xy.
-            segmentations2: shape=(M, K2, 2), 2 means xy.
+            segmentations1(List[np.array]): shape=N * (K1, 2), 2 means xy.
+            segmentations2(List[np.array]): shape=M * (K2, 2), 2 means xy.
 
         Returns:
             intersection_areas(np.array): shape=(N, M)
         """
         from shapely.geometry import Polygon
 
-        areas = np.zeros((segmentations1.shape[0], segmentations2.shape[0]))
+        areas = np.zeros((len(segmentations1), len(segmentations2)))
         for i, points1 in enumerate(segmentations1):
             for j, points2 in enumerate(segmentations2):
                 polygon1 = Polygon(points1)

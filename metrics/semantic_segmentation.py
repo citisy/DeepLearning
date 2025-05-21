@@ -1,4 +1,5 @@
 import numpy as np
+from . import object_detection
 
 
 class MaskArea:
@@ -47,3 +48,8 @@ class MaskArea:
         mask1 = mask1.astype(bool)
         mask2 = mask2.astype(bool)
         return np.sum(np.logical_xor(mask1[:, None], mask2[None, :]), axis=(2, 3))
+
+
+class Iou(object_detection.Iou):
+    def __init__(self, **kwargs):
+        super().__init__(area_method=MaskArea, **kwargs)
