@@ -40,16 +40,20 @@ class BaseImgClsModel(nn.Module):
         ModuleManager.initialize_layers(self)
 
     def forward(self, x, true_label=None):
-        x = self.input(x)
-        x = self.backbone(x)
-        x = self.neck(x)
-        x = self.head(x)
+        x = self.process(x)
 
         loss = None
         if self.training:
             loss = self.loss(pred_label=x, true_label=true_label)
 
         return {'pred': x, 'loss': loss}
+
+    def process(self, x):
+        x = self.input(x)
+        x = self.backbone(x)
+        x = self.neck(x)
+        x = self.head(x)
+        return x
 
     def loss(self, pred_label, true_label):
         return F.cross_entropy(pred_label, true_label)

@@ -151,14 +151,7 @@ class Model(nn.Module):
                 m.fuse()
 
     def forward(self, x, gt_boxes=None, gt_cls=None):
-        x = self.input(x)
-        features = self.backbone(x)
-        features = self.neck(features)
-
-        if isinstance(features, torch.Tensor):
-            features = [features]
-
-        preds, losses = self.head(features, gt_boxes, gt_cls, self.input_size)
+        preds, losses = self.process(x, gt_boxes, gt_cls)
 
         if self.training:
             return dict(
@@ -167,6 +160,17 @@ class Model(nn.Module):
             )
         else:
             return self.post_process(preds)
+
+    def process(self, x, gt_boxes, gt_cls):
+        x = self.input(x)
+        features = self.backbone(x)
+        features = self.neck(features)
+
+        if isinstance(features, torch.Tensor):
+            features = [features]
+
+        preds, losses = self.head(features, gt_boxes, gt_cls, self.input_size)
+        return preds, losses
 
     def post_process(self, preds):
         """
@@ -242,27 +246,19 @@ class Model(nn.Module):
         return result
 
 
-class Model4Triton(Model):
-    """for triton server"""
+class Model4Export(Model):
+    """for exporting to onnx, torchscript, etc."""
 
-    def forward(self, x, gt_boxes=None, gt_cls=None):
+    def forward(self, x):
         x = self.pre_process(x)
-        x = self.input(x)
-        features = self.backbone(x)
-        features = self.neck(features)
-
-        if isinstance(features, torch.Tensor):
-            features = [features]
-
-        preds, losses = self.head(features, gt_boxes, gt_cls, self.input_size)
+        preds, _ = self.process(x, None, None)
         preds = self.post_process(preds)
-
         return preds
 
     def pre_process(self, x):
         """for faster infer, use uint8 input and fp16 to process"""
-        x = x / 255
         x = x.to(dtype=torch.float16)
+        x = x / 255
         return x
 
     def post_process(self, preds):

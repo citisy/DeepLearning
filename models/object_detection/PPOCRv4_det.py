@@ -145,14 +145,17 @@ class Model(nn.Module):
         self.criterion = DBLoss()
 
     def forward(self, x, label_list=()):
-        x = self.backbone(x)
-        x = self.neck(x)
-        outputs = self.head(x)
+        outputs = self.process(x)
 
         if self.training:
             return self.loss(outputs, label_list)
         else:
             return self.post_process(outputs['preds'])
+
+    def process(self, x):
+        x = self.backbone(x)
+        x = self.neck(x)
+        return self.head(x)
 
     def loss(self, x, label_list=()):
         return self.criterion(x, label_list)
@@ -232,7 +235,7 @@ class Model(nn.Module):
         return cv2.mean(bitmap[ymin:ymax + 1, xmin:xmax + 1], mask)[0]
 
     def unclip(self, box):
-        from shapely.geometry import Polygon    # pip install shapely
+        from shapely.geometry import Polygon  # pip install shapely
         import pyclipper  # pip install pyclipper
 
         unclip_ratio = self.unclip_ratio
@@ -242,6 +245,31 @@ class Model(nn.Module):
         offset.AddPath(box, pyclipper.JT_ROUND, pyclipper.ET_CLOSEDPOLYGON)
         expanded = np.array(offset.Execute(distance))
         return expanded
+
+
+class Model4Export(Model):
+    """for exporting to onnx, torchscript, etc."""
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        mean = torch.tensor([0.485, 0.456, 0.406])[None, :, None, None]
+        std = torch.tensor([0.229, 0.224, 0.225])[None, :, None, None]
+        self.register_buffer('mean', mean, persistent=False)
+        self.register_buffer('std', std, persistent=False)
+
+    def forward(self, x):
+        x = self.pre_process(x)
+        outputs = self.process(x)
+        preds = outputs['preds']
+        preds = preds.to(torch.float16)
+        return preds
+
+    def pre_process(self, x):
+        """for faster infer, use uint8 input and fp32 to output"""
+        x = x.to(dtype=torch.float32)   # cannot use fp16
+        x = x / 255
+        x = (x - self.mean) / self.std
+        return x
 
 
 class RSEFPN(nn.Module):

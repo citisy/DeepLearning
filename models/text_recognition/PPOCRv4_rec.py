@@ -160,6 +160,37 @@ class Model(BaseTextRecModel):
         raise NotImplemented
 
 
+class Model4Export(Model):
+    """for exporting to onnx, torchscript, etc."""
+
+    mean = 127.5
+    std = 127.5
+
+    max_h = 48
+    max_w = 1000
+
+    def forward(self, x, ds, rs):
+        x = self.pre_process(x, ds, rs)
+        x = self.process(x)
+        x = x.to(torch.float16)
+        return x
+
+    def pre_process(self, x, ds, rs):
+        """for faster infer, use uint8 input and fp32 to output"""
+        x = x.to(torch.float32)
+        x = (x - self.mean) / self.std
+        indices = torch.arange(x.shape[2]).to(x.device)
+        mask = indices >= (self.max_h - ds)
+        mask = mask[:, None, :, None].expand(*x.shape)
+        x[mask] = 0
+
+        indices = torch.arange(x.shape[3]).to(x.device)
+        mask = indices >= (self.max_w - rs)
+        mask = mask[:, None, None, :].expand(*x.shape)
+        x[mask] = 0
+        return x
+
+
 class SequenceEncoder(nn.Module):
     def __init__(self, in_ch, **kwargs):
         super(SequenceEncoder, self).__init__()

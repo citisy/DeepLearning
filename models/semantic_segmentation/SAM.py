@@ -165,7 +165,7 @@ class Model(nn.Module):
         else:
             return self.post_process(x, **kwargs)
 
-    def post_process(self, x, points=None, effective_areas=None, multimask_output=True, **kwargs):
+    def post_process(self, x, points=None, in_labels=None, effective_areas=None, multimask_output=True, **kwargs):
         """
 
         Args:
@@ -173,6 +173,9 @@ class Model(nn.Module):
             points:
                 shape: (b, n, 2), 2 gives (x, y), n gives num of grid points
                 if none, use average grid points
+            in_labels:
+                shape: (b, 1), falls in [-1, 0, 1]
+                if none, gives in_labels=1
             effective_areas:
                 shape: (b, 4), 4 gives (x1, y1, x2, y2)
                 if none, use the whole area of images
@@ -182,7 +185,7 @@ class Model(nn.Module):
             **kwargs:
 
         """
-        b, c, h, w = x.shape[0]
+        b, c, h, w = x.shape
         features = self.image_encoder(x)
 
         if points is None:
@@ -192,25 +195,20 @@ class Model(nn.Module):
 
         label_masks = []
         for f, p in zip(features, points):
-            label_mask = self.post_process_one_image(f[None], p, multimask_output)
+            label_mask = self.post_process_one_image(f[None], p, in_labels, multimask_output)
             label_masks.append(label_mask)
 
         return torch.stack(label_masks)
 
-    def post_process_one_image(self, features, points, multimask_output):
-        device = features.device
+    def post_process_one_image(self, features, points, in_labels=None, multimask_output=True):
         masks = []
         boxes = []
         iou_predictions = []
         for i in range(0, len(points), self.points_per_batch):
             in_points = points[i: i + self.points_per_batch]
 
-            in_points = torch.as_tensor(in_points, device=device)
-            in_labels = torch.ones(in_points.shape[0], dtype=torch.int, device=device)
-
-            sparse_embeddings, dense_embeddings = self.prompt_encoder(
-                points=(in_points[:, None, :], in_labels[:, None]),
-            )
+            in_points = in_points.to(features)
+            sparse_embeddings, dense_embeddings = self.prompt_encoder(in_points[:, None, :], in_labels)
 
             batch_masks, batch_iou_predictions = self.mask_decoder(
                 image_embeddings=features,
@@ -263,6 +261,7 @@ class Model(nn.Module):
         return label_mask
 
     def make_grid_points(self):
+        # n_points = (n_grids[0] + 1) * (n_grids[1] + 1)
         offset_x, offset_y = map(lambda x: 1 / (2 * (x + 1)), self.n_grids)
         points = cv_utils.GridBox.grids_to_points(
             (offset_x, 1 - offset_x, offset_y, 1 - offset_y),
@@ -275,10 +274,12 @@ class Model(nn.Module):
         for effective_area in effective_areas:
             l, r, t, d = effective_area
             dx, dy = r - l, d - t
-            points.append(np.stack([
+            in_points = np.stack([
                 l + self.grid_points[:, 0] * dx,
                 t + self.grid_points[:, 1] * dy
-            ], axis=1))
+            ], axis=1)
+            in_points = torch.as_tensor(in_points)
+            points.append(in_points)
 
         return points
 
@@ -352,6 +353,63 @@ class Model(nn.Module):
             out = out[0]
 
         return out
+
+
+class Model4Export(Model):
+    """for exporting to onnx, torchscript, etc."""
+    n_grids = (7, 7)
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        mean = torch.tensor([123.675, 116.28, 103.53])[None, :, None, None]
+        std = torch.tensor([58.395, 57.12, 57.375])[None, :, None, None]
+        self.register_buffer('mean', mean, persistent=False)
+        self.register_buffer('std', std, persistent=False)
+
+        layers = torch_utils.ModuleManager.get_module_by_key(self, include=[Rearrange])
+        for current_m, name, full_name in layers:
+            old = getattr(current_m, name)
+            setattr(current_m, name, torch.jit.script(old))
+
+    def forward(self, x, points, in_labels=None, multimask_output=True):
+        x = self.pre_process(x)
+        features = self.image_encoder(x)
+
+        sparse_embeddings, dense_embeddings = self.prompt_encoder(points[:, None, :], in_labels)
+
+        batch_masks, batch_iou_predictions = self.mask_decoder(
+            image_embeddings=features,
+            sparse_prompt_embeddings=sparse_embeddings,
+            dense_prompt_embeddings=dense_embeddings,
+            image_pe=self.prompt_encoder.dense_pe,
+            multimask_output=multimask_output
+        )
+
+        batch_masks = F.interpolate(
+            batch_masks,
+            (self.input_size, self.input_size),
+            mode="bilinear",
+            align_corners=False,
+        )
+
+        batch_masks = batch_masks.flatten(0, 1)
+        batch_iou_predictions = batch_iou_predictions.flatten(0, 1)
+
+        keep = batch_iou_predictions > self.pred_iou_thresh
+        batch_masks, batch_iou_predictions = batch_masks[keep], batch_iou_predictions[keep]
+
+        stability_score = self.calculate_stability_score(batch_masks)
+        keep = stability_score >= self.stability_score_thresh
+        batch_masks, batch_iou_predictions = batch_masks[keep], batch_iou_predictions[keep]
+
+        batch_masks = batch_masks > self.mask_threshold
+        return batch_masks, batch_iou_predictions
+
+    def pre_process(self, x):
+        """for faster infer, use uint8 input and fp32 to output"""
+        x = x.to(dtype=torch.float32)  # cannot use fp16
+        x = (x - self.mean) / self.std
+        return x
 
 
 class ImageEncoder(nn.Module):
@@ -453,7 +511,7 @@ class PromptEncoder(nn.Module):
         self.embed_dim = embed_dim
         self.image_size = image_size
         self.image_embedding_size = image_embedding_size
-        self.pe_layer = RandomPositionEmbedding(embed_dim // 2)
+        self.pe_layer = RandomPositionEmbedding(embed_dim // 2, size=image_embedding_size)
 
         self.num_point_embeddings: int = 4  # pos/neg point + 2 box corners
         self.point_embeddings = nn.ModuleList([nn.Embedding(1, embed_dim) for i in range(self.num_point_embeddings)])
@@ -466,10 +524,7 @@ class PromptEncoder(nn.Module):
             Conv(mask_in_ch, embed_dim, 1, mode='c'),
         )
         self.no_mask_embed = nn.Embedding(1, embed_dim)
-
-    @property
-    def device(self):
-        return self.point_embeddings[0].weight.device
+        self.register_buffer('_padding_embedding', torch.zeros((1, embed_dim)), persistent=False)
 
     @property
     def dense_pe(self):
@@ -484,13 +539,19 @@ class PromptEncoder(nn.Module):
         """Embeds point prompts."""
         points = points + 0.5  # Shift to center of pixel
         point_embedding = self.pe_layer.forward_with_coords(points, self.image_size)
-        point_embedding[labels == -1] = 0.0
-        point_embedding[labels == -1] += self.not_a_point_embed.weight
-        for i in range(2):
-            point_embedding[labels == i] += self.point_embeddings[i].weight
+
+        if labels is not None:
+            point_embedding[labels == -1] = 0.0
+            point_embedding[labels == -1] += self.not_a_point_embed.weight
+            for i in range(2):
+                point_embedding[labels == i] += self.point_embeddings[i].weight
+
+        else:
+            point_embedding += self.point_embeddings[1].weight
 
         if pad:
-            padding_embedding = torch.zeros((point_embedding.shape[0], 1, point_embedding.shape[2])).to(point_embedding)
+            # note, suit for exporting
+            padding_embedding = torch.repeat_interleave(self._padding_embedding[None], int(point_embedding.shape[0]), dim=0)
             point_embedding = torch.cat([point_embedding, padding_embedding], dim=1)
 
         return point_embedding
@@ -527,23 +588,25 @@ class PromptEncoder(nn.Module):
         else:
             return 1
 
-    def forward(
-            self,
-            points: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
-            boxes: Optional[torch.Tensor] = None,
-            masks: Optional[torch.Tensor] = None,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, points=None, in_labels=None, boxes=None, masks=None) -> Tuple[torch.Tensor, torch.Tensor]:
         bs = self._get_batch_size(points, boxes, masks)
-        sparse_embeddings = torch.empty((bs, 0, self.embed_dim), device=self.device)
+        sparse_embeddings = []
 
         if points is not None:
-            coords, labels = points
-            point_embeddings = self._embed_points(coords, labels, pad=(boxes is None))
-            sparse_embeddings = torch.cat([sparse_embeddings, point_embeddings], dim=1)
+            point_embeddings = self._embed_points(points, in_labels, pad=(boxes is None))
+            sparse_embeddings.append(point_embeddings)
 
         if boxes is not None:
             box_embeddings = self._embed_boxes(boxes)
-            sparse_embeddings = torch.cat([sparse_embeddings, box_embeddings], dim=1)
+            sparse_embeddings.append(box_embeddings)
+
+        # note, suit for exporting
+        if len(sparse_embeddings) == 0:
+            sparse_embeddings = torch.empty((bs, 0, self.embed_dim), device=self.device)
+        elif len(sparse_embeddings) == 1:
+            sparse_embeddings = sparse_embeddings[0]
+        else:
+            sparse_embeddings = torch.cat(sparse_embeddings, dim=1)
 
         if masks is not None:
             dense_embeddings = self._embed_masks(masks)
@@ -562,15 +625,23 @@ class RandomPositionEmbedding(nn.Module):
     where, x is seq vec, r ~ N(0,1)
     """
 
-    def __init__(self, num_pos_feats: int = 64, scale: Optional[float] = None) -> None:
+    def __init__(self, num_pos_feats=64, scale=None, size=None) -> None:
         super().__init__()
         if scale is None or scale <= 0.0:
             scale = 1.0
+        self.size = size
         self.register_buffer("weights", scale * torch.randn((2, num_pos_feats)))
+        self.register_buffer("coords", self.make_coords(size), persistent=False)
 
-    @property
-    def device(self):
-        return self.weights.device
+    def make_coords(self, size):
+        h, w = size
+        grid = torch.ones((h, w))
+        y_embed = grid.cumsum(dim=0) - 0.5
+        x_embed = grid.cumsum(dim=1) - 0.5
+        y_embed = y_embed / h
+        x_embed = x_embed / w
+        coords = torch.stack([x_embed, y_embed], dim=-1)
+        return coords
 
     def _pe_encoding(self, coords: torch.Tensor) -> torch.Tensor:
         """Positionally encode points that are normalized to [0,1]."""
@@ -581,16 +652,14 @@ class RandomPositionEmbedding(nn.Module):
         # outputs d_1 x ... x d_n x C shape
         return torch.cat([torch.sin(coords), torch.cos(coords)], dim=-1)
 
-    def forward(self, size: Tuple[int, int]) -> torch.Tensor:
+    def forward(self, size) -> torch.Tensor:
         """Generate positional encoding for a grid of the specified size."""
-        h, w = size
-        grid = torch.ones((h, w), device=self.device, dtype=torch.float32)
-        y_embed = grid.cumsum(dim=0) - 0.5
-        x_embed = grid.cumsum(dim=1) - 0.5
-        y_embed = y_embed / h
-        x_embed = x_embed / w
-
-        pe = self._pe_encoding(torch.stack([x_embed, y_embed], dim=-1))
+        # note, suit for exporting
+        if size[0] == self.size[0] and size[1] == self.size[1]:
+            coords = self.coords
+        else:
+            coords = self.make_coords(size).to(self.weights.device)
+        pe = self._pe_encoding(coords)
         return pe.permute(2, 0, 1)  # C x H x W
 
     def forward_with_coords(
@@ -600,7 +669,7 @@ class RandomPositionEmbedding(nn.Module):
         coords = coords_input.clone()
         coords[:, :, 0] = coords[:, :, 0] / image_size[1]
         coords[:, :, 1] = coords[:, :, 1] / image_size[0]
-        return self._pe_encoding(coords.to(torch.float))  # B x N x C
+        return self._pe_encoding(coords)  # B x N x C
 
 
 class WindowsAttention(CrossAttention3D):
@@ -825,9 +894,9 @@ class MaskDecoder(nn.Module):
         tokens = torch.cat((output_tokens, sparse_prompt_embeddings), dim=1)
 
         # Expand per-image data in batch direction to be per-mask
-        src = torch.repeat_interleave(image_embeddings, tokens.shape[0], dim=0)
+        src = torch.repeat_interleave(image_embeddings, int(tokens.shape[0]), dim=0)
         src = src + dense_prompt_embeddings
-        pos_src = torch.repeat_interleave(image_pe, tokens.shape[0], dim=0)
+        pos_src = torch.repeat_interleave(image_pe, int(tokens.shape[0]), dim=0)
         b, c, h, w = src.shape
 
         # Run the transformer

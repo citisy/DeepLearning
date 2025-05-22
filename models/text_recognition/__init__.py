@@ -36,17 +36,21 @@ class BaseTextRecModel(nn.Module):
         # ModuleManager.initialize_layers(self)
 
     def forward(self, x, true_label=None):
-        x = self.input(x)
-        x = self.backbone(x)
-        x = self.neck(x)
-        x = self.head(x)
-        x = F.log_softmax(x, dim=2)
+        x = self.process(x)
 
         if self.training:
             loss = self.loss(pred_label=x, true_label=true_label)
             return {'pred': x, 'loss': loss}
         else:
             return self.post_process(x)
+
+    def process(self, x):
+        x = self.input(x)
+        x = self.backbone(x)
+        x = self.neck(x)
+        x = self.head(x)
+        x = F.log_softmax(x, dim=2)
+        return x
 
     def loss(self, pred_label, true_label):
         device = pred_label.device
