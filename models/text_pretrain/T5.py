@@ -7,7 +7,7 @@ import torch.nn.functional as F
 from data_parse.nl_data_parse.pre_process.decoder import beam_search
 from utils import torch_utils
 from . import llama
-from .transformers import PositionWiseFeedForward, TransformerSequential, make_causal_attention_mask
+from .transformers import PositionWiseFeedForward, TransformerSequential
 from .. import activations, attentions, bundles, embeddings
 
 
@@ -234,7 +234,7 @@ class Model(nn.Module):
         return x
 
     def decode(self, x, **decoder_kwargs):
-        attention_mask = make_causal_attention_mask(x)
+        attention_mask = attentions.make_causal_attention_mask(x)
         x = self.embedding(x)
         x = self.decoder(x, attention_mask=attention_mask, **decoder_kwargs)
         x = self.decoder_norm(x)

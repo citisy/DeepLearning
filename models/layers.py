@@ -253,9 +253,9 @@ class ConvT(nn.Sequential):
 
 class Linear(nn.Sequential):
     def __init__(self, in_features, out_features,
-                 linear=None,
+                 linear=None, linear_fn=None,
                  is_act=True, act=None,
-                 is_norm=True, norm=None,
+                 is_norm=True, norm=None, norm_fn=None,
                  is_drop=True, drop_prob=0.5,
                  mode='lna', detail_name=True,
                  **linear_kwargs
@@ -269,8 +269,9 @@ class Linear(nn.Sequential):
         for i, m in enumerate(mode):
             if m == 'l':
                 if linear is None:
-                    linear = nn.Linear
-                layers['linear'] = linear(in_features, out_features, **linear_kwargs)
+                    linear_fn = linear_fn or nn.Linear
+                    linear = linear_fn(in_features, out_features, **linear_kwargs)
+                layers['linear'] = linear
             elif m == 'n' and is_norm:
                 if norm is None:
                     j = mode.index('l')
@@ -278,7 +279,8 @@ class Linear(nn.Sequential):
                         norm_features = in_features
                     else:
                         norm_features = out_features
-                    norm = nn.BatchNorm1d(norm_features)
+                    norm_fn = norm_fn or nn.BatchNorm1d
+                    norm = norm_fn(norm_features)
                 layers['norm'] = norm
             elif m == 'a' and is_act:
                 layers['act'] = act or nn.Sigmoid()
@@ -464,3 +466,19 @@ class Residual(nn.Module):
             return self.proj(x) + self.fn(self.norm(x), **fn_kwargs)
         else:
             return self.norm(self.proj(x) + self.fn(x, **fn_kwargs))
+
+
+class DropoutBlock(nn.ModuleList):
+    """dropout some layers in a block"""
+
+    def __init__(self, *args, drop_prob=0.0):
+        super().__init__(*args)
+        self.drop_prob = drop_prob
+
+    def __iter__(self):
+        _probs = torch.empty(len(self._modules.values())).uniform_()
+        for idx, m in enumerate(self._modules.values()):
+            if self.training and (_probs[idx] < self.drop_prob):
+                continue
+
+            yield m

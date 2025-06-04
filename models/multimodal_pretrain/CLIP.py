@@ -5,7 +5,7 @@ from torch.nn import functional as F
 from utils import torch_utils
 from .. import bundles, activations, attentions
 from ..image_classification.ViT import VisionEmbedding
-from ..text_pretrain.transformers import DecoderEmbedding, make_causal_attention_mask, TransformerSequential
+from ..text_pretrain.transformers import DecoderEmbedding, TransformerSequential
 
 
 class Config(bundles.Config):
@@ -407,7 +407,7 @@ class TextTransformer(nn.Module):
                  **encoder_kwargs):
         x = self.embedding(sequence)
 
-        causal_attention_mask = make_causal_attention_mask(x).to(dtype=torch.bool)
+        causal_attention_mask = attentions.make_causal_attention_mask(x).to(dtype=torch.bool)
         if attention_mask is not None:
             attention_mask = attention_mask.to(dtype=torch.bool)
             attention_mask = attention_mask.view(x.shape[0], 1, 1, x.shape[1]).repeat(1, 1, x.shape[1], 1)

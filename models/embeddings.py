@@ -26,20 +26,30 @@ class PositionalEmbedding(nn.Module):
 
     def __init__(self, num_embeddings, embedding_dim, theta=10000.):
         super().__init__()
-        weight = torch.zeros(num_embeddings, embedding_dim).float()
-        position = torch.arange(0, num_embeddings).float().unsqueeze(1)
+        self.num_embeddings = num_embeddings
+        self.embedding_dim = embedding_dim
+        self.theta = theta
+        self._register()
+
+    def _register(self):
+        weight = torch.zeros(self.num_embeddings, self.embedding_dim).float()
+        position = torch.arange(0, self.num_embeddings).float().unsqueeze(1)
         # exp{-d / D * log{\theta}} = \theta ^ {-d / D}
         # same to
         # div_term = 1.0 / (theta ** (torch.arange(0, embedding_dim, 2)[: (embedding_dim // 2)].float() / embedding_dim))
-        div_term = (torch.arange(0, embedding_dim, 2).float() * -(math.log(theta) / embedding_dim)).exp()
+        div_term = (torch.arange(0, self.embedding_dim, 2).float() * -(math.log(self.theta) / self.embedding_dim)).exp()
 
         weight[:, 0::2] = torch.sin(position * div_term)
         weight[:, 1::2] = torch.cos(position * div_term)
 
         weight = weight.unsqueeze(0)
-        self.register_buffer('weight', weight)
-        self.num_embeddings = num_embeddings
-        self.embedding_dim = embedding_dim
+        self.register_buffer('weight', weight, persistent=False)
+
+    def _apply(self, fn, recurse=True):
+        """apply for meta load"""
+        if self.weight.is_meta:
+            self._register()
+        return super()._apply(fn, recurse)
 
     def forward(self, x):
         return self.weight[:, :x.shape[1]]
@@ -77,6 +87,12 @@ class SinusoidalEmbedding(nn.Module):
         return super()._apply(fn, recurse)
 
     def forward(self, x):
+        """
+
+        Args:
+            x: (n_position, )
+
+        """
         dtype = x.dtype
         div_term = self.div_term
         x = x * self.factor

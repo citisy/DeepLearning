@@ -680,7 +680,7 @@ class Vlm(nn.Module):
             inputs_embeds = self.embed_tokens(input_ids)
 
         if attention_mask is None:
-            attention_mask = transformers.make_causal_attention_mask(inputs_embeds, start_pos=start_pos)
+            attention_mask = attentions.make_causal_attention_mask(inputs_embeds, start_pos=start_pos)
 
         rot_embedding_weights = self.rot_embedding.make_weights(position_ids=position_ids)
 

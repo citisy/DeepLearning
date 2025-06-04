@@ -152,37 +152,20 @@ class TransformerBlock(nn.Module):
 class PositionWiseFeedForward(nn.Sequential):
     """y = F2(a(F1(x)))"""
 
-    def __init__(self, hidden_size, ff_hidden_size, act=None, drop_prob=0.1, **kwargs):
+    def __init__(self, hidden_size, ff_hidden_size, act=None, drop_prob=0.1, l1_kwargs=dict(), l2_kwargs=dict(), **kwargs):
         act = act or nn.GELU()
-        super().__init__(
-            Linear(hidden_size, ff_hidden_size, mode='la', act=act, **kwargs),
-            Linear(ff_hidden_size, hidden_size, mode='ld', drop_prob=drop_prob, **kwargs)
+        _l1_kwargs = dict(
+            mode='la', act=act
         )
+        _l1_kwargs.update(kwargs)
+        _l1_kwargs.update(l1_kwargs)
 
-
-def make_causal_attention_mask(x, start_pos=0):
-    """
-    e.g.:
-        x.shape=(b, 3, -1)
-
-        start_pos=0 -> mask.shape=(b, 1, 3, 3)
-        and mask[0, 0] would like that:
-            [[1, 0, 0],
-            [1, 1, 0],
-            [1, 1, 1]]
-
-        start_pos=1 -> mask.shape=(b, 1, 3, 4)
-        and mask[0, 0] would like that:
-            [[1, 1, 0, 0],
-            [1, 1, 1, 0],
-            [1, 1, 1, 1]]
-
-    """
-    batch_size, seq_len = x.shape[:2]
-    mask = torch.tril(torch.ones(seq_len, seq_len, device=x.device))
-    mask = torch.hstack([
-        torch.ones((seq_len, start_pos), dtype=mask.dtype, device=x.device),
-        mask
-    ])
-    mask = mask[None, None].repeat(batch_size, 1, 1, 1)  # (b, 1, s, s+p)
-    return mask
+        _l2_kwargs = dict(
+            mode='ld', drop_prob=drop_prob
+        )
+        _l2_kwargs.update(kwargs)
+        _l2_kwargs.update(l2_kwargs)
+        super().__init__(
+            Linear(hidden_size, ff_hidden_size, **_l1_kwargs),
+            Linear(ff_hidden_size, hidden_size, **_l2_kwargs)
+        )

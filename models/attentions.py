@@ -35,7 +35,72 @@ def get_qkv(q, k=None, v=None):
     return q, k, v
 
 
-def get_mask(attention_mask, det_shape, det_dtype=None, return_bool=True):
+def make_causal_attention_mask(x, start_pos=0):
+    """
+    e.g.:
+        x.shape=(b, 3, -1)
+
+        start_pos=0 -> mask.shape=(b, 1, 3, 3)
+        and mask[0, 0] would like that:
+            [[1, 0, 0],
+            [1, 1, 0],
+            [1, 1, 1]]
+
+        start_pos=1 -> mask.shape=(b, 1, 3, 4)
+        and mask[0, 0] would like that:
+            [[1, 1, 0, 0],
+            [1, 1, 1, 0],
+            [1, 1, 1, 1]]
+
+    """
+    batch_size, seq_len = x.shape[:2]
+    mask = torch.tril(torch.ones(seq_len, seq_len, device=x.device))
+    mask = torch.hstack([
+        torch.ones((seq_len, start_pos), dtype=mask.dtype, device=x.device),
+        mask
+    ])
+    mask = mask[None, None].repeat(batch_size, 1, 1, 1)  # (b, 1, s, s+p)
+    return mask
+
+
+def make_pad_mask(lens, x=None, length_dim=-1, max_len=None):
+    """Make mask tensor containing indices of padded part.
+
+    Args:
+        lens (LongTensor or List): Batch of lengths (B,).
+        x (Tensor, optional): The reference tensor.
+            If set, masks will be the same shape as this tensor.
+        length_dim (int, optional): Dimension indicator of the above tensor.
+            See the example.
+
+    """
+    if not isinstance(lens, list):
+        lens = lens.tolist()
+    bs = int(len(lens))
+    if max_len is None:
+        if x is None:
+            max_len = int(max(lens))
+        else:
+            max_len = x.size(length_dim)
+
+    seq_range = torch.arange(0, max_len, dtype=torch.int64)
+    seq_range_expand = seq_range.unsqueeze(0).expand(bs, max_len)
+    seq_length_expand = seq_range_expand.new(lens).unsqueeze(-1)
+    mask = seq_range_expand < seq_length_expand
+
+    if x is not None:
+        assert x.size(0) == bs, (x.size(0), bs)
+
+        if length_dim < 0:
+            length_dim = x.dim() + length_dim
+        # ind = (:, None, ..., None, :, , None, ..., None)
+        ind = tuple(slice(None) if i in (0, length_dim) else None for i in range(x.dim()))
+        mask = mask[ind].expand_as(x).to(x.device)
+    return mask
+
+
+def remake_mask(attention_mask, det_shape, det_dtype=None, return_bool=True):
+    """remake the value and the shape of the mask to apply for attention inputs"""
     if attention_mask is None:
         return attention_mask
 
@@ -57,7 +122,7 @@ def get_mask(attention_mask, det_shape, det_dtype=None, return_bool=True):
 
 def mask(sim, attention_mask=None, use_min=True):
     if attention_mask is not None:  # mask pad
-        attention_mask = get_mask(attention_mask, sim.shape)
+        attention_mask = remake_mask(attention_mask, sim.shape, return_bool=True)
         min_num = torch.finfo(sim.dtype).min if use_min else -float('inf')
         sim = sim.masked_fill(attention_mask, min_num)  # support fp16
     return sim
@@ -67,12 +132,22 @@ def mask(sim, attention_mask=None, use_min=True):
 class CrossAttention2D(nn.Module):
     """cross attention"""
 
-    def __init__(self, n_heads=None, model_dim=None, head_dim=None, query_dim=None, context_dim=None,
-                 use_conv=False, separate=True, drop_prob=0.1, attend=None, out_layer=None, **fn_kwargs):
+    def __init__(
+            self,
+            n_heads=None, model_dim=None, head_dim=None, query_dim=None, context_dim=None,
+            use_conv=False, separate=True,
+            attend=None, out_layer=None, out_layer_fn=None,
+            drop_prob=0.1, **fn_kwargs
+    ):
         super().__init__()
         n_heads, model_dim, head_dim = get_attention_input(n_heads, model_dim, head_dim)
         query_dim = query_dim or model_dim
         context_dim = context_dim or model_dim
+        self.n_heads = n_heads
+        self.model_dim = model_dim
+        self.head_dim = head_dim
+        self.query_dim = query_dim
+        self.context_dim = context_dim
 
         self.use_conv = use_conv
         self.separate = separate
@@ -91,7 +166,10 @@ class CrossAttention2D(nn.Module):
             self.view_in = Rearrange('b (n c) dk-> b n c dk', n=n_heads)
 
             self.view_out = Rearrange('b n c dk -> b (n c) dk')
-            self.to_out = nn.Conv1d(model_dim, query_dim, **fn_kwargs) if out_layer is None else out_layer
+            if out_layer is None:
+                out_layer_fn = out_layer_fn or nn.Conv1d
+                out_layer = out_layer_fn(model_dim, query_dim, **fn_kwargs)
+            self.to_out = out_layer
 
         else:  # build by linear func
             if separate:
@@ -107,11 +185,14 @@ class CrossAttention2D(nn.Module):
             self.view_in = Rearrange('b s (n dk)-> b n s dk', n=n_heads)
 
             self.view_out = Rearrange('b n s dk -> b s (n dk)')
-            self.to_out = Linear(model_dim, query_dim, mode='ld', drop_prob=drop_prob, **fn_kwargs) if out_layer is None else out_layer
+            if out_layer is None:
+                out_layer_fn = out_layer_fn or Linear
+                out_layer = out_layer_fn(model_dim, query_dim, mode='ld', drop_prob=drop_prob, **fn_kwargs)
+            self.to_out = out_layer
 
         self.attend = ScaleAttend(drop_prob=drop_prob) if attend is None else attend
 
-    def forward(self, q, k=None, v=None, attention_mask=None, **attend_kwargs):
+    def forward_in(self, q, k=None, v=None, *args, **kwargs):
         if self.separate:
             q, k, v = get_qkv(q, k, v)
             q, k, v = [m(x) for m, x in zip(self.to_qkv, (q, k, v))]
@@ -120,11 +201,17 @@ class CrossAttention2D(nn.Module):
             q, k, v = self.to_qkv(q).chunk(3, dim=dim)
 
         q, k, v = [self.view_in(x).contiguous() for x in (q, k, v)]
+        return q, k, v
 
-        x = self.attend(q, k, v, attention_mask=attention_mask, **attend_kwargs)
+    def forward_out(self, x, *args, **kwargs):
         x = self.view_out(x)
-
         x = self.to_out(x)
+        return x
+
+    def forward(self, q, k=None, v=None, attention_mask=None, **attend_kwargs):
+        q, k, v = self.forward_in(q, k, v)
+        x = self.attend(q, k, v, attention_mask=attention_mask, **attend_kwargs)
+        x = self.forward_out(x)
         return x
 
 
@@ -176,8 +263,7 @@ class CrossAttention3D(nn.Module):
 
         self.attend = ScaleAttend(drop_prob=drop_prob) if attend is None else attend
 
-    def forward(self, q, k=None, v=None, **attend_kwargs):
-        b, h, w, c = q.shape
+    def forward_in(self, q, k=None, v=None, *args, **kwargs):
         if self.separate:
             q, k, v = get_qkv(q, k, v)
             q, k, v = [m(x) for m, x in zip(self.to_qkv, (q, k, v))]
@@ -186,10 +272,18 @@ class CrossAttention3D(nn.Module):
             q, k, v = self.to_qkv(q).chunk(3, dim=dim)
 
         q, k, v = [self.view_in(x).contiguous() for x in (q, k, v)]
+        return q, k, v
 
-        x = self.attend(q, k, v, **attend_kwargs)
+    def forward_out(self, x, h, w, *args, **kwargs):
         x = self.view_out(x, h=h, w=w)
         return self.to_out(x)
+
+    def forward(self, q, k=None, v=None, **attend_kwargs):
+        b, h, w, c = q.shape
+        q, k, v = self.forward_in(q, k, v)
+        x = self.attend(q, k, v, **attend_kwargs)
+        x = self.forward_out(x, h, w)
+        return x
 
 
 @make_attention_fn.add_register()
@@ -221,8 +315,7 @@ class LinearAttention3D(nn.Module):
         self.view_out = partial(rearrange, pattern='b n d (h w) -> b (n d) h w')
         self.to_out = nn.Conv2d(model_dim, query_dim, 1) if out_layer is None else out_layer
 
-    def forward(self, q, k=None, v=None, **attend_kwargs):
-        b, c, h, w = q.shape
+    def forward_in(self, q, k=None, v=None, *args, **kwargs):
         if self.separate:
             q, k, v = get_qkv(q, k, v)
             q, k, v = [m(x) for m, x in zip(self.to_qkv, (q, k, v))]
@@ -230,9 +323,18 @@ class LinearAttention3D(nn.Module):
             q, k, v = self.to_qkv(q).chunk(3, dim=1)
 
         q, k, v = [self.view_in(x) for x in (q, k, v)]
-        x = self.attend(q, k, v, **attend_kwargs)
+        return q, k, v
+
+    def forward_out(self, x, h, w, *args, **kwargs):
         x = self.view_out(x, n=self.n_heads, h=h, w=w)
         return self.to_out(x)
+
+    def forward(self, q, k=None, v=None, **attend_kwargs):
+        b, c, h, w = q.shape
+        q, k, v = self.forward_in(q, k, v)
+        x = self.attend(q, k, v, **attend_kwargs)
+        x = self.forward_out(x, h, w)
+        return x
 
 
 @make_attend_fn.add_register()
@@ -281,7 +383,7 @@ class ScaleAttendWithXformers(nn.Module):
         out(attn): (b n s d)
         """
         q, k, v = [self.view_in(x) for x in (q, k, v)]
-        attention_mask = get_mask(attention_mask, q.shape, q.dtype, return_bool=True)
+        attention_mask = remake_mask(attention_mask, q.shape, q.dtype, return_bool=True)
         attn = self.fn(q, k, v, attn_bias=attention_mask, **kwargs)
         attn = self.view_out(attn)
         return attn
@@ -424,7 +526,7 @@ class FlashAttend(nn.Module):
 
         # Check if there is a compatible device for flash attention
         config = self.cuda_config if q.is_cuda else self.cpu_config
-        attention_mask = get_mask(
+        attention_mask = remake_mask(
             attention_mask,
             (q.shape[0], q.shape[1], q.shape[2], q.shape[2]),
             q.dtype, return_bool=False

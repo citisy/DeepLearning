@@ -144,7 +144,7 @@ class Model(nn.Module):
 
     def decode(self, x, start_pos=0, **decoder_kwargs):
         x = self.embedding(x)
-        attention_mask = transformers.make_causal_attention_mask(x, start_pos=start_pos)
+        attention_mask = attentions.make_causal_attention_mask(x, start_pos=start_pos)
         x = self.decoder(x, attention_mask=attention_mask, start_pos=start_pos, **decoder_kwargs)
         x = self.head(x)
         return x
@@ -207,7 +207,7 @@ class Decoder(nn.Module):
             past_kvs=None, start_pos=0
     ):
         if attention_mask is None:
-            attention_mask = transformers.make_causal_attention_mask(inputs_embeds, start_pos=start_pos)
+            attention_mask = attentions.make_causal_attention_mask(inputs_embeds, start_pos=start_pos)
 
         hidden_states = inputs_embeds
 

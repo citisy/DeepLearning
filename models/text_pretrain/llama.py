@@ -4,7 +4,7 @@ import torch.nn.functional as F
 
 from data_parse.nl_data_parse.pre_process.decoder import beam_search
 from utils import torch_utils
-from .transformers import TransformerSequential, make_causal_attention_mask
+from .transformers import TransformerSequential
 from .. import attentions, bundles, embeddings, layers, normalizations
 
 
@@ -115,7 +115,7 @@ class Model(nn.Module):
 
     def decode(self, x, start_pos=0, **decoder_kwargs):
         x = self.embedding(x)
-        attention_mask = make_causal_attention_mask(x, start_pos=start_pos)
+        attention_mask = attentions.make_causal_attention_mask(x, start_pos=start_pos)
         x = self.decoder(x, attention_mask=attention_mask, start_pos=start_pos, **decoder_kwargs)
         x = self.norm(x)
         x = self.head(x)
