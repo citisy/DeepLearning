@@ -14,8 +14,8 @@ class Model(Paraformer.Model):
     https://arxiv.org/abs/2301.12343
     """
 
-    def post_process(self, x, seq_lens=None, frontend=None, **kwargs):
-        x, seq_lens = frontend(x, seq_lens)
+    def post_process(self, x, seq_lens=None, **kwargs):
+        x, seq_lens = self.frontend(x, seq_lens)
 
         encoder_out, encoder_out_lens = self.encode(x, seq_lens)
 

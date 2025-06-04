@@ -2,10 +2,13 @@ import math
 from functools import partial
 from typing import List, Optional, Tuple
 
+import numpy as np
 import torch
 import torch.nn.functional as F
 from einops.layers.torch import Rearrange
 from torch import nn
+from torch.nn.utils.rnn import pad_sequence
+from torchaudio.compliance import kaldi
 
 from utils import torch_utils
 from .. import attentions, embeddings
@@ -57,12 +60,13 @@ class Model(nn.Module):
     eos: int = 2
 
     def __init__(
-            self,
-            encoder_config={}, decoder_config={}, head_config={}, model_config={},
+            self, cmvn,
+            frontend_config={}, encoder_config={}, decoder_config={}, head_config={}, model_config={},
             **kwargs,
     ):
         super().__init__()
         self.__dict__.update(model_config)
+        self.frontend = WavFrontend(cmvn, **frontend_config)
         self.encoder = SANMEncoder(input_size=self.input_size, **encoder_config)
         self.head = CifPredictorV3(**head_config)
         self.decoder = SANMDecoder(
@@ -97,6 +101,102 @@ class Model(nn.Module):
             encoder_out = encoder_out[0]
 
         return encoder_out, encoder_out_lens
+
+
+class WavFrontend(nn.Module):
+    """Conventional frontend structure for ASR."""
+    fs: int = 16000
+    window: str = "hamming"
+    n_mels: int = 80
+    frame_length: int = 25
+    frame_shift: int = 10
+    filter_length_min: int = -1
+    filter_length_max: int = -1
+    lfr_m: int = 7
+    lfr_n: int = 6
+    dither: float = 1.0
+    snip_edges: bool = True
+    upsacle_samples: bool = True
+
+    def __init__(self, cmvn, **kwargs):
+        super().__init__()
+        self.register_buffer('cmvn', cmvn, persistent=False)
+
+    def forward(
+            self,
+            x: torch.Tensor,
+            input_lengths,
+            **kwargs,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        batch_size = x.size(0)
+        feats = []
+        feats_lens = []
+        for i in range(batch_size):
+            waveform_length = input_lengths[i]
+            waveform = x[i][:waveform_length]
+            if self.upsacle_samples:
+                waveform = waveform * (1 << 15)
+            waveform = waveform.unsqueeze(0)
+            mat = kaldi.fbank(
+                waveform,
+                num_mel_bins=self.n_mels,
+                frame_length=min(self.frame_length, waveform_length / self.fs * 1000),
+                frame_shift=self.frame_shift,
+                dither=self.dither,
+                energy_floor=0.0,
+                window_type=self.window,
+                sample_frequency=self.fs,
+                snip_edges=self.snip_edges,
+            )
+
+            if self.lfr_m != 1 or self.lfr_n != 1:
+                mat = self.apply_lfr(mat)
+            if self.cmvn is not None:
+                mat = self.apply_cmvn(mat)
+            feat_length = mat.size(0)
+            feats.append(mat)
+            feats_lens.append(feat_length)
+
+        feats_lens = torch.as_tensor(feats_lens)
+        if batch_size == 1:
+            feats_pad = feats[0][None, :, :]
+        else:
+            feats_pad = pad_sequence(feats, batch_first=True, padding_value=0.0)
+        return feats_pad, feats_lens
+
+    def apply_lfr(self, inputs):
+        lfr_m = self.lfr_m
+        lfr_n = self.lfr_n
+        T = inputs.shape[0]
+        T_lfr = int(np.ceil(T / lfr_n))
+        left_padding = inputs[0].repeat((lfr_m - 1) // 2, 1)
+        inputs = torch.vstack((left_padding, inputs))
+        T = T + (lfr_m - 1) // 2
+        feat_dim = inputs.shape[-1]
+        strides = (lfr_n * feat_dim, 1)
+        sizes = (T_lfr, lfr_m * feat_dim)
+        last_idx = (T - lfr_m) // lfr_n + 1
+        num_padding = lfr_m - (T - last_idx * lfr_n)
+        if num_padding > 0:
+            num_padding = (2 * lfr_m - 2 * T + (T_lfr - 1 + last_idx) * lfr_n) / 2 * (T_lfr - last_idx)
+            inputs = torch.vstack([inputs] + [inputs[-1:]] * int(num_padding))
+        LFR_outputs = inputs.as_strided(sizes, strides)
+        return LFR_outputs.clone().type(torch.float32)
+
+    def apply_cmvn(self, inputs):  # noqa
+        """
+        Apply CMVN with mvn data
+        """
+
+        device = inputs.device
+        frame, dim = inputs.shape
+
+        means = self.cmvn[0:1, :dim]
+        vars = self.cmvn[1:2, :dim]
+        inputs += means.to(device)
+        inputs *= vars.to(device)
+
+        return inputs.type(torch.float32)
 
 
 class SANMEncoder(nn.Module):
