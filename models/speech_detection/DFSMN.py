@@ -260,7 +260,7 @@ class Model(nn.Module):
             is_streaming_input=True,
             **kwargs,
     ):
-        feats, feats_lengths, waveform = self.frontend(speech, caches=caches['frontend'])
+        feats, feats_lengths, waveform = self.frontend(speech, caches=caches['frontend'], is_final=is_final)
 
         stats = caches["stats"]
         windows_detector = caches["windows_detector"]

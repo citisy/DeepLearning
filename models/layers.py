@@ -49,6 +49,7 @@ class OutModule(nn.Sequential):
 
 class Conv(nn.Sequential):
     def __init__(self, in_ch, out_ch, k, s=1, p=None,
+                 conv=None, conv_fn=None,
                  is_act=True, act=None,
                  is_norm=True, norm=None, norm_fn=None,
                  is_drop=True, drop_prob=0.5,
@@ -86,7 +87,10 @@ class Conv(nn.Sequential):
 
         for i, m in enumerate(mode):
             if m == 'c':
-                layers['conv'] = (nn.Conv2d(in_ch, out_ch, k, s, p, **conv_kwargs))
+                if conv is None:
+                    conv_fn = conv_fn or nn.Conv2d
+                    conv = conv_fn(in_ch, out_ch, k, s, p, **conv_kwargs)
+                layers['conv'] = conv
             elif m == 'n' and is_norm:
                 if norm is None:
                     j = mode.index('c')
