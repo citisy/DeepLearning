@@ -17,22 +17,28 @@ from ..text_pretrain import transformers
 
 
 class WeightConverter:
+    encoder_convert_dict = {
+        'encoder.{0}.feed_forward.w_1': 'encoder.{0}.feed_forward.0.linear',
+        'encoder.{0}.feed_forward.w_2': 'encoder.{0}.feed_forward.1.linear',
+        'encoder.{0}.feed_forward.norm': 'encoder.{0}.feed_forward.0.norm',
+        'encoder.{0}.norm1': 'encoder.{0}.norm1',
+        'encoder.{0}.norm2': 'encoder.{0}.norm2',
+        'encoder.{0}.self_attn.linear_q_k_v': 'encoder.{0}.self_attn.to_qkv',
+        'encoder.{0}.self_attn.linear_out': 'encoder.{0}.self_attn.to_out.linear',
+        'encoder.{0}.self_attn.fsmn_block': 'encoder.{0}.self_attn.fsmn_block',
+    }
+
+    decoder_convert_dict = {
+        'decoder.{0}.feed_forward.w_1': 'decoder.{0}.feed_forward.0.linear',
+        'decoder.{0}.feed_forward.w_2': 'decoder.{0}.feed_forward.1.linear',
+        'decoder.{0}.feed_forward.norm': 'decoder.{0}.feed_forward.0.norm',
+    }
+
     @classmethod
     def from_official(cls, state_dict):
         convert_dict = {
-            'encoder.{0}.feed_forward.w_1': 'encoder.{0}.feed_forward.0.linear',
-            'encoder.{0}.feed_forward.w_2': 'encoder.{0}.feed_forward.1.linear',
-            'encoder.{0}.feed_forward.norm': 'encoder.{0}.feed_forward.0.norm',
-            'encoder.{0}.norm1': 'encoder.{0}.norm1',
-            'encoder.{0}.norm2': 'encoder.{0}.norm2',
-            'encoder.{0}.self_attn.linear_q_k_v': 'encoder.{0}.self_attn.to_qkv',
-            'encoder.{0}.self_attn.linear_out': 'encoder.{0}.self_attn.to_out.linear',
-            'encoder.{0}.self_attn.fsmn_block': 'encoder.{0}.self_attn.fsmn_block',
-
-            'decoder.{0}.feed_forward.w_1': 'decoder.{0}.feed_forward.0.linear',
-            'decoder.{0}.feed_forward.w_2': 'decoder.{0}.feed_forward.1.linear',
-            'decoder.{0}.feed_forward.norm': 'decoder.{0}.feed_forward.0.norm',
-
+            **cls.encoder_convert_dict,
+            **cls.decoder_convert_dict,
             'predictor': 'head'
         }
         state_dict = torch_utils.Converter.convert_keys(state_dict, convert_dict)
@@ -46,10 +52,11 @@ class LayerNorm(nn.LayerNorm):
 
 class Model(nn.Module):
     """
-    Author: Speech Lab of DAMO Academy, Alibaba Group
-    Paraformer: Fast and Accurate Parallel Transformer for Non-autoregressive End-to-End Speech Recognition
-    https://arxiv.org/abs/2206.08317
-    code: `funasr.models.bicif_paraformer.model.Paraformer`
+    refer to:
+    paper:
+        (Paraformer: Fast and Accurate Parallel Transformer for Non-autoregressive End-to-End Speech Recognition)[https://arxiv.org/abs/2206.08317]
+    code:
+        `funasr.models.bicif_paraformer.model.Paraformer`
     """
 
     input_size: int = 560
@@ -83,24 +90,6 @@ class Model(nn.Module):
 
     def post_process(self, *args, **kwargs):
         raise NotImplementedError
-
-    def encode(
-            self,
-            x: torch.Tensor,
-            seq_lens: torch.Tensor,
-            **kwargs,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """
-        Args:
-            x: (Batch, Length, ...)
-            seq_lens: (Batch, )
-        """
-        # Forward encoder
-        encoder_out, encoder_out_lens, _ = self.encoder(x, seq_lens)
-        if isinstance(encoder_out, tuple):
-            encoder_out = encoder_out[0]
-
-        return encoder_out, encoder_out_lens
 
 
 class WavFrontend(nn.Module):
@@ -187,24 +176,23 @@ class WavFrontend(nn.Module):
         """
         Apply CMVN with mvn data
         """
-
-        device = inputs.device
         frame, dim = inputs.shape
 
         means = self.cmvn[0:1, :dim]
         vars = self.cmvn[1:2, :dim]
-        inputs += means.to(device)
-        inputs *= vars.to(device)
+        inputs += means
+        inputs *= vars
 
         return inputs.type(torch.float32)
 
 
 class SANMEncoder(nn.Module):
     """
-    Author: Zhifu Gao, Shiliang Zhang, Ming Lei, Ian McLoughlin
-    San-m: Memory equipped self-attention for end-to-end speech recognition
-    https://arxiv.org/abs/2006.01713
-    code: `funasr.models.sanm.encoder.SANMEncoder`
+    refer to:
+    paper:
+        (San-m: Memory equipped self-attention for end-to-end speech recognition)[https://arxiv.org/abs/2006.01713]
+    code:
+        `funasr.models.sanm.encoder.SANMEncoder`
     """
 
     def __init__(
@@ -287,7 +275,7 @@ class SANMEncoder(nn.Module):
             self,
             xs_pad: torch.Tensor,
             ilens: torch.Tensor,
-    ) -> Tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
+    ):
         """Embed positions in tensor.
 
         Args:
@@ -312,7 +300,7 @@ class SANMEncoder(nn.Module):
         xs_pad = self.after_norm(xs_pad)
         olens = masks.squeeze(1).sum(1)
 
-        return xs_pad, olens, None
+        return xs_pad, olens
 
 
 class SinusoidalEmbedding(embeddings.SinusoidalEmbedding):

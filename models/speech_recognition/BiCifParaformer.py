@@ -45,6 +45,19 @@ class Model(Paraformer.Model):
 
         return results
 
+    def encode(self, x: torch.Tensor, seq_lens: torch.Tensor, **kwargs):
+        """
+        Args:
+            x: (Batch, Length, ...)
+            seq_lens: (Batch, )
+        """
+        # Forward encoder
+        encoder_out, encoder_out_lens = self.encoder(x, seq_lens)
+        if isinstance(encoder_out, tuple):
+            encoder_out = encoder_out[0]
+
+        return encoder_out, encoder_out_lens
+
     def decode(self, encoder_out, encoder_out_lens, sematic_embeds, ys_pad_lens):
         decoder_out = self.decoder(encoder_out, encoder_out_lens, sematic_embeds, ys_pad_lens)
         decoder_out = F.log_softmax(decoder_out, dim=-1)
