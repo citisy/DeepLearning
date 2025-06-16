@@ -35,18 +35,15 @@ class VadStateMachine(Enum):
 
 
 class FrameState(Enum):
-    Invalid = -1
-    Speech = 1
     Silence = 0
+    Speech = 1
 
 
 class AudioChangeState(Enum):
-    Speech2Speech = 0
-    Speech2Silence = 1
-    Silence2Silence = 2
-    Silence2Speech = 3
-    NoBegin = 4
-    Invalid = 5
+    Speech2Speech = (1, 1)
+    Speech2Silence = (1, 0)
+    Silence2Silence = (0, 0)
+    Silence2Speech = (0, 1)
 
 
 class VadDetectMode(Enum):
@@ -95,45 +92,31 @@ class WindowDetector:
         self.sil_to_speech_frmcnt_thres = int(sil_to_speech_time / frame_size_ms)
         self.speech_to_sil_frmcnt_thres = int(speech_to_sil_time / frame_size_ms)
 
-        self.voice_last_frame_count = 0
-        self.noise_last_frame_count = 0
-        self.hydre_frame_count = 0
-
     def detect_one_frame(self, frame_state: FrameState) -> AudioChangeState:
-        if frame_state == FrameState.Speech:
-            cur_frame_state = 1
-        elif frame_state == FrameState.Silence:
-            cur_frame_state = 0
-        else:
-            return AudioChangeState.Invalid
-
         self.win_sum -= self.win_state[self.cur_win_pos]
-        self.win_sum += cur_frame_state
-        self.win_state[self.cur_win_pos] = cur_frame_state
+        self.win_sum += frame_state.value
+        self.win_state[self.cur_win_pos] = frame_state.value
         self.cur_win_pos = (self.cur_win_pos + 1) % self.win_size_frame
 
-        if (
-                self.pre_frame_state == FrameState.Silence
-                and self.win_sum >= self.sil_to_speech_frmcnt_thres
-        ):
-            self.pre_frame_state = FrameState.Speech
-            return AudioChangeState.Silence2Speech
-
-        elif (
-                self.pre_frame_state == FrameState.Speech
-                and self.win_sum <= self.speech_to_sil_frmcnt_thres
-        ):
-            self.pre_frame_state = FrameState.Silence
-            return AudioChangeState.Speech2Silence
-
-        elif self.pre_frame_state == FrameState.Silence:
-            return AudioChangeState.Silence2Silence
+        if self.pre_frame_state == FrameState.Silence:
+            cur_frame_state = FrameState.Speech if self.win_sum >= self.sil_to_speech_frmcnt_thres else FrameState.Silence
+            if cur_frame_state == FrameState.Silence:
+                state_change = AudioChangeState.Silence2Silence
+            else:
+                state_change = AudioChangeState.Silence2Speech
 
         elif self.pre_frame_state == FrameState.Speech:
-            return AudioChangeState.Speech2Speech
+            cur_frame_state = FrameState.Speech if self.win_sum >= self.speech_to_sil_frmcnt_thres else FrameState.Silence
+            if cur_frame_state == FrameState.Silence:
+                state_change = AudioChangeState.Speech2Silence
+            else:
+                state_change = AudioChangeState.Speech2Speech
 
         else:
-            return AudioChangeState.Invalid
+            raise
+
+        self.pre_frame_state = cur_frame_state
+        return state_change
 
     def reset(self) -> None:
         self.cur_win_pos = 0
@@ -141,50 +124,37 @@ class WindowDetector:
         self.win_state = [0] * self.win_size_frame
         self.pre_frame_state = FrameState.Silence
         self.cur_frame_state = FrameState.Silence
-        self.voice_last_frame_count = 0
-        self.noise_last_frame_count = 0
-        self.hydre_frame_count = 0
 
 
-class E2EVadSpeechBufWithDoa:
+class DataBuf:
     def __init__(self):
         self.start_ms = 0
         self.end_ms = 0
-        self.buffer = []
         self.contain_seg_start_point = False
         self.contain_seg_end_point = False
-        self.doa = 0
 
 
 class Model(nn.Module):
-    """
-    Author: Speech Lab of DAMO Academy, Alibaba Group
-    Deep-FSMN for Large Vocabulary Continuous Speech Recognition
-    https://arxiv.org/abs/1803.05030
+    """refer to:
+    paper:
+        (Deep-FSMN for Large Vocabulary Continuous Speech Recognition)[https://arxiv.org/abs/1803.05030]
     """
 
     sample_rate: int = 16000
     detect_mode: int = VadDetectMode.MutipleDetect
-    snr_mode: int = 0
     max_end_silence_time: int = 800
     max_start_silence_time: int = 3000
-    do_start_point_detection: bool = True
-    do_end_point_detection: bool = True
     window_size_ms: int = 200
     sil_to_speech_time_thres: int = 150
     speech_to_sil_time_thres: int = 150
-    speech_2_noise_ratio: float = 1.0
+    speech_to_noise_ratio: float = 1.0
     do_extend: bool = True
     lookback_time_start_point: int = 200
     lookahead_time_end_point: int = 100
     max_single_segment_time: int = 60000
-    dcd_block_size: int = 4
     snr_thres: int = -100.0
     noise_frame_num_used_for_snr: int = 100
     decibel_thres: int = -100.0
-    silence_pdf_num: int = 1
-    speech_noise_thresh_low: float = -0.1
-    speech_noise_thresh_high: float = 0.3
     frame_in_ms: int = 10
     frame_length_ms: int = 25
     speech_noise_thres: float = 0.6
@@ -196,12 +166,12 @@ class Model(nn.Module):
         self.frontend = WavFrontendOnline(cmvn, **frontend_config)
         self.encoder = FSMN(**encoder_config)
 
-    def init_caches(self, max_end_silence_time=None, **kwargs):
-        if max_end_silence_time is not None:
-            # update the max_end_silence_time
-            self.max_end_silence_time = max_end_silence_time
         self.max_end_sil_frame_cnt_thresh = self.max_end_silence_time - self.speech_to_sil_time_thres
+        self._sample_rate = self.sample_rate // 1000
+        self.frame_shift_length = self.frame_in_ms * self._sample_rate
+        self.frame_sample_length = self.frame_length_ms * self._sample_rate
 
+    def init_caches(self):
         windows_detector = WindowDetector(
             self.window_size_ms,
             self.sil_to_speech_time_thres,
@@ -212,7 +182,6 @@ class Model(nn.Module):
         stats = Stats()
         return dict(
             frontend={},
-            prev_samples=torch.empty(0),
             encoder={},
             windows_detector=windows_detector,
             stats=stats
@@ -224,13 +193,15 @@ class Model(nn.Module):
         else:
             return self.post_process(x, **kwargs)
 
-    def post_process(self, x, is_final=True, chunk_size=60000, caches=None, **kwargs):
+    def post_process(self, x, is_final=True, is_streaming_input=None, chunk_size=60000, caches=None, **kwargs):
         if caches is None:
             caches = self.init_caches()
 
-        chunk_stride_samples = int(chunk_size * self.sample_rate / 1000)
-        is_streaming_input = False if chunk_size >= 15000 else True
-        n_chunk = int(len(x) // chunk_stride_samples + int(is_final))
+        chunk_stride_samples = chunk_size * self._sample_rate
+        if is_streaming_input is None:
+            is_streaming_input = chunk_size < 15000
+        n_chunk = len(x) // chunk_stride_samples + int(is_final)
+        reserve_len = len(x) % chunk_stride_samples * (1 - int(is_final))
 
         segments = []
         for i in range(n_chunk):
@@ -247,10 +218,26 @@ class Model(nn.Module):
             )
             segments += chunk_segment
 
+        segments = self.merge_segments(segments)
+
         return dict(
             segments=segments,
-            caches=caches
+            caches=caches,
+            reserve_x=x[-reserve_len:]
         )
+
+    def merge_segments(self, segments):
+        if not segments:
+            return segments
+
+        new_segments = [segments[0]]
+        for seg in segments[1:]:
+            if seg[0] == -1:
+                new_segments[-1][-1] = seg[-1]
+            else:
+                new_segments.append(seg)
+
+        return new_segments
 
     def detect_one_chunk(
             self,
@@ -295,9 +282,13 @@ class Model(nn.Module):
         if len(stats.output_data_buf) > 0:
             for i in range(stats.output_data_buf_offset, len(stats.output_data_buf)):
                 data_buf = stats.output_data_buf[i]
-                if is_streaming_input:  # in this case, return [beg, -1], [], [-1, end], [beg, end]
-                    assert data_buf.contain_seg_start_point
-                    assert stats.next_seg or data_buf.contain_seg_end_point
+                if is_streaming_input:
+                    if not data_buf.contain_seg_start_point:
+                        # return [beg, -1], [-1, end], [beg, end]
+                        continue
+                    elif not (stats.next_seg or data_buf.contain_seg_end_point):
+                        # return [beg, -1], [-1, end], [beg, end]
+                        continue
 
                     start_ms = data_buf.start_ms if stats.next_seg else -1
 
@@ -309,8 +300,10 @@ class Model(nn.Module):
                         end_ms = -1
                         stats.next_seg = False
 
-                else:  # in this case, return [beg, end]
-                    assert is_final or (data_buf.contain_seg_start_point and data_buf.contain_seg_end_point)
+                else:
+                    # return [beg, end]
+                    if not (is_final or (data_buf.contain_seg_start_point and data_buf.contain_seg_end_point)):
+                        continue
 
                     start_ms = data_buf.start_ms
                     end_ms = data_buf.end_ms
@@ -321,15 +314,12 @@ class Model(nn.Module):
 
         return segments
 
-    def compute_decibel(self, waveform,):
-        frame_sample_length = int(self.frame_length_ms * self.sample_rate / 1000)
-        frame_shift_length = int(self.frame_in_ms * self.sample_rate / 1000)
+    def compute_decibel(self, waveform):
+        offsets = torch.arange(0, waveform.shape[1] - self.frame_sample_length + 1, self.frame_shift_length)
+        frames = waveform[0, offsets[:, None] + torch.arange(self.frame_sample_length)]
 
-        offsets = torch.arange(0, waveform.shape[1] - frame_sample_length + 1, frame_shift_length)
-        frames = waveform[0, offsets[:, None] + torch.arange(frame_sample_length)]
-
-        decibel = 10 * torch.log10(torch.sum(torch.square(frames), dim=1) + 0.000001)
-        decibel = decibel.numpy().tolist()
+        decibel = 10 * torch.log10(torch.sum(torch.square(frames), dim=1) + 1e-6)
+        decibel = decibel.cpu().numpy().tolist()
         return decibel
 
     def detect_last_frames(self, stats, windows_detector):
@@ -350,27 +340,18 @@ class Model(nn.Module):
 
     def get_frame_state(self, t: int, stats, windows_detector):
         cur_decibel = stats.decibel[t]
-        cur_snr = cur_decibel - stats.noise_average_decibel
         if cur_decibel < self.decibel_thres:
             frame_state = FrameState.Silence
             self.detect_one_frame(frame_state, t, False, stats, windows_detector)
-            return frame_state
 
         else:
-            sum_score = 0.0
-            noise_prob = 0.0
-            if len(self.sil_pdf_ids) > 0:
-                if len(self.sil_pdf_ids) > 1:
-                    sum_score = sum(stats.scores[0][t][sil_pdf_id].item() for sil_pdf_id in self.sil_pdf_ids)
-                else:
-                    sum_score = stats.scores[0][t][self.sil_pdf_ids[0]].item()
-                noise_prob = math.log(sum_score) * self.speech_2_noise_ratio
-                total_score = 1.0
-                sum_score = total_score - sum_score
-            speech_prob = math.log(sum_score)
+            sum_score = sum(stats.scores[0][t][sil_pdf_id].item() for sil_pdf_id in self.sil_pdf_ids)
+            noise_prob = math.log(sum_score) * self.speech_to_noise_ratio
+            sum_score = 1.0 - sum_score
 
-            if math.exp(speech_prob) >= math.exp(noise_prob) + self.speech_noise_thres:
-                if cur_snr >= self.snr_thres and cur_decibel >= self.decibel_thres:
+            if sum_score >= math.exp(noise_prob) + self.speech_noise_thres:
+                cur_snr = cur_decibel - stats.noise_average_decibel
+                if cur_snr >= self.snr_thres:
                     frame_state = FrameState.Speech
                 else:
                     frame_state = FrameState.Silence
@@ -394,7 +375,7 @@ class Model(nn.Module):
             if stats.vad_state_machine == VadStateMachine.StartPoint:
                 start_frame = max(
                     stats.data_buf_start_frame,
-                    cur_frm_idx - self.latency_frm_num_at_start_point(windows_detector),
+                    cur_frm_idx - self.latency_frm_num_at_start_point(windows_detector.win_size_frame),
                 )
                 self.on_voice_start(start_frame, stats)
                 stats.vad_state_machine = VadStateMachine.InSpeechSegment
@@ -405,7 +386,7 @@ class Model(nn.Module):
                     self.on_voice_detected(t, stats)
 
                 if cur_frm_idx - stats.confirmed_start_frame + 1 > self.max_single_segment_time / frm_shift_in_ms:
-                    self.on_voice_end(cur_frm_idx, False, False, stats)
+                    self.on_voice_end(cur_frm_idx, False, stats)
                     stats.vad_state_machine = VadStateMachine.EndPoint
                 elif not is_final_frame:
                     self.on_voice_detected(cur_frm_idx, stats)
@@ -419,11 +400,8 @@ class Model(nn.Module):
             if stats.vad_state_machine == VadStateMachine.StartPoint:
                 pass
             elif stats.vad_state_machine == VadStateMachine.InSpeechSegment:
-                if (
-                        cur_frm_idx - stats.confirmed_start_frame + 1
-                        > self.max_single_segment_time / frm_shift_in_ms
-                ):
-                    self.on_voice_end(cur_frm_idx, False, False, stats)
+                if cur_frm_idx - stats.confirmed_start_frame + 1 > self.max_single_segment_time / frm_shift_in_ms:
+                    self.on_voice_end(cur_frm_idx, False, stats)
                     stats.vad_state_machine = VadStateMachine.EndPoint
                 elif not is_final_frame:
                     self.on_voice_detected(cur_frm_idx, stats)
@@ -433,12 +411,9 @@ class Model(nn.Module):
         elif state_change == AudioChangeState.Speech2Speech:
             stats.continuous_silence_frame_count = 0
             if stats.vad_state_machine == VadStateMachine.InSpeechSegment:
-                if (
-                        cur_frm_idx - stats.confirmed_start_frame + 1
-                        > self.max_single_segment_time / frm_shift_in_ms
-                ):
+                if cur_frm_idx - stats.confirmed_start_frame + 1 > self.max_single_segment_time / frm_shift_in_ms:
                     # stats.max_time_out = True
-                    self.on_voice_end(cur_frm_idx, False, False, stats)
+                    self.on_voice_end(cur_frm_idx, False, stats)
                     stats.vad_state_machine = VadStateMachine.EndPoint
                 elif not is_final_frame:
                     self.on_voice_detected(cur_frm_idx, stats)
@@ -458,27 +433,26 @@ class Model(nn.Module):
                     for t in range(stats.latest_confirmed_silence_frame + 1, cur_frm_idx):
                         self.on_silence_detected(t, stats)
                     self.on_voice_start(0, stats, True)
-                    self.on_voice_end(0, True, False, stats)
+                    self.on_voice_end(0, True, stats)
                     stats.vad_state_machine = VadStateMachine.EndPoint
                 else:
-                    if cur_frm_idx >= self.latency_frm_num_at_start_point(windows_detector):
-                        self.on_silence_detected(
-                            cur_frm_idx - self.latency_frm_num_at_start_point(windows_detector),
-                            stats
-                        )
+                    idx = self.latency_frm_num_at_start_point(windows_detector.win_size_frame)
+                    if cur_frm_idx >= idx:
+                        self.on_silence_detected(cur_frm_idx - idx, stats)
 
             elif stats.vad_state_machine == VadStateMachine.InSpeechSegment:
                 if stats.continuous_silence_frame_count * frm_shift_in_ms >= self.max_end_sil_frame_cnt_thresh:
                     lookback_frame = int(self.max_end_sil_frame_cnt_thresh / frm_shift_in_ms)
                     if self.do_extend:
+                        # note, why use lookahead_time to count lookback_frame?
                         lookback_frame -= int(self.lookahead_time_end_point / frm_shift_in_ms)
                         lookback_frame -= 1
                         lookback_frame = max(0, lookback_frame)
-                    self.on_voice_end(cur_frm_idx - lookback_frame, False, False, stats)
+                    self.on_voice_end(cur_frm_idx - lookback_frame, False, stats)
                     stats.vad_state_machine = VadStateMachine.EndPoint
 
                 elif cur_frm_idx - stats.confirmed_start_frame + 1 > self.max_single_segment_time / frm_shift_in_ms:
-                    self.on_voice_end(cur_frm_idx, False, False, stats)
+                    self.on_voice_end(cur_frm_idx, False, stats)
                     stats.vad_state_machine = VadStateMachine.EndPoint
 
                 elif self.do_extend and not is_final_frame:
@@ -488,14 +462,10 @@ class Model(nn.Module):
                 else:
                     self.maybe_on_voice_end_if_last_frame(is_final_frame, cur_frm_idx, stats)
 
-        if (
-                stats.vad_state_machine == VadStateMachine.EndPoint
-                and self.detect_mode == VadDetectMode.MutipleDetect
-        ):
+        if stats.vad_state_machine == VadStateMachine.EndPoint and self.detect_mode == VadDetectMode.MutipleDetect:
             self.reset_detection(stats, windows_detector)
 
-    def latency_frm_num_at_start_point(self, windows_detector) -> int:
-        vad_latency = windows_detector.win_size_frame
+    def latency_frm_num_at_start_point(self, vad_latency) -> int:
         if self.do_extend:
             vad_latency += int(self.lookback_time_start_point / self.frame_in_ms)
         return vad_latency
@@ -504,21 +474,14 @@ class Model(nn.Module):
         if stats.confirmed_start_frame == -1:
             stats.confirmed_start_frame = start_frame
 
-        if (
-                not fake_result
-                and stats.vad_state_machine == VadStateMachine.StartPoint
-        ):
-            self.pop_data_to_output_buf(
-                stats.confirmed_start_frame, 1, True, False, False, stats
-            )
+        if not fake_result and stats.vad_state_machine == VadStateMachine.StartPoint:
+            self.pop_data_to_output_buf(stats.confirmed_start_frame, 1, True, False, stats)
 
     def on_voice_detected(self, valid_frame: int, stats) -> None:
         stats.latest_confirmed_speech_frame = valid_frame
-        self.pop_data_to_output_buf(valid_frame, 1, False, False, False, stats)
+        self.pop_data_to_output_buf(valid_frame, 1, False, False, stats)
 
-    def on_voice_end(
-            self, end_frame: int, fake_result: bool, is_last_frame: bool, stats
-    ) -> None:
+    def on_voice_end(self, end_frame: int, fake_result: bool, stats) -> None:
         for t in range(stats.latest_confirmed_speech_frame + 1, end_frame):
             self.on_voice_detected(t, stats)
 
@@ -526,7 +489,7 @@ class Model(nn.Module):
             stats.confirmed_end_frame = end_frame
 
         if not fake_result:
-            self.pop_data_to_output_buf(stats.confirmed_end_frame, 1, False, True, is_last_frame, stats)
+            self.pop_data_to_output_buf(stats.confirmed_end_frame, 1, False, True, stats)
         stats.number_end_time_detected += 1
 
     def pop_data_to_output_buf(
@@ -535,45 +498,41 @@ class Model(nn.Module):
             frm_cnt: int,
             first_frm_is_start_point: bool,
             last_frm_is_end_point: bool,
-            end_point_is_sent_end: bool,
             stats
     ) -> None:
         self.pop_data_buf_till_frame(start_frm, stats)
-        expected_sample_number = int(frm_cnt * self.sample_rate * self.frame_in_ms / 1000)
+        expected_sample_number = frm_cnt * self.frame_shift_length
+        stats.data_buf_start_frame += frm_cnt
+
         if last_frm_is_end_point:
-            extra_sample = max(
-                0,
-                int(self.frame_length_ms * self.sample_rate / 1000 - self.sample_rate * self.frame_in_ms / 1000),
-            )
+            extra_sample = max(0, self.frame_sample_length - self.frame_shift_length)
             expected_sample_number += int(extra_sample)
 
         if len(stats.output_data_buf) == 0 or first_frm_is_start_point:
-            data_buf = E2EVadSpeechBufWithDoa()
-            data_buf.start_ms = start_frm * self.frame_in_ms
-            data_buf.end_ms = data_buf.start_ms
-            data_buf.doa = 0
+            data_buf = DataBuf()
+            data_buf.end_ms = data_buf.start_ms = start_frm * self.frame_in_ms
             stats.output_data_buf.append(data_buf)
-        cur_seg = stats.output_data_buf[-1]
 
-        cur_seg.doa = 0
-        stats.data_buf_start_frame += frm_cnt
-        cur_seg.end_ms = (start_frm + frm_cnt) * self.frame_in_ms
+        cur_data_buf = stats.output_data_buf[-1]
+        cur_data_buf.end_ms = (start_frm + frm_cnt) * self.frame_in_ms
         if first_frm_is_start_point:
-            cur_seg.contain_seg_start_point = True
+            cur_data_buf.contain_seg_start_point = True
         if last_frm_is_end_point:
-            cur_seg.contain_seg_end_point = True
+            cur_data_buf.contain_seg_end_point = True
 
-    def pop_data_buf_till_frame(self, frame_idx: int, stats) -> None:  # need check again
+    def pop_data_buf_till_frame(self, frame_idx: int, stats) -> None:
+        # need check again
         while stats.data_buf_start_frame < frame_idx:
-            if len(stats.data_buf) >= int(self.frame_in_ms * self.sample_rate / 1000):
+            if len(stats.data_buf) >= self.frame_shift_length:
                 stats.data_buf_start_frame += 1
-                stats.data_buf = stats.data_buf_all[(stats.data_buf_start_frame - stats.last_drop_frames) * int(self.frame_in_ms * self.sample_rate / 1000):]
+                offset = (stats.data_buf_start_frame - stats.last_drop_frames) * self.frame_shift_length
+                stats.data_buf = stats.data_buf_all[offset:]
 
     def maybe_on_voice_end_if_last_frame(
             self, is_final_frame: bool, cur_frm_idx: int, stats
     ) -> None:
         if is_final_frame:
-            self.on_voice_end(cur_frm_idx, False, True, stats)
+            self.on_voice_end(cur_frm_idx, False, stats)
             stats.vad_state_machine = VadStateMachine.EndPoint
 
     def reset_detection(self, stats, windows_detector):
@@ -589,7 +548,7 @@ class Model(nn.Module):
             drop_frames = int(stats.output_data_buf[-1].end_ms / self.frame_in_ms)
             real_drop_frames = drop_frames - stats.last_drop_frames
             stats.last_drop_frames = drop_frames
-            stats.data_buf_all = stats.data_buf_all[real_drop_frames * int(self.frame_in_ms * self.sample_rate / 1000):]
+            stats.data_buf_all = stats.data_buf_all[real_drop_frames * self.frame_shift_length:]
             stats.decibel = stats.decibel[real_drop_frames:]
             stats.scores = stats.scores[:, real_drop_frames:, :]
 
@@ -622,18 +581,23 @@ class WavFrontendOnline(nn.Module):
         self.register_buffer('cmvn', cmvn, persistent=False)
 
     def forward(self, x, is_final=False, caches={}):
-        reserve_waveforms = caches['reserve_waveforms'] if 'reserve_waveforms' in caches else torch.empty(0)
-        input_cache = caches['input_cache'] if 'input_cache' in caches else torch.empty(0)
+        reserve_waveforms = caches['reserve_waveforms'] if 'reserve_waveforms' in caches else torch.empty(0).to(x.device)
+        input_cache = caches['input_cache'] if 'input_cache' in caches else torch.empty(0).to(x.device)
         lfr_splice_cache = caches['lfr_splice_cache'] if 'lfr_splice_cache' in caches else []
 
         batch_size = x.shape[0]
 
-        waveforms, feats, feats_lengths, input_cache, fbanks, fbanks_lens = self.forward_fbank(x, input_cache)  # input shape: B T D
+        x = torch.cat((input_cache, x), dim=1)
+        frame_num = self.compute_frame_num(x.shape[-1])
+        shift = x.shape[-1] - frame_num * self.frame_shift_sample_length
+        input_cache = x[:, -shift:]
+
+        waveforms, feats, feats_lengths = self.forward_fbank(x, frame_num)  # input shape: B T D
 
         if feats.shape[0]:
             waveforms = torch.cat((reserve_waveforms, waveforms), dim=1)
 
-            if not lfr_splice_cache:  # 初始化splice_cache
+            if not lfr_splice_cache:
                 for i in range(batch_size):
                     lfr_splice_cache.append(
                         feats[i][0, :].unsqueeze(dim=0).repeat((self.lfr_m - 1) // 2, 1)
@@ -682,26 +646,15 @@ class WavFrontendOnline(nn.Module):
 
         return feats, feats_lengths, waveforms
 
-    def forward_fbank(self, x, input_cache):
-        batch_size = x.size(0)
-
-        x = torch.cat((input_cache, x), dim=1)
-        frame_num = self.compute_frame_num(x.shape[-1])
-        # update self.in_cache
-        input_cache = x[:, -(x.shape[-1] - frame_num * self.frame_shift_sample_length):]
-        waveforms = torch.empty(0)
-        feats_pad = torch.empty(0)
-        feats_lens = torch.empty(0)
+    def forward_fbank(self, x, frame_num):
         if frame_num:
             waveforms = []
             feats = []
             feats_lens = []
-            for i in range(batch_size):
+            for i in range(x.shape[0]):
                 waveform = x[i]
                 # we need accurate wave samples that used for fbank extracting
-                waveforms.append(
-                    waveform[:(frame_num - 1) * self.frame_shift_sample_length + self.frame_sample_length]
-                )
+                waveforms.append(waveform[:(frame_num - 1) * self.frame_shift_sample_length + self.frame_sample_length])
                 waveform = waveform * (1 << 15)
                 waveform = waveform.unsqueeze(0)
                 feat = kaldi.fbank(
@@ -722,9 +675,12 @@ class WavFrontendOnline(nn.Module):
             waveforms = torch.stack(waveforms)
             feats_lens = torch.as_tensor(feats_lens)
             feats_pad = pad_sequence(feats, batch_first=True, padding_value=0.0)
-        fbanks = feats_pad
-        fbanks_lens = copy.deepcopy(feats_lens)
-        return waveforms, feats_pad, feats_lens, input_cache, fbanks, fbanks_lens
+        else:
+            waveforms = torch.empty(0).to(x.device)
+            feats_pad = torch.empty(0).to(x.device)
+            feats_lens = torch.empty(0).to(x.device)
+
+        return waveforms, feats_pad, feats_lens
 
     def forward_lfr_cmvn(
             self,
@@ -757,8 +713,8 @@ class WavFrontendOnline(nn.Module):
         frame, dim = inputs.shape
 
         cmvn = self.cmvn.to(inputs)
-        means = np.tile(cmvn[0:1, :dim], (frame, 1))
-        vars = np.tile(cmvn[1:2, :dim], (frame, 1))
+        means = torch.tile(cmvn[0:1, :dim], (frame, 1))
+        vars = torch.tile(cmvn[1:2, :dim], (frame, 1))
         inputs += means
         inputs *= vars
 
@@ -766,7 +722,7 @@ class WavFrontendOnline(nn.Module):
 
     def apply_lfr(self, x: torch.Tensor, is_final: bool = False) -> Tuple[torch.Tensor, torch.Tensor, int]:
         """
-        Apply lfr with data
+        Apply lfr(lower frame rate) with data
         """
         lfr_m = self.lfr_m
         lfr_n = self.lfr_n
@@ -827,6 +783,8 @@ def load_cmvn(cmvn_file):
 
 
 class FSMN(nn.Module):
+    """feedforward sequential memory networks"""
+
     def __init__(
             self,
             input_dim: int = 400,
@@ -878,37 +836,24 @@ class FSMN(nn.Module):
 
 
 class BasicBlock(nn.Module):
-    def __init__(
-            self,
-            linear_dim: int,
-            proj_dim: int,
-            lorder: int,
-            rorder: int,
-            lstride: int,
-            rstride: int,
-            stack_layer: int,
-    ):
+    def __init__(self, linear_dim, hidden_dim, lorder, rorder, lstride, rstride, layer_idx):
         super().__init__()
         self.lorder = lorder
         self.lstride = lstride
-        self.stack_layer = stack_layer
+        self.layer_idx = layer_idx
 
-        self.linear = nn.Linear(linear_dim, proj_dim, bias=False)
-
-        self.fsmn_block = FSMNBlock(proj_dim, proj_dim, lorder, rorder, lstride, rstride)
-
-        self.affine = nn.Linear(proj_dim, linear_dim)
+        self.linear = nn.Linear(linear_dim, hidden_dim, bias=False)
+        self.fsmn_block = FSMNBlock(hidden_dim, lorder, rorder, lstride, rstride)
+        self.affine = nn.Linear(hidden_dim, linear_dim)
         self.relu = nn.ReLU()
 
     def forward(self, x, caches=None):
         x = self.linear(x)  # B T D
 
         if caches is not None:
-            if self.stack_layer not in caches:
-                caches[self.stack_layer] = torch.zeros(
-                    x.shape[0], x.shape[-1], (self.lorder - 1) * self.lstride, 1
-                ).to(x)
-            x, caches[self.stack_layer] = self.fsmn_block(x, caches[self.stack_layer])
+            if self.layer_idx not in caches:
+                caches[self.layer_idx] = torch.zeros(x.shape[0], x.shape[-1], (self.lorder - 1) * self.lstride, 1).to(x)
+            x, caches[self.layer_idx] = self.fsmn_block(x, caches[self.layer_idx])
         else:
             x, _ = self.fsmn_block(x, None)
 
@@ -918,38 +863,23 @@ class BasicBlock(nn.Module):
 
 
 class FSMNBlock(nn.Module):
-    def __init__(
-            self,
-            input_dim: int,
-            output_dim: int,
-            lorder=None,
-            rorder=None,
-            lstride=1,
-            rstride=1,
-    ):
+    def __init__(self, input_dim, lorder=None, rorder=None, lstride=1, rstride=1):
         super().__init__()
-        self.lorder = lorder
-        self.lstride = lstride
+        self.conv_left = nn.Conv2d(input_dim, input_dim, [lorder, 1], dilation=[lstride, 1], groups=input_dim, bias=False)
+        self.conv_right = nn.Conv2d(input_dim, input_dim, [rorder, 1], dilation=[rstride, 1], groups=input_dim, bias=False) if rorder > 0 else None
 
-        self.conv_left = nn.Conv2d(
-            input_dim, input_dim, [lorder, 1], dilation=[lstride, 1], groups=input_dim, bias=False
-        )
-
-        if rorder > 0:
-            self.conv_right = nn.Conv2d(
-                input_dim, input_dim, [rorder, 1], dilation=[rstride, 1], groups=input_dim, bias=False
-            )
-        else:
-            self.conv_right = None
+        self.l_shift = (lorder - 1) * lstride
+        self.rorder = rorder
+        self.rstride = rstride
 
     def forward(self, x: torch.Tensor, cache: torch.Tensor = None):
-        x = torch.unsqueeze(x, 1).permute(0, 3, 2, 1)  # B D T C
+        x = x[:, None].permute(0, 3, 2, 1)  # B T D -> B D T C
 
         if cache is not None:
             y_left = torch.cat((cache, x), dim=2)
-            cache = y_left[:, :, -(self.lorder - 1) * self.lstride:, :]
+            cache = y_left[:, :, -self.l_shift:, :]
         else:
-            y_left = F.pad(x, [0, 0, (self.lorder - 1) * self.lstride, 0])
+            y_left = F.pad(x, [0, 0, self.l_shift, 0])
 
         y_left = self.conv_left(y_left)
         y = x + y_left
