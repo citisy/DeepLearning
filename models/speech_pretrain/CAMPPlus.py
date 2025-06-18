@@ -147,7 +147,6 @@ class Model(nn.Module):
         return features, feature_lengths, feature_times
 
     def extract_segments(self, segments: list, labels: np.ndarray) -> list:
-        labels = self.correct_labels(labels)
         distribute_res = []
         for i in range(len(segments)):
             distribute_res.append([segments[i][0], segments[i][1], labels[i]])
@@ -170,18 +169,6 @@ class Model(nn.Module):
         distribute_res = self.smooth(distribute_res)
 
         return distribute_res
-
-    @staticmethod
-    def correct_labels(labels):
-        labels_id = 0
-        id2id = {}
-        new_labels = []
-        for i in labels:
-            if i not in id2id:
-                id2id[i] = labels_id
-                labels_id += 1
-            new_labels.append(id2id[i])
-        return np.array(new_labels)
 
     @staticmethod
     def merge_seque(distribute_res):
@@ -339,24 +326,23 @@ class ClusterBackend:
         self.spectral_cluster = SpectralCluster()
         self.umap_hdbscan_cluster = UmapHdbscan()
 
-    def __call__(self, X, **params):
+    def __call__(self, x, k=None, **params):
         # clustering and return the labels
-        k = params["oracle_num"] if "oracle_num" in params else None
-        assert len(X.shape) == 2, "modelscope error: the shape of input should be [N, C]"
-        if X.shape[0] < 20:
-            return np.zeros(X.shape[0], dtype="int")
-        if X.shape[0] < 2048 or k is not None:
-            # unexpected corner case
-            labels = self.spectral_cluster(X, k)
-        else:
-            labels = self.umap_hdbscan_cluster(X)
+        assert len(x.shape) == 2, "the shape of input should be [N, C]"
+        if x.shape[0] < 20:
+            return np.zeros(x.shape[0], dtype="int")
 
-        labels = self.merge_by_cos(labels, X, self.merge_thr)
+        if x.shape[0] < 2048 or k is not None:
+            # unexpected corner case
+            labels = self.spectral_cluster(x, k)
+        else:
+            labels = self.umap_hdbscan_cluster(x)
+
+        labels = self.merge_by_cos(labels, x)
         return labels
 
-    def merge_by_cos(self, labels, embs, cos_thr):
+    def merge_by_cos(self, labels, embs):
         # merge the similar speakers by cosine similarity
-        assert cos_thr > 0 and cos_thr <= 1
         while True:
             spk_num = labels.max() + 1
             if spk_num == 1:
@@ -371,7 +357,7 @@ class ClusterBackend:
             affinity = np.matmul(norm_spk_center, norm_spk_center.T)
             affinity = np.triu(affinity, 1)
             spks = np.unravel_index(np.argmax(affinity), affinity.shape)
-            if affinity[spks] < cos_thr:
+            if affinity[spks] < self.merge_thr:
                 break
             for i in range(len(labels)):
                 if labels[i] == spks[1]:
@@ -391,9 +377,9 @@ class SpectralCluster:
         self.max_num_spks = max_num_spks
         self.pval = pval
 
-    def __call__(self, X, oracle_num=None):
+    def __call__(self, x, oracle_num=None):
         # Similarity matrix computation
-        sim_mat = self.get_sim_mat(X)
+        sim_mat = self.get_sim_mat(x)
 
         # Refining similarity matrix with pval
         prunned_sim_mat = self.p_pruning(sim_mat)
@@ -412,10 +398,10 @@ class SpectralCluster:
 
         return labels
 
-    def get_sim_mat(self, X):
+    def get_sim_mat(self, x):
         import sklearn
         # Cosine similarities
-        M = sklearn.metrics.pairwise.cosine_similarity(X, X)
+        M = sklearn.metrics.pairwise.cosine_similarity(x, x)
         return M
 
     def p_pruning(self, A):
@@ -448,7 +434,7 @@ class SpectralCluster:
         if k_oracle is not None:
             num_of_spk = k_oracle
         else:
-            lambda_gap_list = self.getEigenGaps(
+            lambda_gap_list = self.get_eigen_gaps(
                 lambdas[self.min_num_spks - 1: self.max_num_spks + 1]
             )
             num_of_spk = np.argmax(lambda_gap_list) + self.min_num_spks
@@ -461,7 +447,7 @@ class SpectralCluster:
         _, labels, _ = k_means(emb, k)
         return labels
 
-    def getEigenGaps(self, eig_vals):
+    def get_eigen_gaps(self, eig_vals):
         eig_vals_gap_list = []
         for i in range(len(eig_vals) - 1):
             gap = float(eig_vals[i + 1]) - float(eig_vals[i])
@@ -476,28 +462,26 @@ class UmapHdbscan:
       Emphasis On Topological Structure. ICASSP2022
     """
 
-    def __init__(
-            self, n_neighbors=20, n_components=60, min_samples=10, min_cluster_size=10, metric="cosine"
-    ):
+    def __init__(self, n_neighbors=20, n_components=60, min_samples=10, min_cluster_size=10, metric="cosine"):
         self.n_neighbors = n_neighbors
         self.n_components = n_components
         self.min_samples = min_samples
         self.min_cluster_size = min_cluster_size
         self.metric = metric
 
-    def __call__(self, X):
+    def __call__(self, x):
         from sklearn.cluster import HDBSCAN
         import umap.umap_ as umap
 
-        umap_X = umap.UMAP(
+        umap_x = umap.UMAP(
             n_neighbors=self.n_neighbors,
             min_dist=0.0,
-            n_components=min(self.n_components, X.shape[0] - 2),
+            n_components=min(self.n_components, x.shape[0] - 2),
             metric=self.metric,
-        ).fit_transform(X)
+        ).fit_transform(x)
         labels = HDBSCAN(
             min_samples=self.min_samples,
             min_cluster_size=self.min_cluster_size,
             allow_single_cluster=True,
-        ).fit_predict(umap_X)
+        ).fit_predict(umap_x)
         return labels

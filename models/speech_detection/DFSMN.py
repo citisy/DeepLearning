@@ -200,8 +200,7 @@ class Model(nn.Module):
         chunk_stride_samples = chunk_size * self._sample_rate
         if is_streaming_input is None:
             is_streaming_input = chunk_size < 15000
-        n_chunk = len(x) // chunk_stride_samples + int(is_final)
-        reserve_len = len(x) % chunk_stride_samples * (1 - int(is_final))
+        n_chunk = np.ceil(len(x) / chunk_stride_samples).astype(int)
 
         segments = []
         for i in range(n_chunk):
@@ -223,7 +222,6 @@ class Model(nn.Module):
         return dict(
             segments=segments,
             caches=caches,
-            reserve_x=x[-reserve_len:]
         )
 
     def merge_segments(self, segments):
@@ -247,7 +245,7 @@ class Model(nn.Module):
             is_streaming_input=True,
             **kwargs,
     ):
-        feats, feats_lengths, waveform = self.frontend(speech, caches=caches['frontend'], is_final=is_final)
+        feats, waveform = self.frontend(speech, caches=caches['frontend'], is_final=is_final)
 
         stats = caches["stats"]
         windows_detector = caches["windows_detector"]
@@ -528,9 +526,7 @@ class Model(nn.Module):
                 offset = (stats.data_buf_start_frame - stats.last_drop_frames) * self.frame_shift_length
                 stats.data_buf = stats.data_buf_all[offset:]
 
-    def maybe_on_voice_end_if_last_frame(
-            self, is_final_frame: bool, cur_frm_idx: int, stats
-    ) -> None:
+    def maybe_on_voice_end_if_last_frame(self, is_final_frame: bool, cur_frm_idx: int, stats) -> None:
         if is_final_frame:
             self.on_voice_end(cur_frm_idx, False, stats)
             stats.vad_state_machine = VadStateMachine.EndPoint
@@ -576,25 +572,26 @@ class WavFrontendOnline(nn.Module):
 
     def __init__(self, cmvn, **kwargs):
         super().__init__()
+        self.__dict__.update(kwargs)
         self.frame_sample_length = int(self.frame_length * self.fs / 1000)
         self.frame_shift_sample_length = int(self.frame_shift * self.fs / 1000)
         self.register_buffer('cmvn', cmvn, persistent=False)
 
     def forward(self, x, is_final=False, caches={}):
-        reserve_waveforms = caches['reserve_waveforms'] if 'reserve_waveforms' in caches else torch.empty(0).to(x.device)
-        input_cache = caches['input_cache'] if 'input_cache' in caches else torch.empty(0).to(x.device)
-        lfr_splice_cache = caches['lfr_splice_cache'] if 'lfr_splice_cache' in caches else []
+        reserve_waveforms = caches.get('reserve_waveforms', torch.empty(0).to(x.device))
+        input_cache = caches.get('input_cache', torch.empty(0).to(x.device))
+        lfr_splice_cache = caches.get('lfr_splice_cache', [])
 
         batch_size = x.shape[0]
 
         x = torch.cat((input_cache, x), dim=1)
         frame_num = self.compute_frame_num(x.shape[-1])
-        shift = x.shape[-1] - frame_num * self.frame_shift_sample_length
-        input_cache = x[:, -shift:]
+        shift = frame_num * self.frame_shift_sample_length
+        input_cache = x[:, shift:]
 
         waveforms, feats, feats_lengths = self.forward_fbank(x, frame_num)  # input shape: B T D
 
-        if feats.shape[0]:
+        if frame_num:
             waveforms = torch.cat((reserve_waveforms, waveforms), dim=1)
 
             if not lfr_splice_cache:
@@ -602,16 +599,13 @@ class WavFrontendOnline(nn.Module):
                     lfr_splice_cache.append(
                         feats[i][0, :].unsqueeze(dim=0).repeat((self.lfr_m - 1) // 2, 1)
                     )
-            # need the number of the input frames + self.lfr_splice_cache[0].shape[0] is greater than self.lfr_m
+
+            # need the number of the input frames + lfr_splice_cache[0].shape[0] is greater than self.lfr_m
             if feats_lengths[0] + lfr_splice_cache[0].shape[0] >= self.lfr_m:
                 lfr_splice_cache_tensor = torch.stack(lfr_splice_cache)  # B T D
                 feats = torch.cat((lfr_splice_cache_tensor, feats), dim=1)
                 feats_lengths += lfr_splice_cache_tensor[0].shape[0]
-                frame_from_waveforms = int(
-                    (waveforms.shape[1] - self.frame_sample_length)
-                    / self.frame_shift_sample_length
-                    + 1
-                )
+                frame_from_waveforms = int((waveforms.shape[1] - self.frame_sample_length) / self.frame_shift_sample_length + 1)
                 minus_frame = (self.lfr_m - 1) // 2 if reserve_waveforms.numel() == 0 else 0
                 feats, feats_lengths, lfr_splice_frame_idxs = self.forward_lfr_cmvn(feats, feats_lengths, is_final, lfr_splice_cache)
                 if self.lfr_m == 1:
@@ -622,18 +616,14 @@ class WavFrontendOnline(nn.Module):
                     sample_length = (frame_from_waveforms - 1) * self.frame_shift_sample_length + self.frame_sample_length
                     waveforms = waveforms[:, :sample_length]
             else:
-                # update self.reserve_waveforms and self.lfr_splice_cache
+                # update reserve_waveforms and lfr_splice_cache
                 reserve_waveforms = waveforms[:, : -(self.frame_sample_length - self.frame_shift_sample_length)]
                 for i in range(batch_size):
                     lfr_splice_cache[i] = torch.cat((lfr_splice_cache[i], feats[i]), dim=0)
                 feats = torch.empty(0)
         else:
             if is_final:
-                waveforms = (
-                    waveforms
-                    if reserve_waveforms.numel() == 0
-                    else reserve_waveforms
-                )
+                waveforms = waveforms if reserve_waveforms.numel() == 0 else reserve_waveforms
                 feats = torch.stack(lfr_splice_cache)
                 feats_lengths = torch.zeros(batch_size, dtype=torch.int) + feats.shape[1]
                 feats, feats_lengths, _ = self.forward_lfr_cmvn(feats, feats_lengths, is_final, lfr_splice_cache)
@@ -644,7 +634,7 @@ class WavFrontendOnline(nn.Module):
             lfr_splice_cache=lfr_splice_cache
         )
 
-        return feats, feats_lengths, waveforms
+        return feats, waveforms
 
     def forward_fbank(self, x, frame_num):
         if frame_num:
@@ -655,7 +645,7 @@ class WavFrontendOnline(nn.Module):
                 waveform = x[i]
                 # we need accurate wave samples that used for fbank extracting
                 waveforms.append(waveform[:(frame_num - 1) * self.frame_shift_sample_length + self.frame_sample_length])
-                waveform = waveform * (1 << 15)
+                waveform = waveform * (2 ** 15)
                 waveform = waveform.unsqueeze(0)
                 feat = kaldi.fbank(
                     waveform,
@@ -712,7 +702,7 @@ class WavFrontendOnline(nn.Module):
         """Apply CMVN with mvn data"""
         frame, dim = inputs.shape
 
-        cmvn = self.cmvn.to(inputs)
+        cmvn = self.cmvn
         means = torch.tile(cmvn[0:1, :dim], (frame, 1))
         vars = torch.tile(cmvn[1:2, :dim], (frame, 1))
         inputs += means
@@ -728,9 +718,7 @@ class WavFrontendOnline(nn.Module):
         lfr_n = self.lfr_n
 
         T = x.shape[0]  # include the right context
-        T_lfr = int(
-            np.ceil((T - (lfr_m - 1) // 2) / lfr_n)
-        )  # minus the right context: (lfr_m - 1) // 2
+        T_lfr = int(np.ceil((T - (lfr_m - 1) // 2) / lfr_n))  # minus the right context: (lfr_m - 1) // 2
         splice_idx = T_lfr
         feat_dim = x.shape[-1]
         ori_inputs = x
@@ -821,8 +809,8 @@ class FSMN(nn.Module):
         """
         Args:
             x (torch.Tensor): Input tensor (B, T, D)
-            caches: when cache is not None, the forward is in streaming. The type of cache is a dict, egs,
-            {'cache_layer_1': torch.Tensor(B, T1, D)}, T1 is equal to self.lorder. It is {} for the 1st frame
+            caches: when cache is not None, the forward is in streaming. The type of cache is a dict. It is {} for the 1st frame
+                egs, {layer_idx: torch.Tensor(B, D, T1, 1)}, T1 is equal to (lorder - 1) * lstride.
         """
 
         x = self.to_in(x)

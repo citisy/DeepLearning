@@ -113,11 +113,14 @@ class WavFrontend(nn.Module):
 
     def forward(
             self,
-            x: torch.Tensor,
-            input_lengths,
+            x: torch.Tensor,  # (b, seq_len)
+            input_lengths=None,
             **kwargs,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         batch_size = x.size(0)
+        if input_lengths is None:
+            input_lengths = [x.size(1)] * batch_size
+
         feats = []
         feats_lens = []
         for i in range(batch_size):
