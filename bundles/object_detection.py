@@ -282,7 +282,7 @@ class FastererRCNN_Voc(OdProcess, Voc):
     Usage:
         .. code-block:: python
 
-            from examples.object_detect import FastererRCNN_Voc as Process
+            from bundles.object_detect import FastererRCNN_Voc as Process
 
             Process(device=0).run(max_epoch=150, train_batch_size=32, accumulate=192)
             {'score': 0.3910}
@@ -411,7 +411,7 @@ class YoloV5_Voc(YoloV5, Voc, Yolov5Aug):
     Usage:
         .. code-block:: python
 
-            from examples.object_detect import YoloV5_Voc as Process
+            from bundles.object_detect import YoloV5_Voc as Process
 
             Process(device=0).run(max_epoch=150, train_batch_size=32, accumulate=192)
             {'score': 0.3529}
@@ -451,7 +451,7 @@ class YoloV5_yolov5(YoloV5, Yolov5Dataset):
     Usage:
         .. code-block:: python
 
-        from examples.object_detection import YoloV5_yolov5 as Process
+        from bundles.object_detection import YoloV5_yolov5 as Process
 
         max_epoch = 21
         train_batch_size = 32

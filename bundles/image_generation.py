@@ -321,7 +321,7 @@ class WGAN_Mnist(WGAN, Mnist):
     Usage:
         .. code-block:: python
 
-            from examples.image_generation import WGAN_Mnist as Process
+            from bundles.image_generation import WGAN_Mnist as Process
 
             Process().run(max_epoch=1000, train_batch_size=64, fit_kwargs=dict(check_period=40000, max_save_weight_num=10), metric_kwargs=dict(is_visualize=True))
     """
@@ -584,7 +584,7 @@ class StyleGan_Mnist(StyleGan, Mnist):
     Usage:
         .. code-block:: python
 
-            from examples.image_generation import StyleGan_Mnist as Process
+            from bundles.image_generation import StyleGan_Mnist as Process
 
             Process().run(
                 max_epoch=200, train_batch_size=32,
@@ -599,7 +599,7 @@ class StyleGan_Lsun(StyleGan, Lsun):
     Usage:
         .. code-block:: python
 
-            from examples.image_generation import StyleGan_Lsun as Process
+            from bundles.image_generation import StyleGan_Lsun as Process
 
             Process().run(
                 max_epoch=100, train_batch_size=32,
@@ -614,7 +614,7 @@ class StyleGan_CelebA(StyleGan, CelebA):
     Usage:
         .. code-block:: python
 
-            from examples.image_generation import StyleGan_CelebA as Process
+            from bundles.image_generation import StyleGan_CelebA as Process
 
             Process().run(
                 max_epoch=50, train_batch_size=32,
@@ -630,7 +630,7 @@ class StyleGan_IterCelebA(StyleGan, IterCelebA):
     Usage:
         .. code-block:: python
 
-            from examples.image_generation import StyleGan_IterCelebA as Process
+            from bundles.image_generation import StyleGan_IterCelebA as Process
 
             Process().run(
                 max_epoch=10, train_batch_size=32,
@@ -697,7 +697,7 @@ class VAE_CelebA(VAE, CelebA):
     Usage:
         .. code-block:: python
 
-            from examples.image_generation import Ddpm_CelebA as Process
+            from bundles.image_generation import Ddpm_CelebA as Process
 
             Process().run(
                 max_epoch=50, train_batch_size=32,
@@ -826,7 +826,7 @@ class Ddpm_CelebA(Ddpm, CelebA):
     Usage:
         .. code-block:: python
 
-            from examples.image_generation import Ddpm_CelebA as Process
+            from bundles.image_generation import Ddpm_CelebA as Process
 
             Process().run(
                 max_epoch=50, train_batch_size=32,
@@ -854,7 +854,7 @@ class Ddim_CelebA(Dpim, CelebA):
     Usage:
         .. code-block:: python
 
-            from examples.image_generation import Ddpm_CelebA as Process
+            from bundles.image_generation import Ddpm_CelebA as Process
 
             Process().run(
                 max_epoch=50, train_batch_size=32,
@@ -870,7 +870,7 @@ class Ddim_CelebAHQ(Dpim, CelebAHQ):
     Usage:
         .. code-block:: python
 
-            from examples.image_generation import Ddim_CelebAHQ as Process
+            from bundles.image_generation import Ddim_CelebAHQ as Process
 
             Process().run(
                 max_epoch=50, train_batch_size=32,
@@ -1275,7 +1275,7 @@ class SD(WithSDLora, WithSDControlNet, FromSDPretrained, SDTrainer, SDPredictor)
     Usage:
         .. code-block:: python
 
-            from examples.image_generation import SD as Process
+            from bundles.image_generation import SD as Process
 
             process = Process(
                 pretrain_model='...',
@@ -1336,7 +1336,7 @@ class SD_SimpleTextImage(SD, SimpleTextImage):
     Usage:
         .. code-block:: python
 
-            from examples.image_generation import SD_SimpleTextImage as Process
+            from bundles.image_generation import SD_SimpleTextImage as Process
 
             # lora finetune
             process = Process(
@@ -1531,7 +1531,7 @@ class Flux(FromFluxPretrained, FluxPredictor):
     Usage:
         .. code-block:: python
 
-            from examples.image_generation import Flux as Process
+            from bundles.image_generation import Flux as Process
 
             process = Process(
                 clip_vocab_fn='xxx/tokenizer/vocab.json',

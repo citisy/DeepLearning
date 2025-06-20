@@ -276,7 +276,7 @@ class FCN_Voc(SegProcess, Voc):
     Usage:
         .. code-block:: python
 
-            from examples.semantic_segment import FCN_Voc as Process
+            from bundles.semantic_segment import FCN_Voc as Process
 
             Process().run(max_epoch=1000)
             {'score': 0.1429}
@@ -297,7 +297,7 @@ class Unet_Voc(SegProcess, Voc):
     Usage:
         .. code-block:: python
 
-            from examples.semantic_segment import Unet_Voc as Process
+            from bundles.semantic_segment import Unet_Voc as Process
 
             Process().run(max_epoch=1000)
             {'score': 0.1973}
@@ -318,7 +318,7 @@ class DeeplabV3_Voc(SegProcess, Voc):
     Usage:
         .. code-block:: python
 
-            from examples.semantic_segment import DeeplabV3_Voc as Process
+            from bundles.semantic_segment import DeeplabV3_Voc as Process
 
             Process().run(max_epoch=1000)
             {'score': 0.3021}
@@ -338,12 +338,14 @@ class VocForSAM(Voc):
     input_size = 1024
 
     aug = Apply([
-        scale.LetterBox(fill=[123.675, 116.28, 103.53], pad_type=(1, 1)),  # there are gray lines
+        scale.LetterBox(
+            fill=[123.675, 116.28, 103.53]
+        ),
     ])
 
     # note that, use cv2.INTER_NEAREST mode to resize
     mask_aug = Apply([
-        scale.LetterBox(interpolation=1, fill=255),  # there are gray lines
+        scale.LetterBox(interpolation=1, fill=255),
     ])
 
     rand_aug1 = RandomApply([
@@ -366,7 +368,7 @@ class SAM_Voc(SegProcess, VocForSAM):
     Usage:
         .. code-block:: python
 
-            from examples.semantic_segment import DeeplabV3_Voc as Process
+            from bundles.semantic_segment import DeeplabV3_Voc as Process
     """
 
     model_version = 'SAM'

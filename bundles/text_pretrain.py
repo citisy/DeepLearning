@@ -613,7 +613,7 @@ class BertMLMFromHFPretrain(Bert, LoadBertFromHFPretrain, TextProcessForBert):
     Usage:
         .. code-block:: python
 
-            from examples.text_pretrain import BertMLMFromHFPretrain as Process
+            from bundles.text_pretrain import BertMLMFromHFPretrain as Process
 
             process = Process(pretrain_model='...', vocab_fn='...')
             process.init()
@@ -639,7 +639,7 @@ class BertMLM_SimpleText(Bert, SimpleTextForBert):
     Usage:
         .. code-block:: python
 
-            from examples.text_pretrain import BertMLM_SimpleText as Process
+            from bundles.text_pretrain import BertMLM_SimpleText as Process
 
             Process(vocab_fn='...').run(max_epoch=20, train_batch_size=16, fit_kwargs=dict(check_period=1, accumulate=192))
     """
@@ -652,7 +652,7 @@ class Bert_SOP(Bert, SOP):
     Usage:
         .. code-block:: python
 
-            from examples.text_pretrain import BertMLM_SimpleText as Process
+            from bundles.text_pretrain import BertMLM_SimpleText as Process
 
             # about 200M data
             Process(vocab_fn='...').run(max_epoch=20, train_batch_size=16, fit_kwargs=dict(check_period=1, accumulate=192))
@@ -804,7 +804,7 @@ class GPT2FromOpenaiPretrain(GPT2, LoadGPT2FromOpenaiPretrain, TextProcessForGpt
     Usage:
         .. code-block:: python
 
-            from examples.text_pretrain import GPT2FromOpenaiPretrain as Process
+            from bundles.text_pretrain import GPT2FromOpenaiPretrain as Process
 
             process = Process(
                 pretrain_model='...',
@@ -946,7 +946,7 @@ class T5FromHFPretrain(T5, LoadT5FromHFPretrain, SimpleTextForT5):
     Usage:
         .. code-block:: python
 
-            from examples.text_pretrain import T5FromHFPretrain as Process
+            from bundles.text_pretrain import T5FromHFPretrain as Process
 
             process = Process(
                 pretrain_model='xxx/pytorch_model.bin',

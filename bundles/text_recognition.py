@@ -276,7 +276,7 @@ class CRNN_MJSynth(CRNN, MJSynth):
     Usage:
         .. code-block:: python
 
-            from examples.text_recognition import CRNN_MJSynth as Process
+            from bundles.text_recognition import CRNN_MJSynth as Process
 
             Process().run(max_epoch=500, train_batch_size=256, predict_batch_size=256)
             {'score': 0.7878}
@@ -288,7 +288,7 @@ class CRNN_SynthText(CRNN, SynthText):
     Usage:
         .. code-block:: python
 
-            from examples.text_recognition import CRNN_SynthText as Process
+            from bundles.text_recognition import CRNN_SynthText as Process
 
             Process().run(max_epoch=500, train_batch_size=256, predict_batch_size=256)
     """
@@ -299,7 +299,7 @@ class CRNN_MixMJSynthSynthText(CRNN, MixMJSynthSynthText):
     Usage:
         .. code-block:: python
 
-            from examples.text_recognition import CRNN_MixMJSynthSynthText as Process
+            from bundles.text_recognition import CRNN_MixMJSynthSynthText as Process
 
             Process().run(max_epoch=500, train_batch_size=256, predict_batch_size=256)
     """
@@ -324,7 +324,7 @@ class Svtr_MJSynth(Svtr, MJSynth):
     Usage:
         .. code-block:: python
 
-            from examples.text_recognition import Svtr_MJSynth as Process
+            from bundles.text_recognition import Svtr_MJSynth as Process
 
             Process().run(max_epoch=500, train_batch_size=256, predict_batch_size=256)
             {'score': 0.7962}

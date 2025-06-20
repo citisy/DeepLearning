@@ -74,7 +74,7 @@ class Bert_CoLA(McMetric, Bert, CoLA):
     Usage:
         .. code-block:: python
 
-            from examples.text_classification import Bert_CoLA as Process
+            from bundles.text_classification import Bert_CoLA as Process
 
             # about 200M data pretrain
             # it seems that the pretraining model has significantly influenced the score
@@ -88,7 +88,7 @@ class BertHF_CoLA(McMetric, Bert, LoadBertFromHFPretrain, CoLA):
     Usage:
         .. code-block:: python
 
-            from examples.text_classification import BertHF_CoLA as Process
+            from bundles.text_classification import BertHF_CoLA as Process
 
             # if using `bert-base-uncased` pretrain model
             Process(pretrain_model='...', vocab_fn='...').run(max_epoch=5, train_batch_size=128, fit_kwargs=dict(check_period=1))
@@ -102,7 +102,7 @@ class Bert_SST2(Bert, SST2):
     Usage:
         .. code-block:: python
 
-            from examples.text_classification import Bert_SST2 as Process
+            from bundles.text_classification import Bert_SST2 as Process
 
             # no pretrain data, use SST2 data to train directly
             Process(vocab_fn='...').run(max_epoch=100, train_batch_size=128, fit_kwargs=dict(check_period=1))
@@ -119,7 +119,7 @@ class BertFull_SST2(BertFull, SST2):
     Usage:
         .. code-block:: python
 
-            from examples.text_classification import BertFull_SST2 as Process
+            from bundles.text_classification import BertFull_SST2 as Process
 
             # no pretrain data, use SST2 data to train with nsp and mlm directly
             Process(vocab_fn='...').run(max_epoch=5, train_batch_size=128, fit_kwargs=dict(check_period=1))
@@ -132,7 +132,7 @@ class BertHF_SST2(Bert, LoadBertFromHFPretrain, SST2):
     Usage:
         .. code-block:: python
 
-            from examples.text_classification import BertHF_SST2 as Process
+            from bundles.text_classification import BertHF_SST2 as Process
 
             # if using `bert-base-uncased` pretrain model
             Process(pretrain_model='...', vocab_fn='...').run(max_epoch=5, train_batch_size=128, fit_kwargs=dict(check_period=1))

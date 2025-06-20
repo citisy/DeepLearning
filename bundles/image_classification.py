@@ -257,7 +257,7 @@ class LeNet_mnist(ClsProcess, Mnist):
     Usage:
         .. code-block:: python
 
-            from examples.image_classification import LeNet_mnist as Process
+            from bundles.image_classification import LeNet_mnist as Process
 
             Process().run(max_epoch=10, train_batch_size=256, predict_batch_size=256)
             {'score': 0.9899}
@@ -274,7 +274,7 @@ class LeNet_cifar(ClsProcess, Cifar):
     Usage:
         .. code-block:: python
 
-            from examples.image_classification import LeNet_cifar as Process
+            from bundles.image_classification import LeNet_cifar as Process
 
             Process().run(max_epoch=150, train_batch_size=128, predict_batch_size=256)
             {'score': 0.6082}
@@ -291,7 +291,7 @@ class AlexNet_ImageNet(ClsProcess, ImageNet):
     Usage:
         .. code-block:: python
 
-            from examples.image_classification import AlexNet_ImageNet as Process
+            from bundles.image_classification import AlexNet_ImageNet as Process
 
             Process().run()
             {'p': 0.8461538461538461, 'r': 0.88, 'f': 0.8627450980392156}
@@ -308,7 +308,7 @@ class Vgg_ImageNet(ClsProcess, ImageNet):
     Usage:
         .. code-block:: python
 
-            from examples.image_classification import Vgg_ImageNet as Process
+            from bundles.image_classification import Vgg_ImageNet as Process
 
             Process().run()
             {'p': 0.9230769230769231, 'r': 0.96, 'f': 0.9411764705882353, 'score': 0.9411764705882353}
@@ -335,7 +335,7 @@ class InceptionV1_ImageNet(ClsProcess, ImageNet):
     Usage:
         .. code-block:: python
 
-            from examples.image_classification import InceptionV1_ImageNet as Process
+            from bundles.image_classification import InceptionV1_ImageNet as Process
 
             Process().run()
             {'p': 0.8363636363636363, 'r': 0.92, 'f': 0.8761904761904761, 'score': 0.8761904761904761}
@@ -352,7 +352,7 @@ class InceptionV3_ImageNet(ClsProcess, ImageNet):
     Usage:
         .. code-block:: python
 
-            from examples.image_classification import InceptionV3_ImageNet as Process
+            from bundles.image_classification import InceptionV3_ImageNet as Process
 
             Process().run()
             {'p': 0.98, 'r': 0.98, 'f': 0.98, 'score': 0.98}
@@ -370,7 +370,7 @@ class ResNet_ImageNet(ClsProcess, ImageNet):
     Usage:
         .. code-block:: python
 
-            from examples.image_classification import ResNet_ImageNet as Process
+            from bundles.image_classification import ResNet_ImageNet as Process
 
             Process().run()
             {'p': 0.9230769230769231, 'r': 0.96, 'f': 0.9411764705882353, 'score': 0.9411764705882353}
@@ -419,7 +419,7 @@ class DenseNet_ImageNet(ClsProcess, ImageNet):
     Usage:
         .. code-block:: python
 
-            from examples.image_classification import DenseNet_ImageNet as Process
+            from bundles.image_classification import DenseNet_ImageNet as Process
 
             Process().run()
             {'p': 0.819672131147541, 'r': 1.0, 'f': 0.9009009009009009, 'score': 0.9009009009009009}
@@ -436,7 +436,7 @@ class SENet_ImageNet(ClsProcess, ImageNet):
     Usage:
         .. code-block:: python
 
-            from examples.image_classification import SENet_ImageNet as Process
+            from bundles.image_classification import SENet_ImageNet as Process
 
             Process().run()
             {'p': 0.847457627118644, 'r': 1.0, 'f': 0.9174311926605504, 'score': 0.9174311926605504}
@@ -453,7 +453,7 @@ class SqueezeNet_ImageNet(ClsProcess, ImageNet):
     Usage:
         .. code-block:: python
 
-            from examples.image_classification import SqueezeNet_ImageNet as Process
+            from bundles.image_classification import SqueezeNet_ImageNet as Process
 
             Process().run(train_batch_size=32, predict_batch_size=32)
             {'p': 0.7538461538461538, 'r': 0.98, 'f': 0.8521739130434782, 'score': 0.8521739130434782}
@@ -470,7 +470,7 @@ class MobileNetV1_ImageNet(ClsProcess, ImageNet):
     Usage:
         .. code-block:: python
 
-            from examples.image_classification import MobileNetV1_ImageNet as Process
+            from bundles.image_classification import MobileNetV1_ImageNet as Process
 
             Process().run(train_batch_size=32, predict_batch_size=32)
             {'p': 0.9795918367346939, 'r': 0.96, 'f': 0.9696969696969697, 'score': 0.9696969696969697}
@@ -487,7 +487,7 @@ class MobileNetV3_ImageNet(ClsProcess, ImageNet):
     Usage:
         .. code-block:: python
 
-            from examples.image_classification import MobileNetV3_ImageNet as Process
+            from bundles.image_classification import MobileNetV3_ImageNet as Process
 
             Process().run(train_batch_size=32, predict_batch_size=32)
     """
@@ -503,7 +503,7 @@ class ShuffleNetV1_ImageNet(ClsProcess, ImageNet):
     Usage:
         .. code-block:: python
 
-            from examples.image_classification import ShuffleNetV1_ImageNet as Process
+            from bundles.image_classification import ShuffleNetV1_ImageNet as Process
 
             Process().run(train_batch_size=64, predict_batch_size=64)
             {'p': 0.8679245283018868, 'r': 0.92, 'f': 0.8932038834951457, 'score': 0.8932038834951457}
@@ -520,7 +520,7 @@ class IGC_cifar(ClsProcess, Cifar):
     Usage:
         .. code-block:: python
 
-            from examples.image_classification import IGC_cifar as Process
+            from bundles.image_classification import IGC_cifar as Process
 
             Process().run(train_batch_size=64, predict_batch_size=64)
             {'score': 0.8058}
@@ -539,7 +539,7 @@ class CondenseNet_ImageNet(ClsProcess, ImageNet):
     Usage:
         .. code-block:: python
 
-            from examples.image_classification import CondenseNet_ImageNet as Process
+            from bundles.image_classification import CondenseNet_ImageNet as Process
 
             Process().run(train_batch_size=64, predict_batch_size=64)
             {'p': 0.9333333333333333, 'r': 0.84, 'f': 0.8842105263157894, 'score': 0.8842105263157894}
@@ -557,7 +557,7 @@ class ViT_ImageNet(ClsProcess, ImageNet):
     Usage:
         .. code-block:: python
 
-            from examples.image_classification import ViT_ImageNet as Process
+            from bundles.image_classification import ViT_ImageNet as Process
 
             Process().run(max_epoch=300, train_batch_size=32, predict_batch_size=32)
             {'p': 0.7049180212308521, 'r': 0.86, 'f': 0.7747742727054547, 'score': 0.7747742727054547}

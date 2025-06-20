@@ -107,7 +107,7 @@ class Bert_MNLI(Bert, MNLI):
     Usage:
         .. code-block:: python
 
-            from examples.text_pair_classification import Bert_MNLI as Process
+            from bundles.text_pair_classification import Bert_MNLI as Process
 
             # about 200M data pretrain
             process = Process(pretrain_model='...', vocab_fn='...')
@@ -126,7 +126,7 @@ class BertHF_MNLI(Bert, LoadBertFromHFPretrain, MNLI):
     Usage:
         .. code-block:: python
 
-            from examples.text_pair_classification import BertHF_MNLI as Process
+            from bundles.text_pair_classification import BertHF_MNLI as Process
 
             # if using `bert-base-uncased` pretrain model
             process = Process(pretrain_model='...', vocab_fn='...')
@@ -148,7 +148,7 @@ class Bert_QQP(Bert, QQP):
     Usage:
         .. code-block:: python
 
-            from examples.text_pair_classification import Bert_QQP as Process
+            from bundles.text_pair_classification import Bert_QQP as Process
 
             # about 200M data pretrain
             Process(pretrain_model='...', vocab_fn='...').run(max_epoch=5, train_batch_size=128, predict_batch_size=128, check_period=1)
@@ -161,7 +161,7 @@ class BertHF_QQP(Bert, LoadBertFromHFPretrain, QQP):
     Usage:
         .. code-block:: python
 
-            from examples.text_pair_classification import BertHF_QQP as Process
+            from bundles.text_pair_classification import BertHF_QQP as Process
 
             # if using `bert-base-uncased` pretrain model
             Process(pretrain_model='...', vocab_fn='...').run(max_epoch=5, train_batch_size=128, fit_kwargs=dict(check_period=1))
@@ -175,7 +175,7 @@ class Bert_QNLI(Bert, QNLI):
     Usage:
         .. code-block:: python
 
-            from examples.text_pair_classification import Bert_QNLI as Process
+            from bundles.text_pair_classification import Bert_QNLI as Process
 
             # no pretrain data, use QNLI data to train directly
             Process(vocab_fn='...').run(max_epoch=50, train_batch_size=128, fit_kwargs=dict(check_period=1))
@@ -193,7 +193,7 @@ class BertFull_QNLI(BertFull, QNLI):
     Usage:
         .. code-block:: python
 
-            from examples.text_pair_classification import BertFull_QNLI as Process
+            from bundles.text_pair_classification import BertFull_QNLI as Process
 
             # no pretrain data, use QNLI data to train with nsp and mlm directly
             Process(vocab_fn='...').run(max_epoch=50, train_batch_size=128, fit_kwargs=dict(check_period=1))
@@ -206,7 +206,7 @@ class BertHF_QNLI(Bert, LoadBertFromHFPretrain, QNLI):
     Usage:
         .. code-block:: python
 
-            from examples.text_pair_classification import BertHF_QNLI as Process
+            from bundles.text_pair_classification import BertHF_QNLI as Process
 
             # if using `bert-base-uncased` pretrain model
             Process(pretrain_model='...', vocab_fn='...').run(max_epoch=5, train_batch_size=128, fit_kwargs=dict(check_period=1))
@@ -220,7 +220,7 @@ class Bert_MRPC(Bert, MRPC):
     Usage:
         .. code-block:: python
 
-            from examples.text_pair_classification import Bert_QNLI as Process
+            from bundles.text_pair_classification import Bert_QNLI as Process
 
             # about 200M data pretrain
             Process(pretrain_model='...', vocab_fn='...').run(max_epoch=5, train_batch_size=128, fit_kwargs=dict(check_period=1))
@@ -233,7 +233,7 @@ class BertHF_MRPC(Bert, LoadBertFromHFPretrain, MRPC):
     Usage:
         .. code-block:: python
 
-            from examples.text_pair_classification import BertHF_MRPC as Process
+            from bundles.text_pair_classification import BertHF_MRPC as Process
 
             # if using `bert-base-uncased` pretrain model
             Process(pretrain_model='...', vocab_fn='...').run(max_epoch=5, train_batch_size=128, fit_kwargs=dict(check_period=1))
@@ -247,7 +247,7 @@ class Bert_RTE(Bert, RTE):
     Usage:
         .. code-block:: python
 
-            from examples.text_pair_classification import Bert_RTE as Process
+            from bundles.text_pair_classification import Bert_RTE as Process
 
             # about 200M data pretrain
             Process(pretrain_model='...', vocab_fn='...').run(max_epoch=5, train_batch_size=128, fit_kwargs=dict(check_period=1))
@@ -260,7 +260,7 @@ class BertHF_RTE(Bert, LoadBertFromHFPretrain, RTE):
     Usage:
         .. code-block:: python
 
-            from examples.text_pair_classification import BertHF_RTE as Process
+            from bundles.text_pair_classification import BertHF_RTE as Process
 
             # if using `bert-base-uncased` pretrain model
             Process(pretrain_model='...', vocab_fn='...').run(max_epoch=5, train_batch_size=128, fit_kwargs=dict(check_period=1))

@@ -146,7 +146,7 @@ class Pix2pix_facade(Pix2pix, Facade):
     Usage:
         .. code-block:: python
 
-            from examples.image_translate import Pix2pix_facade as Process
+            from bundles.image_translate import Pix2pix_facade as Process
 
             Process().run(max_epoch=1000, train_batch_size=64, check_period=2000)
     """
@@ -282,7 +282,7 @@ class CycleGan_facade(CycleGan, Facade):
     Usage:
         .. code-block:: python
 
-            from examples.image_translate import CycleGan_facade as Process
+            from bundles.image_translate import CycleGan_facade as Process
 
             Process().run(max_epoch=1000, train_batch_size=8, check_period=500)
     """
