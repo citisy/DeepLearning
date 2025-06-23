@@ -4,6 +4,19 @@ from . import object_detection
 
 class MaskArea:
     @staticmethod
+    def areas(mask):
+        """Area(boxes)
+
+        Args:
+            mask(np.array): shape=(N, H, W)
+
+        Returns:
+            areas(np.array): shape=(N,)
+        """
+        mask = mask.astype(bool)
+        return np.sum(mask, axis=(1, 2))
+
+    @staticmethod
     def intersection_areas(mask1, mask2):
         """Area(boxes1 & boxes2)
 

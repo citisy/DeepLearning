@@ -1,6 +1,7 @@
 import logging
 import time
 from datetime import datetime
+from pathlib import Path
 from typing import List, Optional, Dict, Union, Annotated
 
 import numpy as np
@@ -251,7 +252,12 @@ class CheckpointHooks:
 
     def load_pretrained_checkpoint(self):
         if hasattr(self, 'pretrained_checkpoint'):
-            self.load(self.pretrained_checkpoint, save_type=WEIGHT, raw_tensors=False)
+            pretrained_checkpoint = Path(self.pretrained_checkpoint)
+            self.load(
+                self.pretrained_checkpoint,
+                additional_path=f'{pretrained_checkpoint.parent}/{pretrained_checkpoint.stem}.additional.pth',
+                save_type=WEIGHT, raw_tensors=False
+            )
 
 
 class ModelHooks:
@@ -439,6 +445,7 @@ class ModelHooks:
             metric_kwargs=dict(), data_get_kwargs=dict(), dataloader_kwargs=dict(),
             **kwargs
     ):
+        assert self.models, 'model list is empty, it seems that you have not init the processor first, perhaps run `processor.init()` first?'
         assert batch_size, 'please set batch_size'
         assert max_epoch, 'please set max_epoch'
         self.log(f'{batch_size = }')
@@ -763,6 +770,7 @@ class ModelHooks:
                 is_visualize:
                 max_vis_num:
                 save_ret_func:
+                data_get_kwargs:
                 dataloader_kwargs:
 
         val_container:
@@ -797,6 +805,7 @@ class ModelHooks:
         self.val_end_container.update({func: kwargs})
 
     def on_val_start(self, val_dataloader=None, batch_size=None, data_get_kwargs=dict(), dataloader_kwargs=dict(), epoch=-1, **kwargs):
+        assert self.models, 'model list is empty, it seems that you have not init the processor first, perhaps run `processor.init()` first?'
         assert batch_size, 'please set batch_size'
         dataloader_kwargs.setdefault('batch_size', batch_size)
         if val_dataloader is None:

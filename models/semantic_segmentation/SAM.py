@@ -269,16 +269,15 @@ class Model(nn.Module):
         )
         return points
 
-    def make_points(self, effective_areas):
+    def make_points(self, bboxes):
         points = []
-        for effective_area in effective_areas:
-            l, r, t, d = effective_area
+        for box in bboxes:
+            l, t, r, d = box
             dx, dy = r - l, d - t
             in_points = np.stack([
                 l + self.grid_points[:, 0] * dx,
                 t + self.grid_points[:, 1] * dy
             ], axis=1)
-            in_points = torch.as_tensor(in_points)
             points.append(in_points)
 
         return points

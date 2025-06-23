@@ -30,7 +30,7 @@ class Area:
         """
         # boxes1[:, None, 2:]: (N, 2) -> (N, 1, 2)
         # minimum((N, 1, 2), (M, 2)) -> broadcast ->  minimum((N, M, 2), (N, M, 2)) -> (N, M, 2)
-        return (np.minimum(boxes1[:, None, 2:], boxes2[:, 2:]) - np.maximum(boxes1[:, None, :2], boxes2[:, :2])).clip(0).prod(2)
+        return (np.minimum(boxes1[:, None, 2:], boxes2[None, :, 2:]) - np.maximum(boxes1[:, None, :2], boxes2[None, :, :2])).clip(0).prod(2)
 
     @classmethod
     def union_areas(cls, boxes1, boxes2, inter=None):
@@ -63,7 +63,7 @@ class Area:
         Returns:
             outer_areas(np.array): shape=(N, M)
         """
-        return (np.maximum(boxes1[:, None, 2:], boxes2[:, 2:]) - np.minimum(boxes1[:, None, :2], boxes2[:, :2])).clip(0).prod(2)
+        return (np.maximum(boxes1[:, None, 2:], boxes2[None, :, 2:]) - np.minimum(boxes1[:, None, :2], boxes2[None, :, :2])).clip(0).prod(2)
 
 
 class Area1D(Area):

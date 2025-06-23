@@ -119,26 +119,29 @@ class Model(nn.Module):
         if self.training:
             raise NotImplementedError()
         else:
-            return {'preds': self.post_process(input_ids, **kwargs)}
+            return self.post_process(input_ids, **kwargs)
 
     def post_process(
             self,
-            x, content_generator=True, seq_lens=None,
+            x, content_generator=True, seq_lens=None, past_kvs=None,
             **decode_kwargs
     ):
         if content_generator:
-            past_kvs = [dict(
-                # (b, n, s, d)
-                k=torch.empty((x.shape[0], self.decoder.num_heads, 0, self.decoder.hidden_size // self.decoder.num_heads), dtype=self.decoder.dtype, device=self.decoder.device),
-                v=torch.empty((x.shape[0], self.decoder.num_heads, 0, self.decoder.hidden_size // self.decoder.num_heads), dtype=self.decoder.dtype, device=self.decoder.device)
-            ) for i in range(self.decoder.num_blocks)]
+            if past_kvs is None:
+                past_kvs = [dict(
+                    # (b, n, s, d)
+                    k=torch.empty((x.shape[0], self.decoder.num_heads, 0, self.decoder.hidden_size // self.decoder.num_heads), dtype=self.decoder.dtype, device=self.decoder.device),
+                    v=torch.empty((x.shape[0], self.decoder.num_heads, 0, self.decoder.hidden_size // self.decoder.num_heads), dtype=self.decoder.dtype, device=self.decoder.device)
+                ) for i in range(self.decoder.num_blocks)]
 
             preds = beam_search(x, seq_lens, self.decode, eos_ids=self.eos_ids, past_kvs=past_kvs, **decode_kwargs)
 
-            del past_kvs
             torch_utils.ModuleManager.torch_gc()
 
-            return preds
+            return dict(
+                preds=preds,
+                past_kvs=past_kvs
+            )
         else:
             return self.decode(x, **decode_kwargs)
 
