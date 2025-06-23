@@ -35,12 +35,12 @@ class Model(Paraformer.Model):
             peaks = us_peaks[i][: encoder_out_lens[i] * 3]
 
             am_scores = decoder_out[i, : pre_token_length[i], :]
-            token_int = am_scores.argmax(dim=-1)
+            preds = am_scores.argmax(dim=-1)
 
             results.append({
                 'alphas': alphas,
                 'peaks': peaks,
-                "token_int": token_int,
+                "preds": preds,
             })
 
         return results

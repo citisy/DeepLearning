@@ -61,10 +61,6 @@ class Model(nn.Module):
 
     input_size: int = 560
     vocab_size: int = 8404
-    ignore_id: int = -1
-    blank_id: int = 0
-    sos: int = 1
-    eos: int = 2
 
     def __init__(
             self, cmvn,
@@ -114,17 +110,17 @@ class WavFrontend(nn.Module):
     def forward(
             self,
             x: torch.Tensor,  # (b, seq_len)
-            input_lengths=None,
+            seq_lens=None,
             **kwargs,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         batch_size = x.size(0)
-        if input_lengths is None:
-            input_lengths = [x.size(1)] * batch_size
+        if seq_lens is None:
+            seq_lens = [x.size(1)] * batch_size
 
         feats = []
         feats_lens = []
         for i in range(batch_size):
-            waveform_length = input_lengths[i]
+            waveform_length = seq_lens[i]
             waveform = x[i][:waveform_length]
             if self.upsacle_samples:
                 waveform = waveform * (1 << 15)
@@ -276,34 +272,34 @@ class SANMEncoder(nn.Module):
 
     def forward(
             self,
-            xs_pad: torch.Tensor,
-            ilens: torch.Tensor,
+            x: torch.Tensor,
+            seq_lens: torch.Tensor,
     ):
         """Embed positions in tensor.
 
         Args:
-            xs_pad: input tensor (B, L, D)
-            ilens: input length (B)
+            x: input tensor (B, L, D)
+            seq_lens: input length (B)
         Returns:
             position embedded tensor and mask
         """
-        masks = (attentions.make_pad_mask(ilens)[:, None, :]).to(xs_pad.device)
-        xs_pad = xs_pad * self.output_size ** 0.5
-        xs_pad += self.embed(torch.arange(1, xs_pad.shape[1] + 1, device=xs_pad.device, dtype=torch.float32))[None]
+        masks = (attentions.make_pad_mask(seq_lens)[:, None, :]).to(x.device)
+        x = x * self.output_size ** 0.5
+        x += self.embed(torch.arange(1, x.shape[1] + 1, device=x.device, dtype=torch.float32))[None]
 
         # xs_pad = self.dropout(xs_pad)
-        args = (xs_pad, masks)
+        args = (x, masks)
         for m in self.encoders0:
             args = m(*args)
-        xs_pad, masks = args[0], args[1]
-        args = (xs_pad, masks)
+        x, masks = args[0], args[1]
+        args = (x, masks)
         for m in self.encoders:
             args = m(*args)
-        xs_pad, masks = args[0], args[1]
-        xs_pad = self.after_norm(xs_pad)
+        x, masks = args[0], args[1]
+        x = self.after_norm(x)
         olens = masks.squeeze(1).sum(1)
 
-        return xs_pad, olens
+        return x, olens
 
 
 class SinusoidalEmbedding(embeddings.SinusoidalEmbedding):
@@ -585,7 +581,6 @@ class SANMDecoder(nn.Module):
 
             x: decoded token score before softmax (batch, maxlen_out, token)
                 if use_output_layer is True,
-            olens: (batch, )
         """
         tgt = ys_in_pad
         tgt_mask = attentions.make_pad_mask(ys_in_lens).to(device=tgt.device)
@@ -630,7 +625,7 @@ class SANMDecoderLayer(nn.Module):
             self.norm3 = LayerNorm(size)
         self.dropout = nn.Dropout(drop_prob)
 
-    def forward(self, tgt, tgt_mask, context, context_mask=None, cache=None):
+    def forward(self, tgt, tgt_mask, context, context_mask=None):
         """Compute decoded features.
 
         Args:
@@ -638,8 +633,6 @@ class SANMDecoderLayer(nn.Module):
             tgt_mask (torch.Tensor): Mask for input tensor (#batch, maxlen_out).
             context (torch.Tensor): Encoded memory, float32 (#batch, maxlen_in, size).
             context_mask (torch.Tensor): Encoded memory mask (#batch, maxlen_in).
-            cache (List[torch.Tensor]): List of cached tensors.
-                Each tensor shape should be (#batch, maxlen_out - 1, size).
 
         Returns:
             torch.Tensor: Output tensor(#batch, maxlen_out, size).
@@ -664,7 +657,7 @@ class SANMDecoderLayer(nn.Module):
             x_src_attn = self.src_attn(x, context, context_mask)
             x = residual + self.dropout(x_src_attn)
 
-        return x, tgt_mask, context, context_mask, cache
+        return x, tgt_mask, context, context_mask
 
 
 class SANMDecoderAttention(FSMNBlock):
