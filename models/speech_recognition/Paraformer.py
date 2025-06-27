@@ -1,6 +1,5 @@
 import math
 from functools import partial
-from typing import List, Optional, Tuple
 
 import numpy as np
 import torch
@@ -39,7 +38,7 @@ class WeightConverter:
         convert_dict = {
             **cls.encoder_convert_dict,
             **cls.decoder_convert_dict,
-            'predictor': 'head'
+            'predictor': 'neck'
         }
         state_dict = torch_utils.Converter.convert_keys(state_dict, convert_dict)
         return state_dict
@@ -57,10 +56,16 @@ class Model(nn.Module):
         (Paraformer: Fast and Accurate Parallel Transformer for Non-autoregressive End-to-End Speech Recognition)[https://arxiv.org/abs/2206.08317]
     code:
         `funasr.models.bicif_paraformer.model.Paraformer`
+    blog:
+        https://mp.weixin.qq.com/s/xQ87isj5_wxWiQs4qUXtVw
     """
 
     input_size: int = 560
     vocab_size: int = 8404
+    ignore_id: int = -1
+    blank_id: int = 0
+    sos_id: int = 1
+    eos_id: int = 2
 
     def __init__(
             self, cmvn,
@@ -71,7 +76,7 @@ class Model(nn.Module):
         self.__dict__.update(model_config)
         self.frontend = WavFrontend(cmvn, **frontend_config)
         self.encoder = SANMEncoder(input_size=self.input_size, **encoder_config)
-        self.head = CifPredictorV3(**head_config)
+        self.neck = CifPredictorV3(**head_config)
         self.decoder = SANMDecoder(
             vocab_size=self.vocab_size,
             encoder_output_size=self.encoder.output_size,
@@ -105,6 +110,7 @@ class WavFrontend(nn.Module):
 
     def __init__(self, cmvn, **kwargs):
         super().__init__()
+        self.__dict__.update(kwargs)
         self.register_buffer('cmvn', cmvn, persistent=False)
 
     def forward(
@@ -112,7 +118,7 @@ class WavFrontend(nn.Module):
             x: torch.Tensor,  # (b, seq_len)
             seq_lens=None,
             **kwargs,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+    ):
         batch_size = x.size(0)
         if seq_lens is None:
             seq_lens = [x.size(1)] * batch_size
@@ -123,7 +129,7 @@ class WavFrontend(nn.Module):
             waveform_length = seq_lens[i]
             waveform = x[i][:waveform_length]
             if self.upsacle_samples:
-                waveform = waveform * (1 << 15)
+                waveform = waveform * (2 ** 15)
             waveform = waveform.unsqueeze(0)
             mat = kaldi.fbank(
                 waveform,
@@ -139,11 +145,10 @@ class WavFrontend(nn.Module):
 
             if self.lfr_m != 1 or self.lfr_n != 1:
                 mat = self.apply_lfr(mat)
-            if self.cmvn is not None:
-                mat = self.apply_cmvn(mat)
-            feat_length = mat.size(0)
+
+            mat = self.apply_cmvn(mat)
             feats.append(mat)
-            feats_lens.append(feat_length)
+            feats_lens.append(mat.size(0))
 
         feats_lens = torch.as_tensor(feats_lens)
         if batch_size == 1:
@@ -168,13 +173,11 @@ class WavFrontend(nn.Module):
         if num_padding > 0:
             num_padding = (2 * lfr_m - 2 * T + (T_lfr - 1 + last_idx) * lfr_n) / 2 * (T_lfr - last_idx)
             inputs = torch.vstack([inputs] + [inputs[-1:]] * int(num_padding))
-        LFR_outputs = inputs.as_strided(sizes, strides)
-        return LFR_outputs.clone().type(torch.float32)
+        lfr_outputs = inputs.as_strided(sizes, strides)
+        return lfr_outputs.clone().type(torch.float32)
 
-    def apply_cmvn(self, inputs):  # noqa
-        """
-        Apply CMVN with mvn data
-        """
+    def apply_cmvn(self, inputs):
+        """Apply CMVN with mvn data"""
         frame, dim = inputs.shape
 
         means = self.cmvn[0:1, :dim]
@@ -565,7 +568,7 @@ class SANMDecoder(nn.Module):
             ys_in_pad: torch.Tensor,
             ys_in_lens: torch.Tensor,
             chunk_mask: torch.Tensor = None,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+    ):
         """Forward decoder.
 
         Args:
@@ -576,9 +579,8 @@ class SANMDecoder(nn.Module):
                 if input_layer == "embed"
                 input tensor (batch, maxlen_out, #mels) in the other cases
             ys_in_lens: (batch)
+            chunk_mask:
         Returns:
-            (tuple): tuple containing:
-
             x: decoded token score before softmax (batch, maxlen_out, token)
                 if use_output_layer is True,
         """
@@ -594,9 +596,9 @@ class SANMDecoder(nn.Module):
 
         x = tgt
         for m in self.decoders:
-            x, tgt_mask, memory, memory_mask, _ = m(x, tgt_mask, memory, memory_mask)
+            x, tgt_mask, memory, memory_mask = m(x, tgt_mask, memory, memory_mask)
         for m in self.decoders3:
-            x, tgt_mask, memory, memory_mask, _ = m(x, tgt_mask, memory, memory_mask)
+            x, tgt_mask, memory, memory_mask = m(x, tgt_mask, memory, memory_mask)
         hidden = self.after_norm(x)
         x = self.output_layer(hidden)
         return x
@@ -715,7 +717,8 @@ class CrossAttention2D(nn.Module):
 
 
 class CifPredictorV3(nn.Module):
-    """code: `funasr.models.bicif_paraformer.cif_predictor.CifPredictorV3`"""
+    """Continuous integrate-and-fire(Cif)
+    code: `funasr.models.bicif_paraformer.cif_predictor.CifPredictorV3`"""
     input_dim = 512
     l_order = 1
     r_order = 1
@@ -757,7 +760,7 @@ class CifPredictorV3(nn.Module):
         h = hidden
         mk = mask
 
-        context = hidden.transpose(1, 2)
+        context = hidden.transpose(1, 2)  # (b, s, d) -> (b, d, s)
         queries = self.pad(context)
         output = F.relu(self.cif_conv1d(queries))
         output = output.transpose(1, 2)
@@ -785,7 +788,7 @@ class CifPredictorV3(nn.Module):
         elif self.tail_threshold > 0.0:
             h, alphas, token_num = self.tail_process_fn(h, alphas, mask=mk)
 
-        acoustic_embeds, _ = self.cif(h, alphas)
+        acoustic_embeds = self.cif(h, alphas)
         if target_length is None and self.tail_threshold > 0.0:
             token_num_int = torch.max(token_num).type(torch.int32).item()
             acoustic_embeds = acoustic_embeds[:, :token_num_int, :]
@@ -794,7 +797,7 @@ class CifPredictorV3(nn.Module):
         return acoustic_embeds, token_num, alphas, us_alphas, us_peaks
 
     def tail_process_fn(self, hidden, alphas, mask=None):
-        b, t, d = hidden.size()
+        b, s, d = hidden.size()
         tail_threshold = self.tail_threshold
         if mask is not None:
             zeros_t = torch.zeros((b, 1), dtype=torch.float32, device=alphas.device)
@@ -817,18 +820,19 @@ class CifPredictorV3(nn.Module):
         return hidden, alphas, token_num_floor
 
     def cif(self, hidden, alphas):
-        batch_size, len_time, hidden_size = hidden.size()
+        """count embeddings"""
+        b, s, d = hidden.shape
 
-        # loop varss
-        integrate = torch.zeros([batch_size], device=hidden.device)
-        frame = torch.zeros([batch_size, hidden_size], device=hidden.device)
+        # loop vars
+        integrate = torch.zeros([b], device=hidden.device)
+        frame = torch.zeros([b, d], device=hidden.device)
         # intermediate vars along time
         list_fires = []
         list_frames = []
 
-        for t in range(len_time):
+        for t in range(s):
             alpha = alphas[:, t]
-            distribution_completion = torch.ones([batch_size], device=hidden.device) - integrate
+            distribution_completion = torch.ones([b], device=hidden.device) - integrate
 
             integrate += alpha
             list_fires.append(integrate)
@@ -836,29 +840,30 @@ class CifPredictorV3(nn.Module):
             fire_place = integrate >= self.threshold
             integrate = torch.where(
                 fire_place,
-                integrate - torch.ones([batch_size], device=hidden.device),
+                integrate - torch.ones([b], device=hidden.device),
                 integrate
             )
             cur = torch.where(fire_place, distribution_completion, alpha)
-            remainds = alpha - cur
 
-            frame += cur[:, None] * hidden[:, t, :]
+            frame += cur * hidden[:, t, :]
             list_frames.append(frame)
             frame = torch.where(
-                fire_place[:, None].repeat(1, hidden_size), remainds[:, None] * hidden[:, t, :], frame
+                fire_place[:, None].repeat(1, d),
+                (alpha - cur) * hidden[:, t, :],
+                frame
             )
 
         fires = torch.stack(list_fires, 1)
         frames = torch.stack(list_frames, 1)
-        list_ls = []
-        len_labels = torch.round(alphas.sum(-1)).int()
-        max_label_len = len_labels.max()
-        for b in range(batch_size):
-            fire = fires[b, :]
-            l = torch.index_select(frames[b, :, :], 0, torch.nonzero(fire >= self.threshold).squeeze())
-            pad_l = torch.zeros([max_label_len - l.size(0), hidden_size], device=hidden.device)
-            list_ls.append(torch.cat([l, pad_l], 0))
-        return torch.stack(list_ls, 0), fires
+        embeds = []
+        token_num = torch.round(alphas.sum(-1)).int()
+        max_token_num = token_num.max()
+        for i in range(b):
+            l = torch.index_select(frames[i], 0, torch.nonzero(fires[i] >= self.threshold).squeeze())
+            # use zero embed to the last frame if not completed.
+            pad_l = torch.zeros([max_token_num - l.size(0), d], device=hidden.device)
+            embeds.append(torch.cat([l, pad_l], 0))
+        return torch.stack(embeds, 0)
 
     def get_timestamp(self, hidden, mask=None, token_num=None):
         context = hidden.transpose(1, 2)
@@ -882,7 +887,7 @@ class CifPredictorV3(nn.Module):
                 .transpose(-1, -2)
                 .reshape(us_alphas.shape[0], -1)
                 .unsqueeze(-1)
-            )
+            )  # (b, 1, s) -> (b, self.upsample_times * s, 1)
             us_alphas = us_alphas * mask
         us_alphas = us_alphas.squeeze(-1)
         if token_num is not None:
