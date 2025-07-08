@@ -455,10 +455,15 @@ class ImageEncoder(nn.Module):
                 norm_fn=norm_fn,
                 attention_fn=WindowsAttention,
                 fn_kwargs=dict(
-                    bias=qkv_bias,
                     use_conv=False,
                     separate=False,
-                    window_size=window_size_
+                    window_size=window_size_,
+                    qkv_fn_kwargs=dict(
+                        bias=qkv_bias,
+                    ),
+                    out_fn_kwargs=dict(
+                        bias=qkv_bias,
+                    ),
                 ),
                 attend_fn=RelScaleAttend,
                 attend_fn_kwargs=dict(

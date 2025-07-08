@@ -334,18 +334,26 @@ class Downsample(nn.Module):
 
 
 class Upsample(nn.Module):
-    def __init__(self, in_ch, out_ch=None, use_conv=True):
+    def __init__(self, in_ch, out_ch=None, op_fn=None, use_conv=True, use_conv_transpose=True):
         super().__init__()
         out_ch = out_ch or in_ch
 
         if use_conv:
+            if op_fn is None:
+                op_fn = nn.Conv2d
             self.op = nn.Sequential(
                 nn.Upsample(scale_factor=2),
-                nn.Conv2d(in_ch, out_ch, 3, padding=1)
+                op_fn(in_ch, out_ch, 3, padding=1)
             )
+        elif use_conv_transpose:
+            if op_fn is None:
+                op_fn = nn.ConvTranspose2d
+            self.op = op_fn(in_ch, out_ch, 4, stride=2, padding=1)
         else:
             assert in_ch == out_ch
-            self.op = nn.Upsample(scale_factor=2)
+            if op_fn is None:
+                op_fn = nn.Upsample
+            self.op = op_fn(scale_factor=2)
 
         self.in_channels = in_ch
         self.out_channels = out_ch

@@ -151,7 +151,14 @@ class Model(nn.Module):
 
         self.embedding = nn.Embedding(vocab_size, hidden_size)
 
-        fn_kwargs = dict(bias=False)
+        fn_kwargs = dict(
+            qkv_fn_kwargs=dict(
+                bias=False
+            ),
+            out_fn_kwargs=dict(
+                bias=False
+            )
+        )
         attend_kwargs = dict(
             n_relative_buckets=n_relative_buckets,
             relative_max_distance=relative_max_distance,

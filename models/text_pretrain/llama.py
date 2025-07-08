@@ -81,7 +81,14 @@ class Model(nn.Module):
             feed_forward_fn=FeedForward,
             norm_fn=normalizations.RMSNorm2D,
             norm_kwargs=dict(eps=norm_eps),
-            fn_kwargs=dict(bias=False),
+            fn_kwargs=dict(
+                qkv_fn_kwargs=dict(
+                    bias=False
+                ),
+                out_fn_kwargs=dict(
+                    bias=False
+                )
+            ),
             ff_kwargs=dict(bias=False),
             num_blocks=n_layer
         )
@@ -130,7 +137,7 @@ class FeedForward(nn.Module):
         act = act or nn.SiLU()
         self.f1 = layers.Linear(hidden_size, ff_hidden_size, mode='la', act=act, **kwargs)  # gate
         self.f2 = layers.Linear(ff_hidden_size, hidden_size, mode='ld', drop_prob=drop_prob, **kwargs)  # down
-        self.f3 = layers.Linear(hidden_size, ff_hidden_size, mode='l', **kwargs)    # up
+        self.f3 = layers.Linear(hidden_size, ff_hidden_size, mode='l', **kwargs)  # up
 
     def forward(self, x):
         return self.f2(self.f1(x) * self.f3(x))

@@ -669,12 +669,17 @@ class BasicTransformerBlock(nn.Module):
         super().__init__()
         attend_fn = attentions.make_attend_fn.get(attend_type)
         self.norm1 = nn.LayerNorm(query_dim)
-        self.attn1 = CrossAttention2D(query_dim=query_dim, n_heads=n_heads, head_dim=head_dim, attend=attend_fn(), drop_prob=drop_prob, bias=False)  # is a self-attention
+        self.attn1 = CrossAttention2D(
+            query_dim=query_dim, n_heads=n_heads, head_dim=head_dim, attend=attend_fn(), drop_prob=drop_prob,
+            qkv_fn_kwargs=dict(bias=False), out_fn_kwargs=dict(bias=False),
+        )  # is a self-attention
         self.attn1.to_out.linear.bias = nn.Parameter(torch.empty(query_dim))  # only to_out module has bias
 
         self.norm2 = nn.LayerNorm(query_dim)
-        self.attn2 = CrossAttention2D(query_dim=query_dim, context_dim=context_dim, n_heads=n_heads, head_dim=head_dim, attend=attend_fn(), drop_prob=drop_prob, bias=False)  # is self-attn if context is none
-        self.attn2.to_out.linear.bias = nn.Parameter(torch.empty(query_dim))  # only to_out module has bias
+        self.attn2 = CrossAttention2D(
+            query_dim=query_dim, context_dim=context_dim, n_heads=n_heads, head_dim=head_dim, attend=attend_fn(), drop_prob=drop_prob,
+            qkv_fn_kwargs=dict(bias=False), out_fn_kwargs=dict(bias=True),  # only to_out module has bias
+        )  # is self-attn if context is none
 
         self.norm3 = nn.LayerNorm(query_dim)
         self.ff = FeedForward(query_dim, drop_prob=drop_prob, glu=gated_ff)

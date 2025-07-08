@@ -115,13 +115,23 @@ class TransformerBlock(nn.Module):
         attention_kwargs = dict(
             n_heads=num_attention_heads,
             model_dim=hidden_size,
+            drop_prob=drop_prob,
         )
-        fn_kwargs.setdefault('drop_prob', drop_prob)
-        de_fn_kwargs.setdefault('drop_prob', drop_prob)
-        ff_kwargs.setdefault('drop_prob', drop_prob)
+        fn_kwargs = {
+            **attention_kwargs,
+            **fn_kwargs
+        }
+        de_fn_kwargs = {
+            **attention_kwargs,
+            **de_fn_kwargs
+        }
+        ff_kwargs = {
+            'drop_prob': drop_prob,
+            **ff_kwargs
+        }
 
         self.attn_res = Residual(
-            attention_fn(attend=attend, **attention_kwargs, **fn_kwargs),  # SelfAttention
+            attention_fn(attend=attend, **fn_kwargs),  # SelfAttention
             norm=norm_fn(hidden_size, **norm_kwargs),
             norm_first=norm_first
         )
@@ -129,7 +139,7 @@ class TransformerBlock(nn.Module):
         self.is_decode = is_decode
         if is_decode:
             self.de_attn_res = Residual(
-                de_attention_fn(attend=de_attend, **attention_kwargs, **de_fn_kwargs),  # CrossAttention
+                de_attention_fn(attend=de_attend, **de_fn_kwargs),  # CrossAttention
                 norm=norm_fn(hidden_size, **norm_kwargs),
                 norm_first=norm_first
             )

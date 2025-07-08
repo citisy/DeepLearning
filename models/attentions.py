@@ -72,20 +72,29 @@ def make_pad_mask(lens, x=None, length_dim=-1, max_len=None):
             If set, masks will be the same shape as this tensor.
         length_dim (int, optional): Dimension indicator of the above tensor.
             See the example.
+        max_len:
+
+    Examples:
+        >>> lens = [5, 3, 2]
+        >>> make_pad_mask(lens)
+        [[True, True, True, True ,True],
+         [True, True, True, False, False],
+         [True, True, False, False, False]]
 
     """
-    if not isinstance(lens, list):
-        lens = lens.tolist()
-    bs = int(len(lens))
+    if not isinstance(lens, torch.Tensor):
+        lens = torch.tensor(lens)
+
     if max_len is None:
         if x is None:
             max_len = int(max(lens))
         else:
             max_len = x.size(length_dim)
 
-    seq_range = torch.arange(0, max_len, dtype=torch.int64)
+    bs = lens.shape[0]
+    seq_range = torch.arange(0, max_len, dtype=torch.int64, device=lens.device)
     seq_range_expand = seq_range.unsqueeze(0).expand(bs, max_len)
-    seq_length_expand = seq_range_expand.new(lens).unsqueeze(-1)
+    seq_length_expand = lens.unsqueeze(-1)
     mask = seq_range_expand < seq_length_expand
 
     if x is not None:
@@ -99,17 +108,62 @@ def make_pad_mask(lens, x=None, length_dim=-1, max_len=None):
     return mask
 
 
+def make_chunk_mask(
+        size: int,
+        chunk_size: int,
+) -> torch.Tensor:
+    """Create mask for subsequent steps (size, size) with chunk size,
+       this is for streaming encoder
+
+    Args:
+        size (int): size of mask
+        chunk_size (int): size of chunk
+
+    Returns:
+        torch.Tensor: mask
+
+    Examples:
+        >>> make_chunk_mask(4, 1)
+        [[ True, False, False, False],
+        [ True,  True, False, False],
+        [ True,  True,  True, False],
+        [ True,  True,  True,  True]]
+        >>> make_chunk_mask(4, 2)
+        [[ True,  True, False, False],
+        [ True,  True, False, False],
+        [ True,  True,  True,  True],
+        [ True,  True,  True,  True]]
+        >>> make_chunk_mask(4, 2)
+        [[ True,  True,  True, False],
+        [ True,  True,  True, False],
+        [ True,  True,  True, False],
+        [ True,  True,  True,  True]]
+    """
+    # NOTE this modified implementation meets onnx export requirements, but it doesn't support num_left_chunks
+    pos_idx = torch.arange(size)
+    block_value = (torch.div(pos_idx, chunk_size, rounding_mode='trunc') + 1) * chunk_size
+    ret = pos_idx.unsqueeze(0) < block_value.unsqueeze(1)
+    return ret
+
+
 def remake_mask(attention_mask, det_shape, det_dtype=None, return_bool=True):
-    """remake the value and the shape of the mask to apply for attention inputs"""
+    """remake the value and the shape of the mask to apply for attention inputs
+    ori mask is False to mask, convert to True to mask
+    """
     if attention_mask is None:
         return attention_mask
 
     # [1,1,1,0,0,....] -> [F,F,F,T,T,...]
     attention_mask = ~attention_mask.to(dtype=torch.bool)
     if len(attention_mask.shape) != len(det_shape):
-        *t, i, j = det_shape
-        n, j = attention_mask.shape
-        attention_mask = attention_mask.view(n, *[1] * len(t), j).repeat(1, 1, i, 1)  # (n, j) -> (n, 1, i, j)
+        if len(attention_mask.shape) == 2:
+            *t, i, j = det_shape
+            n, j = attention_mask.shape
+            attention_mask = attention_mask.view(n, *[1] * len(t), j).repeat(1, 1, i, 1)  # (n, j) -> (n, 1, i, j)
+        elif len(attention_mask.shape) == 3 and len(det_shape) == 4:
+            attention_mask = attention_mask[:, None]  # # (n, i, j) -> (n, 1, i, j)
+        else:
+            raise NotImplementedError(f'Dont support attention_mask.shape={len(attention_mask.shape)} and det_shape={det_shape}!')
 
     if not return_bool:
         # [1,1,1,0,0,....] -> [0,0,0,-inf,-inf,,...]
@@ -121,6 +175,14 @@ def remake_mask(attention_mask, det_shape, det_dtype=None, return_bool=True):
 
 
 def mask(sim, attention_mask=None, use_min=True):
+    """
+
+    Args:
+        sim:
+        attention_mask: True to mask
+        use_min:
+
+    """
     if attention_mask is not None:  # mask pad
         attention_mask = remake_mask(attention_mask, sim.shape, return_bool=True)
         min_num = torch.finfo(sim.dtype).min if use_min else -float('inf')
@@ -137,7 +199,7 @@ class CrossAttention2D(nn.Module):
             n_heads=None, model_dim=None, head_dim=None, query_dim=None, context_dim=None,
             use_conv=False, separate=True,
             attend=None, out_layer=None, out_layer_fn=None,
-            drop_prob=0.1, **fn_kwargs
+            drop_prob=0.1, qkv_fn_kwargs=dict(), out_fn_kwargs=dict(), **fn_kwargs
     ):
         super().__init__()
         n_heads, model_dim, head_dim = get_attention_input(n_heads, model_dim, head_dim)
@@ -155,39 +217,39 @@ class CrossAttention2D(nn.Module):
         if use_conv:  # build by conv func
             if separate:
                 self.to_qkv = nn.ModuleList([
-                    nn.Conv1d(query_dim, model_dim, 1, **fn_kwargs),
-                    nn.Conv1d(context_dim, model_dim, 1, **fn_kwargs),
-                    nn.Conv1d(context_dim, model_dim, 1, **fn_kwargs),
+                    nn.Conv1d(query_dim, model_dim, 1, **qkv_fn_kwargs),
+                    nn.Conv1d(context_dim, model_dim, 1, **qkv_fn_kwargs),
+                    nn.Conv1d(context_dim, model_dim, 1, **qkv_fn_kwargs),
                 ])
             else:  # only for self attention
                 assert query_dim == context_dim
-                self.to_qkv = nn.Conv1d(query_dim, model_dim * 3, 1, **fn_kwargs)
+                self.to_qkv = nn.Conv1d(query_dim, model_dim * 3, 1, **qkv_fn_kwargs)
 
             self.view_in = Rearrange('b (n c) dk-> b n c dk', n=n_heads)
 
             self.view_out = Rearrange('b n c dk -> b (n c) dk')
             if out_layer is None:
                 out_layer_fn = out_layer_fn or nn.Conv1d
-                out_layer = out_layer_fn(model_dim, query_dim, **fn_kwargs)
+                out_layer = out_layer_fn(model_dim, query_dim, **qkv_fn_kwargs)
             self.to_out = out_layer
 
         else:  # build by linear func
             if separate:
                 self.to_qkv = nn.ModuleList([
-                    nn.Linear(query_dim, model_dim, **fn_kwargs),
-                    nn.Linear(context_dim, model_dim, **fn_kwargs),
-                    nn.Linear(context_dim, model_dim, **fn_kwargs),
+                    nn.Linear(query_dim, model_dim, **qkv_fn_kwargs),
+                    nn.Linear(context_dim, model_dim, **qkv_fn_kwargs),
+                    nn.Linear(context_dim, model_dim, **qkv_fn_kwargs),
                 ])
             else:  # only for self attention
                 assert query_dim == context_dim
-                self.to_qkv = nn.Linear(query_dim, model_dim * 3, **fn_kwargs)
+                self.to_qkv = nn.Linear(query_dim, model_dim * 3, **qkv_fn_kwargs)
 
             self.view_in = Rearrange('b s (n dk)-> b n s dk', n=n_heads)
 
             self.view_out = Rearrange('b n s dk -> b s (n dk)')
             if out_layer is None:
                 out_layer_fn = out_layer_fn or Linear
-                out_layer = out_layer_fn(model_dim, query_dim, mode='ld', drop_prob=drop_prob, **fn_kwargs)
+                out_layer = out_layer_fn(model_dim, query_dim, mode='ld', **out_fn_kwargs)
             self.to_out = out_layer
 
         self.attend = ScaleAttend(drop_prob=drop_prob) if attend is None else attend
@@ -219,8 +281,11 @@ class CrossAttention2D(nn.Module):
 class CrossAttention3D(nn.Module):
     """cross attention build by conv function"""
 
-    def __init__(self, n_heads=None, model_dim=None, head_dim=None, query_dim=None, context_dim=None,
-                 use_conv=True, separate=True, drop_prob=0., attend=None, out_layer=None, **fn_kwargs):
+    def __init__(
+            self, n_heads=None, model_dim=None, head_dim=None, query_dim=None, context_dim=None,
+            use_conv=True, separate=True, drop_prob=0., attend=None, out_layer=None,
+            qkv_fn_kwargs=dict(), out_fn_kwargs=dict(), **fn_kwargs
+    ):
         super().__init__()
         n_heads, model_dim, head_dim = get_attention_input(n_heads, model_dim, head_dim)
         query_dim = query_dim or model_dim
@@ -233,13 +298,13 @@ class CrossAttention3D(nn.Module):
         if use_conv:  # build by conv func
             if separate:
                 self.to_qkv = nn.ModuleList([
-                    nn.Conv2d(query_dim, model_dim, 1, **fn_kwargs),
-                    nn.Conv2d(context_dim, model_dim, 1, **fn_kwargs),
-                    nn.Conv2d(context_dim, model_dim, 1, **fn_kwargs),
+                    nn.Conv2d(query_dim, model_dim, 1, **qkv_fn_kwargs),
+                    nn.Conv2d(context_dim, model_dim, 1, **qkv_fn_kwargs),
+                    nn.Conv2d(context_dim, model_dim, 1, **qkv_fn_kwargs),
                 ])
             else:  # only for self attention
                 assert query_dim == context_dim
-                self.to_qkv = nn.Conv2d(query_dim, model_dim * 3, 1, **fn_kwargs)
+                self.to_qkv = nn.Conv2d(query_dim, model_dim * 3, 1, **qkv_fn_kwargs)
 
             self.view_in = Rearrange('b c h w -> b 1 (h w) c')
             self.view_out = partial(rearrange, pattern='b 1 (h w) c -> b c h w')
@@ -248,18 +313,18 @@ class CrossAttention3D(nn.Module):
         else:  # build by linear func
             if separate:
                 self.to_qkv = nn.ModuleList([
-                    nn.Linear(query_dim, model_dim, **fn_kwargs),
-                    nn.Linear(context_dim, model_dim, **fn_kwargs),
-                    nn.Linear(context_dim, model_dim, **fn_kwargs),
+                    nn.Linear(query_dim, model_dim, **qkv_fn_kwargs),
+                    nn.Linear(context_dim, model_dim, **qkv_fn_kwargs),
+                    nn.Linear(context_dim, model_dim, **qkv_fn_kwargs),
                 ])
             else:  # only for self attention
                 assert query_dim == context_dim
-                self.to_qkv = nn.Linear(query_dim, model_dim * 3, **fn_kwargs)
+                self.to_qkv = nn.Linear(query_dim, model_dim * 3, **qkv_fn_kwargs)
 
             self.view_in = Rearrange('b h w c -> b 1 (h w) c')
 
             self.view_out = partial(rearrange, pattern='b 1 (h w) c -> b h w c')
-            self.to_out = Linear(model_dim, query_dim, mode='ld', drop_prob=drop_prob, **fn_kwargs) if out_layer is None else out_layer
+            self.to_out = Linear(model_dim, query_dim, mode='ld', drop_prob=drop_prob, **out_fn_kwargs) if out_layer is None else out_layer
 
         self.attend = ScaleAttend(drop_prob=drop_prob) if attend is None else attend
 
@@ -587,14 +652,18 @@ class DynamicMemoryAttendWrapper(nn.Module):
         return self.base_layer(q, k, v, attention_mask=attention_mask, **kwargs)
 
     @staticmethod
-    def cache(k, v, past_kv={}, **kwargs):  # noqa
+    def cache(k, v, past_kv=None, **kwargs):  # noqa
         """cache_fn example"""
-        k = torch.cat([past_kv['k'], k], dim=-2)
-        v = torch.cat([past_kv['v'], v], dim=-2)
-        past_kv.update(
-            k=k,
-            v=v,
-        )
+        if past_kv is not None:
+            if 'k' in past_kv and past_kv['k'].shape[0]:
+                k = torch.cat([past_kv['k'], k], dim=-2)
+            if 'v' in past_kv and past_kv['v'].shape[0]:
+                v = torch.cat([past_kv['v'], v], dim=-2)
+
+            past_kv.update(
+                k=k,
+                v=v,
+            )
         return k, v
 
 
