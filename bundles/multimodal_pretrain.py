@@ -70,6 +70,6 @@ class QwenVl(Process):
         ]
 
         r = self.tokenizer.encode_dialog(dialog)
-        r = torch_utils.Converter.arrays_to_tensors(r, self.device)
+        r = torch_utils.Converter.force_to_tensors(r, self.device)
 
         return r

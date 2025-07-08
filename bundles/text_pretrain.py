@@ -411,7 +411,7 @@ class Bert(Process):
         segment_pair_tags = [ret['segment_pair_tags'] for ret in loop_inputs]
         lens = [len(seg) for seg in segments]
         r = self.tokenizer.encode_segments(segments, segment_pair_tags)
-        r = torch_utils.Converter.arrays_to_tensors(r, self.device)
+        r = torch_utils.Converter.force_to_tensors(r, self.device)
         inputs = dict(
             x=r['segments_ids'],
             segment_label=r['segment_pair_tags'],
@@ -875,7 +875,7 @@ class T5(Process):
     def get_model_inputs(self, loop_inputs, train=True):
         paragraphs = [ret['text'] for ret in loop_inputs]
         inputs = self.tokenizer.encode_paragraphs(paragraphs)
-        inputs = torch_utils.Converter.arrays_to_tensors(inputs, self.device)
+        inputs = torch_utils.Converter.force_to_tensors(inputs, self.device)
         return dict(
             x=inputs['segments_ids'],
             seq_lens=inputs['seq_lens'],
