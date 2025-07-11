@@ -10,7 +10,7 @@ class EmbeddingSim(nn.Module):
 
     def __init__(self, weight):
         super().__init__()
-        self.register_buffer('weight', weight, persistent=False)
+        self.register_buffer('weight', weight)
 
     def forward(self, x):
         y = x.matmul(self.weight.transpose(1, 0).detach())

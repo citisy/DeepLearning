@@ -3,7 +3,6 @@ from functools import partial
 from typing import Dict, List, Optional, Tuple, Union
 
 import numpy as np
-import onnxruntime
 import torch
 import torchaudio
 import torchaudio.compliance.kaldi as kaldi
@@ -13,7 +12,8 @@ from scipy.signal import get_window
 from torch import nn
 from torch.distributions.uniform import Uniform
 from torch.nn import functional as F
-from torch.nn.utils import remove_weight_norm, weight_norm
+from torch.nn.utils import remove_weight_norm
+from torch.nn.utils.parametrizations import weight_norm
 
 from utils import torch_utils
 from .. import attentions, embeddings
@@ -26,14 +26,6 @@ class WeightConverter:
     def from_official(cls, state_dict):
         convert_dict = {
             'decoder.estimator.up_blocks.0.2.conv': 'decoder.estimator.up_blocks.0.2.op',
-            "text_encoder.encoders.{0}.feed_forward.w_1": "text_encoder.encoders.{0}.feed_forward.0.linear",
-            "text_encoder.encoders.{0}.feed_forward.w_2": "text_encoder.encoders.{0}.feed_forward.1.linear",
-            "encoder.encoders.{0}.feed_forward.w_1": "encoder.encoders.{0}.feed_forward.0.linear",
-            "encoder.encoders.{0}.feed_forward.w_2": "encoder.encoders.{0}.feed_forward.1.linear",
-
-            "llm.encoders.{0}.feed_forward.w_1": "llm.encoders.{0}.feed_forward.0.linear",
-            "llm.encoders.{0}.feed_forward.w_2": "llm.encoders.{0}.feed_forward.1.linear",
-
             'decoder.estimator.{0}.1.{1}.norm1': 'decoder.estimator.{0}.1.{1}.attn_res.norm',
             'decoder.estimator.{0}.1.{1}.attn1.to_q': 'decoder.estimator.{0}.1.{1}.attn_res.fn.to_qkv.0',
             'decoder.estimator.{0}.1.{1}.attn1.to_k': 'decoder.estimator.{0}.1.{1}.attn_res.fn.to_qkv.1',
@@ -43,6 +35,8 @@ class WeightConverter:
             'decoder.estimator.{0}.1.{1}.ff.net.0.proj': 'decoder.estimator.{0}.1.{1}.ff_res.fn.0.linear',
             'decoder.estimator.{0}.1.{1}.ff.net.2': 'decoder.estimator.{0}.1.{1}.ff_res.fn.1.linear',
 
+            "{0}.feed_forward.w_1": "{0}.feed_forward.0.linear",
+            "{0}.feed_forward.w_2": "{0}.feed_forward.1.linear",
             '{0}.self_attn.pos_bias_u': '{0}.self_attn.attend.base_layer.pos_bias_u',
             '{0}.self_attn.pos_bias_v': '{0}.self_attn.attend.base_layer.pos_bias_v',
             '{0}.self_attn.linear_pos': '{0}.self_attn.attend.base_layer.linear_pos',
@@ -67,12 +61,9 @@ class Model(nn.Module):
             https://github.com/FunAudioLLM/CosyVoice?tab=readme-ov-file
     """
 
-    def __init__(self, front_config=dict(), llm_config=dict(), flow_config=dict(), hift_config=dict()):
+    def __init__(self, **kwargs):
         super().__init__()
-        self.front = CosyVoiceFrontEnd(**front_config)
-        self.llm = TransformerLM(**llm_config)
-        self.flow = MaskedDiffWithXvec(**flow_config)
-        self.hift = HiFTGenerator(**hift_config)
+        self.init_components(**kwargs)
         self.token_min_hop_len = 2 * self.flow.input_frame_rate
         self.token_max_hop_len = 4 * self.flow.input_frame_rate
         self.token_overlap_len = 20
@@ -86,6 +77,12 @@ class Model(nn.Module):
         # rtf and decoding related
         self.stream_scale_factor = 1
         assert self.stream_scale_factor >= 1, 'stream_scale_factor should be greater than 1, change it according to your actual rtf'
+
+    def init_components(self, front_config=dict(), llm_config=dict(), flow_config=dict(), hift_config=dict()):
+        self.front = CosyVoiceFrontEnd(**front_config)
+        self.llm = TransformerLM(**llm_config)
+        self.flow = MaskedDiffWithXvec(**flow_config)
+        self.hift = HiFTGenerator(**hift_config)
 
     def init_caches(self):
         return dict(
@@ -173,6 +170,7 @@ class Model(nn.Module):
                         prompt_feat_len=prompt_speech_feat_len,
                         embedding=flow_embedding,
                         caches=caches,
+                        stream=stream,
                         finalize=False
                     )
                     results.append({'tts_speech': this_tts_speech})
@@ -193,6 +191,7 @@ class Model(nn.Module):
                 prompt_feat_len=prompt_speech_feat_len,
                 embedding=flow_embedding,
                 caches=caches,
+                stream=stream,
                 finalize=True
             )
             results.append({'tts_speech': this_tts_speech})
@@ -207,6 +206,7 @@ class Model(nn.Module):
                 prompt_feat_len=prompt_speech_feat_len,
                 embedding=flow_embedding,
                 caches=caches,
+                stream=stream,
                 finalize=True,
                 speed=speed
             )
@@ -214,7 +214,7 @@ class Model(nn.Module):
 
         return results
 
-    def token2wav(self, token, token_len, prompt_token, prompt_token_len, prompt_feat, prompt_feat_len, embedding, caches, finalize=False, speed=1.0):
+    def token2wav(self, token, token_len, prompt_token, prompt_token_len, prompt_feat, prompt_feat_len, embedding, caches, stream=False, finalize=False, speed=1.0):
         tts_mel, caches['flow'] = self.flow(
             token=token,
             token_len=token_len,
@@ -223,6 +223,8 @@ class Model(nn.Module):
             prompt_feat=prompt_feat,
             prompt_feat_len=prompt_feat_len,
             embedding=embedding,
+            stream=stream,
+            finalize=finalize,
             flow_cache=caches['flow']
         )
 
@@ -263,8 +265,7 @@ class Model(nn.Module):
         mel_overlap_len = int(self.speech_window.shape[0] / 2)
         if fade_in_mel.device == torch.device('cpu'):
             fade_in_mel = fade_in_mel.clone()
-        fade_in_mel[..., :mel_overlap_len] = fade_in_mel[..., :mel_overlap_len] * self.speech_window[:mel_overlap_len] + \
-                                             fade_out_mel[..., -mel_overlap_len:] * self.speech_window[mel_overlap_len:]
+        fade_in_mel[..., :mel_overlap_len] = fade_in_mel[..., :mel_overlap_len] * self.speech_window[:mel_overlap_len] + fade_out_mel[..., -mel_overlap_len:] * self.speech_window[mel_overlap_len:]
         return fade_in_mel.to(device)
 
 
@@ -274,7 +275,7 @@ class CosyVoiceFrontEnd(nn.Module):
 
     n_fft = 1024
     num_mels = 80
-    sampling_rate = 22050
+    sample_rate = 22050
     hop_size = 256
     win_size = 1024
     fmin = 0
@@ -291,6 +292,8 @@ class CosyVoiceFrontEnd(nn.Module):
         """
         super().__init__()
         self.__dict__.update(kwargs)
+        import onnxruntime
+
         option = onnxruntime.SessionOptions()
         option.graph_optimization_level = onnxruntime.GraphOptimizationLevel.ORT_ENABLE_ALL
         option.intra_op_num_threads = 1
@@ -299,68 +302,79 @@ class CosyVoiceFrontEnd(nn.Module):
         self.speech_idsizer_session = onnxruntime.InferenceSession(speech_idsizer_model, sess_options=option, providers=providers)
         self.spk2info = spk2info
 
-    def forward(
+    def forward(self, spk_id='', is_instruct=False, **kwargs):
+        if is_instruct:
+            model_inputs = self.make_instruct_inputs(spk_id=spk_id, **kwargs)
+
+        elif spk_id in self.spk2info:
+            model_inputs = self.make_sft_inputs(spk_id=spk_id, **kwargs)
+
+        else:
+            model_inputs = self.make_zero_shot_inputs(**kwargs)
+
+        return model_inputs
+
+    def make_instruct_inputs(self, prompt_text_ids=None, prompt_text_ids_len=None, spk_id='', **kwargs):
+        assert spk_id in self.spk2info, f'Instruct model must have pretrained embedding, pls check `{spk_id}` is in spk2info'
+        embedding = self.spk2info[spk_id]['embedding']
+        return {
+            'prompt_text_ids': prompt_text_ids, 'prompt_text_ids_len': prompt_text_ids_len,
+            'flow_embedding': embedding,  # no need to set llm_embedding
+        }
+
+    def make_sft_inputs(self, spk_id, **kwargs):
+        embedding = self.spk2info[spk_id]['embedding']
+        return {
+            'llm_embedding': embedding, 'flow_embedding': embedding
+        }
+
+    def make_zero_shot_inputs(
             self,
             prompt_speech_16k=None, source_speech_16k=None,
             prompt_text_ids=None, prompt_text_ids_len=None,
-            resample_rate=22050, spk_id='', is_instruct=False,
+            resample_rate=22050, **kwargs
     ):
-        model_input = {}
-        if is_instruct:
-            embedding = self.spk2info[spk_id]['embedding']
-            model_input.update({
-                'prompt_text_ids': prompt_text_ids, 'prompt_text_ids_len': prompt_text_ids_len,
-                'flow_embedding': embedding,
+        model_inputs = {}
+        resample = torchaudio.transforms.Resample(orig_freq=16000, new_freq=resample_rate)
+        resample.to(prompt_speech_16k.device)
+        prompt_speech_resample = resample(prompt_speech_16k)
+        prompt_speech_feat, prompt_speech_feat_len = self._extract_speech_feat(prompt_speech_resample)
+        speech_ids, speech_ids_len = self._extract_speech_ids(prompt_speech_16k)
+        if resample_rate == 24000:
+            token_len = min(int(prompt_speech_feat.shape[1] / 2), speech_ids.shape[1])
+            prompt_speech_feat, prompt_speech_feat_len[:] = prompt_speech_feat[:, :2 * token_len], 2 * token_len
+            speech_ids, speech_ids_len[:] = speech_ids[:, :token_len], token_len
+        embedding = self._extract_spk_embedding(prompt_speech_16k)
+
+        model_inputs.update({
+            'flow_prompt_speech_ids': speech_ids, 'flow_prompt_speech_ids_len': speech_ids_len,
+            'prompt_speech_feat': prompt_speech_feat, 'prompt_speech_feat_len': prompt_speech_feat_len,
+        })
+
+        if source_speech_16k is not None:
+            source_speech_ids, source_speech_ids_len = self._extract_speech_ids(source_speech_16k)
+            model_inputs.update({
+                'source_speech_ids': source_speech_ids, 'source_speech_ids_len': source_speech_ids_len,
+                'flow_embedding': embedding
             })
-
-        elif spk_id not in self.spk2info:
-            resample = torchaudio.transforms.Resample(orig_freq=16000, new_freq=resample_rate)
-            resample.to(prompt_speech_16k.device)
-            prompt_speech_resample = resample(prompt_speech_16k)
-            prompt_speech_feat, prompt_speech_feat_len = self._extract_speech_feat(prompt_speech_resample)
-            speech_ids, speech_ids_len = self._extract_speech_ids(prompt_speech_16k)
-            if resample_rate == 24000:
-                token_len = min(int(prompt_speech_feat.shape[1] / 2), speech_ids.shape[1])
-                prompt_speech_feat, prompt_speech_feat_len[:] = prompt_speech_feat[:, :2 * token_len], 2 * token_len
-                speech_ids, speech_ids_len[:] = speech_ids[:, :token_len], token_len
-            embedding = self._extract_spk_embedding(prompt_speech_16k)
-
-            model_input.update({
-                'flow_prompt_speech_ids': speech_ids, 'flow_prompt_speech_ids_len': speech_ids_len,
-                'prompt_speech_feat': prompt_speech_feat, 'prompt_speech_feat_len': prompt_speech_feat_len,
-            })
-
-            if source_speech_16k is not None:
-                source_speech_ids, source_speech_ids_len = self._extract_speech_ids(source_speech_16k)
-                model_input.update({
-                    'source_speech_ids': source_speech_ids, 'source_speech_ids_len': source_speech_ids_len,
-                    'flow_embedding': embedding
-                })
-            else:
-
-                if prompt_text_ids is None:
-                    prompt_text_ids = torch.zeros(1, 0, dtype=torch.int32, device=prompt_speech_16k.device)
-                    llm_prompt_speech_ids = prompt_text_ids
-                else:
-                    llm_prompt_speech_ids = speech_ids
-
-                if prompt_text_ids_len is None:
-                    prompt_text_ids_len = torch.zeros(1, dtype=torch.int32, device=prompt_speech_16k.device)
-                    llm_prompt_speech_ids_len = prompt_text_ids_len
-                else:
-                    llm_prompt_speech_ids_len = speech_ids_len
-
-                model_input.update({
-                    'prompt_text_ids': prompt_text_ids, 'prompt_text_ids_len': prompt_text_ids_len,
-                    'llm_prompt_speech_ids': llm_prompt_speech_ids, 'llm_prompt_speech_ids_len': llm_prompt_speech_ids_len,
-                    'llm_embedding': embedding, 'flow_embedding': embedding
-                })
         else:
-            embedding = self.spk2info[spk_id]['embedding']
-            model_input.update({
+            model_inputs.update({
                 'llm_embedding': embedding, 'flow_embedding': embedding
             })
-        return model_input
+
+            if prompt_text_ids is not None:
+                model_inputs.update({
+                    'prompt_text_ids': prompt_text_ids,
+                    'llm_prompt_speech_ids': speech_ids,
+                })
+
+            if prompt_text_ids_len is not None:
+                model_inputs.update({
+                    'prompt_text_ids_len': prompt_text_ids_len,
+                    'llm_prompt_speech_ids_len': speech_ids_len,
+                })
+
+        return model_inputs
 
     def _extract_speech_ids(self, speech):
         import whisper
@@ -398,7 +412,7 @@ class CosyVoiceFrontEnd(nn.Module):
 
     def feat_extractor(self, y):
         if f"{str(self.fmax)}_{str(y.device)}" not in self.mel_basis:
-            mel = librosa_mel_fn(sr=self.sampling_rate, n_fft=self.n_fft, n_mels=self.num_mels, fmin=self.fmin, fmax=self.fmax)
+            mel = librosa_mel_fn(sr=self.sample_rate, n_fft=self.n_fft, n_mels=self.num_mels, fmin=self.fmin, fmax=self.fmax)
             self.mel_basis[str(self.fmax) + "_" + str(y.device)] = torch.from_numpy(mel).float().to(y.device)
             self.hann_window[str(y.device)] = torch.hann_window(self.win_size).to(y.device)
 
@@ -432,15 +446,7 @@ class TransformerLM(nn.Module):
     sos_eos = 0
     task_id = 1
 
-    def __init__(
-            self,
-            text_encoder_input_size: int = 512,
-            llm_input_size: int = 1024,
-            llm_output_size: int = 1024,
-            text_token_size: int = 51866,
-            speech_ids_size: int = 4096,
-            spk_embed_dim: int = 192,
-    ):
+    def __init__(self, text_encoder_input_size=512, llm_input_size=1024, llm_output_size=1024, text_token_size=51866, speech_ids_size=4096, spk_embed_dim=192):
         super().__init__()
         self.llm_input_size = llm_input_size
         self.speech_ids_size = speech_ids_size
@@ -469,73 +475,81 @@ class TransformerLM(nn.Module):
             embedding: torch.Tensor = None,
             max_token_text_ratio: float = 20,
             min_token_text_ratio: float = 2,
+            **kwargs
     ):
         if self.training:
             raise NotImplementedError
 
-        device = text_ids.device
         text_ids = torch.concat([prompt_text_ids, text_ids], dim=1)
         text_ids_len = text_ids_len + prompt_text_ids_len
-        text_ids = self.text_embedding(text_ids)
 
         # 1. encode text
-        text_ids, text_ids_len = self.encode(text_ids, text_ids_len)
+        text_embedding, text_embedding_lens = self.encode_text(text_ids, text_ids_len)
 
         # 2. encode embedding
+        embedding = self.encode_embedding(embedding, text_embedding)
+
+        # 3. concat llm_input
+        lm_input = self.make_lm_input(text_embedding, prompt_speech_ids, prompt_speech_ids_len, embedding)
+
+        # 4. cal min/max_length
+        min_len = int((text_embedding_lens - prompt_text_ids_len) * min_token_text_ratio)
+        max_len = int((text_embedding_lens - prompt_text_ids_len) * max_token_text_ratio)
+
+        # 5. step by step decode
+        out_ids = self.decode(lm_input, max_len, min_len)
+        return out_ids
+
+    def encode_text(self, text_ids, text_ids_len):
+        text_embedding = self.text_embedding(text_ids)
+        text_embedding, text_embedding_mask = self.text_encoder(text_embedding, text_ids_len, decoding_chunk_size=1)
+        text_embedding_lens = text_embedding_mask.squeeze(1).sum(1)
+        text_embedding = self.text_encoder_affine_layer(text_embedding)
+        return text_embedding, text_embedding_lens
+
+    def encode_embedding(self, embedding, text_embedding):
         if embedding.shape[0] != 0:
             embedding = F.normalize(embedding, dim=1)
             embedding = self.spk_embed_affine_layer(embedding)
             embedding = embedding.unsqueeze(dim=1)
         else:
-            embedding = torch.zeros(1, 0, self.llm_input_size, dtype=text_ids.dtype).to(device).to(text_ids.dtype)
+            embedding = torch.zeros(1, 0, self.llm_input_size, dtype=text_embedding.dtype, device=text_embedding.device)
+        return embedding
 
-        # 3. concat llm_input
+    def make_lm_input(self, text_embedding, prompt_speech_ids, prompt_speech_ids_len, embedding):
         sos_eos_emb = self.llm_embedding.weight[self.sos_eos].reshape(1, 1, -1)
         task_id_emb = self.llm_embedding.weight[self.task_id].reshape(1, 1, -1)
         if prompt_speech_ids_len != 0:
             prompt_speech_ids_emb = self.speech_embedding(prompt_speech_ids)
         else:
-            prompt_speech_ids_emb = torch.zeros(1, 0, self.llm_input_size, dtype=text_ids.dtype).to(device)
-        lm_input = torch.concat([sos_eos_emb, embedding, text_ids, task_id_emb, prompt_speech_ids_emb], dim=1)
+            prompt_speech_ids_emb = torch.zeros(1, 0, self.llm_input_size, dtype=text_embedding.dtype, device=text_embedding.device)
+        lm_input = torch.concat([sos_eos_emb, embedding, text_embedding, task_id_emb, prompt_speech_ids_emb], dim=1)
 
-        # 4. cal min/max_length
-        min_len = int((text_ids_len - prompt_text_ids_len) * min_token_text_ratio)
-        max_len = int((text_ids_len - prompt_text_ids_len) * max_token_text_ratio)
+        return lm_input
 
-        # 5. step by step decode
+    def decode(self, lm_input, max_len, min_len):
         out_ids = []
-        offset = 0
+        start_pos = 0
         past_kvs = [dict() for i in range(self.llm.num_blocks)]
 
         for i in range(max_len):
             y_pred = self.llm(
-                lm_input, offset=offset,
-                past_kvs=past_kvs,
+                lm_input, start_pos=start_pos, past_kvs=past_kvs,
                 attention_mask=torch.tril(torch.ones((1, 1, lm_input.shape[1], lm_input.shape[1]), device=lm_input.device)).to(torch.bool)
             )
             logp = self.llm_decoder(y_pred[:, -1]).log_softmax(dim=-1)
             # force continue decode first token
             if i == 0:
                 logp[:, self.speech_ids_size] = -float('inf')
-            top_id = self.sampling_ids(logp.squeeze(dim=0), out_ids, ignore_eos=True if i < min_len else False).item()
+            top_id = self.sampling_ids(logp.squeeze(dim=0), out_ids, ignore_eos=True if i < min_len else False)
             if top_id == self.speech_ids_size:
                 break
             out_ids.append(top_id)
-            offset += lm_input.shape[1]
-            lm_input = self.speech_embedding.weight[top_id].reshape(1, 1, -1)
+            start_pos += lm_input.shape[1]
+            lm_input = self.speech_embedding(top_id.reshape(1, -1))
 
-        out_ids = torch.tensor(out_ids, device=text_ids.device)
+        out_ids = torch.tensor(out_ids, device=lm_input.device)
         return out_ids
-
-    def encode(
-            self,
-            text_ids: torch.Tensor,
-            text_ids_len: torch.Tensor,
-    ):
-        encoder_out, encoder_mask = self.text_encoder(text_ids, text_ids_len, decoding_chunk_size=1, num_decoding_left_chunks=-1)
-        encoder_out_lens = encoder_mask.squeeze(1).sum(1)
-        encoder_out = self.text_encoder_affine_layer(encoder_out)
-        return encoder_out, encoder_out_lens
 
     def sampling_ids(
             self,
@@ -636,18 +650,12 @@ class EspnetRelPositionalEncoding(nn.Module):
         self.d_model = d_model
         self.xscale = math.sqrt(self.d_model)
         self.dropout = nn.Dropout(p=drop_prob)
-        self.pe = None
-        self.extend_pe(torch.tensor(0.0).expand(1, max_len))
+        self.max_len = max_len
+        self._register()
 
-    def extend_pe(self, x: torch.Tensor):
-        """Reset the positional encodings."""
-        if self.pe is not None:
-            # self.pe contains both positive and negative parts
-            # the length of self.pe is 2 * input_len - 1
-            if self.pe.size(1) >= x.size(1) * 2 - 1:
-                if self.pe.dtype != x.dtype or self.pe.device != x.device:
-                    self.pe = self.pe.to(dtype=x.dtype, device=x.device)
-                return
+    def _register(self, x=None):
+        if x is None:
+            x = torch.tensor(0.0).expand(1, self.max_len)
         # Suppose `i` means to the position of query vecotr and `j` means the
         # position of key vector. We use position relative positions when keys
         # are to the left (i>j) and negative relative positions otherwise (i<j).
@@ -669,7 +677,20 @@ class EspnetRelPositionalEncoding(nn.Module):
         pe_positive = torch.flip(pe_positive, [0]).unsqueeze(0)
         pe_negative = pe_negative[1:].unsqueeze(0)
         pe = torch.cat([pe_positive, pe_negative], dim=1)
-        self.pe = pe.to(device=x.device, dtype=x.dtype)
+        self.register_buffer('pe', pe, persistent=False)
+
+    def _apply(self, fn, recurse=True):
+        """apply for meta load"""
+        if self.pe.is_meta:
+            self._register()
+        return super()._apply(fn, recurse)
+
+    def extend_pe(self, x: torch.Tensor):
+        """Reset the positional encodings."""
+        # self.pe contains both positive and negative parts
+        # the length of self.pe is 2 * input_len - 1
+        if self.pe.size(1) < x.size(1) * 2 - 1:
+            self._register(x)
 
     def forward(self, x: torch.Tensor, offset: Union[int, torch.Tensor] = 0) -> Tuple[torch.Tensor, torch.Tensor]:
         """Add positional encoding.
@@ -684,12 +705,12 @@ class EspnetRelPositionalEncoding(nn.Module):
         return self.dropout(x), self.dropout(pos_emb)
 
     def position_encoding(self, offset: Union[int, torch.Tensor], size: int) -> torch.Tensor:
-        """ For getting encoding in a streaming fashion
+        """ For getting encoding in a stream fashion
 
         Attention!!!!!
         we apply dropout only once at the whole utterance level in a none
-        streaming way, but will call this function several times with
-        increasing input size in a streaming scenario, so the dropout will
+        stream way, but will call this function several times with
+        increasing input size in a stream scenario, so the dropout will
         be applied several times.
 
         Args:
@@ -755,7 +776,6 @@ class ConformerEncoder(nn.Module):
             xs: torch.Tensor,
             xs_lens: torch.Tensor,
             decoding_chunk_size: int = 0,
-            num_decoding_left_chunks: int = -1,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """Embed positions in tensor.
 
@@ -766,7 +786,6 @@ class ConformerEncoder(nn.Module):
                 0: default for training, use random dynamic chunk.
                 <0: for decoding, use full chunk.
                 >0: for decoding, use fixed chunk size as set.
-            num_decoding_left_chunks: number of left chunks, this is for decoding,
             the chunk size is decoding_chunk_size.
                 >=0: use num_decoding_left_chunks
                 <0: use all left chunks
@@ -901,19 +920,13 @@ class TransformerEncoder(nn.Module):
             ) for _ in range(num_blocks)
         ])
 
-    def forward(
-            self,
-            xs: torch.Tensor,
-            offset: int,
-            past_kvs=None,
-            attention_mask=None,
-    ):
+    def forward(self, xs, start_pos=0, past_kvs=None, attention_mask=None):
         """ Forward just one chunk
 
         Args:
             xs (torch.Tensor): chunk input, with shape (b=1, time, mel-dim),
                 where `time == (chunk_size - 1) * subsample_rate + subsample.right_context + 1`
-            offset (int): current offset in encoder output time stamp
+            start_pos (int): current offset in encoder output time stamp
             past_kvs:
             attention_mask:
 
@@ -922,9 +935,9 @@ class TransformerEncoder(nn.Module):
                 with shape (b=1, chunk_size, hidden-dim).
         """
         assert xs.size(0) == 1, 'Only for 1 batch'
-        xs, pos_emb = self.embed(xs, offset)
+        xs, pos_emb = self.embed(xs, start_pos)
         chunk_size = xs.size(1)
-        attention_key_size = offset + chunk_size
+        attention_key_size = start_pos + chunk_size
         pos_emb = self.embed.pos_enc.position_encoding(size=attention_key_size, offset=0)
         for i, layer in enumerate(self.encoders):
             xs = layer(
@@ -1080,7 +1093,8 @@ class MaskedDiffWithXvec(nn.Module):
             prompt_feat,
             prompt_feat_len,
             embedding,
-            flow_cache
+            flow_cache=None,
+            **kwargs
     ):
         if self.training:
             raise NotImplementedError
@@ -1130,7 +1144,7 @@ class ConditionalCFM(nn.Module):
         super().__init__()
         self.estimator = ConditionalDecoder()
 
-    def forward(self, mu, mask, n_timesteps, temperature=1.0, spks=None, cond=None, prompt_len=0, cache=torch.zeros(1, 80, 0, 2)):
+    def forward(self, mu, mask, n_timesteps, temperature=1.0, spks=None, cond=None, prompt_len=0, cache=None):
         """Forward diffusion
 
         Args:
@@ -1143,11 +1157,15 @@ class ConditionalCFM(nn.Module):
             spks (torch.Tensor, optional): speaker ids. Defaults to None.
                 shape: (batch_size, spk_emb_dim)
             cond: Not used but kept for future purposes
+            prompt_len:
+            cache:
 
         Returns:
             sample: generated mel-spectrogram
                 shape: (batch_size, n_feats, mel_timesteps)
         """
+        if cache is None:
+            cache = torch.zeros(1, 80, 0, 2, device=mu.device)
 
         z = torch.randn_like(mu).to(mu.device).to(mu.dtype) * temperature
         cache_size = cache.shape[2]
@@ -1164,7 +1182,7 @@ class ConditionalCFM(nn.Module):
             t_span = 1 - torch.cos(t_span * 0.5 * torch.pi)
         return self.solve_euler(z, t_span=t_span, mu=mu, mask=mask, spks=spks, cond=cond), cache
 
-    def solve_euler(self, x, t_span, mu, mask, spks, cond, streaming=False):
+    def solve_euler(self, x, t_span, mu, mask, spks, cond, stream=False):
         """
         Fixed euler solver for ODEs.
         Args:
@@ -1206,7 +1224,7 @@ class ConditionalCFM(nn.Module):
                 mu_in, t_in,
                 spks_in,
                 cond_in,
-                streaming
+                stream
             )
             dphi_dt, cfg_dphi_dt = torch.split(dphi_dt, [x.size(0), x.size(0)], dim=0)
             dphi_dt = ((1.0 + self.inference_cfg_rate) * dphi_dt - self.inference_cfg_rate * cfg_dphi_dt)
@@ -1218,20 +1236,50 @@ class ConditionalCFM(nn.Module):
 
         return sol[-1].float()
 
-    def forward_estimator(self, x, mask, mu, t, spks, cond, streaming=False):
-        return self.estimator(x, mask, mu, t, spks, cond, streaming=streaming)
+    def forward_estimator(self, x, mask, mu, t, spks, cond, stream=False):
+        return self.estimator(x, mask, mu, t, spks, cond, stream=stream)
+
+
+class Block1D(nn.Module):
+    def __init__(self, in_dim, out_dim, groups=8):
+        super().__init__()
+        self.block = Conv(
+            in_dim, out_dim, 3, p=1,
+            mode='cna',
+            conv_fn=nn.Conv1d,
+            norm=nn.GroupNorm(groups, out_dim),
+            act=nn.Mish(),
+            detail_name=False
+        )
+
+    def forward(self, x, mask):
+        output = self.block(x * mask)
+        return output * mask
+
+
+class ResnetBlock(nn.Module):
+    def __init__(self, in_dim, out_dim, time_emb_dim, block_fn=Block1D, groups=8):
+        super().__init__()
+
+        self.block1 = block_fn(in_dim, out_dim, groups=groups)
+        self.mlp = Linear(time_emb_dim, out_dim, mode='al', act=nn.Mish(), detail_name=False)
+        self.block2 = block_fn(out_dim, out_dim, groups=groups)
+        self.res_conv = nn.Conv1d(in_dim, out_dim, 1)
+
+    def forward(self, x, mask, time_emb):
+        h = self.block1(x, mask)
+        h += self.mlp(time_emb).unsqueeze(-1)
+        h = self.block2(h, mask)
+        output = h + self.res_conv(x * mask)
+        return output
 
 
 class ConditionalDecoder(nn.Module):
     def __init__(
             self,
-            in_ch=320,
-            out_ch=80,
-            hidden_ch=(256, 256),
-            num_mid_blocks=12,
-            nun_attention_blocks=4,
-            num_attention_heads=8,
-            attention_head_dim=64,
+            in_ch=320, out_ch=80, hidden_ch=(256, 256),
+            num_mid_blocks=12, nun_attention_blocks=4, num_attention_heads=8, attention_head_dim=64,
+            sample_conv_fn=nn.Conv1d, block_fn=Block1D
     ):
         """
         This decoder requires an input with the same shape of the target. So, if your text content
@@ -1256,7 +1304,7 @@ class ConditionalDecoder(nn.Module):
             in_ch = out_ch
             out_ch = hidden_ch[i]
             is_last = i == len(hidden_ch) - 1
-            resnet = ResnetBlock1D(in_dim=in_ch, out_dim=out_ch, time_emb_dim=time_embed_dim)
+            resnet = ResnetBlock(in_dim=in_ch, out_dim=out_ch, time_emb_dim=time_embed_dim, block_fn=block_fn)
             transformer_blocks = transformers.TransformerSequential(
                 num_blocks=nun_attention_blocks,
                 hidden_size=out_ch,
@@ -1276,14 +1324,14 @@ class ConditionalDecoder(nn.Module):
                 )
             )
             downsample = (
-                Downsample1D(out_ch) if not is_last else nn.Conv1d(out_ch, out_ch, 3, padding=1)
+                Downsample1D(out_ch) if not is_last else sample_conv_fn(out_ch, out_ch, 3, padding=1)
             )
             self.down_blocks.append(nn.ModuleList([resnet, transformer_blocks, downsample]))
 
         for _ in range(num_mid_blocks):
             in_ch = hidden_ch[-1]
             out_ch = hidden_ch[-1]
-            resnet = ResnetBlock1D(in_dim=in_ch, out_dim=out_ch, time_emb_dim=time_embed_dim)
+            resnet = ResnetBlock(in_dim=in_ch, out_dim=out_ch, time_emb_dim=time_embed_dim, block_fn=block_fn)
 
             transformer_blocks = transformers.TransformerSequential(
                 num_blocks=nun_attention_blocks,
@@ -1311,11 +1359,7 @@ class ConditionalDecoder(nn.Module):
             in_ch = hidden_ch[i] * 2
             out_ch = hidden_ch[i + 1]
             is_last = i == len(hidden_ch) - 2
-            resnet = ResnetBlock1D(
-                in_dim=in_ch,
-                out_dim=out_ch,
-                time_emb_dim=time_embed_dim,
-            )
+            resnet = ResnetBlock(in_dim=in_ch, out_dim=out_ch, time_emb_dim=time_embed_dim, block_fn=block_fn)
             transformer_blocks = transformers.TransformerSequential(
                 num_blocks=nun_attention_blocks,
                 hidden_size=out_ch,
@@ -1335,15 +1379,13 @@ class ConditionalDecoder(nn.Module):
                 )
             )
             upsample = (
-                Upsample(out_ch, op_fn=nn.ConvTranspose1d, use_conv=False)
-                if not is_last
-                else nn.Conv1d(out_ch, out_ch, 3, padding=1)
+                Upsample(out_ch, op_fn=nn.ConvTranspose1d, use_conv=False) if not is_last else sample_conv_fn(out_ch, out_ch, 3, padding=1)
             )
             self.up_blocks.append(nn.ModuleList([resnet, transformer_blocks, upsample]))
-        self.final_block = Block1D(hidden_ch[-1], hidden_ch[-1])
+        self.final_block = block_fn(hidden_ch[-1], hidden_ch[-1])
         self.final_proj = nn.Conv1d(hidden_ch[-1], self.out_channels, 1)
 
-    def forward(self, x, mask, mu, t, spks=None, cond=None, streaming=False):
+    def forward(self, x, mask, mu, t, spks=None, cond=None, stream=False):
         """Forward pass of the UNet1DConditional model.
 
         Args:
@@ -1372,7 +1414,10 @@ class ConditionalDecoder(nn.Module):
             mask_down = masks[-1]
             x = resnet(x, mask_down, t)
             x = rearrange(x, "b c t -> b t c").contiguous()
-            attention_mask = add_optional_chunk_mask(x, mask_down.bool(), False, 0, 0).repeat(1, x.size(1), 1)
+            if stream is True:
+                attention_mask = add_optional_chunk_mask(x, mask_down.bool(), False, 0, self.static_chunk_size)
+            else:
+                attention_mask = add_optional_chunk_mask(x, mask_down.bool(), False, 0, 0).repeat(1, x.size(1), 1)
             x = transformer_blocks(
                 x,
                 attention_mask=attention_mask,
@@ -1388,7 +1433,10 @@ class ConditionalDecoder(nn.Module):
         for resnet, transformer_blocks in self.mid_blocks:
             x = resnet(x, mask_mid, t)
             x = rearrange(x, "b c t -> b t c").contiguous()
-            attention_mask = add_optional_chunk_mask(x, mask_mid.bool(), False, 0, 0).repeat(1, x.size(1), 1)
+            if stream is True:
+                attention_mask = add_optional_chunk_mask(x, mask_mid.bool(), False, 0, self.static_chunk_size)
+            else:
+                attention_mask = add_optional_chunk_mask(x, mask_mid.bool(), False, 0, 0).repeat(1, x.size(1), 1)
             x = transformer_blocks(
                 x,
                 attention_mask=attention_mask,
@@ -1402,7 +1450,10 @@ class ConditionalDecoder(nn.Module):
             x = pack([x[:, :, :skip.shape[-1]], skip], "b * t")[0]
             x = resnet(x, mask_up, t)
             x = rearrange(x, "b c t -> b t c").contiguous()
-            attention_mask = add_optional_chunk_mask(x, mask_up.bool(), False, 0, 0).repeat(1, x.size(1), 1)
+            if stream is True:
+                attention_mask = add_optional_chunk_mask(x, mask_up.bool(), False, 0, self.static_chunk_size)
+            else:
+                attention_mask = add_optional_chunk_mask(x, mask_up.bool(), False, 0, 0).repeat(1, x.size(1), 1)
             x = transformer_blocks(
                 x,
                 attention_mask=attention_mask,
@@ -1446,39 +1497,6 @@ class TimestepEmbedding(nn.Module):
         sample = self.act(sample)
         sample = self.linear_2(sample)
         return sample
-
-
-class ResnetBlock1D(nn.Module):
-    def __init__(self, in_dim, out_dim, time_emb_dim, groups=8):
-        super().__init__()
-        self.block1 = Block1D(in_dim, out_dim, groups=groups)
-        self.mlp = Linear(time_emb_dim, out_dim, mode='al', act=nn.Mish(), detail_name=False)
-        self.block2 = Block1D(out_dim, out_dim, groups=groups)
-        self.res_conv = nn.Conv1d(in_dim, out_dim, 1)
-
-    def forward(self, x, mask, time_emb):
-        h = self.block1(x, mask)
-        h += self.mlp(time_emb).unsqueeze(-1)
-        h = self.block2(h, mask)
-        output = h + self.res_conv(x * mask)
-        return output
-
-
-class Block1D(nn.Module):
-    def __init__(self, dim, dim_out, groups=8):
-        super().__init__()
-        self.block = Conv(
-            dim, dim_out, 3, p=1,
-            mode='cna',
-            conv_fn=nn.Conv1d,
-            norm=nn.GroupNorm(groups, dim_out),
-            act=nn.Mish(),
-            detail_name=False
-        )
-
-    def forward(self, x, mask):
-        output = self.block(x * mask)
-        return output * mask
 
 
 class Downsample1D(nn.Module):
@@ -1537,18 +1555,10 @@ class ResBlock(nn.Module):
 
 
 class Snake(nn.Module):
-    """
-    Implementation of a sine-based periodic activation function
+    """Implementation of a sine-based periodic activation function
     References:
         - paper: https://arxiv.org/abs/2006.0819
         - code: https://github.com/EdwardDixon/snake
-
-    Shape:
-        - Input: (B, C, T)
-        - Output: (B, C, T), same shape as the input
-    Parameters:
-        - alpha - trainable parameter
-
     """
 
     def __init__(self, in_features, alpha=1.0, alpha_trainable=True, alpha_logscale=False):
@@ -1633,6 +1643,98 @@ class InterpolateRegulator(nn.Module):
         return out, mel_len1 + mel_len2
 
 
+class SourceModuleHnNSF(nn.Module):
+    """ SourceModule for hn-nsf
+    SourceModule(sample_rate, harmonic_num=0, sine_amp=0.1, add_noise_std=0.003, voiced_threshod=0)
+    sample_rate: sample_rate in Hz
+    harmonic_num: number of harmonic above F0 (default: 0)
+    sine_amp: amplitude of sine source signal (default: 0.1)
+    add_noise_std: std of additive Gaussian noise (default: 0.003)
+        note that amplitude of noise in unvoiced is decided
+        by sine_amp
+    voiced_threshold: threhold to set U/V given F0 (default: 0)
+    Sine_source, noise_source = SourceModuleHnNSF(F0_sampled)
+    F0_sampled (batchsize, length, 1)
+    Sine_source (batchsize, length, 1)
+    noise_source (batchsize, length 1)
+    uv (batchsize, length, 1)
+    """
+
+    def __init__(self, sample_rate, upsample_scale, harmonic_num=0, sine_amp=0.1, add_noise_std=0.003, voiced_threshod=0.):
+        super().__init__()
+
+        self.sine_amp = sine_amp
+        self.noise_std = add_noise_std
+
+        # to produce sine waveforms
+        self.l_sin_gen = SineGen(sample_rate, harmonic_num, sine_amp, add_noise_std, voiced_threshod)
+
+        # to merge source harmonics into a single excitation
+        self.l_linear = nn.Linear(harmonic_num + 1, 1)
+        self.l_tanh = nn.Tanh()
+
+    def forward(self, x):
+        # source for harmonic branch
+        with torch.no_grad():
+            sine_wavs, uv, _ = self.l_sin_gen(x.transpose(1, 2))
+            sine_wavs = sine_wavs.transpose(1, 2)
+            uv = uv.transpose(1, 2)
+        sine_merge = self.l_tanh(self.l_linear(sine_wavs))
+
+        # source for noise branch, in the same shape as uv
+        noise = torch.randn_like(uv) * self.sine_amp / 3
+        return sine_merge, noise, uv
+
+
+class SineGen(nn.Module):
+    """Definition of sine generator"""
+
+    def __init__(self, sample_rate, harmonic_num=0, sine_amp=0.1, noise_std=0.003, voiced_threshold=0.):
+        super().__init__()
+        self.sine_amp = sine_amp
+        self.noise_std = noise_std
+        self.harmonic_num = harmonic_num
+        self.sample_rate = sample_rate
+        self.voiced_threshold = voiced_threshold
+
+    def _f02uv(self, f0):
+        # generate uv signal
+        uv = (f0 > self.voiced_threshold).type(torch.float32)
+        return uv
+
+    def forward(self, f0):
+        """
+        :param f0: [B, 1, sample_len], Hz
+        :return: [B, 1, sample_len]
+        """
+
+        F_mat = torch.zeros((f0.size(0), self.harmonic_num + 1, f0.size(-1))).to(f0.device)
+        for i in range(self.harmonic_num + 1):
+            F_mat[:, i: i + 1, :] = f0 * (i + 1) / self.sample_rate
+
+        theta_mat = 2 * torch.pi * (torch.cumsum(F_mat, dim=-1) % 1)
+        u_dist = Uniform(low=-torch.pi, high=torch.pi)
+        phase_vec = u_dist.sample(sample_shape=(f0.size(0), self.harmonic_num + 1, 1)).to(F_mat.device)
+        phase_vec[:, 0, :] = 0
+
+        # generate sine waveforms
+        sine_waves = self.sine_amp * torch.sin(theta_mat + phase_vec)
+
+        # generate uv signal
+        uv = self._f02uv(f0)
+
+        # noise: for unvoiced should be similar to sine_amp
+        #        std = self.sine_amp/3 -> max value ~ self.sine_amp
+        # .       for voiced regions is self.noise_std
+        noise_amp = uv * self.noise_std + (1 - uv) * self.sine_amp / 3
+        noise = noise_amp * torch.randn_like(sine_waves)
+
+        # first: set the unvoiced part to 0 by uv
+        # then: additive noise
+        sine_waves = sine_waves * uv + noise
+        return sine_waves, uv, noise
+
+
 class HiFTGenerator(nn.Module):
     """HiFTNet Generator: Neural Source Filter + ISTFTNet
     https://arxiv.org/abs/2309.09493
@@ -1643,7 +1745,7 @@ class HiFTGenerator(nn.Module):
             in_ch: int = 80,
             hidden_ch: int = 512,
             nb_harmonics: int = 8,
-            sampling_rate: int = 22050,
+            sample_rate: int = 22050,
             nsf_alpha: float = 0.1,
             nsf_sigma: float = 0.003,
             nsf_voiced_threshold: float = 10,
@@ -1656,20 +1758,20 @@ class HiFTGenerator(nn.Module):
             source_resblock_dilation_sizes: List[List[int]] = [[1, 3, 5], [1, 3, 5]],
             lrelu_slope: float = 0.1,
             audio_limit: float = 0.99,
+            m_source_fn=SourceModuleHnNSF,
     ):
         super().__init__()
 
         self.out_channels = 1
         self.nb_harmonics = nb_harmonics
-        self.sampling_rate = sampling_rate
         self.istft_params = istft_params
         self.lrelu_slope = lrelu_slope
         self.audio_limit = audio_limit
 
         self.num_kernels = len(resblock_kernel_sizes)
         self.num_upsamples = len(upsample_rates)
-        self.m_source = SourceModuleHnNSF(
-            sampling_rate=sampling_rate,
+        self.m_source = m_source_fn(
+            sample_rate=sample_rate,
             upsample_scale=np.prod(upsample_rates) * istft_params["hop_len"],
             harmonic_num=nb_harmonics,
             sine_amp=nsf_alpha,
@@ -1795,98 +1897,6 @@ class HiFTGenerator(nn.Module):
         return generated_speech, s
 
 
-class SourceModuleHnNSF(nn.Module):
-    """ SourceModule for hn-nsf
-    SourceModule(sampling_rate, harmonic_num=0, sine_amp=0.1, add_noise_std=0.003, voiced_threshod=0)
-    sampling_rate: sampling_rate in Hz
-    harmonic_num: number of harmonic above F0 (default: 0)
-    sine_amp: amplitude of sine source signal (default: 0.1)
-    add_noise_std: std of additive Gaussian noise (default: 0.003)
-        note that amplitude of noise in unvoiced is decided
-        by sine_amp
-    voiced_threshold: threhold to set U/V given F0 (default: 0)
-    Sine_source, noise_source = SourceModuleHnNSF(F0_sampled)
-    F0_sampled (batchsize, length, 1)
-    Sine_source (batchsize, length, 1)
-    noise_source (batchsize, length 1)
-    uv (batchsize, length, 1)
-    """
-
-    def __init__(self, sampling_rate, upsample_scale, harmonic_num=0, sine_amp=0.1, add_noise_std=0.003, voiced_threshod=0.):
-        super().__init__()
-
-        self.sine_amp = sine_amp
-        self.noise_std = add_noise_std
-
-        # to produce sine waveforms
-        self.l_sin_gen = SineGen(sampling_rate, harmonic_num, sine_amp, add_noise_std, voiced_threshod)
-
-        # to merge source harmonics into a single excitation
-        self.l_linear = nn.Linear(harmonic_num + 1, 1)
-        self.l_tanh = nn.Tanh()
-
-    def forward(self, x):
-        # source for harmonic branch
-        with torch.no_grad():
-            sine_wavs, uv, _ = self.l_sin_gen(x.transpose(1, 2))
-            sine_wavs = sine_wavs.transpose(1, 2)
-            uv = uv.transpose(1, 2)
-        sine_merge = self.l_tanh(self.l_linear(sine_wavs))
-
-        # source for noise branch, in the same shape as uv
-        noise = torch.randn_like(uv) * self.sine_amp / 3
-        return sine_merge, noise, uv
-
-
-class SineGen(nn.Module):
-    """Definition of sine generator"""
-
-    def __init__(self, samp_rate, harmonic_num=0, sine_amp=0.1, noise_std=0.003, voiced_threshold=0.):
-        super().__init__()
-        self.sine_amp = sine_amp
-        self.noise_std = noise_std
-        self.harmonic_num = harmonic_num
-        self.sampling_rate = samp_rate
-        self.voiced_threshold = voiced_threshold
-
-    def _f02uv(self, f0):
-        # generate uv signal
-        uv = (f0 > self.voiced_threshold).type(torch.float32)
-        return uv
-
-    def forward(self, f0):
-        """
-        :param f0: [B, 1, sample_len], Hz
-        :return: [B, 1, sample_len]
-        """
-
-        F_mat = torch.zeros((f0.size(0), self.harmonic_num + 1, f0.size(-1))).to(f0.device)
-        for i in range(self.harmonic_num + 1):
-            F_mat[:, i: i + 1, :] = f0 * (i + 1) / self.sampling_rate
-
-        theta_mat = 2 * torch.pi * (torch.cumsum(F_mat, dim=-1) % 1)
-        u_dist = Uniform(low=-torch.pi, high=torch.pi)
-        phase_vec = u_dist.sample(sample_shape=(f0.size(0), self.harmonic_num + 1, 1)).to(F_mat.device)
-        phase_vec[:, 0, :] = 0
-
-        # generate sine waveforms
-        sine_waves = self.sine_amp * torch.sin(theta_mat + phase_vec)
-
-        # generate uv signal
-        uv = self._f02uv(f0)
-
-        # noise: for unvoiced should be similar to sine_amp
-        #        std = self.sine_amp/3 -> max value ~ self.sine_amp
-        # .       for voiced regions is self.noise_std
-        noise_amp = uv * self.noise_std + (1 - uv) * self.sine_amp / 3
-        noise = noise_amp * torch.randn_like(sine_waves)
-
-        # first: set the unvoiced part to 0 by uv
-        # then: additive noise
-        sine_waves = sine_waves * uv + noise
-        return sine_waves, uv, noise
-
-
 class ConvRNNF0Predictor(nn.Module):
     def __init__(self, num_class=1, in_ch=80, out_ch=512):
         super().__init__()
@@ -1952,7 +1962,7 @@ def add_optional_chunk_mask(
     """
     # Whether to use chunk mask or not
     if use_dynamic_chunk:
-        max_len = xs.size(1)
+        max_len = xs.shape[1]
         if decoding_chunk_size < 0:
             chunk_size = max_len
         elif decoding_chunk_size > 0:
@@ -1966,12 +1976,12 @@ def add_optional_chunk_mask(
                 chunk_size = max_len
             else:
                 chunk_size = chunk_size % 25 + 1
-        chunk_masks = attentions.make_chunk_mask(xs.size(1), chunk_size).to(xs.device)  # (L, L)
+        chunk_masks = attentions.make_chunk_mask(xs.shape[1], chunk_size).to(xs.device)  # (L, L)
         chunk_masks = chunk_masks.unsqueeze(0)  # (1, L, L)
         chunk_masks = masks & chunk_masks  # (B, L, L)
 
     elif static_chunk_size > 0:
-        chunk_masks = attentions.make_chunk_mask(xs.size(1), static_chunk_size).to(xs.device)  # (L, L)
+        chunk_masks = attentions.make_chunk_mask(xs.shape[1], static_chunk_size).to(xs.device)  # (L, L)
         chunk_masks = chunk_masks.unsqueeze(0)  # (1, L, L)
         chunk_masks = masks & chunk_masks  # (B, L, L)
 

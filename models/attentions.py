@@ -554,56 +554,31 @@ class FlashAttend(nn.Module):
 
         self.drop_prob = drop_prob
 
-        # determine efficient attention configs for cuda and cpu
-        self.cpu_config = dict(
-            enable_flash=True,
-            enable_math=True,
-            enable_mem_efficient=True
-        )
-
-        self.cuda_config = dict()
-
-        if not torch.cuda.is_available():
-            return
-
-        device_properties = torch.cuda.get_device_properties(torch.device('cuda'))
-        if device_properties.major == 8 and device_properties.minor == 0:
-            self.cuda_config = dict(
-                enable_flash=True,
-                enable_math=False,
-                enable_mem_efficient=False
-            )
-        else:
-            self.cuda_config = dict(
-                enable_flash=False,
-                enable_math=True,
-                enable_mem_efficient=True
-            )
-
     def forward(self, q, k, v, attention_mask=None, **kwargs):
         """
         in(q|k|v): (b n s d)
         out(attn): (b n s d)
         """
-        _, heads, q_len, _ = q.shape
+        b, heads, q_len, _ = q.shape
 
         q, k, v = map(lambda t: t.contiguous(), (q, k, v))
 
+        is_causal = False
+        if attention_mask is None:
+            is_causal = True
+        elif q_len == 1:
+            attention_mask = None
+
         # Check if there is a compatible device for flash attention
-        config = self.cuda_config if q.is_cuda else self.cpu_config
-        attention_mask = remake_mask(
-            attention_mask,
-            (q.shape[0], q.shape[1], q.shape[2], q.shape[2]),
-            q.dtype, return_bool=False
-        )
+        attention_mask = remake_mask(attention_mask, (b, heads, q_len, q_len), q.dtype, return_bool=False)
 
         # pytorch 2.0 flash attn: q, k, v, mask, dropout, causal, softmax_scale
-        with torch.backends.cuda.sdp_kernel(**config):
-            out = F.scaled_dot_product_attention(
-                q, k, v,
-                attn_mask=attention_mask,
-                dropout_p=self.drop_prob if self.training else 0.
-            )
+        out = F.scaled_dot_product_attention(
+            q, k, v,
+            attn_mask=attention_mask,
+            is_causal=is_causal,
+            dropout_p=self.drop_prob if self.training else 0.
+        )
 
         return out
 

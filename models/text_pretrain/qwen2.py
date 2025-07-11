@@ -72,26 +72,28 @@ class WeightLoader(bundles.WeightLoader):
 
 
 class WeightConverter:
+    convert_dict = {
+        'model.layers.{0}.self_attn.q_proj': 'decoder.blocks.{0}.attn_res.fn.to_qkv.0',
+        'model.layers.{0}.self_attn.k_proj': 'decoder.blocks.{0}.attn_res.fn.to_qkv.1',
+        'model.layers.{0}.self_attn.v_proj': 'decoder.blocks.{0}.attn_res.fn.to_qkv.2',
+        'model.layers.{0}.self_attn.o_proj': 'decoder.blocks.{0}.attn_res.fn.to_out.linear',
+        'model.layers.{0}.mlp.gate_proj': 'decoder.blocks.{0}.ff_res.fn.f1.linear',
+        'model.layers.{0}.mlp.up_proj': 'decoder.blocks.{0}.ff_res.fn.f3.linear',
+        'model.layers.{0}.mlp.down_proj': 'decoder.blocks.{0}.ff_res.fn.f2.linear',
+        'model.layers.{0}.input_layernorm': 'decoder.blocks.{0}.attn_res.norm',
+        'model.layers.{0}.post_attention_layernorm': 'decoder.blocks.{0}.ff_res.norm',
+
+        'model.embed_tokens': 'embedding',
+        'model.norm': 'decoder.norm',
+        'lm_head': 'head'
+
+    }
+
     @classmethod
     def from_official(cls, state_dict):
-        convert_dict = {
-            'model.layers.{0}.self_attn.q_proj': 'decoder.blocks.{0}.attn_res.fn.to_qkv.0',
-            'model.layers.{0}.self_attn.k_proj': 'decoder.blocks.{0}.attn_res.fn.to_qkv.1',
-            'model.layers.{0}.self_attn.v_proj': 'decoder.blocks.{0}.attn_res.fn.to_qkv.2',
-            'model.layers.{0}.self_attn.o_proj': 'decoder.blocks.{0}.attn_res.fn.to_out.linear',
-            'model.layers.{0}.mlp.gate_proj': 'decoder.blocks.{0}.ff_res.fn.f1.linear',
-            'model.layers.{0}.mlp.up_proj': 'decoder.blocks.{0}.ff_res.fn.f3.linear',
-            'model.layers.{0}.mlp.down_proj': 'decoder.blocks.{0}.ff_res.fn.f2.linear',
-            'model.layers.{0}.input_layernorm': 'decoder.blocks.{0}.attn_res.norm',
-            'model.layers.{0}.post_attention_layernorm': 'decoder.blocks.{0}.ff_res.norm',
-
-            'model.embed_tokens': 'embedding',
-            'model.norm': 'decoder.norm',
-            'lm_head': 'head'
-
-        }
-
-        state_dict = torch_utils.Converter.convert_keys(state_dict, convert_dict)
+        state_dict = torch_utils.Converter.convert_keys(state_dict, cls.convert_dict)
+        if 'head.weight' not in state_dict:
+            state_dict['head.weight'] = state_dict['embedding.weight']
         return state_dict
 
 
@@ -221,7 +223,7 @@ class Decoder(nn.Module):
             ))
 
         seq_len = inputs_embeds.shape[1]
-        if past_kvs:
+        if past_kvs and 'k' in past_kvs[0]:
             seq_len += past_kvs[0]['k'].shape[-2]
         rot_embedding_weights = self.rot_embedding.make_weights(seq_len)
 
@@ -241,7 +243,7 @@ class Decoder(nn.Module):
 
 class RotaryEmbedding(embeddings.RotaryEmbedding):
     def make_weights(self, seq_len):
-        position_ids = torch.arange(0, seq_len).float()[None]
+        position_ids = torch.arange(0, seq_len, device=self.div_term.device).float()[None]
         inv_freq_expanded = self.div_term[None, :, None].float().expand(position_ids.shape[0], -1, 1)
         position_ids_expanded = position_ids[:, None, :].float()
         # Force float32 (see https://github.com/huggingface/transformers/pull/29285)
