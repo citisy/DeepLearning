@@ -868,7 +868,9 @@ class ModelHooks:
 
     @torch.no_grad()
     def single_predict(self, *obj, **kwargs):
-        return self.batch_predict(*[[o] for o in obj], **kwargs)[0]
+        if not len(obj):
+            obj = [None]
+        return self.batch_predict(*[[o] for o in obj], **kwargs)
 
     @torch.no_grad()
     def batch_predict(self, *objs, batch_size=16, **kwargs):
@@ -876,7 +878,7 @@ class ModelHooks:
         kwargs.update(process_kwargs)
 
         for i in tqdm(range(0, len(objs[0]), batch_size), desc=visualize.TextVisualize.highlight_str('Predict')):
-            loop_inputs = self.gen_predict_inputs(*objs, start_idx=i, end_idx=i + batch_size, **kwargs)
+            loop_inputs = self.gen_predict_inputs(*objs, start_idx=i, end_idx=min(i + batch_size, len(objs[0])), **kwargs)
             loop_inputs = self.on_predict_step_start(loop_inputs, **kwargs)
             loop_objs.update(
                 loop_inputs=loop_inputs,
@@ -891,11 +893,13 @@ class ModelHooks:
         return self.on_predict_end(**kwargs)
 
     @torch.no_grad()
-    def fragment_predict(self, image: np.ndarray, *args, **kwargs):
-        """Tear large picture to pieces for prediction, and then, merge the results and restore them"""
+    def fragment_predict(self, *obj, **kwargs):
+        """Tear large inputs to pieces for prediction, and then, merge the results and restore them"""
         raise NotImplementedError
 
     def on_predict_start(self, **kwargs):
+        assert self.models, 'model list is empty, it seems that you have not init the processor first, perhaps run `processor.init()` first?'
+
         self.set_mode(train=False)
         loop_objs = dict(
             vis_num=0
@@ -906,6 +910,7 @@ class ModelHooks:
         return loop_objs, process_kwargs
 
     def gen_predict_inputs(self, *objs, start_idx=None, end_idx=None, **kwargs) -> List[dict]:
+        """gen inputs for on_predict_step"""
         raise NotImplementedError
 
     def on_predict_step_start(self, loop_inputs, **kwargs):
@@ -917,11 +922,14 @@ class ModelHooks:
     def on_predict_step(self, loop_inputs, **kwargs):
         return self.on_val_step(loop_inputs, **kwargs)
 
-    def on_predict_reprocess(self, loop_objs, process_results=dict(), **kwargs):
+    def on_predict_reprocess(self, loop_objs, process_results=dict(), return_keys=(), **kwargs):
         """prepare true and pred label for `visualize()`
         reprocess data will be cached in predict_container"""
         model_results = loop_objs['model_results']
-        process_results.setdefault(self.model_name, []).extend(model_results[self.model_name]['preds'])
+        ret = process_results.setdefault(self.model_name, {})
+        for k in return_keys:
+            data = ret.setdefault(k, [])
+            data.extend(model_results[self.model_name][k])
 
     def on_predict_step_end(self, loop_objs, **kwargs):
         """visualize the model outputs usually"""

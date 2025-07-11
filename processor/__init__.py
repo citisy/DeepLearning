@@ -192,20 +192,6 @@ class Process(
         help_str = f'{info["path"]}(\n{help_str})'
         return help_str
 
-    @staticmethod
-    def setup_seed(seed=42):
-        """42 is a lucky number"""
-        import random
-        import torch.backends.cudnn as cudnn
-
-        torch.manual_seed(seed)
-        torch.cuda.manual_seed_all(seed)
-        np.random.seed(seed)
-        random.seed(seed)
-        os.environ["PL_GLOBAL_SEED"] = str(seed)
-        cudnn.benchmark = False
-        cudnn.deterministic = True
-
     def init(self):
         self.init_logs()
         self.init_paths()
@@ -228,7 +214,7 @@ class Process(
         self.log(f'{self.model_name = }')
 
     def init_components(self):
-        self.setup_seed()
+        torch_utils.setup_seed()
         if torch.cuda.is_available():
             if isinstance(self.device, (str, int)) and self.device != 'cpu':
                 self.device = torch.device(f"cuda:{self.device}")
@@ -265,11 +251,9 @@ class Process(
         self.log(f'{self.models.keys() = }')
 
     def set_model_status(self):
-        if not isinstance(self.device, list):
-            # note that, it must be set device before load_state_dict()
-            self.model.to(self.device)
-
         self.load_pretrained()
+        if not isinstance(self.device, list):
+            self.model.to(self.device)
 
     def run(self, max_epoch=100, train_batch_size=16, predict_batch_size=None, fit_kwargs=dict(), metric_kwargs=dict()):
         self.init()

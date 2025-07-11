@@ -103,15 +103,15 @@ class Model(nn.Module):
             self,
             text_ids=None, text_ids_len=None,
             prompt_text_ids=None, prompt_text_ids_len=None,
-            prompt_speech_16k=None, source_speech_16k=None,
-            resample_rate=22050, spk_id='', is_instruct=False,
+            prompt_speech=None, source_speech=None,
+            spk_id='', is_instruct=False,
             stream=False, speed=1.0, caches=None,
             **kwargs
     ):
         inputs = self.front(
-            prompt_speech_16k=prompt_speech_16k, source_speech_16k=source_speech_16k,
+            prompt_speech=prompt_speech, source_speech=source_speech,
             prompt_text_ids=prompt_text_ids, prompt_text_ids_len=prompt_text_ids_len,
-            resample_rate=resample_rate, spk_id=spk_id, is_instruct=is_instruct,
+            spk_id=spk_id, is_instruct=is_instruct,
         )
         if caches is None:
             caches = self.init_caches()
@@ -282,12 +282,11 @@ class CosyVoiceFrontEnd(nn.Module):
     fmax = 8000
     center = False
 
-    def __init__(self, campplus_model, speech_idsizer_model, spk2info={}, **kwargs):
+    def __init__(self, campplus_model, speech_idsizer_model, **kwargs):
         """
         Args:
             campplus_model (str): like "xxx/campplus.onnx"
             speech_idsizer_model (str): like "speech_tokenizer_v1.onnx"
-            spk2info (Dict[str, Tensor]):
             **kwargs:
         """
         super().__init__()
@@ -300,7 +299,11 @@ class CosyVoiceFrontEnd(nn.Module):
         providers = ["CUDAExecutionProvider" if torch.cuda.is_available() else "CPUExecutionProvider"]
         self.campplus_session = onnxruntime.InferenceSession(campplus_model, sess_options=option, providers=providers)
         self.speech_idsizer_session = onnxruntime.InferenceSession(speech_idsizer_model, sess_options=option, providers=providers)
-        self.spk2info = spk2info
+        self.resample = torchaudio.transforms.Resample(orig_freq=16000, new_freq=self.sample_rate)
+        self.spk2info = {}
+
+    def update_spk2info(self, spk2info):
+        self.spk2info.update(spk2info)
 
     def forward(self, spk_id='', is_instruct=False, **kwargs):
         if is_instruct:
@@ -330,29 +333,27 @@ class CosyVoiceFrontEnd(nn.Module):
 
     def make_zero_shot_inputs(
             self,
-            prompt_speech_16k=None, source_speech_16k=None,
+            prompt_speech=None, source_speech=None,
             prompt_text_ids=None, prompt_text_ids_len=None,
-            resample_rate=22050, **kwargs
+            **kwargs
     ):
         model_inputs = {}
-        resample = torchaudio.transforms.Resample(orig_freq=16000, new_freq=resample_rate)
-        resample.to(prompt_speech_16k.device)
-        prompt_speech_resample = resample(prompt_speech_16k)
+        prompt_speech_resample = self.resample(prompt_speech)
         prompt_speech_feat, prompt_speech_feat_len = self._extract_speech_feat(prompt_speech_resample)
-        speech_ids, speech_ids_len = self._extract_speech_ids(prompt_speech_16k)
-        if resample_rate == 24000:
+        speech_ids, speech_ids_len = self._extract_speech_ids(prompt_speech)
+        if self.sample_rate == 24000:
             token_len = min(int(prompt_speech_feat.shape[1] / 2), speech_ids.shape[1])
             prompt_speech_feat, prompt_speech_feat_len[:] = prompt_speech_feat[:, :2 * token_len], 2 * token_len
             speech_ids, speech_ids_len[:] = speech_ids[:, :token_len], token_len
-        embedding = self._extract_spk_embedding(prompt_speech_16k)
+        embedding = self._extract_spk_embedding(prompt_speech)
 
         model_inputs.update({
             'flow_prompt_speech_ids': speech_ids, 'flow_prompt_speech_ids_len': speech_ids_len,
             'prompt_speech_feat': prompt_speech_feat, 'prompt_speech_feat_len': prompt_speech_feat_len,
         })
 
-        if source_speech_16k is not None:
-            source_speech_ids, source_speech_ids_len = self._extract_speech_ids(source_speech_16k)
+        if source_speech is not None:
+            source_speech_ids, source_speech_ids_len = self._extract_speech_ids(source_speech)
             model_inputs.update({
                 'source_speech_ids': source_speech_ids, 'source_speech_ids_len': source_speech_ids_len,
                 'flow_embedding': embedding
