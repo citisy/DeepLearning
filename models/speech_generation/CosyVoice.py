@@ -610,11 +610,11 @@ class LinearNoSubsampling(nn.Module):
             nn.LayerNorm(output_size, eps=1e-5),
             nn.Dropout(drop_prob),
         )
-        self.pos_enc = EspnetRelPositionalEncoding(output_size, drop_prob)
+        self.pos_enc = EspnetRelPositionalEncoding(5000, output_size, factor=math.sqrt(output_size), drop_prob=drop_prob)
 
-    def forward(self, x, offset=0):
+    def forward(self, x, start_pos=0):
         x = self.out(x)
-        x, pos_emb = self.pos_enc(x, offset)
+        x, pos_emb = self.pos_enc(x, start_pos)
         return x, pos_emb
 
 
@@ -630,43 +630,32 @@ class LegacyLinearNoSubsampling(nn.Module):
             nn.Dropout(drop_prob),
             nn.ReLU(),
         )
-        self.pos_enc = EspnetRelPositionalEncoding(output_size, drop_prob)
+        self.pos_enc = EspnetRelPositionalEncoding(5000, output_size, factor=math.sqrt(output_size), drop_prob=drop_prob)
 
-    def forward(self, x, offset=0):
+    def forward(self, x, start_pos=0):
         x = self.out(x)
-        x, pos_emb = self.pos_enc(x, offset)
+        x, pos_emb = self.pos_enc(x, start_pos)
         return x, pos_emb
 
 
-class EspnetRelPositionalEncoding(nn.Module):
+class EspnetRelPositionalEncoding(embeddings.PositionalEmbedding):
     """Relative positional encoding module (new implementation).
 
     Details can be found in https://github.com/espnet/espnet/pull/2816.
     See : Appendix B in https://arxiv.org/abs/1901.02860
     """
 
-    def __init__(self, d_model: int, drop_prob: float, max_len: int = 5000):
-        """Construct an PositionalEncoding object."""
-        super().__init__()
-        self.d_model = d_model
-        self.xscale = math.sqrt(self.d_model)
-        self.dropout = nn.Dropout(p=drop_prob)
-        self.max_len = max_len
-        self._register()
+    def _register(self, num_embeddings=None):
+        if num_embeddings is None:
+            num_embeddings = self.num_embeddings
 
-    def _register(self, x=None):
-        if x is None:
-            x = torch.tensor(0.0).expand(1, self.max_len)
         # Suppose `i` means to the position of query vecotr and `j` means the
         # position of key vector. We use position relative positions when keys
         # are to the left (i>j) and negative relative positions otherwise (i<j).
-        pe_positive = torch.zeros(x.size(1), self.d_model)
-        pe_negative = torch.zeros(x.size(1), self.d_model)
-        position = torch.arange(0, x.size(1), dtype=torch.float32).unsqueeze(1)
-        div_term = torch.exp(
-            torch.arange(0, self.d_model, 2, dtype=torch.float32)
-            * -(math.log(10000.0) / self.d_model)
-        )
+        pe_positive = torch.zeros(num_embeddings, self.embedding_dim)
+        pe_negative = torch.zeros(num_embeddings, self.embedding_dim)
+        position = torch.arange(0, num_embeddings, dtype=torch.float32).unsqueeze(1)
+        div_term = embeddings.make_pos_div_term(self.embedding_dim, self.theta)
         pe_positive[:, 0::2] = torch.sin(position * div_term)
         pe_positive[:, 1::2] = torch.cos(position * div_term)
         pe_negative[:, 0::2] = torch.sin(-1 * position * div_term)
@@ -677,35 +666,15 @@ class EspnetRelPositionalEncoding(nn.Module):
         # as in https://arxiv.org/abs/1901.02860
         pe_positive = torch.flip(pe_positive, [0]).unsqueeze(0)
         pe_negative = pe_negative[1:].unsqueeze(0)
-        pe = torch.cat([pe_positive, pe_negative], dim=1)
-        self.register_buffer('pe', pe, persistent=False)
+        weight = torch.cat([pe_positive, pe_negative], dim=1)
+        self.register_buffer('weight', weight, persistent=False)
 
-    def _apply(self, fn, recurse=True):
-        """apply for meta load"""
-        if self.pe.is_meta:
-            self._register()
-        return super()._apply(fn, recurse)
-
-    def extend_pe(self, x: torch.Tensor):
+    def extend_weight(self, seq_len):
         """Reset the positional encodings."""
-        # self.pe contains both positive and negative parts
-        # the length of self.pe is 2 * input_len - 1
-        if self.pe.size(1) < x.size(1) * 2 - 1:
-            self._register(x)
+        if self.weight.shape[1] < seq_len * 2 - 1:
+            self._register(seq_len)
 
-    def forward(self, x: torch.Tensor, offset: Union[int, torch.Tensor] = 0) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Add positional encoding.
-
-        Args:
-            x (torch.Tensor): Input tensor (batch, time, `*`).
-
-        """
-        self.extend_pe(x)
-        x = x * self.xscale
-        pos_emb = self.position_encoding(size=x.size(1), offset=offset)
-        return self.dropout(x), self.dropout(pos_emb)
-
-    def position_encoding(self, offset: Union[int, torch.Tensor], size: int) -> torch.Tensor:
+    def make_embedding(self, seq_len, start_pos=0) -> torch.Tensor:
         """ For getting encoding in a stream fashion
 
         Attention!!!!!
@@ -714,15 +683,23 @@ class EspnetRelPositionalEncoding(nn.Module):
         increasing input size in a stream scenario, so the dropout will
         be applied several times.
 
-        Args:
-            offset (int or torch.tensor): start offset
-            size (int): required size of position encoding
-
-        Returns:
-            torch.Tensor: Corresponding encoding
         """
-        pos_emb = self.pe[:, self.pe.size(1) // 2 - size - offset + 1: self.pe.size(1) // 2 + size + offset]
+        pos_emb = self.weight[:, self.weight.shape[1] // 2 - seq_len - start_pos + 1: self.weight.shape[1] // 2 + seq_len + start_pos]
         return pos_emb
+
+    def forward(self, x, start_pos=0) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Add positional encoding.
+
+        Args:
+            x (torch.Tensor): Input tensor (batch, time, `*`).
+            start_pos (int):
+
+        """
+        seq_len = x.shape[1]
+        self.extend_weight(seq_len)
+        x = x * self.factor
+        emb = self.make_embedding(seq_len, start_pos=start_pos)
+        return self.dropout(x), self.dropout(emb)
 
 
 class ConformerEncoder(nn.Module):
@@ -793,8 +770,7 @@ class ConformerEncoder(nn.Module):
         Returns:
             encoder output tensor xs, and subsampled masks
             xs: padded output tensor (B, T' ~= T/subsample_rate, D)
-            masks: torch.Tensor batch padding mask after subsample
-                (B, 1, T' ~= T/subsample_rate)
+            masks: torch.Tensor batch padding mask after subsample (B, 1, T' ~= T/subsample_rate)
         """
         masks = attentions.make_pad_mask(xs_lens, max_len=xs.shape[1]).unsqueeze(1)
         xs, pos_emb = self.embed(xs)
@@ -932,14 +908,13 @@ class TransformerEncoder(nn.Module):
             attention_mask:
 
         Returns:
-            torch.Tensor: output of current input xs,
-                with shape (b=1, chunk_size, hidden-dim).
+            torch.Tensor: output of current input xs, with shape (b=1, chunk_size, hidden-dim).
         """
         assert xs.size(0) == 1, 'Only for 1 batch'
         xs, pos_emb = self.embed(xs, start_pos)
         chunk_size = xs.size(1)
         attention_key_size = start_pos + chunk_size
-        pos_emb = self.embed.pos_enc.position_encoding(size=attention_key_size, offset=0)
+        pos_emb = self.embed.pos_enc.make_embedding(attention_key_size)
         for i, layer in enumerate(self.encoders):
             xs = layer(
                 xs,
@@ -1087,14 +1062,10 @@ class MaskedDiffWithXvec(nn.Module):
 
     def forward(
             self,
-            token,
-            token_len,
-            prompt_token,
-            prompt_token_len,
-            prompt_feat,
-            prompt_feat_len,
-            embedding,
-            flow_cache=None,
+            token, token_len,
+            prompt_token, prompt_token_len,
+            prompt_feat, prompt_feat_len,
+            embedding, flow_cache=None,
             **kwargs
     ):
         if self.training:
@@ -1471,7 +1442,6 @@ class SinusoidalEmbedding(embeddings.SinusoidalEmbedding):
     def _register(self):
         # note, different here
         half_dim = self.embedding_dim // 2
-        # exp{-d / D * log{\theta}} = \theta ^ {-d / D}
         div_term = (torch.arange(half_dim).float() * -(math.log(self.theta) / (half_dim - 1))).exp()
         self.register_buffer('div_term', div_term, persistent=False)
 
@@ -1516,7 +1486,7 @@ class ResBlock(nn.Module):
             self,
             ch: int = 512,
             k: int = 3,
-            dilations: List[int] = [1, 3, 5],
+            dilations: List[int] = (1, 3, 5),
     ):
         super().__init__()
         self.convs1 = nn.ModuleList()
@@ -1602,7 +1572,7 @@ class InterpolateRegulator(nn.Module):
     def __init__(
             self,
             channels: int = 80,
-            sampling_ratios: Tuple = [1, 1, 1, 1],
+            sampling_ratios: Tuple = (1, 1, 1, 1),
             out_channels: int = None,
             groups: int = 1,
     ):
@@ -1750,12 +1720,12 @@ class HiFTGenerator(nn.Module):
             nsf_alpha: float = 0.1,
             nsf_sigma: float = 0.003,
             nsf_voiced_threshold: float = 10,
-            upsample_rates: List[int] = [8, 8],
-            upsample_kernel_sizes: List[int] = [16, 16],
+            upsample_rates: List[int] = (8, 8),
+            upsample_kernel_sizes: List[int] = (16, 16),
             istft_params: Dict[str, int] = {"n_fft": 16, "hop_len": 4},
-            resblock_kernel_sizes: List[int] = [3, 7, 11],
+            resblock_kernel_sizes: List[int] = (3, 7, 11),
             resblock_dilation_sizes: List[List[int]] = [[1, 3, 5], [1, 3, 5], [1, 3, 5]],
-            source_resblock_kernel_sizes: List[int] = [7, 11],
+            source_resblock_kernel_sizes: List[int] = (7, 11),
             source_resblock_dilation_sizes: List[List[int]] = [[1, 3, 5], [1, 3, 5]],
             lrelu_slope: float = 0.1,
             audio_limit: float = 0.99,
@@ -1790,13 +1760,7 @@ class HiFTGenerator(nn.Module):
         for i, (u, k) in enumerate(zip(upsample_rates, upsample_kernel_sizes)):
             self.ups.append(
                 weight_norm(
-                    nn.ConvTranspose1d(
-                        hidden_ch // (2 ** i),
-                        hidden_ch // (2 ** (i + 1)),
-                        k,
-                        u,
-                        padding=(k - u) // 2,
-                    )
+                    nn.ConvTranspose1d(hidden_ch // (2 ** i), hidden_ch // (2 ** (i + 1)), k, u, padding=(k - u) // 2)
                 )
             )
 

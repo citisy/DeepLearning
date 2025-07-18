@@ -315,7 +315,7 @@ class T5ScaleAttend(attentions.ScaleAttend):
             bias = self.make_relative_bias(sim)
             sim += bias
 
-        sim = attentions.mask(sim, attention_mask)
+        sim = attentions.mask_values(sim, attention_mask)
         attn = F.softmax(sim, dim=-1)
         attn = self.dropout(attn)
 

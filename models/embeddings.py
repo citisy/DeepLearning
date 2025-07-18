@@ -5,6 +5,14 @@ from einops.layers.torch import Rearrange
 from torch import nn
 
 
+def make_pos_div_term(embedding_dim, theta):
+    # exp{-d / D * log{\theta}} = \theta ^ {-d / D}
+    # same to
+    # div_term = 1.0 / (theta ** (torch.arange(0, embedding_dim, 2)[: (embedding_dim // 2)].float() / embedding_dim))
+    div_term = (torch.arange(0, embedding_dim, 2).float() * -(math.log(theta) / embedding_dim)).exp()
+    return div_term
+
+
 class EmbeddingSim(nn.Module):
     """as a linear layer"""
 
@@ -24,20 +32,23 @@ class PositionalEmbedding(nn.Module):
     where, n is token position of N, d is emb position of D
     """
 
-    def __init__(self, num_embeddings, embedding_dim, theta=10000.):
+    def __init__(self, num_embeddings, embedding_dim, theta=10000., is_shortcut=False, factor=1., drop_prob=0.):
         super().__init__()
         self.num_embeddings = num_embeddings
         self.embedding_dim = embedding_dim
         self.theta = theta
+        self.is_shortcut = is_shortcut
+        self.factor = factor
+        self.dropout = nn.Dropout(drop_prob)
         self._register()
 
-    def _register(self):
-        weight = torch.zeros(self.num_embeddings, self.embedding_dim).float()
-        position = torch.arange(0, self.num_embeddings).float().unsqueeze(1)
-        # exp{-d / D * log{\theta}} = \theta ^ {-d / D}
-        # same to
-        # div_term = 1.0 / (theta ** (torch.arange(0, embedding_dim, 2)[: (embedding_dim // 2)].float() / embedding_dim))
-        div_term = (torch.arange(0, self.embedding_dim, 2).float() * -(math.log(self.theta) / self.embedding_dim)).exp()
+    def _register(self, num_embeddings=None):
+        if num_embeddings is None:
+            num_embeddings = self.num_embeddings
+
+        weight = torch.zeros(num_embeddings, self.embedding_dim).float()
+        position = torch.arange(0, num_embeddings).float().unsqueeze(1)
+        div_term = make_pos_div_term(self.embedding_dim, self.theta)
 
         weight[:, 0::2] = torch.sin(position * div_term)
         weight[:, 1::2] = torch.cos(position * div_term)
@@ -51,8 +62,21 @@ class PositionalEmbedding(nn.Module):
             self._register()
         return super()._apply(fn, recurse)
 
+    def extend_weight(self, seq_len):
+        """Reset the positional encodings."""
+        if self.weight.shape[1] < seq_len:
+            self._register(seq_len)
+
+    def make_embedding(self, seq_len, **kwargs):
+        return self.weight[:, :seq_len]
+
     def forward(self, x):
-        return self.weight[:, :x.shape[1]]
+        seq_len = x.shape[1]
+        self.extend_weight(seq_len)
+        emb = self.make_embedding(seq_len)
+        if self.is_shortcut:
+            emb = x * self.factor + emb
+        return self.dropout(emb)
 
 
 class LearnedPositionEmbedding(nn.Embedding):
@@ -67,6 +91,15 @@ class LearnedPositionEmbedding(nn.Embedding):
         return super().forward(position_ids[:, :x.shape[1]])
 
 
+class LearnedPositionEmbeddingV2(PositionalEmbedding):
+    def __init__(self, *arg, **kwargs):
+        super().__init__(*arg, **kwargs)
+        self.alpha = nn.Parameter(torch.ones(1))
+
+    def make_embedding(self, seq_len, **kwargs):
+        return self.alpha * self.weight[:, :seq_len]
+
+
 class SinusoidalEmbedding(nn.Module):
     def __init__(self, embedding_dim, theta=10000., factor=1.):
         super().__init__()
@@ -76,8 +109,7 @@ class SinusoidalEmbedding(nn.Module):
         self._register()
 
     def _register(self):
-        # exp{-d / D * log{\theta}} = \theta ^ {-d / D}
-        div_term = (torch.arange(0, self.embedding_dim, 2).float() * -(math.log(self.theta) / self.embedding_dim)).exp()
+        div_term = make_pos_div_term(self.embedding_dim, self.theta)
         self.register_buffer('div_term', div_term, persistent=False)
 
     def _apply(self, fn, recurse=True):
@@ -126,23 +158,17 @@ class RotaryEmbedding(nn.Module):
         super().__init__()
         self.embedding_dim = embedding_dim
         self.theta = theta
-
-        div_term = self.make_div_term()
-        self.register_buffer('div_term', div_term, persistent=False)
+        self._register()
 
     def _apply(self, fn, recurse=True):
         """apply for meta load"""
         if self.div_term.is_meta:
-            div_term = self.make_div_term()
-            self.register_buffer('div_term', div_term, persistent=False)
+            self._register()
         return super()._apply(fn, recurse)
 
-    def make_div_term(self):
-        # exp{-d / D * log{\theta}} = \theta ^ {-d / D} = 1 / (\theta ^ {d / D})
-        # equal to
-        # div_term = 1.0 / (self.theta ** (torch.arange(0, self.embedding_dim, 2)[: (self.embedding_dim // 2)].float() / self.embedding_dim))
-        div_term = (torch.arange(0, self.embedding_dim, 2).float() * -(math.log(self.theta) / self.embedding_dim)).exp()
-        return div_term
+    def _register(self):
+        div_term = make_pos_div_term(self.embedding_dim, self.theta)
+        self.register_buffer('div_term', div_term, persistent=False)
 
     def make_weights(self, seq_len):
         position = torch.arange(0, seq_len).float()

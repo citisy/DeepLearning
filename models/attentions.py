@@ -35,48 +35,58 @@ def get_qkv(q, k=None, v=None):
     return q, k, v
 
 
-def make_causal_attention_mask(x, start_pos=0):
+def make_causal_attention_mask(x=None, det_shape=None, len_dim=1, start_pos=0):
     """
+    Args:
+        x (Tensor): only for getting lens, higher priority than `det_shape`
+        det_shape (Tensor): only for getting lens
+        len_dim (int): dim of sequence lengths
+        start_pos (int): num of kv caches' seq len
+
     e.g.:
         x.shape=(b, 3, -1)
 
         start_pos=0 -> mask.shape=(b, 1, 3, 3)
         and mask[0, 0] would like that:
-            [[1, 0, 0],
-            [1, 1, 0],
-            [1, 1, 1]]
+            [[True, False, False],
+            [True, True, False],
+            [True, True, True]]
 
         start_pos=1 -> mask.shape=(b, 1, 3, 4)
         and mask[0, 0] would like that:
-            [[1, 1, 0, 0],
-            [1, 1, 1, 0],
-            [1, 1, 1, 1]]
+            [[True, True, False, False],
+            [True, True, True, False],
+            [True, True, True, True]]
 
     """
-    batch_size, seq_len = x.shape[:2]
-    mask = torch.tril(torch.ones(seq_len, seq_len, device=x.device))
+    if x is None:
+        device = det_shape.device
+    else:
+        det_shape = x.shape
+        device = x.device
+
+    bs = det_shape[0]
+    seq_len = det_shape[len_dim]
+    mask = torch.tril(torch.ones(seq_len, seq_len, device=device))
     mask = torch.hstack([
-        torch.ones((seq_len, start_pos), dtype=mask.dtype, device=x.device),
+        torch.ones((seq_len, start_pos), dtype=mask.dtype, device=device),
         mask
     ])
-    mask = mask[None, None].repeat(batch_size, 1, 1, 1)  # (b, 1, s, s+p)
-    return mask
+    mask = mask[None, None].repeat(bs, 1, 1, 1)  # (b, 1, s, s+p)
+    return mask.to(torch.bool)
 
 
-def make_pad_mask(lens, x=None, length_dim=-1, max_len=None):
-    """Make mask tensor containing indices of padded part.
-
+def make_pad_mask(lens, x=None, len_dim=1, max_len=None):
+    """
     Args:
-        lens (LongTensor or List): Batch of lengths (B,).
-        x (Tensor, optional): The reference tensor.
-            If set, masks will be the same shape as this tensor.
-        length_dim (int, optional): Dimension indicator of the above tensor.
-            See the example.
+        lens (LongTensor or List): shape of (b, ), for counting max_len, for getting mask areas
+        x (Tensor): higher priority than `lens` for counting max_len
+        len_dim (int): for getting max_len, gives the dims of sequence lengths, x.shape[length_dim] is max_len
         max_len:
 
     Examples:
         >>> lens = [5, 3, 2]
-        >>> make_pad_mask(lens)
+        >>> make_pad_mask(lens) # -> mask.shape=(3, 5)
         [[True, True, True, True ,True],
          [True, True, True, False, False],
          [True, True, False, False, False]]
@@ -89,7 +99,7 @@ def make_pad_mask(lens, x=None, length_dim=-1, max_len=None):
         if x is None:
             max_len = int(max(lens))
         else:
-            max_len = x.size(length_dim)
+            max_len = x.shape[len_dim]
 
     bs = lens.shape[0]
     seq_range = torch.arange(0, max_len, dtype=torch.int64, device=lens.device)
@@ -97,21 +107,10 @@ def make_pad_mask(lens, x=None, length_dim=-1, max_len=None):
     seq_length_expand = lens.unsqueeze(-1)
     mask = seq_range_expand < seq_length_expand
 
-    if x is not None:
-        assert x.size(0) == bs, (x.size(0), bs)
-
-        if length_dim < 0:
-            length_dim = x.dim() + length_dim
-        # ind = (:, None, ..., None, :, , None, ..., None)
-        ind = tuple(slice(None) if i in (0, length_dim) else None for i in range(x.dim()))
-        mask = mask[ind].expand_as(x).to(x.device)
     return mask
 
 
-def make_chunk_mask(
-        size: int,
-        chunk_size: int,
-) -> torch.Tensor:
+def make_chunk_mask(size, chunk_size) -> torch.Tensor:
     """Create mask for subsequent steps (size, size) with chunk size,
        this is for streaming encoder
 
@@ -120,7 +119,7 @@ def make_chunk_mask(
         chunk_size (int): size of chunk
 
     Returns:
-        torch.Tensor: mask
+        torch.Tensor: mask, shape of (size, size)
 
     Examples:
         >>> make_chunk_mask(4, 1)
@@ -133,13 +132,12 @@ def make_chunk_mask(
         [ True,  True, False, False],
         [ True,  True,  True,  True],
         [ True,  True,  True,  True]]
-        >>> make_chunk_mask(4, 2)
+        >>> make_chunk_mask(4, 3)
         [[ True,  True,  True, False],
         [ True,  True,  True, False],
         [ True,  True,  True, False],
         [ True,  True,  True,  True]]
     """
-    # NOTE this modified implementation meets onnx export requirements, but it doesn't support num_left_chunks
     pos_idx = torch.arange(size)
     block_value = (torch.div(pos_idx, chunk_size, rounding_mode='trunc') + 1) * chunk_size
     ret = pos_idx.unsqueeze(0) < block_value.unsqueeze(1)
@@ -147,8 +145,9 @@ def make_chunk_mask(
 
 
 def remake_mask(attention_mask, det_shape, det_dtype=None, return_bool=True):
-    """remake the value and the shape of the mask to apply for attention inputs
-    ori mask is False to mask, convert to True to mask
+    """remake the value and the shape of the mask to apply for attention counting
+    by ori mask, the value of `False` mean the attention value is masking,
+    after remaking, the value of new mask is inverted
     """
     if attention_mask is None:
         return attention_mask
@@ -174,12 +173,11 @@ def remake_mask(attention_mask, det_shape, det_dtype=None, return_bool=True):
     return attention_mask
 
 
-def mask(sim, attention_mask=None, use_min=True):
+def mask_values(sim, attention_mask=None, use_min=True):
     """
-
     Args:
         sim:
-        attention_mask: True to mask
+        attention_mask: False to mask
         use_min:
 
     """
@@ -420,7 +418,7 @@ class ScaleAttend(nn.Module):
         # similarity -> (..., i, j), usually i=j=s
         # sim = torch.einsum('... i d, ... j d -> ... i j', q, k) * self.scale
         sim = torch.matmul(q, k.transpose(-2, -1)) * scale
-        sim = mask(sim, attention_mask, use_min=use_min)
+        sim = mask_values(sim, attention_mask, use_min=use_min)
 
         attn = F.softmax(sim, dim=-1)
         attn = self.dropout(attn)

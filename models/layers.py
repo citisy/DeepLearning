@@ -104,7 +104,7 @@ class Conv(nn.Sequential):
             elif m == 'a' and is_act:
                 layers['act'] = act or nn.ReLU(inplace=True)
             elif m == 'd' and is_drop:
-                layers['drop'] = nn.Dropout(drop_prob)
+                layers['dropout'] = nn.Dropout(drop_prob)
             elif m not in 'cnad':
                 raise ValueError(f'mode = {mode} not in `cnad`, please check!')
 
@@ -236,7 +236,7 @@ class ConvT(nn.Sequential):
                 elif m == 'a' and is_act:
                     layers['act'] = act or nn.ReLU(True)
                 elif m == 'd' and is_drop:
-                    layers['drop'] = nn.Dropout(drop_prob)
+                    layers['dropout'] = nn.Dropout(drop_prob)
                 elif m not in 'cnad':
                     raise ValueError(f'mode = {mode} not in `cnad`, please check!')
 
@@ -289,7 +289,7 @@ class Linear(nn.Sequential):
             elif m == 'a' and is_act:
                 layers['act'] = act or nn.Sigmoid()
             elif m == 'd' and is_drop:
-                layers['drop'] = nn.Dropout(drop_prob)
+                layers['dropout'] = nn.Dropout(drop_prob)
             elif m not in 'lnad':
                 raise ValueError(f'mode = {mode} not in `lnad`, please check!')
 
