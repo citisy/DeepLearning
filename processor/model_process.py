@@ -870,7 +870,11 @@ class ModelHooks:
     def single_predict(self, *obj, **kwargs):
         if not len(obj):
             obj = [None]
-        return self.batch_predict(*[[o] for o in obj], **kwargs)
+        ret = self.batch_predict(*[[o] for o in obj], **kwargs)
+        if isinstance(ret, list):
+            return ret[0]
+        else:
+            return ret
 
     @torch.no_grad()
     def batch_predict(self, *objs, batch_size=16, **kwargs):

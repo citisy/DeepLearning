@@ -1,6 +1,6 @@
 import torch
 import numpy as np
-from .text_pretrain import TextProcessForBert, Bert as BertFull, LoadBertFromHFPretrain
+from .text_pretrain import TextProcessForBert, BaseBert as BertFull, FromBertHFPretrained
 
 
 class CoLA(TextProcessForBert):
@@ -83,7 +83,7 @@ class Bert_CoLA(McMetric, Bert, CoLA):
     """
 
 
-class BertHF_CoLA(McMetric, Bert, LoadBertFromHFPretrain, CoLA):
+class BertHF_CoLA(McMetric, Bert, FromBertHFPretrained, CoLA):
     """
     Usage:
         .. code-block:: python
@@ -127,7 +127,7 @@ class BertFull_SST2(BertFull, SST2):
     """
 
 
-class BertHF_SST2(Bert, LoadBertFromHFPretrain, SST2):
+class BertHF_SST2(Bert, FromBertHFPretrained, SST2):
     """
     Usage:
         .. code-block:: python

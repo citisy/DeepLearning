@@ -11,7 +11,6 @@ from ..text_pretrain import llama, qwen2, transformers
 from data_parse.nl_data_parse.pre_process.decoder import beam_search
 
 
-
 class Config(bundles.Config):
     LayerNorm = 'LayerNorm'
     RMSNorm2D = 'RMSNorm2D'
@@ -107,10 +106,14 @@ class WeightConverter:
             'model.layers.{0}.mlp.up_proj': 'vlm.blocks.{0}.ff_res.fn.f3.linear',
             'model.layers.{0}.mlp.down_proj': 'vlm.blocks.{0}.ff_res.fn.f2.linear',
             'model.layers.{0}.input_layernorm': 'vlm.blocks.{0}.attn_res.norm',
-            'model.layers.{0}.post_attention_layernorm': 'vlm.blocks.{0}.ff_res.norm'
+            'model.layers.{0}.post_attention_layernorm': 'vlm.blocks.{0}.ff_res.norm',
+
+            'lm_head': 'head'
         }
 
         state_dict = torch_utils.Converter.convert_keys(state_dict, convert_dict)
+        if 'head.weight' not in state_dict:
+            state_dict['head.weight'] = state_dict['vlm.embed_tokens.weight']
         return state_dict
 
 
@@ -121,7 +124,7 @@ class Model(nn.Module):
     vision_start_token_id = 151652
     eos_ids = [151645, 151643]
 
-    def __init__(self, vit_config=Config._2b_vit_config, vlm_config=Config._2b_vlm_config, model_config={}):    # noqa
+    def __init__(self, vit_config=Config._2b_vit_config, vlm_config=Config._2b_vlm_config, model_config={}):  # noqa
         super().__init__()
         self.__dict__.update(model_config)
 
@@ -134,6 +137,28 @@ class Model(nn.Module):
         self.criterion = nn.CrossEntropyLoss()
 
         self.rope_deltas = None
+
+    _device = None
+    _dtype = None
+
+    @property
+    def device(self):
+        return torch_utils.ModuleInfo.possible_device(self) if self._device is None else self._device
+
+    @property
+    def dtype(self):
+        return torch_utils.ModuleInfo.possible_dtype(self) if self._dtype is None else self._dtype
+
+    def set_half(self):
+        dtype = torch.bfloat16
+
+        torch_utils.ModuleManager.apply(
+            self,
+            lambda module: module.to(dtype),
+            exclude=[normalizations.RMSNorm2D]
+        )
+
+        self.forward = partial(torch_utils.ModuleManager.assign_dtype_run, self, self.forward, dtype, force_effect_module=False)
 
     def get_rope_index(
             self,
@@ -303,9 +328,9 @@ class Model(nn.Module):
         if content_generator:
             vlm_past_kvs = [dict(
                 # (b, n, s, d)
-                k=torch.empty((x.shape[0], self.decoder.num_heads, 0, self.decoder.hidden_size // self.decoder.num_heads), dtype=self.decoder.dtype, device=self.decoder.device),
-                v=torch.empty((x.shape[0], self.decoder.num_heads, 0, self.decoder.hidden_size // self.decoder.num_heads), dtype=self.decoder.dtype, device=self.decoder.device)
-            ) for i in range(self.decoder.num_blocks)]
+                k=torch.empty((x.shape[0], self.vlm.num_heads, 0, self.vlm.hidden_size // self.vlm.num_heads), dtype=self.vlm.dtype, device=self.vlm.device),
+                v=torch.empty((x.shape[0], self.vlm.num_heads, 0, self.vlm.hidden_size // self.vlm.num_heads), dtype=self.vlm.dtype, device=self.vlm.device)
+            ) for i in range(self.vlm.num_blocks)]
 
             preds = beam_search(x, seq_lens, self.decode, eos_ids=self.eos_ids, vlm_past_kvs=vlm_past_kvs, **decode_kwargs)
 

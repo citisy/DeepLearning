@@ -171,7 +171,7 @@ class RotaryEmbedding(nn.Module):
         self.register_buffer('div_term', div_term, persistent=False)
 
     def make_weights(self, seq_len):
-        position = torch.arange(0, seq_len).float()
+        position = torch.arange(0, seq_len).to(self.div_term)
         # equal to
         # freqs = torch.einsum("...n,d->...nd", position, self.div_term)
         freqs = torch.outer(position, self.div_term).float()

@@ -1,4 +1,5 @@
 import re
+from pathlib import Path
 from typing import List
 
 import numpy as np
@@ -381,7 +382,7 @@ class SOP(DataProcessForBert):
         return TextPairProcessForBert.data_augment(self, ret, train)
 
 
-class Bert(Process):
+class BaseBert(Process):
     model_version = 'bert'
     is_token_cls = True
     is_seq_cls = True
@@ -597,7 +598,7 @@ class Bert(Process):
             process_results.setdefault(name, []).extend(results['pred_segment'])
 
 
-class LoadBertFromHFPretrain(CheckpointHooks):
+class FromBertHFPretrained(CheckpointHooks):
     """load pretrain model from hugging face"""
 
     def load_pretrained(self):
@@ -608,14 +609,18 @@ class LoadBertFromHFPretrain(CheckpointHooks):
             self.model.load_state_dict(state_dict, strict=False)
 
 
-class BertMLMFromHFPretrain(Bert, LoadBertFromHFPretrain, TextProcessForBert):
+class BertMLM(BaseBert, FromBertHFPretrained, TextProcessForBert):
     """
     Usage:
         .. code-block:: python
 
-            from bundles.text_pretrain import BertMLMFromHFPretrain as Process
+            from bundles.text_pretrain import BertMLM as Process
 
-            process = Process(pretrain_model='...', vocab_fn='...')
+            model_dir = 'xxx'
+            process = Process(
+                pretrain_model=f'{model_dir}/pytorch_model.bin',
+                vocab_fn=f'{model_dir}/vocab.txt'
+            )
             process.init()
 
             # if using `bert-base-uncased` pretrain model
@@ -634,7 +639,7 @@ class BertMLMFromHFPretrain(Bert, LoadBertFromHFPretrain, TextProcessForBert):
     is_chunk = False
 
 
-class BertMLM_SimpleText(Bert, SimpleTextForBert):
+class BertMLM_SimpleText(BaseBert, SimpleTextForBert):
     """
     Usage:
         .. code-block:: python
@@ -647,7 +652,7 @@ class BertMLM_SimpleText(Bert, SimpleTextForBert):
     is_chunk = True
 
 
-class Bert_SOP(Bert, SOP):
+class Bert_SOP(BaseBert, SOP):
     """
     Usage:
         .. code-block:: python
@@ -850,7 +855,7 @@ class SimpleTextForT5(DataHooks):
             return loader.load(set_type=DataRegister.TEST, max_size=self.val_data_num, return_label=True, generator=False)[0]
 
 
-class T5(Process):
+class BaseT5(Process):
     model_version = 'T5'
     config_version = 'small'
     use_scaler = True
@@ -930,7 +935,7 @@ class T5(Process):
             process_results.setdefault(name, []).extend(results['pred_segment'])
 
 
-class LoadT5FromHFPretrain(CheckpointHooks):
+class FromT5HFPretrained(CheckpointHooks):
     """load pretrain model from huggingface"""
 
     def load_pretrained(self):
@@ -941,18 +946,19 @@ class LoadT5FromHFPretrain(CheckpointHooks):
             self.model.load_state_dict(state_dict, strict=False)
 
 
-class T5FromHFPretrain(T5, LoadT5FromHFPretrain, SimpleTextForT5):
+class T5(BaseT5, FromT5HFPretrained, SimpleTextForT5):
     """
     Usage:
         .. code-block:: python
 
-            from bundles.text_pretrain import T5FromHFPretrain as Process
+            from bundles.text_pretrain import T5 as Process
 
+            model_dir = 'xxx'
             process = Process(
-                pretrain_model='xxx/pytorch_model.bin',
-                vocab_fn='xxx/tokenizer.json',
-                encoder_fn='xxx/spiece.model',
-                config_version='xxx'
+                pretrain_model=f'{model_dir}/pytorch_model.bin',
+                vocab_fn=f'{model_dir}/tokenizer.json',
+                encoder_fn=f'{model_dir}/spiece.model',
+                config_version='small'  # ['small', 'base', 'large', '3B', '11B']
             )
             process.init()
 
@@ -970,12 +976,29 @@ class T5FromHFPretrain(T5, LoadT5FromHFPretrain, SimpleTextForT5):
     dataset_version = 'huggingface_pretrain'
 
 
-class Qwen2(Process):
+class FromQwen2Pretrained(CheckpointHooks):
+    pretrain_model: str | List[str]
+
+    def load_pretrained(self):
+        if hasattr(self, 'pretrain_model'):
+            from models.text_pretrain.qwen2 import WeightLoader, WeightConverter
+
+            if Path(self.pretrain_model).is_dir():
+                self.pretrain_model = [str(fp) for fp in os_lib.find_all_suffixes_files(self.pretrain_model, ['.safetensors'])]
+
+            state_dict = WeightLoader.auto_load(self.pretrain_model)
+            state_dict = WeightConverter.from_official(state_dict)
+            self.model.load_state_dict(state_dict, strict=False, assign=True)
+
+
+class BaseQwen2(Process):
+    config_version: str = '0.5b'
+
     def set_model(self):
-        from models.text_pretrain.qwen2 import Model
+        from models.text_pretrain.qwen2 import Model, Config
 
         with torch.device('meta'):
-            self.model = Model()
+            self.model = Model(**Config.get(self.config_version))
 
     def set_tokenizer(self):
         from data_parse.nl_data_parse.pre_process.bundled import Qwen2Tokenizer
@@ -985,9 +1008,88 @@ class Qwen2(Process):
             encoder_fn=self.encoder_fn
         )
 
-    def load_pretrain(self):
-        from models.text_pretrain.qwen2 import WeightLoader, WeightConverter
+    def get_model_inputs(self, loop_inputs, train=True):
+        if train:
+            raise NotImplementedError
+        else:
+            return self.get_model_val_inputs(loop_inputs)
 
-        state_dict = WeightLoader.auto_load(self.pretrain_model)
-        state_dict = WeightConverter.from_official(state_dict)
-        self.model.load_state_dict(state_dict, strict=False, assign=True)
+
+class Qwen2Predictor(BaseQwen2):
+    def get_model_val_inputs(self, loop_inputs):
+        model_inputs = []
+        for ret in loop_inputs:
+            messages = ret['messages']
+            prompt_inputs = self.tokenizer.encode_dialog(messages)
+
+            model_input = dict(
+                input_ids=prompt_inputs['segments_ids'],
+                seq_lens=prompt_inputs['seq_lens']
+            )
+            model_input = torch_utils.Converter.force_to_tensors(model_input, self.device)
+            model_inputs.append(model_input)
+
+        return model_inputs
+
+    def on_val_step(self, loop_objs, model_kwargs=dict(), **kwargs) -> dict:
+        loop_inputs = loop_objs['loop_inputs']
+        model_inputs = self.get_model_inputs(loop_inputs, train=False)
+
+        model_results = {}
+        for name, model in self.models.items():
+            generated_ids = []
+            for model_input in model_inputs:
+                model_output = model(**model_input, **model_kwargs)
+
+                preds = model_output['preds']
+                preds = preds.cpu().numpy()
+
+                seq_lens = model_input['seq_lens']
+                generated_ids += [pred[seq_len:-1] for seq_len, pred in zip(seq_lens, preds)]
+
+            model_results[name] = dict(
+                generated_ids=generated_ids,
+            )
+
+        return model_results
+
+    def gen_predict_inputs(self, *objs, start_idx=None, end_idx=None, messages=None, content=None, **kwargs) -> List[dict]:
+        if messages is None:
+            messages = [
+                {"role": "system", "content": "You are a helpful assistant."},
+                {"role": "user", "content": content}
+            ]
+
+        return [dict(
+            messages=messages
+        )] * (end_idx - start_idx)
+
+    def on_predict_reprocess(self, loop_objs, process_results=dict(), **kwargs):
+        model_results = loop_objs['model_results']
+        generated_ids = model_results[self.model_name]['generated_ids']
+        response = self.tokenizer.decode_to_segments(generated_ids)
+        process_results.setdefault(self.model_name, []).extend(response)
+
+
+class Qwen2(FromQwen2Pretrained, Qwen2Predictor):
+    """
+    Usage:
+        .. code-block:: python
+
+            from bundles.text_pretrain import Qwen2 as Process
+
+            model_dir = 'xxx'
+            process = Process(
+                pretrain_model=model_dir,
+                vocab_fn=f'{model_dir}/vocab.json',
+                encoder_fn=f'{model_dir}/merges.txt',
+                config_version='0.5b'  # ['0.5b', '1.5b', '7b', '72b']
+            )
+
+            process.init()
+
+            # todo: only support single predict
+            content = '简单介绍一下大模型。'
+            process.single_predict(content=content)
+            # '大模型是一种计算机视觉模型，它能够模拟人类视觉感知，能够识别和理解图像中的物体、形状、颜色等特征，并能够进行分类、识别、预测等任务。大模型可以用于图像识别、自然语言处理、计算机视觉等领域。'
+    """

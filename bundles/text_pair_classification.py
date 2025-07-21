@@ -1,5 +1,5 @@
 import torch
-from .text_pretrain import TextPairProcessForBert, Bert as BertFull, LoadBertFromHFPretrain
+from .text_pretrain import TextPairProcessForBert, BaseBert as BertFull, FromBertHFPretrained
 
 
 class MNLI(TextPairProcessForBert):
@@ -121,7 +121,7 @@ class Bert_MNLI(Bert, MNLI):
     """
 
 
-class BertHF_MNLI(Bert, LoadBertFromHFPretrain, MNLI):
+class BertHF_MNLI(Bert, FromBertHFPretrained, MNLI):
     """
     Usage:
         .. code-block:: python
@@ -156,7 +156,7 @@ class Bert_QQP(Bert, QQP):
     """
 
 
-class BertHF_QQP(Bert, LoadBertFromHFPretrain, QQP):
+class BertHF_QQP(Bert, FromBertHFPretrained, QQP):
     """
     Usage:
         .. code-block:: python
@@ -201,7 +201,7 @@ class BertFull_QNLI(BertFull, QNLI):
     """
 
 
-class BertHF_QNLI(Bert, LoadBertFromHFPretrain, QNLI):
+class BertHF_QNLI(Bert, FromBertHFPretrained, QNLI):
     """
     Usage:
         .. code-block:: python
@@ -228,7 +228,7 @@ class Bert_MRPC(Bert, MRPC):
     """
 
 
-class BertHF_MRPC(Bert, LoadBertFromHFPretrain, MRPC):
+class BertHF_MRPC(Bert, FromBertHFPretrained, MRPC):
     """
     Usage:
         .. code-block:: python
@@ -255,7 +255,7 @@ class Bert_RTE(Bert, RTE):
     """
 
 
-class BertHF_RTE(Bert, LoadBertFromHFPretrain, RTE):
+class BertHF_RTE(Bert, FromBertHFPretrained, RTE):
     """
     Usage:
         .. code-block:: python

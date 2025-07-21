@@ -1533,20 +1533,21 @@ class Flux(FromFluxPretrained, FluxPredictor):
 
             from bundles.image_generation import Flux as Process
 
+            model_dir = 'xxx'
             process = Process(
-                clip_vocab_fn='xxx/tokenizer/vocab.json',
-                clip_encoder_fn='xxx/tokenizer/merges.txt',
+                clip_vocab_fn=f'{model_dir}/tokenizer/vocab.json',
+                clip_encoder_fn=f'{model_dir}/tokenizer/merges.txt',
 
-                t5_vocab_fn='xxx/tokenizer_2/tokenizer.json',
-                t5_encoder_fn='xxx/tokenizer_2/spiece.model',
+                t5_vocab_fn=f'{model_dir}/tokenizer_2/tokenizer.json',
+                t5_encoder_fn=f'{model_dir}/tokenizer_2/spiece.model',
 
-                clip_text_encoder_pretrained='xxx/text_encoder/model.safetensors',
+                clip_text_encoder_pretrained=f'{model_dir}/text_encoder/model.safetensors',
                 t5_text_encoder_pretrained=[
-                    'xxx/text_encoder_2/model-00001-of-00002.safetensors',
-                    'xxx/text_encoder_2/model-00002-of-00002.safetensors'
+                    f'{model_dir}/text_encoder_2/model-00001-of-00002.safetensors',
+                    f'{model_dir}/text_encoder_2/model-00002-of-00002.safetensors'
                 ],
-                flux_pretrained='xxx/flux1-dev.safetensors',
-                vae_pretrained='xxx/ae.safetensors',
+                flux_pretrained=f'{model_dir}/flux1-dev.safetensors',
+                vae_pretrained=f'{model_dir}/ae.safetensors',
 
                 low_memory_run=True,
                 use_half=True,
