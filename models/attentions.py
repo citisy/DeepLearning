@@ -555,7 +555,7 @@ class FlashAttend(nn.Module):
 
         self.drop_prob = drop_prob
 
-    def forward(self, q, k, v, attention_mask=None, **kwargs):
+    def forward(self, q, k, v, attention_mask=None, is_causal=False, **kwargs):
         """
         in(q|k|v): (b n s d)
         out(attn): (b n s d)
@@ -563,12 +563,6 @@ class FlashAttend(nn.Module):
         b, heads, q_len, _ = q.shape
 
         q, k, v = map(lambda t: t.contiguous(), (q, k, v))
-
-        is_causal = False
-        if attention_mask is None:
-            is_causal = True
-        elif q_len == 1:
-            attention_mask = None
 
         # Check if there is a compatible device for flash attention
         attention_mask = remake_mask(attention_mask, (b, heads, q_len, q_len), q.dtype, return_bool=False)

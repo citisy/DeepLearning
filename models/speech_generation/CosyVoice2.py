@@ -145,20 +145,6 @@ class Qwen2Encoder(nn.Module):
         super().__init__()
         self.model = qwen2.Model(**qwen2.Config.get('0.5b'))
 
-    def forward_(self, xs, masks, cache=None):
-        input_masks = masks[:, -1, :]
-        outs = self.model(
-            inputs_embeds=xs,
-            attention_mask=input_masks,
-            output_hidden_states=True,
-            return_dict=True,
-            use_cache=True,
-            past_key_values=cache,
-        )
-        xs = outs.hidden_states[-1]
-        new_cache = outs.past_key_values
-        return xs, new_cache
-
     def forward(self, xs, start_pos=0, past_kvs=None):
         y = self.model.decoder(xs, start_pos=start_pos, past_kvs=past_kvs)
         return y
