@@ -342,7 +342,10 @@ class CrossAttention3D(nn.Module):
         return self.to_out(x)
 
     def forward(self, q, k=None, v=None, **attend_kwargs):
-        b, h, w, c = q.shape
+        if self.use_conv:
+            b, c, h, w = q.shape
+        else:
+            b, h, w, c = q.shape
         q, k, v = self.forward_in(q, k, v)
         x = self.attend(q, k, v, **attend_kwargs)
         x = self.forward_out(x, h, w)

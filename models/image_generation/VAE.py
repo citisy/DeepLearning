@@ -356,7 +356,7 @@ class Decoder(nn.Module):
             self.head = nn.Identity()
             self.out_act = nn.Identity()
         else:
-            self.head = Conv(in_ch, self.out_channels, 3, mode='nac', norm=make_norm(groups, in_ch), act=Swish())
+            self.head = Conv(in_ch, self.out_channels, 3, mode='nac', norm=make_norm(groups, in_ch), act=activations.Swish())
             self.out_act = nn.Tanh() if tanh_out else nn.Identity()  # todo: something wrong???
 
     def forward(self, z, time_emb=None):

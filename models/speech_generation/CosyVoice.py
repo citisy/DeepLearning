@@ -1011,7 +1011,7 @@ class RelPositionAttend(nn.Module):
         scale = q.shape[-1] ** -0.5
         sim = (matrix_ac + matrix_bd) * scale
 
-        sim = attentions.mask(sim, attention_mask, use_min=True)
+        sim = attentions.mask_values(sim, attention_mask, use_min=True)
         attn = torch.softmax(sim, dim=-1)
 
         attn = self.dropout(attn)
