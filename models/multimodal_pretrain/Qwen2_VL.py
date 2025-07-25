@@ -308,8 +308,10 @@ class Model(nn.Module):
 
             return position_ids, mrope_position_deltas
 
-    def forward(self, input_ids, trues=None, **kwargs):
+    def make_caches(self):
+        return [dict() for i in range(self.vlm.num_blocks)]
 
+    def forward(self, input_ids, trues=None, **kwargs):
         if self.training:
             preds = self.decode(input_ids)
             outputs = dict(
@@ -318,26 +320,23 @@ class Model(nn.Module):
             outputs['loss'] = self.loss(trues, preds)
             return outputs
         else:
-            return {'preds': self.post_process(input_ids, **kwargs)}
+            return self.post_process(input_ids, **kwargs)
 
     def post_process(
             self,
-            x, content_generator=True, seq_lens=None,
+            x, content_generator=True, seq_lens=None, vlm_past_kvs=None,
             **decode_kwargs
     ):
         if content_generator:
-            vlm_past_kvs = [dict(
-                # (b, n, s, d)
-                k=torch.empty((x.shape[0], self.vlm.num_heads, 0, self.vlm.hidden_size // self.vlm.num_heads), dtype=self.vlm.dtype, device=self.vlm.device),
-                v=torch.empty((x.shape[0], self.vlm.num_heads, 0, self.vlm.hidden_size // self.vlm.num_heads), dtype=self.vlm.dtype, device=self.vlm.device)
-            ) for i in range(self.vlm.num_blocks)]
+            if vlm_past_kvs is None:
+                vlm_past_kvs = self.make_caches()
 
             preds = beam_search(x, seq_lens, self.decode, eos_ids=self.eos_ids, vlm_past_kvs=vlm_past_kvs, **decode_kwargs)
 
-            del vlm_past_kvs
-            torch_utils.ModuleManager.torch_gc()
-
-            return preds
+            return dict(
+                preds=preds,
+                vlm_past_kvs=vlm_past_kvs
+            )
         else:
             return self.decode(x, **decode_kwargs)
 

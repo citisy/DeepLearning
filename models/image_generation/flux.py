@@ -168,12 +168,14 @@ class Model(nn.Module):
     def flow_in_ch(self):
         return self.vae.z_ch
 
-    @property
-    def flow_in_size(self):
+    def flow_in_size(self, image_size=None):
+        image_size = image_size or self.image_size
+        if isinstance(image_size, int):
+            image_size = (image_size, image_size)
         return (
-            2 * math.ceil(self.image_size[0] / 16),
-            2 * math.ceil(self.image_size[1] / 16),
-        )
+            2 * math.ceil(image_size[0] / 16),
+            2 * math.ceil(image_size[1] / 16),
+        )   # (w, h)
 
     def set_low_memory_run(self):
         # Not critical to run single batch for decoding strategy, but reduce more GPU memory
@@ -219,13 +221,13 @@ class Model(nn.Module):
         else:
             return self.post_process(**kwargs)
 
-    def post_process(self, x=None, t5_text_ids=None, clip_text_ids=None, mask_x=None, **kwargs):
+    def post_process(self, x=None, t5_text_ids=None, clip_text_ids=None, mask_x=None, image_size=None, **kwargs):
         if x is None or not len(x):  # txt2img
-            x = self.gen_x_t(t5_text_ids.shape[0])
+            x = self.gen_x_t(t5_text_ids.shape[0], image_size)
             z0 = None
 
         else:  # img2img
-            x, z0, i0 = self.make_image_cond(x, noise=self.gen_x_t(t5_text_ids.shape[0]), **kwargs)
+            x, z0, i0 = self.make_image_cond(x, noise=self.gen_x_t(t5_text_ids.shape[0], (x.shape[-1], x.shape[-2])), **kwargs)
             kwargs.update(i0=i0)
 
         bs, c, H, W = x.shape
@@ -273,11 +275,11 @@ class Model(nn.Module):
         img = rearrange(img, "b (h w) (c ph pw) -> b c (h ph) (w pw)", h=h, w=w, ph=2, pw=2)
         return img
 
-    def gen_x_t(self, batch_size):
+    def gen_x_t(self, batch_size, image_size=None):
         return torch.randn(
-            (batch_size, self.flow_in_ch, *self.flow_in_size[::-1]),
+            (batch_size, self.flow_in_ch, *self.flow_in_size(image_size)[::-1]),  # (b, c, h, w)
             device=self.device, dtype=self.dtype,
-            generator=torch.Generator(device=self.device),  # note, necessary
+            # generator=torch.Generator(device=self.device),  # note, necessary
         )
 
     def make_image_cond(self, images, i0=None, noise=None, strength=0.75, **kwargs):

@@ -476,8 +476,8 @@ class BaseBert(Process):
                 token_cls_preds = results['token_cls_preds']
 
                 skip_id = self.tokenizer.skip_id
-                token_cls_trues = snack.align(token_cls_trues, max_seq_len=self.max_seq_len, pad_obj=skip_id, auto_pad=False)
-                token_cls_preds = snack.align(token_cls_preds, max_seq_len=self.max_seq_len, pad_obj=skip_id, auto_pad=False)
+                token_cls_trues = snack.align(token_cls_trues, max_seq_len=self.max_seq_len, pad_obj=skip_id, pad_type=snack.MAX_LEN)
+                token_cls_preds = snack.align(token_cls_preds, max_seq_len=self.max_seq_len, pad_obj=skip_id, pad_type=snack.MAX_LEN)
 
                 token_cls_trues = np.array(token_cls_trues)
                 token_cls_preds = np.array(token_cls_preds)
@@ -1020,12 +1020,8 @@ class Qwen2Predictor(BaseQwen2):
         model_inputs = []
         for ret in loop_inputs:
             messages = ret['messages']
-            prompt_inputs = self.tokenizer.encode_dialog(messages)
-
-            model_input = dict(
-                input_ids=prompt_inputs['segments_ids'],
-                seq_lens=prompt_inputs['seq_lens']
-            )
+            model_input = self.tokenizer.encode_dialog(messages)
+            model_input['input_ids'] = model_input.pop('segments_ids')
             model_input = torch_utils.Converter.force_to_tensors(model_input, self.device)
             model_inputs.append(model_input)
 
@@ -1038,7 +1034,9 @@ class Qwen2Predictor(BaseQwen2):
         model_results = {}
         for name, model in self.models.items():
             generated_ids = []
+            per_seq_lens = []
             for model_input in model_inputs:
+                per_seq_lens.extend(model_input.pop('per_seq_lens'))
                 model_output = model(**model_input, **model_kwargs)
 
                 preds = model_output['preds']
@@ -1049,6 +1047,7 @@ class Qwen2Predictor(BaseQwen2):
 
             model_results[name] = dict(
                 generated_ids=generated_ids,
+                per_seq_lens=per_seq_lens
             )
 
         return model_results
@@ -1067,8 +1066,13 @@ class Qwen2Predictor(BaseQwen2):
     def on_predict_reprocess(self, loop_objs, process_results=dict(), **kwargs):
         model_results = loop_objs['model_results']
         generated_ids = model_results[self.model_name]['generated_ids']
-        response = self.tokenizer.decode_to_segments(generated_ids)
-        process_results.setdefault(self.model_name, []).extend(response)
+        per_seq_lens = model_results[self.model_name]['per_seq_lens']
+        texts = self.tokenizer.decode_to_segments(generated_ids)
+        results = [dict(
+            text=text,
+            per_seq_len=per_seq_len
+        ) for text, per_seq_len in zip(texts, per_seq_lens)]
+        process_results.setdefault(self.model_name, []).extend(results)
 
 
 class Qwen2(FromQwen2Pretrained, Qwen2Predictor):
@@ -1090,6 +1094,40 @@ class Qwen2(FromQwen2Pretrained, Qwen2Predictor):
 
             # todo: only support single predict
             content = '简单介绍一下大模型。'
-            process.single_predict(content=content)
+            process.single_predict(content=content)['text']
             # '大模型是一种计算机视觉模型，它能够模拟人类视觉感知，能够识别和理解图像中的物体、形状、颜色等特征，并能够进行分类、识别、预测等任务。大模型可以用于图像识别、自然语言处理、计算机视觉等领域。'
+
+            past_kvs = process.model.make_caches()
+
+            # Custom management kv caches
+            # first usage
+            content = '简单介绍一下大模型。'
+            response = process.single_predict(
+                content=content,
+                model_kwargs=dict(
+                    start_pos=0,
+                    past_kvs=past_kvs,
+                )
+            )
+            print(response['text'])
+
+            # second usage, using the same system prompt as the first
+            start_pos = response['per_seq_len'][0]
+            past_kvs = [
+                dict(
+                    k=d['k'][:, :, :start_pos, :],
+                    v=d['v'][:, :, :start_pos, :],
+                )
+                for d in past_kvs
+            ]  # only use system caches
+
+            content = '怎么做炒鸡蛋'
+            response = process.single_predict(
+                content=content,
+                model_kwargs=dict(
+                    start_pos=start_pos,
+                    past_kvs=past_kvs,
+                )
+            )
+            print(response['text'])
     """

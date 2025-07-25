@@ -117,6 +117,9 @@ class Model(nn.Module):
             self.head.weight = self.embedding.weight
         return super()._apply(fn, recurse)
 
+    def make_caches(self):
+        return [dict() for i in range(self.decoder.num_blocks)]
+
     def forward(self, input_ids, **kwargs):
         if self.training:
             raise NotImplementedError()
@@ -130,11 +133,7 @@ class Model(nn.Module):
     ):
         if content_generator:
             if past_kvs is None:
-                past_kvs = [dict(
-                    # (b, n, s, d)
-                    k=torch.empty((x.shape[0], self.decoder.num_heads, 0, self.decoder.hidden_size // self.decoder.num_heads), dtype=self.decoder.dtype, device=self.decoder.device),
-                    v=torch.empty((x.shape[0], self.decoder.num_heads, 0, self.decoder.hidden_size // self.decoder.num_heads), dtype=self.decoder.dtype, device=self.decoder.device)
-                ) for i in range(self.decoder.num_blocks)]
+                past_kvs = self.make_caches()
 
             preds = beam_search(x, seq_lens, self.decode, eos_ids=self.eos_ids, past_kvs=past_kvs, **decode_kwargs)
 

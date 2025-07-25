@@ -50,6 +50,13 @@ class WeightConverter:
 
 
 class Model(nn.Module):
+    """
+    References:
+        paper:
+            - [CAM++: A Fast and Efficient Network for Speaker Verification Using Context-Aware Masking](https://arxiv.org/abs/2303.00332)
+        code:
+            - `funasr.models.campplus.model.CAMPPlus`
+    """
     def __init__(
             self,
             feat_dim=80,

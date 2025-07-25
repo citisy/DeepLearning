@@ -274,11 +274,13 @@ class Model(ddim.Model):
     def diffuse_in_ch(self):
         return self.vae.z_ch
 
-    @property
-    def diffuse_in_size(self):
+    def diffuse_in_size(self, image_size=None):
+        image_size = image_size or self.image_size
+        if isinstance(image_size, int):
+            image_size = (image_size, image_size)
         return (
-            self.image_size[0] // self.vae.encoder.down_scale,
-            self.image_size[1] // self.vae.encoder.down_scale,
+            image_size[0] // self.vae.encoder.down_scale,
+            image_size[1] // self.vae.encoder.down_scale,
         )
 
     def loss(self, x, text_ids=None, **kwargs):
@@ -290,7 +292,7 @@ class Model(ddim.Model):
 
         return self.sampler.loss(self.diffuse, x0, **kwargs)
 
-    def post_process(self, x=None, text_ids=None, mask_x=None, **kwargs):
+    def post_process(self, x=None, text_ids=None, mask_x=None, image_size=None, **kwargs):
         """
 
         Args:
@@ -318,7 +320,7 @@ class Model(ddim.Model):
 
         # make x_t
         if x is None or not len(x):  # txt2img
-            x = self.gen_x_t(b)
+            x = self.gen_x_t(b, image_size)
             x = self.sampler.scale_x_t(x)
             z0 = None
 

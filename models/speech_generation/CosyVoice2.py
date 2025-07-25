@@ -118,7 +118,7 @@ class Qwen2LM(CosyVoice.TransformerLM):
 
     def decode(self, lm_input, max_len, min_len):
         out_ids = []
-        past_kvs = [dict() for i in range(self.llm.model.decoder.num_blocks)]
+        past_kvs = self.llm.model.make_caches()
         start_pos = 0
         for i in range(max_len):
             y_pred = self.llm(

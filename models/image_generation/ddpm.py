@@ -226,13 +226,15 @@ class Model(nn.ModuleList):
         """channels of x_t"""
         return self.img_ch
 
-    @property
-    def diffuse_in_size(self):
+    def diffuse_in_size(self, image_size=None):
         """size of x_t"""
-        return self.image_size
+        image_size = image_size or self.image_size
+        if isinstance(image_size, int):
+            image_size = (image_size, image_size)
+        return image_size
 
-    def gen_x_t(self, batch_size):
-        return torch.randn((batch_size, self.diffuse_in_ch, *self.diffuse_in_size[::-1]), device=self.device, dtype=self.dtype)
+    def gen_x_t(self, batch_size, image_size=None):
+        return torch.randn((batch_size, self.diffuse_in_ch, *self.diffuse_in_size(image_size)[::-1]), device=self.device, dtype=self.dtype)
 
     def post_process(self, x_t, **kwargs):
         return self.sampler(self.diffuse, x_t, **kwargs)

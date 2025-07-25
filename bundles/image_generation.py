@@ -96,7 +96,7 @@ class IgProcess(Process):
                         image_save_stem = f'{sub_name}{data_name}.{i}'
                         self.visualize_one(image, cache_dir, model_name, image_save_stem, **kwargs)
 
-    def on_val_end(self, process_results=dict(), save_samples=False, save_synth=True, num_synth_per_image=64, is_visualize=False, max_vis_num=None, **kwargs):
+    def on_val_end(self, process_results=dict(), save_synth=True, num_synth_per_image=64, is_visualize=False, max_vis_num=None, **kwargs):
         if is_visualize and save_synth:
             results = [image for image in process_results[self.model_name]['fake_x']]
             max_vis_num = len(results)
@@ -722,8 +722,8 @@ def _load_images(images, b, start_idx, end_idx):
 
 
 class DiProcess(IgProcess):
-    low_memory_run = False
-    use_half = False
+    low_memory_run = True
+    use_half = True
 
     def set_model_status(self):
         self.load_pretrained()
@@ -737,6 +737,8 @@ class DiProcess(IgProcess):
 
         if self.use_half:
             self.model.set_half()
+        else:
+            self.model.to(torch.float)
 
     def set_optimizer(self, lr=1e-4, betas=(0.9, 0.99), **kwargs):
         super().set_optimizer(lr=lr, betas=betas, **kwargs)
@@ -786,12 +788,13 @@ class DiProcess(IgProcess):
     def on_val_step(self, loop_objs, model_kwargs=dict(), **kwargs) -> dict:
         loop_inputs = loop_objs['loop_inputs']
         model_inputs = self.get_model_inputs(loop_inputs, train=False)
+        model_inputs.update(model_kwargs)
 
         model_results = {}
         for name, model in self.models.items():
             # note, something wrong with autocast, got inf result
             # with torch.cuda.amp.autocast(True):
-            fake_x = model(**model_inputs, **model_kwargs)
+            fake_x = model(**model_inputs)
             fake_x = (fake_x + 1) * 0.5  # unnormalize, [-1, 1] -> [0, 1]
             fake_x = fake_x.data.mul(255).clamp_(0, 255).permute(0, 2, 3, 1).to("cpu", torch.uint8).numpy()
             model_results[name] = dict(
@@ -1477,10 +1480,10 @@ class FluxPredictor(BaseFlux):
 
                 images.append(torch.from_numpy(image).to(self.device, non_blocking=True, dtype=torch.float))
 
-        inputs = self.clip_tokenizer.encode_paragraphs(texts, auto_pad=False)
+        inputs = self.clip_tokenizer.encode_paragraphs(texts)
         clip_text_ids = torch.tensor(inputs['segments_ids']).to(self.device)
 
-        inputs = self.t5_tokenizer.encode_paragraphs(texts, auto_pad=False)
+        inputs = self.t5_tokenizer.encode_paragraphs(texts)
         t5_text_ids = torch.tensor(inputs['segments_ids']).to(self.device)
 
         if images:
@@ -1496,9 +1499,8 @@ class FluxPredictor(BaseFlux):
             clip_text_ids=clip_text_ids,
             t5_text_ids=t5_text_ids,
             x=images,
+            image_size=self.input_size
         )
-
-    model_input_template = namedtuple('model_inputs', ['text', 'image'], defaults=[None, None])
 
     def gen_predict_inputs(self, *objs, images=None, start_idx=None, end_idx=None, **kwargs):
         """
@@ -1520,7 +1522,11 @@ class FluxPredictor(BaseFlux):
 
         rets = []
         for text, image in zip(pos_texts, images):
-            rets.append(self.model_input_template(image=image, text=text)._asdict())
+            rets.append(dict(
+                image=image,
+                text=text,
+                **kwargs
+            ))
 
         return rets
 
