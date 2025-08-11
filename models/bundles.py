@@ -1,5 +1,6 @@
 import os
 import warnings
+from pathlib import Path
 
 from utils import torch_utils
 
@@ -37,26 +38,30 @@ class WeightLoader:
         return file_name
 
     @classmethod
-    def auto_load(cls, save_path: str | list, save_name: str | list = '', **kwargs):
-        if not isinstance(save_path, str):
+    def auto_load(cls, save_path: str | list, save_name: str | list = '', suffix='', **kwargs):
+        if not isinstance(save_path, (str, Path)):
             state_dict = {}
             for _save_path in save_path:
-                state_dict.update(cls.auto_load(_save_path, save_name=save_name, **kwargs))
-            return state_dict
+                state_dict.update(cls.auto_load(_save_path, save_name=save_name, suffix=suffix, **kwargs))
 
-        elif not isinstance(save_name, str):
+        elif not isinstance(save_name, (str, Path)):
             state_dict = {}
             for _save_name in save_name:
-                state_dict.update(cls.auto_load(save_path, save_name=_save_name, **kwargs))
-            return state_dict
+                state_dict.update(cls.auto_load(save_path, save_name=_save_name, suffix=suffix, **kwargs))
+
+        elif os.path.isfile(f'{save_path}/{save_name}'):
+            state_dict = torch_utils.Load.from_file(f'{save_path}/{save_name}')
+
+        elif os.path.isfile(save_path):
+            state_dict = torch_utils.Load.from_file(save_path)
+
+        elif os.path.isdir(save_path):
+            state_dict = torch_utils.Load.from_dir(save_path, suffix)
 
         else:
-            try:
-                file_name = cls.get_file_name(save_path, save_name, **kwargs)
-                state_dict = torch_utils.Load.from_file(file_name)
-            except ValueError:
-                state_dict = cls.auto_download(save_path, save_name=save_name, **kwargs)
-            return state_dict
+            state_dict = cls.auto_download(save_path, save_name=save_name, **kwargs)
+
+        return state_dict
 
     @classmethod
     def auto_download(cls, save_path, **kwargs):

@@ -268,9 +268,9 @@ class CrossAttention2D(nn.Module):
         x = self.to_out(x)
         return x
 
-    def forward(self, q, k=None, v=None, attention_mask=None, **attend_kwargs):
+    def forward(self, q, k=None, v=None, **attend_kwargs):
         q, k, v = self.forward_in(q, k, v)
-        x = self.attend(q, k, v, attention_mask=attention_mask, **attend_kwargs)
+        x = self.attend(q, k, v, **attend_kwargs)
         x = self.forward_out(x)
         return x
 

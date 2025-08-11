@@ -61,9 +61,8 @@ class Config(ddim.Config):
 
 class WeightLoader(bundles.WeightLoader):
     @classmethod
-    def auto_load(cls, save_path, save_name='', **kwargs):
-        file_name = cls.get_file_name(save_path, save_name)
-        state_dict = torch_utils.Load.from_file(file_name)
+    def auto_load(cls, *args, **kwargs):
+        state_dict = super().auto_load(*args, **kwargs)
         if 'state_dict' in state_dict:
             state_dict = state_dict['state_dict']
         return state_dict
@@ -142,7 +141,7 @@ class WeightConverter:
 
     @classmethod
     def to_official(cls, state_dict):
-        pass
+        raise NotImplementedError
 
     @classmethod
     def from_official_lora(cls, state_dict):
@@ -365,14 +364,15 @@ class Model(ddim.Model):
         c = c * (original_mean / new_mean)
         return c
 
-    def make_image_cond(self, images, i0=None, noise=None, strength=0.75, **kwargs):
+    def make_image_cond(self, images, i0=None, noise=None, strength=0.75, num_steps=None, **kwargs):
         z, _, _ = self.vae.encode(images)
         x0 = self.scale_factor * z
 
         if i0 is None:
-            i0 = int(strength * self.sampler.num_steps)
+            num_steps = num_steps or self.sampler.num_steps
+            i0 = int(strength * num_steps)
 
-        timestep_seq = self.sampler.make_timesteps(i0)
+        timestep_seq = self.sampler.make_timesteps(i0, num_steps=num_steps)
         t = timestep_seq[0]
         t = torch.full((x0.shape[0],), t, device=x0.device, dtype=torch.long)
         xt = self.sampler.q_sample(x0, t, noise=noise)

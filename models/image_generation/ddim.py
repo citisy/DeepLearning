@@ -20,12 +20,13 @@ class Sampler(Sampler_):
     num_steps = 50
     ddim_discr_method = 'uniform'
 
-    def make_timesteps(self, i0=None):
+    def make_timesteps(self, i0=None, num_steps=None):
+        num_steps = num_steps or self.num_steps
         if self.ddim_discr_method == 'uniform':
-            c = self.timesteps // self.num_steps
+            c = self.timesteps // num_steps
             timestep_seq = np.asarray(list(range(0, self.timesteps, c)))
         elif self.ddim_discr_method == 'quad':
-            timestep_seq = ((np.linspace(0, np.sqrt(self.timesteps * .8), self.num_steps)) ** 2).astype(int)
+            timestep_seq = ((np.linspace(0, np.sqrt(self.timesteps * .8), num_steps)) ** 2).astype(int)
         else:
             raise NotImplementedError(f'There is no ddim discretization method called "{self.ddim_discr_method}"')
 
@@ -35,8 +36,8 @@ class Sampler(Sampler_):
         # note, add one to get the final alpha values right (the ones from first scale to data during sampling)
         return timestep_seq + 1
 
-    def forward(self, diffuse_func, x_t, i0=None, callback_fn=None, **kwargs):
-        timestep_seq = self.make_timesteps(i0)
+    def forward(self, diffuse_func, x_t, i0=None, callback_fn=None, num_steps=None, **kwargs):
+        timestep_seq = self.make_timesteps(i0, num_steps=num_steps)
         # previous sequence
         timestep_prev_seq = np.append(np.array([0]), timestep_seq[:-1])
         x_0 = None

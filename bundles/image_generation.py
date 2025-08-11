@@ -883,19 +883,36 @@ class Ddim_CelebAHQ(Dpim, CelebAHQ):
     """
 
 
-class WithSDLora(Process):
+class WithLora(Process):
     use_lora = False
-    use_half_lora = False
+    use_half_lora = True
     lora_wrap: 'models.tuning.lora.ModelWrap'
     lora_pretrain_model: str
     lora_config = {}
-    config_version = 'v1'  # for config choose
 
     def init_components(self):
         super().init_components()
         if self.use_lora:
             self.set_lora()
             self.load_lora_pretrain()
+
+    def unset_lora(self):
+        self.lora_wrap.dewrap()
+
+    def state_dict(self):
+        state_dict = super().state_dict()
+        state_dict['lora'] = self.lora_wrap.state_dict()
+        return state_dict
+
+    def save_lora_weight(self, suffix, max_save_weight_num, **kwargs):
+        fp = f'{self.work_dir}/{suffix}.lora.safetensors'
+        torch_utils.Export.to_safetensors(self.lora_wrap.state_dict(), fp)
+        os_lib.FileCacher(self.work_dir, max_size=max_save_weight_num, stdout_method=self.log).delete_over_range(suffix=r'\d+\.lora\.safetensors')
+        self.log(f'Successfully save lora to {fp}!')
+
+
+class WithSDLora(WithLora):
+    config_version = 'v1'  # for config choose
 
     def set_lora(self):
         from models.tuning import lora
@@ -927,17 +944,8 @@ class WithSDLora(Process):
             if self.use_half_lora:
                 layer.to(torch.bfloat16)
 
-        def save(suffix, max_save_weight_num, **kwargs):
-            fp = f'{self.work_dir}/{suffix}.lora.safetensors'
-            torch_utils.Export.to_safetensors(self.lora_wrap.state_dict(), fp)
-            os_lib.FileCacher(self.work_dir, max_size=max_save_weight_num, stdout_method=self.log).delete_over_range(suffix=r'\d+\.lora\.safetensors')
-            self.log(f'Successfully save lora to {fp}!')
-
-        self.register_save_checkpoint(save)
+        self.register_save_checkpoint(self.save_lora_weight)
         self.log('Successfully add lora!')
-
-    def unset_lora(self):
-        self.lora_wrap.dewrap()
 
     def load_lora_pretrain(self):
         if hasattr(self, 'lora_pretrain_model'):
@@ -954,18 +962,6 @@ class WithSDLora(Process):
             state_dict = WeightConverter.from_official_lora(state_dict)
             self.lora_wrap.load_state_dict(state_dict, strict=True)
             self.log(f'Loaded lora pretrain model from {self.lora_pretrain_model}')
-
-    def save_lora_weight(self, save_name='lora.safetensors'):
-        from collections import OrderedDict
-
-        state_dict = self.lora_wrap.state_dict()
-        state_dict = OrderedDict({k: v.to(torch.bfloat16) for k, v in state_dict.items()})
-        torch_utils.Export.to_safetensors(state_dict, f'{self.work_dir}/{save_name}')
-
-    def state_dict(self):
-        state_dict = super().state_dict()
-        state_dict['lora'] = self.lora_wrap.state_dict()
-        return state_dict
 
 
 class WithSDControlNet(Process):
@@ -1284,7 +1280,14 @@ class SD(WithSDLora, WithSDControlNet, FromSDPretrained, SDTrainer, SDPredictor)
                 pretrain_model='...',
                 vocab_fn='xxx/vocab.json',
                 encoder_fn='xxx/merges.txt',
-                config_version='...'
+                config_version='...',
+
+                low_memory_run=True,
+                use_half=True,
+
+                # if using lora
+                # use_lora=True,
+                # lora_pretrain_model='xxx',
             )
             process.init()
 
@@ -1381,6 +1384,50 @@ class SD_SimpleTextImage(SD, SimpleTextImage):
     """
 
 
+class WithFluxLora(WithLora):
+    def set_lora(self):
+        assert 'di' in self.config_version, 'Only support `diffusers` version weights, for example, try to set config_version to `dev.di`'
+        from models.tuning import lora
+
+        self.lora_wrap = lora.ModelWrap(
+            include=(
+                'double_blocks',
+                'single_blocks'
+            ),
+            exclude=(
+                't5',
+                'clip',
+                'vae',
+                'norm',
+                'attend',
+                'embedding',
+                'act',
+                'dropout'
+            ),
+            **self.lora_config
+        )
+        self.lora_wrap.wrap(self.model)
+
+        for full_name in self.lora_wrap.layers:
+            layer = torch_utils.ModuleManager.get_module_by_name(self.model, full_name)
+            layer.to(self.device)
+            if self.use_half_lora:
+                layer.to(torch.bfloat16)
+
+        self.register_save_checkpoint(self.save_lora_weight)
+        self.log('Successfully add lora!')
+
+    def load_lora_pretrain(self):
+        if hasattr(self, 'lora_pretrain_model'):
+            from models.image_generation.flux import WeightConverter
+            from models.bundles import WeightLoader
+
+            state_dict = WeightLoader.auto_load(self.lora_pretrain_model)
+            state_dict = WeightConverter.from_official_lora(state_dict)
+            self.lora_wrap.load_state_dict(state_dict, strict=True)
+            self.log(f'Loaded lora pretrain model from {self.lora_pretrain_model}!')
+
+
 class FromFluxPretrained(CheckpointHooks):
     clip_text_encoder_pretrained: List[str] | str
     t5_text_encoder_pretrained: List[str] | str
@@ -1392,16 +1439,16 @@ class FromFluxPretrained(CheckpointHooks):
         from models.bundles import WeightLoader
 
         state_dicts = {
-            "t5": WeightLoader.auto_load(self.t5_text_encoder_pretrained),
-            "clip": WeightLoader.auto_load(self.clip_text_encoder_pretrained),
-            "flux": WeightLoader.auto_load(self.flux_pretrained),
-            "vae": WeightLoader.auto_load(self.vae_pretrained),
+            "t5": WeightLoader.auto_load(self.t5_text_encoder_pretrained, suffix='.safetensors'),
+            "clip": WeightLoader.auto_load(self.clip_text_encoder_pretrained, suffix='.safetensors'),
+            "flux": WeightLoader.auto_load(self.flux_pretrained, suffix='.safetensors'),
+            "vae": WeightLoader.auto_load(self.vae_pretrained, suffix='.safetensors'),
         }
 
-        state_dict = WeightConverter.from_official(state_dicts)
+        state_dict = WeightConverter.auto_convert(state_dicts)
         self.model.load_state_dict(state_dict, strict=False, assign=True)
 
-        self.log(f'Loaded pretrain model')
+        self.log(f'Loaded pretrain model!')
 
 
 class BaseFlux(DiProcess):
@@ -1531,7 +1578,7 @@ class FluxPredictor(BaseFlux):
         return rets
 
 
-class Flux(FromFluxPretrained, FluxPredictor):
+class Flux(WithFluxLora, FromFluxPretrained, FluxPredictor):
     """no training, only for prediction
 
     Usage:
@@ -1548,15 +1595,24 @@ class Flux(FromFluxPretrained, FluxPredictor):
                 t5_encoder_fn=f'{model_dir}/tokenizer_2/spiece.model',
 
                 clip_text_encoder_pretrained=f'{model_dir}/text_encoder/model.safetensors',
-                t5_text_encoder_pretrained=[
-                    f'{model_dir}/text_encoder_2/model-00001-of-00002.safetensors',
-                    f'{model_dir}/text_encoder_2/model-00002-of-00002.safetensors'
-                ],
+                t5_text_encoder_pretrained=f'{model_dir}/text_encoder_2',
                 flux_pretrained=f'{model_dir}/flux1-dev.safetensors',
                 vae_pretrained=f'{model_dir}/ae.safetensors',
 
                 low_memory_run=True,
                 use_half=True,
+
+                # if using `diffusers` version weights
+                # config_version='dev.di',
+                # flux_pretrained=f'{model_dir}/transformer',
+
+                # if using lora
+                # use_lora=True,
+                # lora_pretrain_model='xxx',
+                # lora_config=dict(
+                #     r=16,
+                #     alpha=16
+                # )
             )
             process.init()
 
@@ -1565,7 +1621,14 @@ class Flux(FromFluxPretrained, FluxPredictor):
             prompts = ['a painting of a virus monster playing guitar', 'a painting of two virus monster playing guitar']
 
             # predict one
-            image = process.single_predict(prompt, is_visualize=True)
+            image = process.single_predict(
+                prompt,
+                is_visualize=True,
+                model_kwargs=dict(
+                    image_size=1024,
+                    num_steps=20,
+                )
+            )
 
             # predict batch
             images = process.batch_predict(prompts, batch_size=2, is_visualize=True)

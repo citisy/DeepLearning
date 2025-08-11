@@ -22,8 +22,8 @@ from ..text_pretrain.transformers import PositionWiseFeedForward
 
 class Config(bundles.Config):
     backbone = dict(
-        in_channels=64,
-        out_channels=64,
+        in_ch=64,
+        out_ch=64,
         vec_in_dim=768,
         context_in_dim=4096,
         hidden_size=3072,
@@ -33,6 +33,18 @@ class Config(bundles.Config):
         depth_single_blocks=38,
         axes_dim=[16, 56, 56],
         guidance_embed=True,
+    )
+
+    official_backbone = dict(
+        **backbone,
+        separate=False,
+        head_mode=0
+    )
+
+    diffusers_backbone = dict(
+        **backbone,
+        separate=True,
+        head_mode=1
     )
 
     t5_xxl = dict(
@@ -69,14 +81,21 @@ class Config(bundles.Config):
             'dev': dict(
                 t5_config=cls.t5_xxl,
                 clip_config=cls.clip,
-                backbone_config=cls.backbone,
+                backbone_config=cls.official_backbone,
                 vae_config=cls.vae,
-            )
+            ),
+
+            'dev.di': dict(
+                t5_config=cls.t5_xxl,
+                clip_config=cls.clip,
+                backbone_config=cls.diffusers_backbone,
+                vae_config=cls.vae,
+            ),
         }
 
 
 class WeightConverter:
-    backbone_convert_dict = {
+    official_backbone_convert_dict = {
         'double_blocks.{0}_attn.norm.{1}_norm.scale': 'double_blocks.{0}_stream.{1}_norm.weight',
         'double_blocks.{0}_attn.{1}.': 'double_blocks.{0}_stream.{1}.',
         'double_blocks.{0}_mlp.0': 'double_blocks.{0}_stream.mlp.0.linear',
@@ -96,9 +115,17 @@ class WeightConverter:
     }
 
     @classmethod
-    def from_official(cls, state_dicts):
-        """
+    def auto_convert(cls, state_dicts):
+        weights = state_dicts['flux']
+        for k in weights:
+            if k.startswith('double_blocks'):
+                return cls.from_official(state_dicts)
+            elif k.startswith('single_transformer'):
+                return cls.from_diffusers(state_dicts)
 
+    @classmethod
+    def from_official(cls, state_dicts):
+        """weights training from https://github.com/black-forest-labs/flux
         Args:
             state_dicts:
                 {
@@ -109,6 +136,76 @@ class WeightConverter:
                 }
 
         """
+        state_dict = cls._convert(state_dicts)
+
+        _state_dict = torch_utils.Converter.convert_keys(state_dicts['flux'], cls.official_backbone_convert_dict)
+        state_dict.update({'backbone.' + k: v for k, v in _state_dict.items()})
+
+        return state_dict
+
+    diffusers_backbone_convert_dict = {
+        'x_embedder': 'img_in',
+        'context_embedder': 'txt_in',
+        'time_text_embed.timestep_embedder.linear_{0}.': 'time_in.{[0]-1}.linear.',
+        'time_text_embed.text_embedder.linear_{0}.': 'vector_in.{[0]-1}.linear.',
+        'time_text_embed.guidance_embedder.linear_{0}.': 'guidance_in.{[0]-1}.linear.',
+        'norm_out.linear': 'head.adaLN_modulation.linear',
+        'norm_out.norm': 'head.norm_final',
+        'proj_out': 'head.linear',
+
+        'transformer_blocks.{0}.attn.add_q_proj': 'double_blocks.{0}.txt_stream.to_qkv.0',
+        'transformer_blocks.{0}.attn.add_k_proj': 'double_blocks.{0}.txt_stream.to_qkv.1',
+        'transformer_blocks.{0}.attn.add_v_proj': 'double_blocks.{0}.txt_stream.to_qkv.2',
+        'transformer_blocks.{0}.attn.norm_added_k': 'double_blocks.{0}.txt_stream.key_norm',
+        'transformer_blocks.{0}.attn.norm_added_q': 'double_blocks.{0}.txt_stream.query_norm',
+        'transformer_blocks.{0}.attn.to_add_out': 'double_blocks.{0}.txt_stream.proj',
+        'transformer_blocks.{0}.ff_context.net.0.proj': 'double_blocks.{0}.txt_stream.mlp.0.linear',
+        'transformer_blocks.{0}.ff_context.net.2': 'double_blocks.{0}.txt_stream.mlp.1.linear',
+        'transformer_blocks.{0}.norm1_context.linear': 'double_blocks.{0}.txt_stream.mod.lin',
+
+        'transformer_blocks.{0}.attn.norm_k': 'double_blocks.{0}.img_stream.key_norm',
+        'transformer_blocks.{0}.attn.norm_q': 'double_blocks.{0}.img_stream.query_norm',
+        'transformer_blocks.{0}.attn.to_out.0': 'double_blocks.{0}.img_stream.proj',
+        'transformer_blocks.{0}.attn.to_q': 'double_blocks.{0}.img_stream.to_qkv.0',
+        'transformer_blocks.{0}.attn.to_k': 'double_blocks.{0}.img_stream.to_qkv.1',
+        'transformer_blocks.{0}.attn.to_v': 'double_blocks.{0}.img_stream.to_qkv.2',
+        'transformer_blocks.{0}.ff.net.0.proj': 'double_blocks.{0}.img_stream.mlp.0.linear',
+        'transformer_blocks.{0}.ff.net.2': 'double_blocks.{0}.img_stream.mlp.1.linear',
+        'transformer_blocks.{0}.norm1.linear': 'double_blocks.{0}.img_stream.mod.lin',
+
+        'single_transformer_blocks.{0}.attn.norm_k': 'single_blocks.{0}.stream.key_norm',
+        'single_transformer_blocks.{0}.attn.norm_q': 'single_blocks.{0}.stream.query_norm',
+        'single_transformer_blocks.{0}.attn.to_q': 'single_blocks.{0}.stream.to_qkv.0',
+        'single_transformer_blocks.{0}.attn.to_k': 'single_blocks.{0}.stream.to_qkv.1',
+        'single_transformer_blocks.{0}.attn.to_v': 'single_blocks.{0}.stream.to_qkv.2',
+        'single_transformer_blocks.{0}.norm.linear': 'single_blocks.{0}.stream.mod.lin',
+        'single_transformer_blocks.{0}.proj_mlp': 'single_blocks.{0}.stream.to_mlp',
+        'single_transformer_blocks.{0}.proj_out': 'single_blocks.{0}.stream.proj',
+
+    }
+
+    @classmethod
+    def from_diffusers(cls, state_dicts):
+        """weights training from `diffusers`
+        Args:
+            state_dicts:
+                {
+                    "t5": tensors,
+                    "clip": tensors,
+                    "flux": tensors,
+                    "vae": tensors,
+                }
+
+        """
+        state_dict = cls._convert(state_dicts)
+
+        _state_dict = torch_utils.Converter.convert_keys(state_dicts['flux'], cls.diffusers_backbone_convert_dict)
+        state_dict.update({'backbone.' + k: v for k, v in _state_dict.items()})
+
+        return state_dict
+
+    @staticmethod
+    def _convert(state_dicts):
         state_dict = OrderedDict()
 
         _state_dict = T5.WeightConverter.from_hf(state_dicts['t5'])
@@ -117,12 +214,26 @@ class WeightConverter:
         _state_dict = CLIP.WeightConverter.from_openai(state_dicts['clip'])
         state_dict.update({'clip.' + k: v for k, v in _state_dict.items()})
 
-        _state_dict = torch_utils.Converter.convert_keys(state_dicts['flux'], cls.backbone_convert_dict)
-        state_dict.update({'backbone.' + k: v for k, v in _state_dict.items()})
-
         _state_dict = VAE.WeightConverter.from_ldm_official(state_dicts['vae'])
         state_dict.update({'vae.' + k: v for k, v in _state_dict.items()})
 
+        return state_dict
+
+    @classmethod
+    def to_official(cls, state_dict):
+        raise NotImplementedError
+
+    @classmethod
+    def from_official_lora(cls, state_dict):
+        """weights training from https://github.com/ostris/ai-toolkit"""
+        convert_dict = {'transformer.' + k: 'backbone.' + v for k, v in cls.diffusers_backbone_convert_dict.items()}
+        state_dict = torch_utils.Converter.convert_keys(state_dict, convert_dict)
+
+        convert_dict = {
+            '{0}.lora_A': '{0}.down',
+            '{0}.lora_B': '{0}.up',
+        }
+        state_dict = torch_utils.Converter.convert_keys(state_dict, convert_dict)
         return state_dict
 
 
@@ -132,9 +243,6 @@ class Model(nn.Module):
     guidance = 3.5
 
     image_size = (768, 768)
-
-    use_half = True
-    low_memory_run = True
 
     def __init__(self, t5_config=Config.t5_xxl, clip_config=Config.clip, backbone_config=Config.backbone, vae_config=Config.vae, **kwargs):
         super().__init__()
@@ -175,7 +283,7 @@ class Model(nn.Module):
         return (
             2 * math.ceil(image_size[0] / 16),
             2 * math.ceil(image_size[1] / 16),
-        )   # (w, h)
+        )  # (w, h)
 
     def set_low_memory_run(self):
         # Not critical to run single batch for decoding strategy, but reduce more GPU memory
@@ -282,14 +390,15 @@ class Model(nn.Module):
             # generator=torch.Generator(device=self.device),  # note, necessary
         )
 
-    def make_image_cond(self, images, i0=None, noise=None, strength=0.75, **kwargs):
+    def make_image_cond(self, images, i0=None, noise=None, strength=0.75, num_steps=None, **kwargs):
         z, _, _ = self.vae.encode(images)
         x0 = z
 
         if i0 is None:
-            i0 = int(strength * self.sampler.num_steps)
+            num_steps = num_steps or self.sampler.num_steps
+            i0 = int(strength * num_steps)
 
-        timestep_seq = self.sampler.make_timesteps(i0)
+        timestep_seq = self.sampler.make_timesteps(i0, num_steps=num_steps)
         t = timestep_seq[-1]
         t = torch.full((x0.shape[0],), t, device=x0.device, dtype=torch.long)
         xt = self.sampler.q_sample(x0, t, noise=noise)
@@ -297,7 +406,7 @@ class Model(nn.Module):
 
 
 class FluxSampler(EulerSampler):
-    def p_sample(self, diffuse_func, x_t, t, prev_t=None, **diffuse_kwargs):
+    def p_sample(self, diffuse_func, x_t, t, prev_t=None, num_steps=None, **diffuse_kwargs):
         # todo: add more sample methods
         t = torch.full((x_t.shape[0],), t, device=x_t.device, dtype=torch.long)
         prev_t = torch.full((x_t.shape[0],), prev_t, device=x_t.device, dtype=torch.long)
@@ -307,7 +416,7 @@ class FluxSampler(EulerSampler):
 
         gamma = torch.where(
             torch.logical_and(self.s_tmin <= sigma, sigma <= self.s_tmax),
-            min(self.s_churn / (self.schedule.num_steps - 1), 2 ** 0.5 - 1),
+            min(self.s_churn / (num_steps - 1 + 1e-8), 2 ** 0.5 - 1),
             0.
         ).to(sigma)
 
@@ -355,42 +464,42 @@ class Flux(nn.Module):
 
     def __init__(
             self,
-            in_channels, out_channels,
+            in_ch, out_ch,
             hidden_size, num_heads,
             axes_dim, vec_in_dim, guidance_embed,
             context_in_dim, mlp_ratio,
-            depth_double_blocks, depth_single_blocks
+            depth_double_blocks, depth_single_blocks,
+            separate=False, head_mode=0,
     ):
         super().__init__()
 
-        self.in_channels = in_channels
-        self.out_channels = out_channels
-        self.hidden_size = hidden_size
-        self.num_heads = num_heads
+        self.in_channels = in_ch
+        self.out_channels = out_ch
         self.guidance_embed = guidance_embed
 
         self.time_embed = SinusoidalEmbedding(256, factor=1000.0)
 
-        self.img_in = nn.Linear(self.in_channels, self.hidden_size)
-        self.txt_in = nn.Linear(context_in_dim, self.hidden_size)
+        self.img_in = nn.Linear(in_ch, hidden_size)
+        self.txt_in = nn.Linear(context_in_dim, hidden_size)
 
         self.time_in = MLPEmbedder(256, hidden_size)
         self.vector_in = MLPEmbedder(vec_in_dim, hidden_size)
         self.guidance_in = MLPEmbedder(256, hidden_size) if guidance_embed else nn.Identity()
 
         self.embedding = FluxRotaryEmbedding(axes_dim)
-        attend = FluxRotaryAttendWrapper(
+        attention = FluxRotaryAttention(
             embedding=self.embedding,
-            base_layer=attentions.FlashAttend()
+            attend=attentions.FlashAttend()
         )
 
         self.double_blocks = nn.ModuleList(
             [
                 DoubleStreamBlock(
-                    self.hidden_size,
-                    self.num_heads,
+                    hidden_size,
+                    num_heads,
                     mlp_ratio=mlp_ratio,
-                    attend=attend
+                    attention=attention,
+                    separate=separate
                 )
                 for _ in range(depth_double_blocks)
             ]
@@ -399,16 +508,17 @@ class Flux(nn.Module):
         self.single_blocks = nn.ModuleList(
             [
                 SingleStreamBlock(
-                    self.hidden_size,
-                    self.num_heads,
+                    hidden_size,
+                    num_heads,
                     mlp_ratio=mlp_ratio,
-                    attend=attend
+                    attention=attention,
+                    separate=separate
                 )
                 for _ in range(depth_single_blocks)
             ]
         )
 
-        self.head = Head(self.hidden_size, 1, self.out_channels)
+        self.head = Head(hidden_size, 1, out_ch, head_mode=head_mode)
 
     def forward(self, img, timesteps, img_ids, txt, txt_ids, y, guidance) -> Tensor:
         # running on sequences img
@@ -448,16 +558,22 @@ class FluxRotaryEmbedding(nn.Module):
         super().__init__()
         self.embedding_dims = embedding_dims
         self.theta = theta
+        self._register()
 
-    @property
-    def div_terms(self):
+    def _register(self):
         # note, support for meta device init
         div_terms = []
         for embedding_dim in self.embedding_dims:
             div_term = (torch.arange(0, embedding_dim, 2).float() * -(math.log(self.theta) / embedding_dim)).exp()
             div_terms.append(div_term)
 
-        return div_terms
+        self.div_terms = div_terms
+
+    def _apply(self, fn, recurse=True):
+        """apply for meta load"""
+        if self.div_terms[0].is_meta:
+            self._register()
+        return super()._apply(fn, recurse)
 
     def make_weights(self, positions):
         div_terms = self.div_terms
@@ -484,11 +600,12 @@ class FluxRotaryEmbedding(nn.Module):
         return y.reshape(*x.shape).type_as(x)
 
 
-class FluxRotaryAttendWrapper(nn.Module):
-    def __init__(self, embedding=None, base_layer=None, base_layer_fn=None, **base_layer_kwargs):
+@attentions.make_attention_fn.add_register()
+class FluxRotaryAttention(nn.Module):
+    def __init__(self, embedding=None, attend=None, **kwargs):
         super().__init__()
         self.embedding = embedding
-        self.base_layer = base_layer or base_layer_fn(**base_layer_kwargs)
+        self.attend = attend
 
     def forward(self, q, k, v, embedding_kwargs=dict(), **attend_kwargs):
         """
@@ -497,20 +614,20 @@ class FluxRotaryAttendWrapper(nn.Module):
         """
         q = self.embedding(q, **embedding_kwargs)
         k = self.embedding(k, **embedding_kwargs)
-        attn = self.base_layer(q, k, v, **attend_kwargs)
+        attn = self.attend(q, k, v, **attend_kwargs)
         attn = rearrange(attn, "B H L D -> B L (H D)")
         return attn
 
 
 class DoubleStreamBlock(nn.Module):
-    def __init__(self, hidden_size, num_heads, mlp_ratio, attend=None):
+    def __init__(self, hidden_size, num_heads, mlp_ratio, attention=None, separate=False):
         super().__init__()
 
         self.num_heads = num_heads
         self.hidden_size = hidden_size
-        self.img_stream = CondStreamBlock(hidden_size, num_heads, mlp_ratio, double=True)
-        self.txt_stream = CondStreamBlock(hidden_size, num_heads, mlp_ratio, double=True)
-        self.attend = attend
+        self.img_stream = CondStreamBlock(hidden_size, num_heads, mlp_ratio, double=True, separate=separate)
+        self.txt_stream = CondStreamBlock(hidden_size, num_heads, mlp_ratio, double=True, separate=separate)
+        self.attention = attention
 
     def forward(self, img: Tensor, txt: Tensor, vec: Tensor, pe: Tensor) -> tuple[Tensor, Tensor]:
         txt_mod1, txt_mod2, txt_q, txt_k, txt_v, _ = self.txt_stream.stream_in(txt, vec)
@@ -521,7 +638,7 @@ class DoubleStreamBlock(nn.Module):
         k = torch.cat((txt_k, img_k), dim=2)
         v = torch.cat((txt_v, img_v), dim=2)
 
-        attn = self.attend(q, k, v, embedding_kwargs=dict(weights=pe))
+        attn = self.attention(q, k, v, embedding_kwargs=dict(weights=pe))
         txt_attn, img_attn = attn[:, : txt.shape[1]], attn[:, txt.shape[1]:]
 
         txt = self.txt_stream.stream_out(txt, txt_attn, txt_mod1, txt_mod2)
@@ -536,41 +653,63 @@ class SingleStreamBlock(nn.Module):
     https://arxiv.org/abs/2302.05442 and adapted modulation interface.
     """
 
-    def __init__(self, hidden_size, num_heads, mlp_ratio=4.0, attend=None):
+    def __init__(self, hidden_size, num_heads, mlp_ratio=4.0, attention=None, separate=False):
         super().__init__()
         self.num_heads = num_heads
         self.hidden_size = hidden_size
 
-        self.stream = CondStreamBlock(hidden_size, num_heads, mlp_ratio, double=False)
-        self.attend = attend
+        self.stream = CondStreamBlock(hidden_size, num_heads, mlp_ratio, double=False, separate=separate)
+        self.attention = attention
 
     def forward(self, x: Tensor, vec: Tensor, pe: Tensor) -> Tensor:
         mod1, _, q, k, v, mlp = self.stream.stream_in(x, vec)
-        attn = self.attend(q, k, v, embedding_kwargs=dict(weights=pe))
+        attn = self.attention(q, k, v, embedding_kwargs=dict(weights=pe))
         attn = torch.cat((attn, mlp), 2)
         x = self.stream.stream_out(x, attn, mod1)
         return x
 
 
 class CondStreamBlock(nn.Module):
-    def __init__(self, hidden_size, num_heads, mlp_ratio, double):
+    def __init__(self, hidden_size, num_heads, mlp_ratio, double, separate=False):
         super().__init__()
         self.double = double
         mlp_hidden_size = int(hidden_size * mlp_ratio)
         head_dim = hidden_size // num_heads
         self.num_heads = num_heads
-        if double:
-            qkv_output_size = hidden_size * 3
-            proj_input_size = hidden_size
-        else:
-            qkv_output_size = hidden_size * 3 + mlp_hidden_size
-            proj_input_size = hidden_size + mlp_hidden_size
         self.hidden_size = hidden_size
         self.mlp_hidden_size = mlp_hidden_size
+        self.separate = separate
+        if separate:
+            if double:
+                proj_input_size = hidden_size
+
+                self.to_qkv = nn.ModuleList([
+                    nn.Linear(hidden_size, hidden_size),
+                    nn.Linear(hidden_size, hidden_size),
+                    nn.Linear(hidden_size, hidden_size),
+                ])
+
+            else:
+                proj_input_size = hidden_size + mlp_hidden_size
+
+                self.to_mlp = nn.Linear(hidden_size, mlp_hidden_size)
+                self.to_qkv = nn.ModuleList([
+                    nn.Linear(hidden_size, hidden_size),
+                    nn.Linear(hidden_size, hidden_size),
+                    nn.Linear(hidden_size, hidden_size),
+                ])
+
+        else:
+            if double:
+                proj_input_size = hidden_size
+                qkv_output_size = hidden_size * 3
+            else:
+                proj_input_size = hidden_size + mlp_hidden_size
+                qkv_output_size = hidden_size * 3 + mlp_hidden_size
+            self.qkv = nn.Linear(hidden_size, qkv_output_size)
 
         self.mod = Modulation(hidden_size, double=double)
         self.norm1 = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
-        self.qkv = nn.Linear(hidden_size, qkv_output_size)
         self.mlp_act = nn.GELU(approximate="tanh")
         self.query_norm = RMSNorm2D(head_dim)
         self.key_norm = RMSNorm2D(head_dim)
@@ -585,13 +724,26 @@ class CondStreamBlock(nn.Module):
         mod1, mod2 = self.mod(vec)
         x = self.norm1(x)
         modulated = (1 + mod1.scale) * x + mod1.shift
-        if self.double:
-            qkv = self.qkv(modulated)
-            mlp = None
+        if self.separate:
+            if self.double:
+                mlp = None
+                q, k, v = [m(modulated) for m in self.to_qkv]
+            else:
+                mlp = self.to_mlp(modulated)
+                mlp = self.mlp_act(mlp)
+                q, k, v = [m(modulated) for m in self.to_qkv]
+
+            q, k, v = [rearrange(x, "B L (H D) -> B H L D", H=self.num_heads).contiguous() for x in (q, k, v)]
         else:
-            qkv, mlp = torch.split(self.qkv(modulated), [3 * self.hidden_size, self.mlp_hidden_size], dim=-1)
-            mlp = self.mlp_act(mlp)
-        q, k, v = rearrange(qkv, "B L (K H D) -> K B H L D", K=3, H=self.num_heads)
+            if self.double:
+                qkv = self.qkv(modulated)
+                mlp = None
+            else:
+                qkv, mlp = torch.split(self.qkv(modulated), [3 * self.hidden_size, self.mlp_hidden_size], dim=-1)
+                mlp = self.mlp_act(mlp)
+
+            q, k, v = rearrange(qkv, "B L (K H D) -> K B H L D", K=3, H=self.num_heads)
+
         q = self.query_norm(q)
         k = self.key_norm(k)
         return mod1, mod2, q, k, v, mlp
@@ -618,7 +770,7 @@ class Modulation(nn.Module):
         self.lin = nn.Linear(dim, self.multiplier * dim)
 
     def forward(self, vec: Tensor) -> tuple[ModulationOut, ModulationOut | None]:
-        out = self.lin(nn.functional.silu(vec))[:, None, :].chunk(self.multiplier, dim=-1)
+        out = self.lin(F.silu(vec))[:, None, :].chunk(self.multiplier, dim=-1)
 
         return (
             ModulationOut(*out[:3]),
@@ -627,14 +779,20 @@ class Modulation(nn.Module):
 
 
 class Head(nn.Module):
-    def __init__(self, hidden_size, patch_size, out_channels):
+    def __init__(self, hidden_size, patch_size, out_ch, head_mode=0):
         super().__init__()
         self.adaLN_modulation = Linear(hidden_size, 2 * hidden_size, mode='al', act=nn.SiLU())
         self.norm_final = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
-        self.linear = nn.Linear(hidden_size, patch_size * patch_size * out_channels)
+        self.linear = nn.Linear(hidden_size, patch_size * patch_size * out_ch)
+        self.head_mode = head_mode
 
     def forward(self, x: Tensor, vec: Tensor) -> Tensor:
-        shift, scale = self.adaLN_modulation(vec).chunk(2, dim=1)
-        x = (1 + scale[:, None, :]) * self.norm_final(x) + shift[:, None, :]
+        emb = self.adaLN_modulation(vec)
+        # note, this silly bug wasted me a lot of time!!!
+        if self.head_mode == 0:
+            shift, scale = torch.chunk(emb, 2, dim=1)
+        else:
+            scale, shift = torch.chunk(emb, 2, dim=1)
+        x = self.norm_final(x) * (1 + scale)[:, None, :] + shift[:, None, :]
         x = self.linear(x)
         return x

@@ -60,9 +60,10 @@ class Schedule(nn.Module):
             self.register_buffer('sigmas', sigmas * st)
         return super()._apply(fn, recurse)
 
-    def make_timesteps(self, i0=None):
+    def make_timesteps(self, i0=None, num_steps=None):
+        num_steps = num_steps or self.num_steps
         # note, must start with self.timesteps
-        timestep_seq = np.linspace(self.timesteps, 0, self.num_steps, endpoint=False).astype(int)[::-1]
+        timestep_seq = np.linspace(self.timesteps, 0, num_steps, endpoint=False).astype(int)[::-1]
         if i0:
             timestep_seq = timestep_seq[:i0]
         return timestep_seq
@@ -247,8 +248,9 @@ class Sampler(nn.Module):
     def q_sample(self, x0, sigma, noise=None):
         raise NotImplementedError
 
-    def forward(self, diffuse_func, x_t, i0=None, callback_fn=None, **p_sample_kwargs):
-        timestep_seq = self.schedule.make_timesteps(i0)
+    def forward(self, diffuse_func, x_t, i0=None, callback_fn=None, num_steps=None, **p_sample_kwargs):
+        timestep_seq = self.schedule.make_timesteps(i0, num_steps=num_steps)
+        num_steps = num_steps or len(timestep_seq)
         # previous sequence
         timestep_prev_seq = np.append(np.array([0]), timestep_seq[:-1])
         x_0 = None
@@ -257,7 +259,7 @@ class Sampler(nn.Module):
 
         for i in reversed(range(len(timestep_seq))):
             self_cond = x_0 if self.self_condition else None
-            x_t, x_0 = self.p_sample(diffuse_func, x_t, timestep_seq[i], prev_t=timestep_prev_seq[i], x_self_cond=self_cond, **p_sample_kwargs)
+            x_t, x_0 = self.p_sample(diffuse_func, x_t, timestep_seq[i], prev_t=timestep_prev_seq[i], x_self_cond=self_cond, num_steps=num_steps, **p_sample_kwargs)
 
             if callback_fn:
                 callback_fn(x_t, timestep_seq[i])
@@ -269,8 +271,8 @@ class Sampler(nn.Module):
     def scale_x_t(self, x_t):
         raise NotImplementedError
 
-    def make_timesteps(self, i0=None):
-        return self.schedule.make_timesteps(i0)
+    def make_timesteps(self, i0=None, num_steps=None):
+        return self.schedule.make_timesteps(i0, num_steps=num_steps)
 
 
 class EulerSampler(Sampler):
@@ -309,7 +311,7 @@ class EulerSampler(Sampler):
     def scale_x_t(self, x_t):
         return x_t * torch.sqrt(1.0 + self.schedule.sigmas[-1] ** 2.0)
 
-    def p_sample(self, diffuse_func, x_t, t, prev_t=None, **diffuse_kwargs):
+    def p_sample(self, diffuse_func, x_t, t, prev_t=None, num_steps=None, **diffuse_kwargs):
         # todo: add more sample methods
         t = torch.full((x_t.shape[0],), t, device=x_t.device, dtype=torch.long)
         prev_t = torch.full((x_t.shape[0],), prev_t, device=x_t.device, dtype=torch.long)
@@ -319,7 +321,7 @@ class EulerSampler(Sampler):
 
         gamma = torch.where(
             torch.logical_and(self.s_tmin <= sigma, sigma <= self.s_tmax),
-            min(self.s_churn / (self.schedule.num_steps - 1), 2 ** 0.5 - 1),
+            min(self.s_churn / (num_steps - 1 + 1e-8), 2 ** 0.5 - 1),
             0.
         ).to(sigma)
 
