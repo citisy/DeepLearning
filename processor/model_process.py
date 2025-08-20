@@ -330,7 +330,7 @@ class ModelHooks:
         'every `epoch` or every `step` to run scheduler'
     ] = EPOCH
 
-    def set_scheduler(self, max_epoch, lr_lambda=None, lrf=0.01, **kwargs):
+    def set_scheduler(self, max_epoch, lr_lambda=None, lrf=0.01, train_dataloader=None, **kwargs):
         if self.use_scheduler:
             if self.scheduler_strategy == EPOCH:
                 if not lr_lambda:
@@ -344,7 +344,7 @@ class ModelHooks:
                     "linear",
                     optimizer=self.optimizer,
                     num_warmup_steps=0,
-                    num_training_steps=max_epoch * len(self.train_container['train_dataloader']),
+                    num_training_steps=max_epoch * len(train_dataloader),
                 )
 
     use_scaler = False
@@ -468,7 +468,7 @@ class ModelHooks:
 
         for item in ('optimizer', 'stopper', 'scaler', 'scheduler'):
             if not hasattr(self, item) or getattr(self, item) is None:
-                getattr(self, f'set_{item}')(max_epoch=max_epoch, **kwargs)
+                getattr(self, f'set_{item}')(max_epoch=max_epoch, train_dataloader=train_dataloader, **kwargs)
 
         for func, params in self.train_start_container.items():
             func(**params)
@@ -622,7 +622,7 @@ class ModelHooks:
 
     def _check_on_train_step_end(self, loop_objs, check_period=None, batch_size=None, max_save_weight_num=None, is_metric=True, **kwargs):
         total_nums = loop_objs['total_nums']
-        if check_period and total_nums % check_period < batch_size:
+        if check_period and check_period * batch_size <= total_nums:
             self.trace({'total_nums': total_nums}, (bundled.LOGGING, bundled.WANDB))
 
             ckpt = self._check_train(loop_objs, max_save_weight_num, total_nums, **kwargs)
