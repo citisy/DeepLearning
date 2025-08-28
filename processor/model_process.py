@@ -2,7 +2,7 @@ import logging
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import List, Optional, Dict, Union, Annotated
+from typing import List, Optional, Dict, Union, Annotated, overload
 
 import numpy as np
 import torch
@@ -414,6 +414,54 @@ class ModelHooks:
         import torchexplorer
         torchexplorer.watch(self.model, log=['io', 'params'], disable_inplace=True, backend='standalone')
 
+    @overload
+    def fit(
+            self,
+            batch_size: int = -1,
+            max_epoch: int = -1,
+
+            train_dataloader: 'torch.utils.data.DataLoader' = None,
+            val_dataloader: 'torch.utils.data.DataLoader' = None,
+
+            # for `get_data()`
+            data_get_kwargs: dict = dict(),
+
+            # for `torch.utils.data.DataLoader`
+            dataloader_kwargs: dict = dict(),
+
+            # num of epoch/step to run training check
+            check_period: int = None,
+
+            # for `metric()`
+            is_metric: bool = True,
+            metric_kwargs: dict = dict(),
+
+            # for model run
+            model_kwargs: dict = dict(),
+
+            # which vars will be recorded when training
+            _counters: Optional[tuple] = ('per_epoch_nums',),
+
+            # num for accumulate if not None
+            accumulate: int = None,
+
+            # if True, log more info, like gpu info
+            more_log: bool = False,
+
+            # if True, while occur nan output, training will be stopped
+            ignore_non_loss: bool = False,
+
+            # the value is
+            # None,
+            #     if is_metric=False, only save weight with name of `last.pth`,
+            #     else, save weight with name of `[last/best].pth`
+            # 0, don't save any weight file
+            # >0,
+            #     if is_metric=False, only save weight with name of `{check_period}.pth`,
+            max_save_weight_num: int = None,
+    ):
+        pass
+
     def fit(self, **kwargs):
         """
         the fit procedure will be run the following pipelines:
@@ -581,7 +629,7 @@ class ModelHooks:
     def on_train_step_start(self, loop_objs, **kwargs):
         pass
 
-    def on_train_step(self, loop_objs, **kwargs) -> dict:
+    def on_train_step(self, loop_objs, model_kwargs=dict(), **kwargs) -> dict:
         """logic of model training step, and expected to return a dict of model output
         must return a dict included:
             loss: loss to backward
@@ -764,6 +812,31 @@ class ModelHooks:
     def metric(self, *args, **kwargs) -> dict:
         """call the `predict()` function to get model output, then count the score, expected to return a dict of model score"""
         raise NotImplementedError
+
+    @overload
+    def predict(
+            self,
+            batch_size: int,
+            val_dataloader: 'torch.utils.data.DataLoader' = None,
+
+            # for `get_data()`
+            data_get_kwargs: dict = dict(),
+
+            # for `torch.utils.data.DataLoader`
+            dataloader_kwargs: dict = dict(),
+
+            # for model run
+            model_kwargs: dict = dict(),
+
+            # whether to visualize or not
+            is_visualize: bool = False,
+
+            # num for visualize
+            max_vis_num: int = None,
+
+            **kwargs
+    ) -> dict:
+        pass
 
     @torch.no_grad()
     def predict(self, **kwargs) -> dict:

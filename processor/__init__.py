@@ -6,105 +6,6 @@ from .data_process import *
 from .model_process import *
 
 
-class ProcessConfig:
-    # for work_dir and cache_dir
-    model_version: str
-    dataset_version: str
-
-    # for saving some model data, like weight, config, vocab, etc
-    # self.work_dir = os.path.abspath(f'{self._model_cache_dir}/{self.model_version}/{self.dataset_version}')
-    _model_cache_dir: str = 'model_data'
-
-    # for saving some cache data, like visual image, result text, etc.
-    # self.cache_dir = os.path.abspath(f'{self._result_cache_dir}/{self.model_version}/{self.dataset_version}')
-    _result_cache_dir: str = 'cache_data'
-
-    # for saving log info, if None, do not save the log info
-    log_dir: str = None
-
-    # for marking the base model
-    # self.default_model_path = f'{self.work_dir}/{self.model_name}.pth'
-    model_name: str = 'model'
-
-    # for loading the train or test data
-    data_dir: str = None
-    train_dataset_ins: 'torch.utils.data.Dataset' = BaseImgDataset
-    val_dataset_ins: 'torch.utils.data.Dataset' = BaseImgDataset
-
-    # 'cpu', or id of gpu device if gpu is available
-    device: Union[int, str, torch.device] = None
-
-    use_ema: bool = False
-    use_early_stop: bool = True
-    use_scaler: bool = False
-    use_scheduler: bool = False
-
-    # every epoch or every step to run scheduler
-    scheduler_strategy: str = EPOCH
-    lrf: float = 0.01
-
-    # for wandb logging
-    wandb_id: str = None
-
-    # every epoch or every step to run training check, like saving checkpoint, run the metric step, etc
-    check_strategy: str = EPOCH
-
-
-class FitConfig:
-    batch_size: int
-    max_epoch: int
-
-    train_dataloader: 'torch.utils.data.DataLoader' = None
-    val_dataloader: 'torch.utils.data.DataLoader' = None
-
-    # for `get_data()`
-    data_get_kwargs: dict = dict()
-
-    # for `torch.utils.data.DataLoader`
-    dataloader_kwargs: dict = dict()
-
-    # num of epoch/step to run training check
-    check_period: int = None
-
-    # for `metric()`
-    metric_kwargs: dict = dict()
-
-    # which vars will be recorded when training
-    _counters: Optional[tuple] = ('per_epoch_nums',)
-
-    # num for accumulate if not None
-    accumulate: int = None
-
-    # if True, log more info, like gpu info
-    more_log: bool = False
-
-    # if True, while occur nan output, training will be stopped
-    ignore_non_loss: bool = False
-
-    # nums of checkpoint files saving when training
-    # if None, save 2 checkpoints: 'best.pth', 'last.pth'
-    # if int, save {num} checkpoints, use '{check_num}.pth'
-    # specially, if 0, do not save weight
-    max_save_weight_num: int = None
-
-
-class PredictConfig:
-    batch_size: int
-    val_dataloader: 'torch.utils.data.DataLoader' = None
-
-    # for `get_data()`
-    data_get_kwargs: dict = dict()
-
-    # for `torch.utils.data.DataLoader`
-    dataloader_kwargs: dict = dict()
-
-    # whether to visualize or not
-    is_visualize: bool = False
-
-    # num for visualize
-    max_vis_num: int = None
-
-
 class Process(
     LogHooks,
     DataHooks,
@@ -133,6 +34,54 @@ class Process(
         run `Process.help()` to get more kwargs info,
         also can see `ProcessConfig` to get more kwargs info,
     """
+
+    @overload
+    def __init__(
+            self,
+            # for work_dir and cache_dir
+            model_version: str = '',
+            dataset_version: str = '',
+
+            # for saving some model data, like weight, config, vocab, etc
+            # self.work_dir = os.path.abspath(f'{self._model_cache_dir}/{self.model_version}/{self.dataset_version}')
+            _model_cache_dir: str = 'model_data',
+
+            # for saving some cache data, like visual image, result text, etc.
+            # self.cache_dir = os.path.abspath(f'{self._result_cache_dir}/{self.model_version}/{self.dataset_version}')
+            _result_cache_dir: str = 'cache_data',
+
+            # for saving log info, if None, do not save the log info
+            log_dir: str = None,
+
+            # for marking the base model
+            # self.default_model_path = f'{self.work_dir}/{self.model_name}.pth'
+            model_name: str = 'model',
+
+            # for loading the train or test data
+            data_dir: str = None,
+            train_dataset_ins: 'torch.utils.data.Dataset' = BaseImgDataset,
+            val_dataset_ins: 'torch.utils.data.Dataset' = BaseImgDataset,
+
+            # 'cpu', or id of gpu device if gpu is available
+            device: Union[int, str, torch.device] = None,
+
+            use_ema: bool = False,
+            use_early_stop: bool = True,
+            use_scaler: bool = False,
+            use_scheduler: bool = False,
+
+            # every epoch or every step to run scheduler
+            scheduler_strategy: str = EPOCH,
+            lrf: float = 0.01,
+
+            # for wandb logging
+            wandb_id: str = None,
+
+            # every epoch or every step to run training check, like saving checkpoint, run the metric step, etc
+            check_strategy: str = EPOCH,
+            **kwargs
+    ):
+        pass
 
     def __init__(self, **kwargs):
         self.date = datetime.now().isoformat()
