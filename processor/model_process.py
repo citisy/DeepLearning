@@ -43,6 +43,8 @@ class CheckpointHooks:
             JIT: self.load_jit
         }
 
+        self.checkpoint_container: dict = {}
+
     log: bundled.LogHooks.log
 
     def save(self, save_path, save_type=WEIGHT, verbose=True, **kwargs):
@@ -149,11 +151,47 @@ class CheckpointHooks:
     def save_triton(self, save_path, **kwargs):
         raise NotImplementedError
 
+    def register_save_checkpoint(self, func, **kwargs):
+        self.checkpoint_container.update({func: kwargs})
+
+    work_dir: str
+
+    def save_pretrained_checkpoint(self, suffix, max_save_weight_num, state_dict):
+        self.save(
+            f'{self.work_dir}/{suffix}.pth',
+            additional_path=f'{self.work_dir}/{suffix}.additional.pth',
+            additional_items=state_dict,
+            save_type=WEIGHT,
+        )
+
+        for func, kwargs in self.checkpoint_container.items():
+            func(suffix, max_save_weight_num, **kwargs)
+
+        if max_save_weight_num:
+            os_lib.FileCacher(self.work_dir, max_size=max_save_weight_num, stdout_method=self.log).delete_over_range(suffix=r'\d+\.pth')
+            os_lib.FileCacher(self.work_dir, max_size=max_save_weight_num, stdout_method=self.log).delete_over_range(suffix=r'\d+\.additional\.pth')
+
+    def state_dict(self):
+        """get additional info except model weights"""
+        state_dict = {
+            'date': datetime.now().isoformat()
+        }
+
+        for name in ('optimizer', 'stopper', 'counters', 'wandb_id'):
+            if hasattr(self, name):
+                var = getattr(self, name)
+                if hasattr(var, 'state_dict'):
+                    state_dict[name] = var.state_dict()
+                elif var is not None:
+                    state_dict[name] = var
+
+        return state_dict
+
     def load(self, save_path, save_type=WEIGHT, **kwargs):
         func = self.load_funcs.get(save_type)
         assert func, ValueError(f'dont support {save_type = }')
 
-        func(save_path, **kwargs)
+        return func(save_path, **kwargs)
 
     model: nn.Module
     model_name: str
@@ -192,25 +230,26 @@ class CheckpointHooks:
 
         """
         if additional_path:
-            state_dict = torch_utils.Load.from_ckpt(save_path, map_location=self.device, **kwargs)
+            state_dict = torch_utils.Load.from_ckpt(save_path, map_location=self.device, weights_only=False, **kwargs)
             if raw_tensors:
                 state_dict = {self.model_name: state_dict}
             state_dict = {
                 **state_dict,
-                **torch_utils.Load.from_ckpt(additional_path, map_location=self.device, **kwargs)
+                **torch_utils.Load.from_ckpt(additional_path, map_location=self.device, weights_only=False, **kwargs)
             }
             if verbose:
                 self.log(f'Successfully load {save_path} !')
                 self.log(f'Successfully load {additional_path} !')
 
         else:
-            state_dict = torch_utils.Load.from_ckpt(save_path, map_location=self.device, **kwargs)
+            state_dict = torch_utils.Load.from_ckpt(save_path, map_location=self.device, weights_only=False, **kwargs)
             if raw_tensors:
                 state_dict = {self.model_name: state_dict}
             if verbose:
                 self.log(f'Successfully load {save_path} !')
 
         self.load_state_dict(state_dict, include, exclude, cache)
+        return state_dict
 
     def load_safetensors(self, save_path, **kwargs):
         state_dict = torch_utils.Load.from_safetensors(save_path, **kwargs)
@@ -250,14 +289,17 @@ class CheckpointHooks:
 
     pretrained_checkpoint: str
 
-    def load_pretrained_checkpoint(self):
+    def load_pretrained_checkpoint(self, raw_tensors=True) -> dict:
         if hasattr(self, 'pretrained_checkpoint'):
             pretrained_checkpoint = Path(self.pretrained_checkpoint)
-            self.load(
+            return self.load(
                 self.pretrained_checkpoint,
                 additional_path=f'{pretrained_checkpoint.parent}/{pretrained_checkpoint.stem}.additional.pth',
-                save_type=WEIGHT, raw_tensors=False
+                save_type=WEIGHT,
+                raw_tensors=raw_tensors
             )
+        else:
+            return {}
 
 
 class ModelHooks:
@@ -265,6 +307,9 @@ class ModelHooks:
     log: bundled.LogHooks.log
     log_trace: bundled.LogHooks.log_trace
     device: Optional[str]
+    register_save_checkpoint: CheckpointHooks.register_save_checkpoint
+    state_dict: CheckpointHooks.state_dict
+    save_pretrained_checkpoint: CheckpointHooks.save_pretrained_checkpoint
 
     def __init__(self):
         super().__init__()
@@ -279,7 +324,6 @@ class ModelHooks:
         self.train_end_container: dict = {}
         self.val_start_container: dict = {}
         self.val_end_container: dict = {}
-        self.checkpoint_container: dict = {}
 
     model: nn.Module
 
@@ -439,6 +483,8 @@ class ModelHooks:
     def register_train_end(self, func, **kwargs):
         self.train_end_container.update({func: kwargs})
 
+    counters_keys = ['epoch', 'total_nums', 'total_steps', 'check_nums']
+
     def on_train_start(
             self, batch_size=None, max_epoch=None,
             train_dataloader=None, val_dataloader=None, check_period=None,
@@ -473,7 +519,7 @@ class ModelHooks:
         for func, params in self.train_start_container.items():
             func(**params)
 
-        self.load_pretrained_checkpoint()
+        state_dict = self.load_pretrained_checkpoint()
         self.set_mode(train=True)
 
         loop_objs = dict(
@@ -481,9 +527,10 @@ class ModelHooks:
             last_check_time=time.time(),
         )
 
-        _counters = ['epoch', 'total_nums', 'total_steps', 'check_nums']
-        for c in _counters:
+        for c in self.counters_keys:
             loop_objs.setdefault(c, 0)
+
+        loop_objs.update(state_dict.get('loop_objs', {}))
 
         process_kwargs = dict(
             train_dataloader=train_dataloader,
@@ -622,12 +669,12 @@ class ModelHooks:
 
     def _check_on_train_step_end(self, loop_objs, check_period=None, batch_size=None, max_save_weight_num=None, is_metric=True, **kwargs):
         total_nums = loop_objs['total_nums']
-        if check_period and check_period * batch_size <= total_nums:
+        if check_period and total_nums % check_period < batch_size:
             self.trace({'total_nums': total_nums}, (bundled.LOGGING, bundled.WANDB))
 
-            ckpt = self._check_train(loop_objs, max_save_weight_num, total_nums, **kwargs)
+            state_dict = self._check_train(loop_objs, max_save_weight_num, total_nums, **kwargs)
             if is_metric:
-                self._check_metric(loop_objs, ckpt, total_nums, max_save_weight_num, **kwargs)
+                self._check_metric(loop_objs, state_dict, total_nums, max_save_weight_num, **kwargs)
 
             self.log_trace(bundled.LOGGING)
             self.log_trace(bundled.WANDB)
@@ -676,14 +723,13 @@ class ModelHooks:
             loop_objs['last_check_time'] = now
 
         state_dict = self.state_dict()
+        state_dict['loop_objs'] = {c: loop_objs[c] for c in self.counters_keys}
 
         if not isinstance(max_save_weight_num, int):  # None
-            self._save_checkpoint('last', max_save_weight_num, state_dict)
+            self.save_pretrained_checkpoint('last', max_save_weight_num, state_dict)
 
         elif max_save_weight_num > 0:
-            self._save_checkpoint(str(check_num), max_save_weight_num, state_dict)
-            os_lib.FileCacher(self.work_dir, max_size=max_save_weight_num, stdout_method=self.log).delete_over_range(suffix=r'\d+\.pth')
-            os_lib.FileCacher(self.work_dir, max_size=max_save_weight_num, stdout_method=self.log).delete_over_range(suffix=r'\d+\.additional\.pth')
+            self.save_pretrained_checkpoint(str(check_num), max_save_weight_num, state_dict)
 
         return state_dict
 
@@ -703,38 +749,9 @@ class ModelHooks:
             score = results[self.model_name]['score']
             if score > self.stopper.best_score:
                 if not isinstance(max_save_weight_num, int) or max_save_weight_num > 0:
-                    self._save_checkpoint('best', max_save_weight_num, state_dict)
+                    self.save_pretrained_checkpoint('best', max_save_weight_num, state_dict)
 
             loop_objs['end_flag'] = loop_objs['end_flag'] or self.stopper(check_num, score)
-
-    def register_save_checkpoint(self, func, **kwargs):
-        self.checkpoint_container.update({func: kwargs})
-
-    def _save_checkpoint(self, suffix, max_save_weight_num, state_dict):
-        self.save(
-            f'{self.work_dir}/{suffix}.pth',
-            additional_path=f'{self.work_dir}/{suffix}.additional.pth',
-            additional_items=state_dict,
-            save_type=WEIGHT,
-        )
-
-        for func, kwargs in self.checkpoint_container.items():
-            func(suffix, max_save_weight_num, **kwargs)
-
-    def state_dict(self):
-        state_dict = {
-            'date': datetime.now().isoformat()
-        }
-
-        for name in ('optimizer', 'stopper', 'counters', 'wandb_id'):
-            if hasattr(self, name):
-                var = getattr(self, name)
-                if hasattr(var, 'state_dict'):
-                    state_dict[name] = var.state_dict()
-                elif var is not None:
-                    state_dict[name] = var
-
-        return state_dict
 
     def on_train_end(self, **kwargs):
         for func, params in self.train_end_container.items():
@@ -831,7 +848,7 @@ class ModelHooks:
     def on_val_step_start(self, loop_objs, **kwargs):
         pass
 
-    def on_val_step(self, loop_objs, **kwargs) -> dict:
+    def on_val_step(self, loop_objs, model_kwargs=dict(), **kwargs) -> dict:
         """logic of validating step, expected to return a dict of model output included preds
         must return a dict included:
             outputs: original model output

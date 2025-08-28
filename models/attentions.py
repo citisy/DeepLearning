@@ -101,6 +101,8 @@ def make_pad_mask(lens, x=None, len_dim=1, max_len=None):
         else:
             max_len = x.shape[len_dim]
 
+    max_len = int(max_len)
+
     bs = lens.shape[0]
     seq_range = torch.arange(0, max_len, dtype=torch.int64, device=lens.device)
     seq_range_expand = seq_range.unsqueeze(0).expand(bs, max_len)

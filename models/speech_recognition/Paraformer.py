@@ -12,6 +12,7 @@ from torchaudio.compliance import kaldi
 from utils import torch_utils
 from .. import attentions, embeddings
 from ..layers import Linear
+from ..losses import LabelSmoothingLoss, MAELoss
 from ..text_pretrain import transformers
 
 
@@ -53,11 +54,11 @@ class Model(nn.Module):
     """
     refer to:
     paper:
-        (Paraformer: Fast and Accurate Parallel Transformer for Non-autoregressive End-to-End Speech Recognition)[https://arxiv.org/abs/2206.08317]
+        - (Paraformer: Fast and Accurate Parallel Transformer for Non-autoregressive End-to-End Speech Recognition)[https://arxiv.org/abs/2206.08317]
     code:
-        `funasr.models.bicif_paraformer.model.Paraformer`
+        - `funasr.models.bicif_paraformer.model.Paraformer`
     blog:
-        https://mp.weixin.qq.com/s/xQ87isj5_wxWiQs4qUXtVw
+        - https://mp.weixin.qq.com/s/xQ87isj5_wxWiQs4qUXtVw
     """
 
     input_size: int = 560
@@ -67,14 +68,21 @@ class Model(nn.Module):
     sos_id: int = 1
     eos_id: int = 2
 
+    predictor_weight: float = 1.0
+    ctc_weight: float = 0.
+    lsm_weight: float = 0.0
+    length_normalized_loss: bool = False
+    sampling_ratio = 0.75
+    share_embedding: bool = False
+
     def __init__(
-            self, cmvn,
-            frontend_config={}, encoder_config={}, decoder_config={}, head_config={}, model_config={},
+            self,
+            encoder_config={}, decoder_config={}, head_config={}, model_config={},
+            ctc_config={},
             **kwargs,
     ):
         super().__init__()
         self.__dict__.update(model_config)
-        self.frontend = WavFrontend(cmvn, **frontend_config)
         self.encoder = SANMEncoder(input_size=self.input_size, **encoder_config)
         self.neck = CifPredictorV3(**head_config)
         self.decoder = SANMDecoder(
@@ -83,109 +91,37 @@ class Model(nn.Module):
             **decoder_config,
         )
 
-    def forward(self, x, **kwargs):
-        if self.training:
-            raise NotImplementedError
+        if self.ctc_weight == 0.0:
+            self.ctc = None
         else:
-            return self.post_process(x, **kwargs)
+            self.criterion_ctc = CTC(odim=self.vocab_size, encoder_output_size=self.encoder.output_size, **ctc_config)
+        self.criterion_att = LabelSmoothingLoss(
+            size=self.vocab_size,
+            padding_idx=self.ignore_id,
+            smoothing=self.lsm_weight,
+            normalize_length=self.length_normalized_loss,
+        )
+        self.criterion_pre = MAELoss(normalize_length=self.length_normalized_loss)
+
+    def _calc_ctc_loss(
+            self,
+            encoder_out: torch.Tensor,
+            encoder_out_lens: torch.Tensor,
+            ys_pad: torch.Tensor,
+            ys_pad_lens: torch.Tensor,
+    ):
+        # Calc CTC loss
+        loss_ctc = self.criterion_ctc(encoder_out, encoder_out_lens, ys_pad, ys_pad_lens)
+        return loss_ctc
+
+    def forward(self, *args, **kwargs):
+        raise NotImplementedError
+
+    def loss(self, *args, **kwargs):
+        raise NotImplementedError
 
     def post_process(self, *args, **kwargs):
         raise NotImplementedError
-
-
-class WavFrontend(nn.Module):
-    """Conventional frontend structure for ASR."""
-    fs: int = 16000
-    window: str = "hamming"
-    n_mels: int = 80
-    frame_length: int = 25
-    frame_shift: int = 10
-    filter_length_min: int = -1
-    filter_length_max: int = -1
-    lfr_m: int = 7
-    lfr_n: int = 6
-    dither: float = 1.0
-    snip_edges: bool = True
-    upsacle_samples: bool = True
-
-    def __init__(self, cmvn, **kwargs):
-        super().__init__()
-        self.__dict__.update(kwargs)
-        self.register_buffer('cmvn', cmvn, persistent=False)
-
-    def forward(
-            self,
-            x: torch.Tensor,  # (b, seq_len)
-            seq_lens=None,
-            **kwargs,
-    ):
-        batch_size = x.size(0)
-        if seq_lens is None:
-            seq_lens = [x.size(1)] * batch_size
-
-        feats = []
-        feats_lens = []
-        for i in range(batch_size):
-            waveform_length = seq_lens[i]
-            waveform = x[i][:waveform_length]
-            if self.upsacle_samples:
-                waveform = waveform * (2 ** 15)
-            waveform = waveform.unsqueeze(0)
-            mat = kaldi.fbank(
-                waveform,
-                num_mel_bins=self.n_mels,
-                frame_length=min(self.frame_length, waveform_length / self.fs * 1000),
-                frame_shift=self.frame_shift,
-                dither=self.dither,
-                energy_floor=0.0,
-                window_type=self.window,
-                sample_frequency=self.fs,
-                snip_edges=self.snip_edges,
-            )
-
-            if self.lfr_m != 1 or self.lfr_n != 1:
-                mat = self.apply_lfr(mat)
-
-            mat = self.apply_cmvn(mat)
-            feats.append(mat)
-            feats_lens.append(mat.size(0))
-
-        feats_lens = torch.as_tensor(feats_lens)
-        if batch_size == 1:
-            feats_pad = feats[0][None, :, :]
-        else:
-            feats_pad = pad_sequence(feats, batch_first=True, padding_value=0.0)
-        return feats_pad, feats_lens
-
-    def apply_lfr(self, inputs):
-        lfr_m = self.lfr_m
-        lfr_n = self.lfr_n
-        T = inputs.shape[0]
-        T_lfr = int(np.ceil(T / lfr_n))
-        left_padding = inputs[0].repeat((lfr_m - 1) // 2, 1)
-        inputs = torch.vstack((left_padding, inputs))
-        T = T + (lfr_m - 1) // 2
-        feat_dim = inputs.shape[-1]
-        strides = (lfr_n * feat_dim, 1)
-        sizes = (T_lfr, lfr_m * feat_dim)
-        last_idx = (T - lfr_m) // lfr_n + 1
-        num_padding = lfr_m - (T - last_idx * lfr_n)
-        if num_padding > 0:
-            num_padding = (2 * lfr_m - 2 * T + (T_lfr - 1 + last_idx) * lfr_n) / 2 * (T_lfr - last_idx)
-            inputs = torch.vstack([inputs] + [inputs[-1:]] * int(num_padding))
-        lfr_outputs = inputs.as_strided(sizes, strides)
-        return lfr_outputs.clone().type(torch.float32)
-
-    def apply_cmvn(self, inputs):
-        """Apply CMVN with mvn data"""
-        frame, dim = inputs.shape
-
-        means = self.cmvn[0:1, :dim]
-        vars = self.cmvn[1:2, :dim]
-        inputs += means
-        inputs *= vars
-
-        return inputs.type(torch.float32)
 
 
 class SANMEncoder(nn.Module):
@@ -273,11 +209,7 @@ class SANMEncoder(nn.Module):
         self.conditioning_layer = None
         self.dropout = nn.Dropout(dropout_rate)
 
-    def forward(
-            self,
-            x: torch.Tensor,
-            seq_lens: torch.Tensor,
-    ):
+    def forward(self, x: torch.Tensor, seq_lens: torch.Tensor):
         """Embed positions in tensor.
 
         Args:
@@ -286,23 +218,19 @@ class SANMEncoder(nn.Module):
         Returns:
             position embedded tensor and mask
         """
-        masks = (attentions.make_pad_mask(seq_lens)[:, None, :]).to(x.device)
+        attention_mask = (attentions.make_pad_mask(seq_lens)[:, None, :]).to(x.device)
         x = x * self.output_size ** 0.5
         x += self.embed(torch.arange(1, x.shape[1] + 1, device=x.device, dtype=torch.float32))[None]
 
-        # xs_pad = self.dropout(xs_pad)
-        args = (x, masks)
+        # x = self.dropout(x)
         for m in self.encoders0:
-            args = m(*args)
-        x, masks = args[0], args[1]
-        args = (x, masks)
-        for m in self.encoders:
-            args = m(*args)
-        x, masks = args[0], args[1]
-        x = self.after_norm(x)
-        olens = masks.squeeze(1).sum(1)
+            x = m(x, attention_mask)
 
-        return x, olens
+        for m in self.encoders:
+            x = m(x, attention_mask)
+
+        x = self.after_norm(x)
+        return x
 
 
 class SinusoidalEmbedding(embeddings.SinusoidalEmbedding):
@@ -357,12 +285,12 @@ class SANMEncoderLayer(nn.Module):
         self.stochastic_depth_rate = stochastic_depth_rate
         self.dropout_rate = drop_prob
 
-    def forward(self, x, mask, cache=None, mask_shfit_chunk=None, mask_att_chunk_encoder=None):
+    def forward(self, x, attention_mask, cache=None, mask_shift_chunk=None, mask_att_chunk_encoder=None):
         """Compute encoded features.
 
         Args:
             x (torch.Tensor): Input tensor (#batch, time, size).
-            mask (torch.Tensor): Mask tensor for the input (#batch, time).
+            attention_mask (torch.Tensor): Mask tensor for the input (#batch, time).
             cache (torch.Tensor): Cache tensor of the input (#batch, time - 1, size).
 
         Returns:
@@ -381,7 +309,7 @@ class SANMEncoderLayer(nn.Module):
             if skip_layer:
                 if cache is not None:
                     x = torch.cat([cache, x], dim=1)
-                return x, mask
+                return x
 
         residual = x
         if self.norm_first:
@@ -393,8 +321,8 @@ class SANMEncoderLayer(nn.Module):
                     x,
                     self.self_attn(
                         x,
-                        attention_mask=mask,
-                        mask_shfit_chunk=mask_shfit_chunk,
+                        attention_mask=attention_mask,
+                        mask_shift_chunk=mask_shift_chunk,
                         mask_att_chunk_encoder=mask_att_chunk_encoder,
                     ),
                 ),
@@ -409,8 +337,8 @@ class SANMEncoderLayer(nn.Module):
                 x = residual + stoch_layer_coeff * self.dropout(
                     self.self_attn(
                         x,
-                        attention_mask=mask,
-                        mask_shfit_chunk=mask_shfit_chunk,
+                        attention_mask=attention_mask,
+                        mask_shift_chunk=mask_shift_chunk,
                         mask_att_chunk_encoder=mask_att_chunk_encoder,
                     )
                 )
@@ -418,8 +346,8 @@ class SANMEncoderLayer(nn.Module):
                 x = stoch_layer_coeff * self.dropout(
                     self.self_attn(
                         x,
-                        attention_mask=mask,
-                        mask_shfit_chunk=mask_shfit_chunk,
+                        attention_mask=attention_mask,
+                        mask_shift_chunk=mask_shift_chunk,
                         mask_att_chunk_encoder=mask_att_chunk_encoder,
                     )
                 )
@@ -433,7 +361,7 @@ class SANMEncoderLayer(nn.Module):
         if not self.norm_first:
             x = self.norm2(x)
 
-        return x, mask, cache, mask_shfit_chunk, mask_att_chunk_encoder
+        return x
 
 
 class FSMNBlock(nn.Module):
@@ -450,12 +378,12 @@ class FSMNBlock(nn.Module):
         right_padding = kernel_size - 1 - left_padding
         self.pad_fn = nn.ConstantPad1d((left_padding, right_padding), 0.0)
 
-    def forward_fsmn(self, inputs, mask, mask_shfit_chunk=None):
+    def forward_fsmn(self, inputs, mask, mask_shift_chunk=None):
         b, t, d = inputs.size()
         if mask is not None:
             mask = torch.reshape(mask, (b, -1, 1))
-            if mask_shfit_chunk is not None:
-                mask = mask * mask_shfit_chunk
+            if mask_shift_chunk is not None:
+                mask = mask * mask_shift_chunk
             inputs = inputs * mask
 
         x = inputs.transpose(1, 2)
@@ -471,12 +399,12 @@ class FSMNBlock(nn.Module):
 
 class SANMEncoderAttention(FSMNBlock, attentions.CrossAttention2D):
 
-    def forward(self, q, k=None, v=None, attention_mask=None, mask_shfit_chunk=None, **attend_kwargs):
+    def forward(self, q, k=None, v=None, attention_mask=None, mask_shift_chunk=None, **attend_kwargs):
         dim = 1 if self.use_conv else -1
         qkv = self.to_qkv(q)
         q, k, v = qkv.chunk(3, dim=dim)
 
-        fsmn_memory = self.forward_fsmn(v, attention_mask, mask_shfit_chunk)
+        fsmn_memory = self.forward_fsmn(v, attention_mask, mask_shift_chunk)
 
         q, k, v = [self.view_in(x).contiguous() for x in (q, k, v)]
 
@@ -669,8 +597,8 @@ class SANMDecoderAttention(FSMNBlock):
         self.model_dim = model_dim
         super().__init__(**kwargs)
 
-    def forward(self, x, attention_mask=None, mask_shfit_chunk=None):
-        return self.forward_fsmn(x, attention_mask, mask_shfit_chunk)
+    def forward(self, x, attention_mask=None, mask_shift_chunk=None):
+        return self.forward_fsmn(x, attention_mask, mask_shift_chunk)
 
 
 class CrossAttention2D(nn.Module):
@@ -747,6 +675,43 @@ class CifPredictorV3(nn.Module):
         self.upsample_cnn = nn.ConvTranspose1d(input_dim, input_dim, self.upsample_times, self.upsample_times)
         self.blstm = nn.LSTM(input_dim, input_dim, 1, bias=True, batch_first=True, dropout=0.0, bidirectional=True)
         self.cif_output2 = nn.Linear(input_dim * 2, 1)
+
+    def get_token_num2(
+            self,
+            hidden,
+            target_label=None,
+            mask=None,
+            ignore_id=-1,
+            mask_chunk_predictor=None,
+            target_label_length=None,
+    ):
+        context = hidden.transpose(1, 2)  # (b, s, d) -> (b, d, s)
+        queries = self.pad(context)
+        output = F.relu(self.cif_conv1d(queries))
+
+        # alphas2 is an extra head for timestamp prediction
+        if not self.use_cif1_cnn:
+            _output = context
+        else:
+            _output = output
+
+        output2 = self.upsample_cnn(_output).transpose(1, 2)
+        output2, (_, _) = self.blstm(output2)
+
+        alphas2 = torch.sigmoid(self.cif_output2(output2))
+        alphas2 = torch.nn.functional.relu(alphas2 * self.smooth_factor2 - self.noise_threshold2)
+        # repeat the mask in T demension to match the upsampled length
+        if mask is not None:
+            mask2 = (
+                mask.repeat(1, self.upsample_times, 1)
+                .transpose(-1, -2)
+                .reshape(alphas2.shape[0], -1)
+            )
+            mask2 = mask2.unsqueeze(-1)
+            alphas2 = alphas2 * mask2
+        alphas2 = alphas2.squeeze(-1)
+        token_num2 = alphas2.sum(-1)
+        return token_num2
 
     def forward(
             self,
@@ -845,11 +810,11 @@ class CifPredictorV3(nn.Module):
             )
             cur = torch.where(fire_place, distribution_completion, alpha)
 
-            frame += cur * hidden[:, t, :]
+            frame += cur[:, None] * hidden[:, t, :]
             list_frames.append(frame)
             frame = torch.where(
                 fire_place[:, None].repeat(1, d),
-                (alpha - cur) * hidden[:, t, :],
+                (alpha - cur)[:, None] * hidden[:, t, :],
                 frame
             )
 
@@ -922,3 +887,93 @@ class CifPredictorV3(nn.Module):
 
         fires = torch.stack(list_fires, 1)
         return fires
+
+
+class CTC(nn.Module):
+    """CTC module.
+
+    Args:
+        odim: dimension of outputs
+        encoder_output_size: number of encoder projection units
+        dropout_rate: dropout rate (0.0 ~ 1.0)
+        ctc_type: builtin or warpctc
+        reduce: reduce the CTC loss into a scalar
+    """
+
+    def __init__(
+            self,
+            odim: int,
+            encoder_output_size: int,
+            dropout_rate: float = 0.0,
+            reduce: bool = True,
+            ignore_nan_grad: bool = True,
+    ):
+        super().__init__()
+        self.dropout_rate = dropout_rate
+        self.ctc_lo = nn.Linear(encoder_output_size, odim)
+        self.ignore_nan_grad = ignore_nan_grad
+        self.criterion = nn.CTCLoss(reduction="none")
+        self.reduce = reduce
+
+    def forward(self, hs_pad, hlens, ys_pad, ys_lens):
+        """Calculate CTC loss.
+
+        Args:
+            hs_pad: batch of padded hidden state sequences (B, Tmax, D)
+            hlens: batch of lengths of hidden state sequences (B)
+            ys_pad: batch of padded character id sequence tensor (B, Lmax)
+            ys_lens: batch of lengths of character sequence (B)
+        """
+        # hs_pad: (B, L, NProj) -> ys_hat: (B, L, Nvocab)
+        ys_hat = self.ctc_lo(F.dropout(hs_pad, p=self.dropout_rate))
+
+        # ys_hat: (B, L, D) -> (L, B, D)
+        ys_hat = ys_hat.transpose(0, 1)
+        # (B, L) -> (BxL,)
+        ys_true = torch.cat([ys_pad[i, :l] for i, l in enumerate(ys_lens)])
+
+        hlens = hlens.to(hs_pad.device)
+        loss = self.loss(ys_hat, ys_true, hlens, ys_lens).to(device=hs_pad.device, dtype=hs_pad.dtype)
+
+        return loss
+
+    def loss(self, th_pred, th_target, th_ilen, th_olen) -> torch.Tensor:
+        th_pred = th_pred.log_softmax(2)
+        loss = self.criterion(th_pred, th_target, th_ilen, th_olen)
+
+        if loss.requires_grad and self.ignore_nan_grad:
+            # ctc_grad: (L, B, O)
+            ctc_grad = loss.grad_fn(torch.ones_like(loss))
+            ctc_grad = ctc_grad.sum([0, 2])
+            indices = torch.isfinite(ctc_grad)
+            size = indices.long().sum()
+            if size != th_pred.size(1):
+                # Create mask for target
+                target_mask = torch.full(
+                    [th_target.size(0)],
+                    1,
+                    dtype=torch.bool,
+                    device=th_target.device,
+                )
+                s = 0
+                for ind, le in enumerate(th_olen):
+                    if not indices[ind]:
+                        target_mask[s: s + le] = 0
+                    s += le
+
+                # Calc loss again using maksed data
+                loss = self.criterion(
+                    th_pred[:, indices, :],
+                    th_target[target_mask],
+                    th_ilen[indices],
+                    th_olen[indices],
+                )
+        else:
+            size = th_pred.size(1)
+
+        if self.reduce:
+            # Batch-size average
+            loss = loss.sum() / size
+        else:
+            loss = loss / size
+        return loss

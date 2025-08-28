@@ -197,3 +197,19 @@ class LabelSmoothingLoss(nn.Module):
         kl = self.criterion(torch.log_softmax(x, dim=1), true_dist)
         denom = total if self.normalize_length else batch_size
         return kl.masked_fill(ignore.unsqueeze(1), 0).sum() / denom
+
+
+class MAELoss(torch.nn.Module):
+
+    def __init__(self, normalize_length=True):
+        super().__init__()
+        self.normalize_length = normalize_length
+        self.criterion = torch.nn.L1Loss(reduction="sum")
+
+    def forward(self, token_length, pre_token_length):
+        loss_token_normalizer = token_length.size(0)
+        if self.normalize_length:
+            loss_token_normalizer = token_length.sum().type(torch.float32)
+        loss = self.criterion(token_length, pre_token_length)
+        loss = loss / loss_token_normalizer
+        return loss

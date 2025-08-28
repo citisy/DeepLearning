@@ -1617,10 +1617,8 @@ class Flux(WithFluxLora, FromFluxPretrained, FluxPredictor):
             process.init()
 
             # txt2img
-            prompt = 'a painting of a virus monster playing guitar'
-            prompts = ['a painting of a virus monster playing guitar', 'a painting of two virus monster playing guitar']
-
             # predict one
+            prompt = 'a painting of a virus monster playing guitar'
             image = process.single_predict(
                 prompt,
                 is_visualize=True,
@@ -1631,5 +1629,6 @@ class Flux(WithFluxLora, FromFluxPretrained, FluxPredictor):
             )
 
             # predict batch
-            images = process.batch_predict(prompts, batch_size=2, is_visualize=True)
+            prompts = [prompt] * 2
+            images = process.batch_predict(prompts, batch_size=4, is_visualize=True)
     """

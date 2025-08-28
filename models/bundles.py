@@ -50,13 +50,13 @@ class WeightLoader:
                 state_dict.update(cls.auto_load(save_path, save_name=_save_name, suffix=suffix, **kwargs))
 
         elif os.path.isfile(f'{save_path}/{save_name}'):
-            state_dict = torch_utils.Load.from_file(f'{save_path}/{save_name}')
+            state_dict = torch_utils.Load.from_file(f'{save_path}/{save_name}', **kwargs)
 
         elif os.path.isfile(save_path):
-            state_dict = torch_utils.Load.from_file(save_path)
+            state_dict = torch_utils.Load.from_file(save_path, **kwargs)
 
         elif os.path.isdir(save_path):
-            state_dict = torch_utils.Load.from_dir(save_path, suffix)
+            state_dict = torch_utils.Load.from_dir(save_path, suffix, **kwargs)
 
         else:
             state_dict = cls.auto_download(save_path, save_name=save_name, **kwargs)
