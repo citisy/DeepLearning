@@ -9,6 +9,7 @@ from utils import torch_utils
 from . import CosyVoice
 from .. import attentions, bundles
 from ..text_pretrain import qwen2, transformers
+from torch.nn.utils.rnn import pad_sequence
 
 
 class Config(bundles.Config):
@@ -79,14 +80,15 @@ class Model(CosyVoice.Model):
         - code:
             https://github.com/FunAudioLLM/CosyVoice?tab=readme-ov-file
     """
+
     def init_components(self, front_config=Config.front, llm_config=Config.llm, flow_config=Config.flow, hift_config=Config.hift):
-        self.front = CosyVoiceFrontEnd(**front_config)
+        self.front = SpkEmbedding(**front_config)
         self.llm = Qwen2LM(**llm_config)
         self.flow = CausalMaskedDiffWithXvec(**flow_config)
         self.hift = HiFTGenerator(**hift_config)
 
 
-class CosyVoiceFrontEnd(CosyVoice.CosyVoiceFrontEnd):
+class SpkEmbedding(CosyVoice.SpkEmbedding):
     def make_instruct_inputs(self, **kwargs):
         model_inputs = self.make_zero_shot_inputs(**kwargs)
         # dont need lm_prompt_speech
@@ -114,10 +116,13 @@ class Qwen2LM(CosyVoice.TransformerLM):
 
     def encode_embedding(self, embedding, text_embedding):
         # dont need encoding embedding
-        return torch.zeros(1, 0, self.llm_input_size, dtype=text_embedding.dtype, device=text_embedding.device)
+        return torch.zeros(text_embedding.shape[0], 0, self.llm_input_size, dtype=text_embedding.dtype, device=text_embedding.device)
 
     def decode(self, lm_input, max_len, min_len):
-        out_ids = []
+        batch_size = lm_input.shape[0]
+        out_ids = [[] for _ in range(batch_size)]
+        out_lens = torch.zeros(batch_size, device=lm_input.device, dtype=torch.long) + max_len
+        eos_flag = [False] * batch_size
         past_kvs = self.llm.model.make_caches()
         start_pos = 0
         for i in range(max_len):
@@ -127,17 +132,27 @@ class Qwen2LM(CosyVoice.TransformerLM):
                 past_kvs=past_kvs
             )
             logp = self.llm_decoder(y_pred[:, -1]).log_softmax(dim=-1)
-            top_id = self.sampling_ids(logp.squeeze(dim=0), out_ids, ignore_eos=True if i < min_len else False)
-            if top_id == self.speech_ids_size:
-                break
-            if top_id > self.speech_ids_size:
-                continue
-            out_ids.append(top_id)
-            start_pos += lm_input.shape[1]
-            lm_input = self.speech_embedding(top_id.reshape(1, -1))
+            top_ids = []
+            for batch in range(batch_size):
+                top_id = self.sampling_ids(logp[batch], out_ids[batch], ignore_eos=True if i < min_len else False)
+                if top_id == self.speech_ids_size:
+                    if not eos_flag[batch]:
+                        out_lens[batch] = len(out_ids[batch])
+                    eos_flag[batch] = True
+                if top_id < self.speech_ids_size:
+                    out_ids[batch].append(top_id)
+                top_ids.append(out_ids[batch][-1])
 
-        out_ids = torch.tensor(out_ids, device=lm_input.device)
-        return out_ids
+            if all(eos_flag):
+                break
+
+            start_pos += lm_input.shape[1]
+            top_ids = torch.tensor(top_ids, device=lm_input.device).reshape(batch_size, 1)
+            lm_input = self.speech_embedding(top_ids)
+
+        out_ids = [torch.tensor(ids, device=lm_input.device) for ids in out_ids]
+        out_ids = pad_sequence(out_ids, batch_first=True, padding_value=0)
+        return out_ids, out_lens
 
 
 class Qwen2Encoder(nn.Module):
@@ -194,7 +209,8 @@ class CausalMaskedDiffWithXvec(nn.Module):
             flow_cache=None,
             **kwargs
     ):
-        assert token.shape[0] == 1
+        batch_size = token.shape[0]
+        # assert token.shape[0] == 1
         # xvec projection
         embedding = F.normalize(embedding, dim=1)
         embedding = self.spk_embed_affine_layer(embedding)
@@ -214,7 +230,7 @@ class CausalMaskedDiffWithXvec(nn.Module):
         h = self.encoder_proj(h)
 
         # get conditions
-        conds = torch.zeros([1, mel_len1 + mel_len2, self.output_size], device=token.device).to(h.dtype)
+        conds = torch.zeros([batch_size, mel_len1 + mel_len2, self.output_size], device=token.device).to(h.dtype)
         conds[:, :mel_len1] = prompt_feat
         conds = conds.transpose(1, 2)
 

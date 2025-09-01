@@ -2,10 +2,12 @@ from typing import List
 
 import torch
 import torchaudio
+from torch.nn.utils.rnn import pad_sequence
 
 from data_parse.nl_data_parse.pre_process import chunker
 from processor import Process
-from utils import configs, torch_utils, os_lib
+from utils import configs, torch_utils, os_lib, math_utils
+import numpy as np
 
 
 class CosyVoice(Process):
@@ -101,12 +103,14 @@ class CosyVoice(Process):
         from data_parse.nl_data_parse.pre_process.bundled import WhisperTokenizer
         self.tokenizer = WhisperTokenizer()
 
-    def get_model_inputs(self, loop_inputs, train=True) -> List[List[dict]]:
+    batch = 2
+
+    def get_model_inputs(self, loop_inputs, train=True) -> dict:
         if train:
             raise NotImplementedError
 
         model_inputs = []
-        for ret in loop_inputs:
+        for i, ret in enumerate(loop_inputs):
             is_instruct = ret.get('is_instruct', False)
 
             prompt_text = ret.get('prompt_text')
@@ -118,9 +122,9 @@ class CosyVoice(Process):
                 prompt_inputs = self.tokenizer.encode_paragraphs([prompt_text])
 
                 prompt_inputs = dict(
-                    prompt_text_ids=prompt_inputs['segments_ids'],
-                    prompt_text_ids_len=prompt_inputs['seq_lens'],
-                    prompt_speech=prompt_speech
+                    prompt_text_ids=prompt_inputs['segments_ids'][0],
+                    prompt_text_ids_len=prompt_inputs['seq_lens'][0],
+                    prompt_speech=prompt_speech[0]
                 )
             else:
                 # vc mode
@@ -135,48 +139,72 @@ class CosyVoice(Process):
                 query_text = ret.get('query_text')
                 query_texts = chunker.RetentionToChunkedParagraphs(max_len=80).from_paragraph(query_text)
                 query_inputs = self.tokenizer.encode_paragraphs(query_texts, pad_type=0)
-                model_input = []
                 for text_ids in query_inputs['segments_ids']:
-                    text_ids = [text_ids]
                     per_model_input = dict(
                         text_ids=text_ids,
+                        text_ids_len=len(text_ids),
                         spk_id=spk_id,
                         is_instruct=is_instruct,
+                        batch_idx=i,
                         **prompt_inputs
                     )
                     per_model_input = torch_utils.Converter.force_to_tensors(per_model_input, device=self.device)
-                    model_input.append(per_model_input)
+                    model_inputs.append(per_model_input)
 
             else:
                 # vc mode
                 per_model_input = dict(
-                    source_speech=source_speech,
+                    source_speech=source_speech[0],
                     is_instruct=is_instruct,
+                    batch_idx=i,
                     **prompt_inputs
                 )
 
                 per_model_input = torch_utils.Converter.force_to_tensors(per_model_input, device=self.device)
-                model_input = [per_model_input]
-            model_inputs.append(model_input)
-        return model_inputs
+                model_inputs.append(per_model_input)
 
-    def on_val_step(self, loop_objs, model_kwargs=dict(), **kwargs) -> dict:
+        list_keys = ['prompt_text_ids', 'prompt_text_ids_len', 'prompt_speech', 'text_ids', 'text_ids_len', 'batch_idx']
+        _model_inputs = dict()
+        for per_model_input in model_inputs:
+            for k, v in per_model_input.items():
+                if k in list_keys:
+                    _model_inputs.setdefault(k, []).append(v)
+                else:
+                    vv = _model_inputs.setdefault(k, v)
+                    assert vv == v
+
+        for k, v in _model_inputs.items():
+            if k in ['prompt_text_ids', 'prompt_speech', 'text_ids']:
+                _model_inputs[k] = pad_sequence(v, batch_first=True, padding_value=0)
+            elif k in ['prompt_text_ids_len', 'text_ids_len']:
+                _model_inputs[k] = torch.tensor(v)
+        return _model_inputs
+
+    def on_val_step(self, loop_objs, model_kwargs=dict(), batch_size=None, **kwargs) -> dict:
         loop_inputs = loop_objs['loop_inputs']
         model_inputs = self.get_model_inputs(loop_inputs, train=False)
+        batch_idx = model_inputs.pop('batch_idx')
 
         model_results = {}
         for name, model in self.models.items():
             query_speeches = []
-            for model_input in model_inputs:
-                query_speech = []
-                for per_model_inputs in model_input:
-                    # only support one batch inference
-                    model_outputs = model(**per_model_inputs, **model_kwargs)
-                    tts_speech = model_outputs[0]['tts_speech'].cpu()
-                    query_speech.append(tts_speech)
+            # the data will be overlarge the batch_size, so that re-batch the data again
+            for i in range(0, len(batch_idx), batch_size):
+                _model_inputs = dict()
+                for k, v in model_inputs.items():
+                    if k in ['prompt_text_ids', 'prompt_text_ids_len', 'prompt_speech', 'text_ids', 'text_ids_len']:
+                        _model_inputs[k] = v[i:i+batch_size]
+                    else:
+                        _model_inputs[k] = v
 
-                query_speech = torch.cat(query_speech, dim=1)
-                query_speeches.append(query_speech)
+                _model_inputs.update(model_kwargs)
+
+                model_outputs = model(**_model_inputs)
+                query_speeches += model_outputs['tts_speech']
+
+            query_speeches = math_utils.unique_gather(batch_idx, query_speeches)
+            query_speeches = [torch.cat(q, dim=1).cpu() for q in query_speeches]
+
             model_results[name] = dict(
                 query_speeches=query_speeches,
             )
@@ -184,15 +212,30 @@ class CosyVoice(Process):
         return model_results
 
     def gen_predict_inputs(self, *objs, start_idx=None, end_idx=None, prompt_speech_path=None, source_speech_path=None, **kwargs) -> List[dict]:
+        prompt_speech = None
         if prompt_speech_path:
             prompt_speech, _ = os_lib.loader.load_audio_from_torchaudio(prompt_speech_path)
-            kwargs.update(prompt_speech=prompt_speech)
 
+        source_speech = None
         if source_speech_path:
             source_speech, _ = os_lib.loader.load_audio_from_torchaudio(source_speech_path)
-            kwargs.update(source_speech=source_speech)
 
-        return [kwargs] * (end_idx - start_idx)
+        inputs = []
+        keys = ['query_text', 'prompt_text', 'save_path']
+        for i in range(start_idx, end_idx):
+            per_input = dict(
+                prompt_speech=prompt_speech,
+                source_speech=source_speech
+            )
+            for k, v in kwargs.items():
+                if k in keys and not isinstance(v, str):
+                    per_input[k] = v[i]
+                else:
+                    per_input[k] = v
+
+            inputs.append(per_input)
+
+        return inputs
 
     def on_predict_step_end(self, loop_objs, **kwargs):
         loop_inputs = loop_objs['loop_inputs']
@@ -240,6 +283,15 @@ class CosyVoice2(CosyVoice):
             prompt_speech_path=prompt_speech_path,
             is_instruct=True,
             save_path=f'{processor.cache_dir}/instruct.wav'
+        )
+
+        # batch predict
+        processor.batch_predict(
+            query_text=[query_text] * 2,
+            prompt_text=prompt_text,
+            prompt_speech_path=prompt_speech_path,
+            save_path=[f'{processor.cache_dir}/zero_shot_{i}.wav' for i in range(2)],
+            total=2
         )
     """
     model_version = 'CosyVoice2'

@@ -14,6 +14,7 @@ from torch.distributions.uniform import Uniform
 from torch.nn import functional as F
 from torch.nn.utils import remove_weight_norm
 from torch.nn.utils.parametrizations import weight_norm
+from torch.nn.utils.rnn import pad_sequence
 
 from utils import torch_utils
 from .. import attentions, embeddings
@@ -79,18 +80,19 @@ class Model(nn.Module):
         assert self.stream_scale_factor >= 1, 'stream_scale_factor should be greater than 1, change it according to your actual rtf'
 
     def init_components(self, front_config=dict(), llm_config=dict(), flow_config=dict(), hift_config=dict()):
-        self.front = CosyVoiceFrontEnd(**front_config)
+        self.front = SpkEmbedding(**front_config)
         self.llm = TransformerLM(**llm_config)
         self.flow = MaskedDiffWithXvec(**flow_config)
         self.hift = HiFTGenerator(**hift_config)
 
-    def init_caches(self):
+    def init_caches(self, batch_size=1):
         return dict(
-            source_speech_ids=torch.zeros(0, dtype=torch.int64),
-            llm_end=False,
-            hift=None,
-            mel_overlap=torch.zeros(1, 80, 0),
-            flow=torch.zeros(1, 80, 0, 2)
+            source_speech_ids=torch.zeros(batch_size, 0, dtype=torch.int64),
+            batch=[dict(
+                hift=None,
+                mel_overlap=torch.zeros(1, 80, 0),
+                flow=torch.zeros(1, 80, 0, 2)
+            ) for _ in range(batch_size)]
         )
 
     def forward(self, **kwargs):
@@ -108,13 +110,15 @@ class Model(nn.Module):
             stream=False, speed=1.0, caches=None,
             **kwargs
     ):
+        batch_size = text_ids.shape[0]
+
         inputs = self.front(
             prompt_speech=prompt_speech, source_speech=source_speech,
             prompt_text_ids=prompt_text_ids, prompt_text_ids_len=prompt_text_ids_len,
             spk_id=spk_id, is_instruct=is_instruct,
         )
         if caches is None:
-            caches = self.init_caches()
+            caches = self.init_caches(batch_size)
 
         if 'source_speech_ids' not in inputs:
             source_speech_ids = caches['source_speech_ids'].to(text_ids.device)
@@ -123,12 +127,12 @@ class Model(nn.Module):
                 text_ids_len = torch.tensor([len(t) for t in text_ids], dtype=torch.int32, device=text_ids.device)
 
             llm_embedding = inputs.get('llm_embedding', torch.zeros(0, 192)).to(text_ids.device)  # embedding from front will have different devices
-            prompt_text_ids = inputs.get('prompt_text_ids', torch.zeros(1, 0, dtype=torch.int32, device=text_ids.device))
-            prompt_text_ids_len = inputs.get('prompt_text_ids_len', torch.zeros(1, dtype=torch.int32, device=text_ids.device))
-            llm_prompt_speech_ids = inputs.get('llm_prompt_speech_ids', torch.zeros(1, 0, dtype=torch.int32, device=text_ids.device))
-            llm_prompt_speech_ids_len = inputs.get('llm_prompt_speech_ids_len', torch.zeros(1, dtype=torch.int32, device=text_ids.device))
+            prompt_text_ids = inputs.get('prompt_text_ids', torch.zeros(batch_size, 0, dtype=torch.int32, device=text_ids.device))
+            prompt_text_ids_len = inputs.get('prompt_text_ids_len', torch.zeros(batch_size, dtype=torch.int32, device=text_ids.device))
+            llm_prompt_speech_ids = inputs.get('llm_prompt_speech_ids', torch.zeros(batch_size, 0, dtype=torch.int32, device=text_ids.device))
+            llm_prompt_speech_ids_len = inputs.get('llm_prompt_speech_ids_len', torch.zeros(batch_size, dtype=torch.int32, device=text_ids.device))
 
-            out_ids = self.llm(
+            out_ids, out_lens = self.llm(
                 text_ids=text_ids,
                 text_ids_len=text_ids_len,
                 prompt_text_ids=prompt_text_ids,
@@ -137,31 +141,30 @@ class Model(nn.Module):
                 prompt_speech_ids_len=llm_prompt_speech_ids_len,
                 embedding=llm_embedding,
             )
-            source_speech_ids = torch.cat([source_speech_ids, out_ids])
-            source_speech_ids = source_speech_ids[None]
-            source_speech_ids_len = torch.tensor([source_speech_ids.shape[1]], dtype=torch.int32, device=source_speech_ids.device)
+            source_speech_ids_len = torch.tensor([source_speech_ids.shape[1]] * batch_size, dtype=torch.int32, device=source_speech_ids.device) + out_lens
+            source_speech_ids = torch.cat([source_speech_ids, out_ids], dim=1)
 
         else:
             source_speech_ids = inputs['source_speech_ids']
             source_speech_ids_len = inputs['source_speech_ids_len']
 
         caches['source_speech_ids'] = source_speech_ids
-        caches['llm_end'] = True
 
         flow_embedding = inputs.get('flow_embedding', torch.zeros(0, 192)).to(source_speech_ids.device)
-        flow_prompt_speech_ids = inputs.get('flow_prompt_speech_ids', torch.zeros(1, 0, dtype=torch.int32, device=source_speech_ids.device))
-        flow_prompt_speech_ids_len = inputs.get('flow_prompt_speech_ids_len', torch.zeros(1, dtype=torch.int32, device=source_speech_ids.device))
-        prompt_speech_feat = inputs.get('prompt_speech_feat', torch.zeros(1, 0, 80, dtype=torch.int32, device=source_speech_ids.device))
-        prompt_speech_feat_len = inputs.get('prompt_speech_feat_len', torch.zeros(1, dtype=torch.int32, device=source_speech_ids.device))
+        flow_prompt_speech_ids = inputs.get('flow_prompt_speech_ids', torch.zeros(batch_size, 0, dtype=torch.int32, device=source_speech_ids.device))
+        flow_prompt_speech_ids_len = inputs.get('flow_prompt_speech_ids_len', torch.zeros(batch_size, dtype=torch.int32, device=source_speech_ids.device))
+        prompt_speech_feat = inputs.get('prompt_speech_feat', torch.zeros(batch_size, 0, 80, dtype=torch.int32, device=source_speech_ids.device))
+        prompt_speech_feat_len = inputs.get('prompt_speech_feat_len', torch.zeros(batch_size, dtype=torch.int32, device=source_speech_ids.device))
 
-        results = []
         if stream is True:
+            assert batch_size == 1, "stream mode only support batch_size=1"
             token_hop_len = self.token_min_hop_len
+            this_tts_speech = []
             while True:
                 if len(source_speech_ids) >= token_hop_len + self.token_overlap_len:
                     chunk_source_speech_ids = source_speech_ids[:, token_hop_len + self.token_overlap_len]
                     chunk_source_speech_ids_len = torch.tensor([chunk_source_speech_ids.shape[1]], dtype=torch.int32, device=chunk_source_speech_ids.device)
-                    this_tts_speech = self.token2wav(
+                    _this_tts_speech = self.token2wav(
                         token=chunk_source_speech_ids,
                         token_len=chunk_source_speech_ids_len,
                         prompt_token=flow_prompt_speech_ids,
@@ -169,20 +172,19 @@ class Model(nn.Module):
                         prompt_feat=prompt_speech_feat,
                         prompt_feat_len=prompt_speech_feat_len,
                         embedding=flow_embedding,
-                        caches=caches,
+                        caches=caches['batch'][0],
                         stream=stream,
                         finalize=False
                     )
-                    results.append({'tts_speech': this_tts_speech})
+                    this_tts_speech.append(_this_tts_speech)
                     source_speech_ids = source_speech_ids[token_hop_len:]
                     # increase token_hop_len for better speech quality
                     token_hop_len = min(self.token_max_hop_len, int(token_hop_len * self.stream_scale_factor))
-                if caches['llm_end'] is True and len(source_speech_ids) < token_hop_len + self.token_overlap_len:
+                if len(source_speech_ids) < token_hop_len + self.token_overlap_len:
                     break
-            # deal with remain tokens, make sure inference remain token len equals token_hop_len when cache_speech is not None
             chunk_source_speech_ids = source_speech_ids
             chunk_source_speech_ids_len = torch.tensor([chunk_source_speech_ids.shape[1]], dtype=torch.int32, device=chunk_source_speech_ids.device)
-            this_tts_speech = self.token2wav(
+            _this_tts_speech = self.token2wav(
                 token=chunk_source_speech_ids,
                 token_len=chunk_source_speech_ids_len,
                 prompt_token=flow_prompt_speech_ids,
@@ -190,28 +192,33 @@ class Model(nn.Module):
                 prompt_feat=prompt_speech_feat,
                 prompt_feat_len=prompt_speech_feat_len,
                 embedding=flow_embedding,
-                caches=caches,
+                caches=caches['batch'][0],
                 stream=stream,
                 finalize=True
             )
-            results.append({'tts_speech': this_tts_speech})
+            this_tts_speech.append(_this_tts_speech)
+            this_tts_speech = [torch.cat(this_tts_speech, dim=1)]
         else:
-            # deal with all tokens
-            this_tts_speech = self.token2wav(
-                token=source_speech_ids,
-                token_len=source_speech_ids_len,
-                prompt_token=flow_prompt_speech_ids,
-                prompt_token_len=flow_prompt_speech_ids_len,
-                prompt_feat=prompt_speech_feat,
-                prompt_feat_len=prompt_speech_feat_len,
-                embedding=flow_embedding,
-                caches=caches,
-                stream=stream,
-                finalize=True,
-                speed=speed
-            )
-            results.append({'tts_speech': this_tts_speech})
+            this_tts_speech = []
+            for i in range(batch_size):
+                token_len = source_speech_ids_len[i]
+                token = source_speech_ids[i, :token_len]
+                _this_tts_speech = self.token2wav(
+                    token=token[None],
+                    token_len=token_len[None],
+                    prompt_token=flow_prompt_speech_ids[i:i + 1],
+                    prompt_token_len=flow_prompt_speech_ids_len[i:i + 1],
+                    prompt_feat=prompt_speech_feat[i:i + 1],
+                    prompt_feat_len=prompt_speech_feat_len[i:i + 1],
+                    embedding=flow_embedding[i:i + 1],
+                    caches=caches['batch'][i],
+                    stream=stream,
+                    finalize=True,
+                    speed=speed
+                )
+                this_tts_speech.append(_this_tts_speech)
 
+        results = {'tts_speech': this_tts_speech}
         return results
 
     def token2wav(self, token, token_len, prompt_token, prompt_token_len, prompt_feat, prompt_feat_len, embedding, caches, stream=False, finalize=False, speed=1.0):
@@ -269,7 +276,7 @@ class Model(nn.Module):
         return fade_in_mel.to(device)
 
 
-class CosyVoiceFrontEnd(nn.Module):
+class SpkEmbedding(nn.Module):
     mel_basis = {}
     hann_window = {}
 
@@ -381,34 +388,41 @@ class CosyVoiceFrontEnd(nn.Module):
         import whisper
 
         assert speech.shape[1] / 16000 <= 30, 'do not support extract speech token for audio longer than 30s'
-        feat = whisper.log_mel_spectrogram(speech, n_mels=128)
-        speech_ids = self.speech_idsizer_session.run(
-            None,
-            {
-                self.speech_idsizer_session.get_inputs()[0].name: feat.detach().cpu().numpy(),
-                self.speech_idsizer_session.get_inputs()[1].name: np.array([feat.shape[2]], dtype=np.int32)
-            })[0].flatten().tolist()
-        speech_ids = torch.tensor([speech_ids], dtype=torch.int32, device=speech.device)
-        speech_ids_len = torch.tensor([speech_ids.shape[1]], dtype=torch.int32, device=speech.device)
+        feats = whisper.log_mel_spectrogram(speech, n_mels=128)
+        speech_ids = []
+        for feat in feats:
+            feat = feat[None]
+            speech_id = self.speech_idsizer_session.run(
+                None,
+                {
+                    self.speech_idsizer_session.get_inputs()[0].name: feat.detach().cpu().numpy(),
+                    self.speech_idsizer_session.get_inputs()[1].name: np.array([feat.shape[2]], dtype=np.int32)
+                })[0].flatten().tolist()
+            speech_ids.append(torch.tensor(speech_id, dtype=torch.int32, device=speech.device))
+        speech_ids_len = torch.tensor([len(speech_id) for speech_id in speech_ids], dtype=torch.int32, device=speech.device)
+        speech_ids = pad_sequence(speech_ids, batch_first=True, padding_value=-1)
         return speech_ids, speech_ids_len
 
     def _extract_spk_embedding(self, speech):
-        feat = kaldi.fbank(speech,
-                           num_mel_bins=80,
-                           dither=0,
-                           sample_frequency=16000)
-        feat = feat - feat.mean(dim=0, keepdim=True)
-        embedding = self.campplus_session.run(
-            None,
-            {self.campplus_session.get_inputs()[0].name: feat.unsqueeze(dim=0).cpu().numpy()}
-        )[0].flatten().tolist()
-        embedding = torch.tensor([embedding], device=speech.device)
+        embedding = []
+        for s in speech:
+            s = s[None]
+            feat = kaldi.fbank(s,
+                               num_mel_bins=80,
+                               dither=0,
+                               sample_frequency=16000)
+            feat = feat - feat.mean(dim=0, keepdim=True)
+            embed = self.campplus_session.run(
+                None,
+                {self.campplus_session.get_inputs()[0].name: feat.unsqueeze(dim=0).cpu().numpy()}
+            )[0].flatten().tolist()
+            embedding.append(embed)
+        embedding = torch.tensor(embedding, device=speech.device)
         return embedding
 
     def _extract_speech_feat(self, speech):
-        speech_feat = self.feat_extractor(speech).squeeze(dim=0).transpose(0, 1)
-        speech_feat = speech_feat.unsqueeze(dim=0)
-        speech_feat_len = torch.tensor([speech_feat.shape[1]], dtype=torch.int32)
+        speech_feat = self.feat_extractor(speech).transpose(1, 2)
+        speech_feat_len = torch.tensor([speech_feat.shape[2]], dtype=torch.int32)
         return speech_feat, speech_feat_len
 
     def feat_extractor(self, y):
@@ -494,12 +508,11 @@ class TransformerLM(nn.Module):
         lm_input = self.make_lm_input(text_embedding, prompt_speech_ids, prompt_speech_ids_len, embedding)
 
         # 4. cal min/max_length
-        min_len = int((text_embedding_lens - prompt_text_ids_len) * min_token_text_ratio)
-        max_len = int((text_embedding_lens - prompt_text_ids_len) * max_token_text_ratio)
+        min_len = ((text_embedding_lens - prompt_text_ids_len) * min_token_text_ratio).min()
+        max_len = ((text_embedding_lens - prompt_text_ids_len) * max_token_text_ratio).max()
 
         # 5. step by step decode
-        out_ids = self.decode(lm_input, max_len, min_len)
-        return out_ids
+        return self.decode(lm_input, max_len, min_len)
 
     def encode_text(self, text_ids, text_ids_len):
         text_embedding = self.text_embedding(text_ids)
@@ -514,22 +527,26 @@ class TransformerLM(nn.Module):
             embedding = self.spk_embed_affine_layer(embedding)
             embedding = embedding.unsqueeze(dim=1)
         else:
-            embedding = torch.zeros(1, 0, self.llm_input_size, dtype=text_embedding.dtype, device=text_embedding.device)
+            embedding = torch.zeros(text_embedding.shape[0], 0, self.llm_input_size, dtype=text_embedding.dtype, device=text_embedding.device)
         return embedding
 
     def make_lm_input(self, text_embedding, prompt_speech_ids, prompt_speech_ids_len, embedding):
-        sos_eos_emb = self.llm_embedding.weight[self.sos_eos].reshape(1, 1, -1)
-        task_id_emb = self.llm_embedding.weight[self.task_id].reshape(1, 1, -1)
-        if prompt_speech_ids_len != 0:
+        b = len(text_embedding)
+        sos_eos_emb = self.llm_embedding(torch.tensor([self.sos_eos] * b, device=text_embedding.device))[:, None, :]
+        task_id_emb = self.llm_embedding(torch.tensor([self.task_id] * b, device=text_embedding.device))[:, None, :]
+        if (prompt_speech_ids_len != 0).all():
             prompt_speech_ids_emb = self.speech_embedding(prompt_speech_ids)
         else:
-            prompt_speech_ids_emb = torch.zeros(1, 0, self.llm_input_size, dtype=text_embedding.dtype, device=text_embedding.device)
+            prompt_speech_ids_emb = torch.zeros(b, 0, self.llm_input_size, dtype=text_embedding.dtype, device=text_embedding.device)
         lm_input = torch.concat([sos_eos_emb, embedding, text_embedding, task_id_emb, prompt_speech_ids_emb], dim=1)
 
         return lm_input
 
     def decode(self, lm_input, max_len, min_len):
-        out_ids = []
+        batch_size = lm_input.shape[0]
+        out_ids = [[] for _ in range(batch_size)]
+        out_lens = torch.zeros(batch_size, device=lm_input.device, dtype=torch.long) + max_len
+        eos_flag = [False] * batch_size
         start_pos = 0
         past_kvs = [dict() for i in range(self.llm.num_blocks)]
 
@@ -539,18 +556,26 @@ class TransformerLM(nn.Module):
                 attention_mask=torch.tril(torch.ones((1, 1, lm_input.shape[1], lm_input.shape[1]), device=lm_input.device)).to(torch.bool)
             )
             logp = self.llm_decoder(y_pred[:, -1]).log_softmax(dim=-1)
-            # force continue decode first token
-            if i == 0:
-                logp[:, self.speech_ids_size] = -float('inf')
-            top_id = self.sampling_ids(logp.squeeze(dim=0), out_ids, ignore_eos=True if i < min_len else False)
-            if top_id == self.speech_ids_size:
+            top_ids = []
+            for batch in range(batch_size):
+                top_id = self.sampling_ids(logp[batch], out_ids[batch], ignore_eos=True if i < min_len else False)
+                if top_id == self.speech_ids_size:
+                    if not eos_flag[batch]:
+                        out_lens[batch] = len(out_ids[batch])
+                    eos_flag[batch] = True
+                if top_id < self.speech_ids_size:
+                    out_ids[batch].append(top_id)
+                top_ids.append(out_ids[batch][-1])
+
+            if all(eos_flag):
                 break
-            out_ids.append(top_id)
+
             start_pos += lm_input.shape[1]
-            lm_input = self.speech_embedding(top_id.reshape(1, -1))
+            top_ids = torch.tensor(top_ids, device=lm_input.device).reshape(batch_size, 1)
+            lm_input = self.speech_embedding(top_ids)
 
         out_ids = torch.tensor(out_ids, device=lm_input.device)
-        return out_ids
+        return out_ids, out_lens
 
     def sampling_ids(
             self,

@@ -967,12 +967,17 @@ class ModelHooks:
             return ret
 
     @torch.no_grad()
-    def batch_predict(self, *objs, batch_size=16, **kwargs):
+    def batch_predict(self, *objs, total=None, **kwargs):
+        batch_size = kwargs.setdefault('batch_size', 16)
         loop_objs, process_kwargs = self.on_predict_start(**kwargs)
         kwargs.update(process_kwargs)
 
-        for i in tqdm(range(0, len(objs[0]), batch_size), desc=visualize.TextVisualize.highlight_str('Predict')):
-            loop_inputs = self.gen_predict_inputs(*objs, start_idx=i, end_idx=min(i + batch_size, len(objs[0])), **kwargs)
+        total = total or len(objs[0])
+        pbar = tqdm(total=total, desc=visualize.TextVisualize.highlight_str('Predict'))
+        for i in range(0, total, batch_size):
+            start_idx = i
+            end_idx = min(i + batch_size, total)
+            loop_inputs = self.gen_predict_inputs(*objs, start_idx=start_idx, end_idx=end_idx, **kwargs)
             loop_inputs = self.on_predict_step_start(loop_inputs, **kwargs)
             loop_objs.update(
                 loop_inputs=loop_inputs,
@@ -983,6 +988,7 @@ class ModelHooks:
             )
             self.on_predict_reprocess(loop_objs, **kwargs)
             self.on_predict_step_end(loop_objs, **kwargs)
+            pbar.update(end_idx - start_idx)
 
         return self.on_predict_end(**kwargs)
 
