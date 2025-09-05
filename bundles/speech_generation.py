@@ -4,10 +4,9 @@ import torch
 import torchaudio
 from torch.nn.utils.rnn import pad_sequence
 
-from data_parse.nl_data_parse.pre_process import chunker
+from data_parse.nl_data_parse.pre_process import chunker, snack
 from processor import Process
-from utils import configs, torch_utils, os_lib, math_utils
-import numpy as np
+from utils import configs, math_utils, os_lib, torch_utils
 
 
 class CosyVoice(Process):
@@ -103,7 +102,7 @@ class CosyVoice(Process):
         from data_parse.nl_data_parse.pre_process.bundled import WhisperTokenizer
         self.tokenizer = WhisperTokenizer()
 
-    batch = 2
+    max_prompt_speech_len = 15  # seconds
 
     def get_model_inputs(self, loop_inputs, train=True) -> dict:
         if train:
@@ -116,6 +115,8 @@ class CosyVoice(Process):
             prompt_text = ret.get('prompt_text')
             prompt_speech = ret.get('prompt_speech')
             if prompt_text:
+                assert is_instruct or prompt_speech.shape[1] <= self.max_prompt_speech_len * 16000, \
+                    f'prompt_speech must be less than {self.max_prompt_speech_len}s, if want to break the limit, try to run without `prompt_text` or use instruct mode'
                 if is_instruct:
                     prompt_text += '<|endofprompt|>'
 
@@ -129,7 +130,7 @@ class CosyVoice(Process):
             else:
                 # vc mode
                 prompt_inputs = dict(
-                    prompt_speech=prompt_speech
+                    prompt_speech=prompt_speech[0][:self.max_prompt_speech_len * 16000]
                 )
 
             source_speech = ret.get('source_speech')
@@ -138,6 +139,7 @@ class CosyVoice(Process):
                 spk_id = ret.get('spk_id')
                 query_text = ret.get('query_text')
                 query_texts = chunker.RetentionToChunkedParagraphs(max_len=80).from_paragraph(query_text)
+                query_texts = snack.add_end_token(query_texts)
                 query_inputs = self.tokenizer.encode_paragraphs(query_texts, pad_type=0)
                 for text_ids in query_inputs['segments_ids']:
                     per_model_input = dict(
@@ -177,7 +179,7 @@ class CosyVoice(Process):
             if k in ['prompt_text_ids', 'prompt_speech', 'text_ids']:
                 _model_inputs[k] = pad_sequence(v, batch_first=True, padding_value=0)
             elif k in ['prompt_text_ids_len', 'text_ids_len']:
-                _model_inputs[k] = torch.tensor(v)
+                _model_inputs[k] = torch.tensor(v, device=self.device)
         return _model_inputs
 
     def on_val_step(self, loop_objs, model_kwargs=dict(), batch_size=None, **kwargs) -> dict:
@@ -214,7 +216,11 @@ class CosyVoice(Process):
     def gen_predict_inputs(self, *objs, start_idx=None, end_idx=None, prompt_speech_path=None, source_speech_path=None, **kwargs) -> List[dict]:
         prompt_speech = None
         if prompt_speech_path:
-            prompt_speech, _ = os_lib.loader.load_audio_from_torchaudio(prompt_speech_path)
+            prompt_speech, sr = os_lib.loader.load_audio_from_torchaudio(prompt_speech_path, backend='soundfile')
+            prompt_speech = prompt_speech.mean(dim=0, keepdim=True)
+            if sr != 16000:
+                assert sr > 16000, f'wav sample rate {sr} must be greater than 16000'
+                prompt_speech = torchaudio.transforms.Resample(orig_freq=sr, new_freq=16000)(prompt_speech)
 
         source_speech = None
         if source_speech_path:
@@ -284,22 +290,14 @@ class CosyVoice2(CosyVoice):
             is_instruct=True,
             save_path=f'{processor.cache_dir}/instruct.wav'
         )
-
-        # batch predict
-        processor.batch_predict(
-            query_text=[query_text] * 2,
-            prompt_text=prompt_text,
-            prompt_speech_path=prompt_speech_path,
-            save_path=[f'{processor.cache_dir}/zero_shot_{i}.wav' for i in range(2)],
-            total=2
-        )
     """
     model_version = 'CosyVoice2'
+    config_version = '0.5b'
 
     def set_model(self):
         from models.speech_generation.CosyVoice2 import Model, Config
 
-        cfgs = Config.get()
+        cfgs = Config.get(self.config_version)
         sp_cfg = dict(
             front_config=dict(
                 campplus_model=f'{self.model_dir}/campplus.onnx',
