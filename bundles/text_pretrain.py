@@ -705,6 +705,94 @@ class SimpleTextForGpt(TextProcessForGpt):
             return loader.load(set_type=DataRegister.TEST, max_size=self.val_data_num, return_label=True, generator=False)[0]
 
 
+class BgeM3(Process):
+    """
+    Usage:
+        model_dir = 'xxx'
+        processor = BgeM3(
+            pretrain_model=model_dir,
+            vocab_fn=f'{model_dir}/tokenizer.json',
+            encoder_fn=f'{model_dir}/sentencepiece.bpe.model'
+        )
+        processor.init()
+
+        text = [
+            "What is BGE M3?",
+            "Defination of BM25"
+        ]
+        outs = processor.batch_predict(text)
+        dense_vecs = outs['dense_vecs']
+        dense_vecs = torch.tensor(dense_vecs)
+        similarity = dense_vecs[0][None] @ dense_vecs[1][None].T
+        # [[0.4103]]
+
+        outs = processor.batch_predict(
+            text,
+            model_kwargs=dict(
+                return_sparse=True,
+                return_colbert=True,
+            )
+        )
+    """
+    def set_model(self):
+        from models.text_pretrain.bge_m3 import Model
+        self.model = Model()
+
+    def set_tokenizer(self):
+        self.tokenizer = bundled.XLMRobertaTokenizer.from_pretrained(self.vocab_fn, self.encoder_fn)
+
+    def load_pretrained(self):
+        if self.pretrain_model:
+            from models.text_pretrain.bge_m3 import WeightConverter
+            from models.bundles import WeightLoader
+            tensors = {
+                'backbone': WeightLoader.auto_load(f'{self.pretrain_model}/pytorch_model.bin'),
+                'sparse': WeightLoader.auto_load(f'{self.pretrain_model}/sparse_linear.pt'),
+                'colbert': WeightLoader.auto_load(f'{self.pretrain_model}/colbert_linear.pt'),
+            }
+            tensors = WeightConverter.from_hf(tensors)
+            self.model.load_state_dict(tensors, strict=False)
+
+    def get_model_inputs(self, loop_inputs, train=True):
+        paragraphs = [ret['text'] for ret in loop_inputs]
+        r = self.tokenizer.encode_paragraphs(paragraphs)
+        r = torch_utils.Converter.force_to_tensors(r, self.device)
+        inputs = dict(
+            input_ids=r['segments_ids'],
+            attention_mask=r['valid_segment_tags'],
+        )
+
+        return inputs
+
+    def on_val_step(self, loop_objs, model_kwargs=dict(), **kwargs) -> dict:
+        loop_inputs = loop_objs['loop_inputs']
+        model_inputs = self.get_model_inputs(loop_inputs, train=False)
+        model_inputs.update(model_kwargs)
+
+        model_results = {}
+        for name, model in self.models.items():
+            model_output = model(**model_inputs)
+            model_results[name] = {k: v.cpu().numpy().tolist() for k, v in model_output.items()}
+
+        return model_results
+
+    def on_predict_reprocess(self, loop_objs, return_keys=(), **kwargs):
+        super().on_predict_reprocess(
+            loop_objs,
+            return_keys=('dense_vecs', 'colbert_vecs', 'sparse_vecs'),
+            **kwargs
+        )
+
+    def gen_predict_inputs(self, *objs, start_idx=None, end_idx=None, **kwargs) -> List[dict]:
+        texts = objs[0]
+        if isinstance(texts, str):
+            texts = [texts] * (end_idx - start_idx)
+
+        inputs = [dict(text=text) for text in texts]
+
+        return inputs
+
+
 class GPT2(Process):
     model_version = 'GPT2'
     use_scaler = True

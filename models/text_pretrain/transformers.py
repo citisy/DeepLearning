@@ -29,14 +29,21 @@ class EncoderEmbedding(nn.Module):
             nn.LayerNorm(embedding_dim),
             nn.Dropout(drop_prob)
         )
+        self.register_buffer("segment_label", torch.zeros(max_seq_len, dtype=torch.long), persistent=False)
         self.embedding_dim = embedding_dim
+        self.pad_id = pad_id
 
-    def forward(self, sequence, segment_label):
+    def forward(self, sequence, segment_label=None):
         """(b, s) -> (b, s, h)
         note, s is a dynamic var"""
+        if segment_label is None:
+            # use registered buffer to apply tracing the model
+            b, s = sequence.shape[:2]
+            segment_label = self.segment_label[:s]
+            segment_label = segment_label.expand(b, s)
         x = (
                 self.token(sequence)
-                + self.position(sequence)
+                + self.position(sequence, self.pad_id)
                 + self.segment(segment_label)
         )
         return self.head(x)

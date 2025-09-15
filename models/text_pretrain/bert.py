@@ -190,7 +190,7 @@ class Bert(nn.Module):
 
         self.out_features = hidden_size
 
-    def forward(self, x, segment_label, attention_mask=None, **encoder_kwargs):
+    def forward(self, x, segment_label=None, attention_mask=None, **encoder_kwargs):
         x = self.embedding(x, segment_label)
         x = self.encoder(x, attention_mask=attention_mask, **encoder_kwargs)
         return x

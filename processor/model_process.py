@@ -1028,8 +1028,9 @@ class ModelHooks:
         model_results = loop_objs['model_results']
         ret = process_results.setdefault(self.model_name, {})
         for k in return_keys:
-            data = ret.setdefault(k, [])
-            data.extend(model_results[self.model_name][k])
+            if k in model_results[self.model_name]:
+                data = ret.setdefault(k, [])
+                data.extend(model_results[self.model_name][k])
 
     def on_predict_step_end(self, loop_objs, **kwargs):
         """visualize the model outputs usually"""

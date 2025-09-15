@@ -80,15 +80,16 @@ class PositionalEmbedding(nn.Module):
 
 
 class LearnedPositionEmbedding(nn.Embedding):
-    @property
-    def position_ids(self):
+    def make_position_ids(self, x, pad_id, start_pos):
         # note, support for meta device init
-        return torch.arange(self.num_embeddings).expand((1, -1))
+        mask = x.ne(pad_id).int()
+        incremental_indices = (torch.cumsum(mask, dim=1).type_as(mask) + start_pos) * mask
+        return incremental_indices.long() + pad_id
 
-    def forward(self, x):
+    def forward(self, x, pad_id=0, start_pos=0):
         """make sure x.ndim >= 2 and x.shape[1] is seq_len"""
-        position_ids = self.position_ids.to(x.device)
-        return super().forward(position_ids[:, :x.shape[1]])
+        position_ids = self.make_position_ids(x, pad_id, start_pos).to(x.device)
+        return super().forward(position_ids)
 
 
 class LearnedPositionEmbeddingV2(PositionalEmbedding):
