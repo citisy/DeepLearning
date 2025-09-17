@@ -39,7 +39,7 @@ class BaseTextRecModel(nn.Module):
         if self.training:
             return self.fit(*args, **kwargs)
         else:
-            self.inference(*args, **kwargs)
+            return self.inference(*args, **kwargs)
 
     def fit(self, x, true_label=None):
         x = self.process(x)
