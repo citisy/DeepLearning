@@ -215,24 +215,31 @@ class Model(nn.Module):
         del self.decoder_norm
         del self.head
 
-    def forward(self, x, y=None, seq_lens=None, attention_mask=None, **kwargs):
-        context = self.encode(x, attention_mask=attention_mask)
+    def forward(self, *args, **kwargs):
         if self.training:
-            # note, shift one token to predict the future word
-            trues = torch.cat([x[:, 1:], torch.full((len(x), 1), self.pad_id)], dim=1)
-            logits = self.decode(x, context=context, context_mask=attention_mask, **kwargs)
-            loss = self.loss(logits, trues)
-            return {'loss': loss}
+            return self.fit(*args, **kwargs)
         else:
-            if y is None:
-                y = torch.zeros((len(x), 1), dtype=torch.long, device=x.device)
-                seq_lens = [1] * len(x)
-            preds = self.post_process(y, context=context, context_mask=attention_mask, seq_lens=seq_lens, **kwargs)
-            return {'preds': preds}
+            return self.inference(*args, **kwargs)
+
+    def fit(self, x, attention_mask=None, **kwargs):
+        context = self.encode(x, attention_mask=attention_mask)
+        # note, shift one token to predict the future word
+        trues = torch.cat([x[:, 1:], torch.full((len(x), 1), self.pad_id)], dim=1)
+        logits = self.decode(x, context=context, context_mask=attention_mask, **kwargs)
+        loss = self.loss(logits, trues)
+        return {'loss': loss}
 
     def loss(self, logits, trues):
         logits = logits.transpose(1, 2)  # seq first -> class first
         return F.cross_entropy(logits, trues)
+
+    def inference(self, x, y=None, seq_lens=None, attention_mask=None, **kwargs):
+        context = self.encode(x, attention_mask=attention_mask)
+        if y is None:
+            y = torch.zeros((len(x), 1), dtype=torch.long, device=x.device)
+            seq_lens = [1] * len(x)
+        preds = self.post_process(y, context=context, context_mask=attention_mask, seq_lens=seq_lens, **kwargs)
+        return {'preds': preds}
 
     def encode(self, x, attention_mask=None, **encoder_kwargs):
         x = self.embedding(x)
@@ -250,16 +257,8 @@ class Model(nn.Module):
         x = self.head(x)
         return x
 
-    def post_process(
-            self,
-            x, content_generator=True, seq_lens=None,
-            **decode_kwargs
-    ):
-        if content_generator:
-            preds = beam_search(x, seq_lens, self.decode, eos_ids=self.eos_ids, **decode_kwargs)
-            return preds
-        else:
-            return self.decode(x, **decode_kwargs)
+    def post_process(self, x, **decode_kwargs):
+        return self.decode(x, **decode_kwargs)
 
 
 class T5LayerNorm(nn.Module):

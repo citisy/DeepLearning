@@ -169,30 +169,25 @@ class Model(nn.Module):
         self.norm = nn.LayerNorm(hidden_size)
         self.embedding_sim = embeddings.EmbeddingSim(self.embedding.token.weight)
 
-    def forward(self, x, **kwargs):
+    def forward(self, *args, **kwargs):
         if self.training:
-            # note, shift one token to predict the future word
-            trues = torch.cat([x[:, 1:], torch.full((len(x), 1), self.pad_id)], dim=1)
-            logits = self.decode(x, **kwargs)
-            loss = self.loss(logits, trues)
-            return {'loss': loss}
+            return self.fit(*args, **kwargs)
         else:
-            return {'preds': self.post_process(x, **kwargs)}
+            return self.inference(*args, **kwargs)
+
+    def fit(self, x, **kwargs):
+        # note, shift one token to predict the future word
+        trues = torch.cat([x[:, 1:], torch.full((len(x), 1), self.pad_id)], dim=1)
+        logits = self.decode(x, **kwargs)
+        loss = self.loss(logits, trues)
+        return {'loss': loss}
 
     def loss(self, logits, trues):
         logits = logits.transpose(1, 2)  # seq first -> class first
         return F.cross_entropy(logits, trues)
 
-    def post_process(
-            self,
-            x, content_generator=True, seq_lens=None,
-            **decode_kwargs
-    ):
-        if content_generator:
-            preds = beam_search(x, seq_lens, self.decode, **decode_kwargs)
-            return preds
-        else:
-            return self.decode(x, **decode_kwargs)
+    def inference(self, x, **decode_kwargs):
+        return {'preds': self.decode(x, **decode_kwargs)}
 
     def decode(self, sequence, **decoder_kwargs):
         x = self.embedding(sequence)
@@ -201,6 +196,3 @@ class Model(nn.Module):
         x = self.norm(x)
         x = self.embedding_sim(x)
         return x
-
-
-

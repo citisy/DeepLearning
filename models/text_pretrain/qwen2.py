@@ -120,31 +120,14 @@ class Model(nn.Module):
     def make_caches(self):
         return [dict() for i in range(self.decoder.num_blocks)]
 
-    def forward(self, input_ids, **kwargs):
+    def forward(self, *args, **kwargs):
         if self.training:
             raise NotImplementedError()
         else:
-            return self.post_process(input_ids, **kwargs)
+            return self.inference(*args, **kwargs)
 
-    def post_process(
-            self,
-            x, content_generator=True, seq_lens=None, past_kvs=None,
-            **decode_kwargs
-    ):
-        if content_generator:
-            if past_kvs is None:
-                past_kvs = self.make_caches()
-
-            preds = beam_search(x, seq_lens, self.decode, eos_ids=self.eos_ids, past_kvs=past_kvs, **decode_kwargs)
-
-            torch_utils.ModuleManager.torch_gc()
-
-            return dict(
-                preds=preds,
-                past_kvs=past_kvs
-            )
-        else:
-            return self.decode(x, **decode_kwargs)
+    def inference(self, x, **decode_kwargs):
+        return self.decode(x, **decode_kwargs)
 
     def decode(self, x, start_pos=0, **decoder_kwargs):
         x = self.embedding(x)

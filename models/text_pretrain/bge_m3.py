@@ -115,10 +115,7 @@ class SparseHead(nn.Module):
             embedding = torch.zeros(input_ids.size(0), self.vocab_size).to(token_weights)
             embedding = embedding.scatter_reduce(dim=-1, index=input_ids, src=token_weights.squeeze(-1), reduce="amax")
 
-        unused_tokens = [
-            self.tokenizer.cls_token_id, self.tokenizer.eos_token_id,
-            self.tokenizer.pad_token_id, self.tokenizer.unk_token_id
-        ]
+        unused_tokens = [self.cls_id, self.eos_id,self.pad_id, self.unk_tid]
         embedding[:, unused_tokens] *= 0.
         return embedding
 
