@@ -694,6 +694,8 @@ class BgeM3(Process):
             )
         )
     """
+    model_version = 'bge_m3'
+
     def set_model(self):
         from models.text_pretrain.bge_m3 import Model
         self.model = Model()

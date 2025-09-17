@@ -65,10 +65,17 @@ class WeightConverter:
 
 class Model(nn.Module):
     """refer to `transformers.XLMRobertaModel`"""
+
     def __init__(self, backbone_config=Config.backbone):
         super().__init__()
-        self.backbone = bert.Bert(**backbone_config)
-        self.head = Head(self.backbone.out_features)
+        self.backbone = self.make_backbone(**backbone_config)
+        self.head = self.make_head()
+
+    def make_backbone(self, **backbone_config):
+        return bert.Bert(**backbone_config)
+
+    def make_head(self, **head_config):
+        return Head(self.backbone.out_features)
 
     def forward(self, *args, **kwargs):
         if self.training:
