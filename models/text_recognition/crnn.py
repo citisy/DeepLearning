@@ -21,7 +21,7 @@ class Model(BaseTextRecModel):
 
     def post_process(self, x):
         x = x.permute(1, 0, 2)
-        preds, probs = decoder.beam_search(x, beam_size=10)
+        preds, probs = self.beam_search(x, beam_size=10)
         words = []
         for b in range(x.shape[0]):
             seq = {}
