@@ -175,10 +175,10 @@ class Model(nn.Module):
         else:
             return self.inference(*args, **kwargs)
 
-    def fit(self, x, **kwargs):
+    def fit(self, text_ids, **kwargs):
         # note, shift one token to predict the future word
-        trues = torch.cat([x[:, 1:], torch.full((len(x), 1), self.pad_id)], dim=1)
-        logits = self.decode(x, **kwargs)
+        trues = torch.cat([text_ids[:, 1:], torch.full((len(text_ids), 1), self.pad_id)], dim=1)
+        logits = self.decode(text_ids, **kwargs)
         loss = self.loss(logits, trues)
         return {'loss': loss}
 
@@ -186,8 +186,8 @@ class Model(nn.Module):
         logits = logits.transpose(1, 2)  # seq first -> class first
         return F.cross_entropy(logits, trues)
 
-    def inference(self, x, **decode_kwargs):
-        return {'preds': self.decode(x, **decode_kwargs)}
+    def inference(self, text_ids, **decode_kwargs):
+        return {'preds': self.decode(text_ids, **decode_kwargs)}
 
     def decode(self, sequence, **decoder_kwargs):
         x = self.embedding(sequence)

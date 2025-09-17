@@ -1,13 +1,10 @@
 import math
 from functools import partial
 
-import numpy as np
 import torch
 import torch.nn.functional as F
 from einops.layers.torch import Rearrange
 from torch import nn
-from torch.nn.utils.rnn import pad_sequence
-from torchaudio.compliance import kaldi
 
 from utils import torch_utils
 from .. import attentions, embeddings
@@ -115,13 +112,10 @@ class Model(nn.Module):
         return loss_ctc
 
     def forward(self, *args, **kwargs):
-        raise NotImplementedError
-
-    def loss(self, *args, **kwargs):
-        raise NotImplementedError
-
-    def post_process(self, *args, **kwargs):
-        raise NotImplementedError
+        if self.training:
+            return self.fit(*args, **kwargs)
+        else:
+            return self.post_process(*args, **kwargs)
 
 
 class SANMEncoder(nn.Module):

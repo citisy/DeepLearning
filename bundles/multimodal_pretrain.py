@@ -102,7 +102,7 @@ class Qwen2VlPredictor(BaseQwen2Vl):
             },
             ]
             prompt_inputs = self.tokenizer.encode_dialog(messages)
-            prompt_inputs['input_ids'] = prompt_inputs.pop('segments_ids')
+            prompt_inputs['text_ids'] = prompt_inputs.pop('segments_ids')
             prompt_inputs = torch_utils.Converter.force_to_tensors(prompt_inputs, self.device)
             prompt_inputs['image_pixel_values'] = prompt_inputs['image_pixel_values'].to(self.model.dtype)
             model_inputs.append(prompt_inputs)

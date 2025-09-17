@@ -70,10 +70,14 @@ class Model(nn.Module):
         self.backbone = bert.Bert(**backbone_config)
         self.head = Head(self.backbone.out_features)
 
-    def forward(self, input_ids, attention_mask):
+    def forward(self, *args, **kwargs):
         if self.training:
             raise NotImplementedError
-        x = self.backbone(input_ids, attention_mask=attention_mask)
+        else:
+            return self.inference(*args, **kwargs)
+
+    def inference(self, text_ids, attention_mask):
+        x = self.backbone(text_ids, attention_mask=attention_mask)
         x = self.head(x)
         return x
 

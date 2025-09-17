@@ -121,7 +121,13 @@ class Model(nn.Module):
         self.xvector = nn.Sequential(layers)
         self.cb_model = ClusterBackend()
 
-    def forward(self, x, is_final=True, segments=None, **kwargs):
+    def forward(self, *args, **kwargs):
+        if self.training:
+            raise NotImplementedError
+        else:
+            return self.post_process(*args, **kwargs)
+
+    def inference(self, x, is_final=True, segments=None, **kwargs):
         x, _, _ = self.extract_feature(x)
 
         x = x.permute(0, 2, 1)  # (B,T,F) => (B,F,T)

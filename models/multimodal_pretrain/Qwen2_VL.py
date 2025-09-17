@@ -311,34 +311,37 @@ class Model(nn.Module):
     def make_caches(self):
         return [dict() for i in range(self.vlm.num_blocks)]
 
-    def forward(self, input_ids, trues=None, **kwargs):
+    def forward(self, *args, **kwargs):
         if self.training:
-            preds = self.decode(input_ids)
-            outputs = dict(
-                preds=preds
-            )
-            outputs['loss'] = self.loss(trues, preds)
-            return outputs
+            return self.fit(*args, **kwargs)
         else:
-            return self.post_process(input_ids, **kwargs)
+            return self.inference(*args, **kwargs)
 
-    def post_process(
+    def fit(self, text_ids, trues=None, **kwargs):
+        preds = self.decode(text_ids)
+        outputs = dict(
+            preds=preds
+        )
+        outputs['loss'] = self.loss(trues, preds)
+        return outputs
+
+    def inference(
             self,
-            x, content_generator=True, seq_lens=None, vlm_past_kvs=None,
+            text_ids, content_generator=True, seq_lens=None, vlm_past_kvs=None,
             **decode_kwargs
     ):
         if content_generator:
             if vlm_past_kvs is None:
                 vlm_past_kvs = self.make_caches()
 
-            preds = beam_search(x, seq_lens, self.decode, eos_ids=self.eos_ids, vlm_past_kvs=vlm_past_kvs, **decode_kwargs)
+            preds = beam_search(text_ids, seq_lens, self.decode, eos_ids=self.eos_ids, vlm_past_kvs=vlm_past_kvs, **decode_kwargs)
 
             return dict(
                 preds=preds,
                 vlm_past_kvs=vlm_past_kvs
             )
         else:
-            return self.decode(x, **decode_kwargs)
+            return self.decode(text_ids, **decode_kwargs)
 
     def decode(
             self,

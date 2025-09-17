@@ -108,26 +108,35 @@ class Model(nn.Module):
 
         torch_utils.ModuleManager.initialize_layers(self)
 
-    def forward(self, x, segment_label=None, attention_mask=None, seq_cls_true=None, token_cls_true=None, **backbone_kwargs):
-        x = self.backbone(x, segment_label=segment_label, attention_mask=attention_mask, **backbone_kwargs)
+    def forward(self, *args, **kwargs):
+        if self.training:
+            return self.fit(*args, **kwargs)
+        else:
+            return self.inference(*args, **kwargs)
+
+    def fit(self, text_ids, segment_label=None, attention_mask=None, seq_cls_true=None, token_cls_true=None, **backbone_kwargs):
+        outputs = self.process(text_ids, segment_label, attention_mask, **backbone_kwargs)
+        seq_cls_logit = outputs.get('seq_cls_logit')
+        token_cls_logit = outputs.get('token_cls_logit')
+        losses = self.loss(text_ids.device, seq_cls_logit, token_cls_logit, seq_cls_true, token_cls_true)
+
+        outputs.update(losses)
+        return outputs
+
+    def inference(self, *args, **kwargs):
+        return self.process(*args, **kwargs)
+
+    def process(self, text_ids, segment_label=None, attention_mask=None, **backbone_kwargs):
+        text_ids = self.backbone(text_ids, segment_label=segment_label, attention_mask=attention_mask, **backbone_kwargs)
 
         outputs = {}
 
-        seq_cls_logit = None
         if self.is_seq_cls:
-            seq_cls_logit = self.seq_cls_head(x)
-            outputs['seq_cls_logit'] = seq_cls_logit
+            outputs['seq_cls_logit'] = self.seq_cls_head(text_ids)
 
-        token_cls_logit = None
         if self.is_token_cls:
-            token_cls_logit = self.token_cls_head(x)
-            outputs['token_cls_logit'] = token_cls_logit
+            outputs['token_cls_logit'] = self.token_cls_head(text_ids)
 
-        losses = {}
-        if self.training:
-            losses = self.loss(x.device, seq_cls_logit, token_cls_logit, seq_cls_true, token_cls_true)
-
-        outputs.update(losses)
         return outputs
 
     def loss(self, device, seq_cls_logit=None, token_cls_logit=None, seq_cls_true=None, token_cls_true=None):

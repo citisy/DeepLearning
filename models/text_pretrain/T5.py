@@ -233,11 +233,11 @@ class Model(nn.Module):
         logits = logits.transpose(1, 2)  # seq first -> class first
         return F.cross_entropy(logits, trues)
 
-    def inference(self, x, y=None, seq_lens=None, attention_mask=None, **kwargs):
-        context = self.encode(x, attention_mask=attention_mask)
+    def inference(self, text_ids, y=None, seq_lens=None, attention_mask=None, **kwargs):
+        context = self.encode(text_ids, attention_mask=attention_mask)
         if y is None:
-            y = torch.zeros((len(x), 1), dtype=torch.long, device=x.device)
-            seq_lens = [1] * len(x)
+            y = torch.zeros((len(text_ids), 1), dtype=torch.long, device=text_ids.device)
+            seq_lens = [1] * len(text_ids)
         preds = self.post_process(y, context=context, context_mask=attention_mask, seq_lens=seq_lens, **kwargs)
         return {'preds': preds}
 

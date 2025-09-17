@@ -99,9 +99,9 @@ class Model(nn.Module):
         if self.training:
             raise NotImplementedError
         else:
-            return self.post_process(**kwargs)
+            return self.inference(**kwargs)
 
-    def post_process(
+    def inference(
             self,
             text_ids=None, text_ids_len=None,
             prompt_text_ids=None, prompt_text_ids_len=None,

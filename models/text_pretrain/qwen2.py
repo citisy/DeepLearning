@@ -126,8 +126,8 @@ class Model(nn.Module):
         else:
             return self.inference(*args, **kwargs)
 
-    def inference(self, x, **decode_kwargs):
-        return self.decode(x, **decode_kwargs)
+    def inference(self, text_ids, **decode_kwargs):
+        return self.decode(text_ids, **decode_kwargs)
 
     def decode(self, x, start_pos=0, **decoder_kwargs):
         x = self.embedding(x)

@@ -208,18 +208,19 @@ class Model(nn.ModuleList):
         x = self.head(x)
         return x
 
-    def forward(self, x=None, **kwargs):
+    def forward(self, *args, **kwargs):
         if self.training:
-            # if training, x is x0, the real image
-            loss = self.loss(x, **kwargs)
-            return {'loss': loss}
+            return self.fit(*args, **kwargs)
         else:
-            # if predicting, x is x_T, the noise
-            images = self.post_process(x, **kwargs)
-            return images
+            return self.inference(*args, **kwargs)
 
-    def loss(self, x, **kwargs):
-        return self.sampler.loss(self.diffuse, x, **kwargs)
+    def fit(self, x, **kwargs):
+        # if training, x is x0, the real image
+        return {'loss': self.sampler.loss(self.diffuse, x, **kwargs)}
+
+    def inference(self, x, **kwargs):
+        # if inference, x is x_T, the noise
+        return self.sampler(self.diffuse, x, **kwargs)
 
     @property
     def diffuse_in_ch(self):
@@ -235,9 +236,6 @@ class Model(nn.ModuleList):
 
     def gen_x_t(self, batch_size, image_size=None):
         return torch.randn((batch_size, self.diffuse_in_ch, *self.diffuse_in_size(image_size)[::-1]), device=self.device, dtype=self.dtype)
-
-    def post_process(self, x_t, **kwargs):
-        return self.sampler(self.diffuse, x_t, **kwargs)
 
 
 class Sampler(nn.Module):

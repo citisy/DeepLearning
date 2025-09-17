@@ -291,7 +291,7 @@ class Model(ddim.Model):
 
         return self.sampler.loss(self.diffuse, x0, **kwargs)
 
-    def post_process(self, x=None, text_ids=None, mask_x=None, image_size=None, **kwargs):
+    def inference(self, x=None, text_ids=None, mask_x=None, image_size=None, **kwargs):
         """
 
         Args:

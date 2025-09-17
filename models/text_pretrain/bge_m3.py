@@ -46,21 +46,21 @@ class Model(nn.Module):
         if self.training:
             raise NotImplementedError
         else:
-            return self.post_process(*args, **kwargs)
+            return self.inference(*args, **kwargs)
 
-    def post_process(
-            self, input_ids, attention_mask,
+    def inference(
+            self, text_ids, attention_mask,
             return_dense=True,
             return_sparse=False, return_sparse_embedding=False,
             return_colbert=False,
     ):
-        h = self.backbone(input_ids, attention_mask=attention_mask)
+        h = self.backbone(text_ids, attention_mask=attention_mask)
 
         output = {}
         if return_dense:
             output['dense_vecs'] = self.dense_head(h, attention_mask)
         if return_sparse:
-            output['sparse_vecs'] = self.sparse_head(h, input_ids, return_embedding=return_sparse_embedding)
+            output['sparse_vecs'] = self.sparse_head(h, text_ids, return_embedding=return_sparse_embedding)
         if return_colbert:
             output['colbert_vecs'] = self.colbert_head(h, attention_mask)
 

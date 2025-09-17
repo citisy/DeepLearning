@@ -191,9 +191,9 @@ class Model(nn.Module):
         if self.training:
             raise NotImplementedError
         else:
-            return self.post_process(x, **kwargs)
+            return self.inference(x, **kwargs)
 
-    def post_process(self, x, is_final=True, is_streaming_input=None, chunk_size=60000, caches=None, **kwargs):
+    def inference(self, x, is_final=True, is_streaming_input=None, chunk_size=60000, caches=None, **kwargs):
         if caches is None:
             caches = self.init_caches()
 

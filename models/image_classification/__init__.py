@@ -4,11 +4,6 @@ from utils.torch_utils import ModuleManager
 from ..layers import ConvInModule, Linear, OutModule
 
 
-class Config:
-    def get(self, name=None):
-        raise NotImplemented
-
-
 class BaseImgClsModel(nn.Module):
     """a template to make a image classifier model by yourself"""
 
@@ -39,14 +34,20 @@ class BaseImgClsModel(nn.Module):
 
         ModuleManager.initialize_layers(self)
 
-    def forward(self, x, true_label=None):
-        x = self.process(x)
-
-        loss = None
+    def forward(self, *args, **kwargs):
         if self.training:
-            loss = self.loss(pred_label=x, true_label=true_label)
+            return self.fit(*args, **kwargs)
+        else:
+            return self.inference(*args, **kwargs)
 
+    def fit(self, x, true_label=None):
+        x = self.process(x)
+        loss = self.loss(pred_label=x, true_label=true_label)
         return {'pred': x, 'loss': loss}
+
+    def inference(self, x):
+        x = self.process(x)
+        return {'pred': x}
 
     def process(self, x):
         x = self.input(x)

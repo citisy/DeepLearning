@@ -35,14 +35,20 @@ class BaseTextRecModel(nn.Module):
         self.head = head if head is not None else nn.Linear(neck_out_features, self.out_features)
         # ModuleManager.initialize_layers(self)
 
-    def forward(self, x, true_label=None):
-        x = self.process(x)
-
+    def forward(self, *args, **kwargs):
         if self.training:
-            loss = self.loss(pred_label=x, true_label=true_label)
-            return {'pred': x, 'loss': loss}
+            return self.fit(*args, **kwargs)
         else:
-            return self.post_process(x)
+            self.inference(*args, **kwargs)
+
+    def fit(self, x, true_label=None):
+        x = self.process(x)
+        loss = self.loss(pred_label=x, true_label=true_label)
+        return {'pred': x, 'loss': loss}
+
+    def inference(self, x):
+        x = self.process(x)
+        return self.post_process(x)
 
     def process(self, x):
         x = self.input(x)

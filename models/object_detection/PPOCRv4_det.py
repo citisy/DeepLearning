@@ -144,13 +144,19 @@ class Model(nn.Module):
         self.head = converter.DataInsConvert.str_to_instance(head_name)(in_ch=self.neck.out_channels, **head_config)
         self.criterion = DBLoss()
 
-    def forward(self, x, label_list=()):
-        outputs = self.process(x)
-
+    def forward(self, *args, **kwargs):
         if self.training:
-            return self.loss(outputs, label_list)
+            return self.fit(*args, **kwargs)
         else:
-            return self.post_process(outputs['preds'])
+            return self.inference(*args, **kwargs)
+
+    def fit(self, x, label_list=()):
+        outputs = self.process(x)
+        return self.loss(outputs, label_list)
+
+    def inference(self, x, **kwargs):
+        outputs = self.process(x)
+        return self.post_process(outputs['preds'])
 
     def process(self, x):
         x = self.backbone(x)

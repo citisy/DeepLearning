@@ -414,7 +414,7 @@ class BaseBert(Process):
         r = self.tokenizer.encode_segments(segments, segment_pair_tags)
         r = torch_utils.Converter.force_to_tensors(r, self.device)
         inputs = dict(
-            x=r['segments_ids'],
+            text_ids=r['segments_ids'],
             segment_label=r['segment_pair_tags'],
             attention_mask=r['valid_segment_tags'],
             lens=lens
@@ -718,7 +718,7 @@ class BgeM3(Process):
         r = self.tokenizer.encode_paragraphs(paragraphs)
         r = torch_utils.Converter.force_to_tensors(r, self.device)
         inputs = dict(
-            input_ids=r['segments_ids'],
+            text_ids=r['segments_ids'],
             attention_mask=r['valid_segment_tags'],
         )
 

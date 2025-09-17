@@ -76,7 +76,7 @@ class GPT2(Process):
         segments = [ret['segment'] for ret in loop_inputs]
         r = self.tokenizer.encode_segments(segments)
         return dict(
-            x=torch.tensor(r['segments_ids'], device=self.device, dtype=torch.long),
+            text_ids=torch.tensor(r['segments_ids'], device=self.device, dtype=torch.long),
             seq_lens=r['seq_lens'],
             max_gen_len=self.max_gen_len
         )
@@ -228,7 +228,7 @@ class BaseT5(Process):
         inputs = self.tokenizer.encode_paragraphs(paragraphs)
         inputs = torch_utils.Converter.force_to_tensors(inputs, self.device)
         return dict(
-            x=inputs['segments_ids'],
+            text_ids=inputs['segments_ids'],
             seq_lens=inputs['seq_lens'],
             attention_mask=inputs['valid_segment_tags'],
             max_gen_len=self.max_gen_len

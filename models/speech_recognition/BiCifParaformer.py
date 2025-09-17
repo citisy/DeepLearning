@@ -14,13 +14,18 @@ class Model(Paraformer.Model):
         - [Achieving timestamp prediction while recognizing with non-autoregressive end-to-end ASR model](https://arxiv.org/abs/2301.12343)
     """
 
-    def forward(self, speech, speech_lens, **kwargs):
+    def fit(self, speech, speech_lens, **kwargs):
+        encoder_out, encoder_out_mask = self.process(speech, speech_lens)
+        return self.loss(encoder_out, encoder_out_mask, speech_lens, **kwargs)
+
+    def inference(self, speech, speech_lens, **kwargs):
+        encoder_out, encoder_out_mask = self.process(speech, speech_lens)
+        return self.post_process(encoder_out, encoder_out_mask, speech_lens, **kwargs)
+
+    def process(self, speech, speech_lens):
         encoder_out = self.encode(speech, speech_lens)
         encoder_out_mask = attentions.make_pad_mask(speech_lens, max_len=encoder_out.shape[1])[:, None, :].to(encoder_out.device)
-        if self.training:
-            return self.loss(encoder_out, encoder_out_mask, speech_lens, **kwargs)
-        else:
-            return self.post_process(encoder_out, encoder_out_mask, speech_lens, **kwargs)
+        return encoder_out, encoder_out_mask
 
     def post_process(self, encoder_out, encoder_out_mask, speech_lens, **kwargs):
         # predict the length of token

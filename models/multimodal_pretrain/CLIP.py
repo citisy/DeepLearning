@@ -273,20 +273,30 @@ class Model(nn.Module):
         self.text_model = TextTransformer(**text_config)
         self.logit_scale = nn.Parameter(torch.ones([]) * logit_scale_init_value)
 
-    def forward(self, images, text_ids, attention_mask=None):
+    def forward(self, *args, **kwargs):
+        if self.training:
+            return self.fit(*args, **kwargs)
+        else:
+            return self.inference(*args, **kwargs)
+
+    def fit(self, *args, **kwargs):
+        outputs = self.process(*args, **kwargs)
+        logits_per_text = outputs['logits_per_text']
+        outputs['loss'] = self.loss(logits_per_text)
+        return outputs
+
+    def inference(self, *args, **kwargs):
+        outputs = self.process(*args, **kwargs)
+        return outputs
+
+    def process(self, images, text_ids, attention_mask=None):
         vision_outputs = self.vision_model(images)['pooled_output']
         text_outputs = self.text_model(text_ids, attention_mask=attention_mask)['pooled_output']
 
         logits_per_text, logits_per_image = self.head(vision_outputs, text_outputs)
-
-        loss = None
-        if self.training:
-            loss = self.loss(logits_per_text)
-
         return dict(
             logits_per_text=logits_per_text,
             logits_per_image=logits_per_image,
-            loss=loss
         )
 
     def head(self, vision_outputs, text_outputs):

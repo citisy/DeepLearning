@@ -109,14 +109,24 @@ class Model(nn.Module):
     def set_inference_only(self):
         del self.loss
 
-    def forward(self, x, sample_posterior=True, **loss_kwargs):
+    def forward(self, *args, **kwargs):
+        if self.training:
+            return self.fit(*args, **kwargs)
+        else:
+            return self.inference(*args, **kwargs)
+
+    def fit(self, x, sample_posterior=True, **loss_kwargs):
+        z, mean, log_var = self.process(x, sample_posterior)
+        return self.loss(x, z, mean, log_var, last_layer=self.decoder.head.conv.weight, **loss_kwargs)
+
+    def inference(self, x, sample_posterior=True):
+        z, mean, log_var = self.process(x, sample_posterior)
+        return z
+
+    def process(self, x, sample_posterior=True):
         z, mean, log_var = self.encode(x, sample_posterior)
         z = self.decode(z)
-
-        if self.training:
-            return self.loss(x, z, mean, log_var, last_layer=self.decoder.head.conv.weight, **loss_kwargs)
-        else:
-            return z
+        return z, mean, log_var
 
     def encode(self, x, sample_posterior=True):
         h = self.encoder(x)

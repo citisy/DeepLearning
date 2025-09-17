@@ -150,18 +150,24 @@ class Model(nn.Module):
             if hasattr(m, 'fuse'):
                 m.fuse()
 
-    def forward(self, x, gt_boxes=None, gt_cls=None):
-        preds, losses = self.process(x, gt_boxes, gt_cls)
-
+    def forward(self, *args, **kwargs):
         if self.training:
-            return dict(
-                preds=preds,
-                **losses
-            )
+            return self.fit(*args, **kwargs)
         else:
-            return self.post_process(preds)
+            return self.inference(*args, **kwargs)
 
-    def process(self, x, gt_boxes, gt_cls):
+    def fit(self, x, gt_boxes=None, gt_cls=None):
+        preds, losses = self.process(x, gt_boxes, gt_cls)
+        return dict(
+            preds=preds,
+            **losses
+        )
+
+    def inference(self, x, **kwargs):
+        preds, _ = self.process(x)
+        return self.post_process(preds)
+
+    def process(self, x, gt_boxes=None, gt_cls=None):
         x = self.input(x)
         features = self.backbone(x)
         features = self.neck(features)
@@ -249,7 +255,7 @@ class Model(nn.Module):
 class Model4Export(Model):
     """for exporting to onnx, torchscript, etc."""
 
-    def forward(self, x):
+    def inference(self, x, **kwargs):
         x = self.pre_process(x)
         preds, _ = self.process(x, None, None)
         preds = self.post_process(preds)

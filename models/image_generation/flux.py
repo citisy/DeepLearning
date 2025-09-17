@@ -327,9 +327,9 @@ class Model(nn.Module):
         if self.training:
             raise NotImplementedError('Do not support train mode yet!')
         else:
-            return self.post_process(**kwargs)
+            return self.inference(**kwargs)
 
-    def post_process(self, x=None, t5_text_ids=None, clip_text_ids=None, mask_x=None, image_size=None, **kwargs):
+    def inference(self, x=None, t5_text_ids=None, clip_text_ids=None, mask_x=None, image_size=None, **kwargs):
         if x is None or not len(x):  # txt2img
             x = self.gen_x_t(t5_text_ids.shape[0], image_size)
             z0 = None
