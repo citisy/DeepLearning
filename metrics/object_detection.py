@@ -216,16 +216,30 @@ class Overlap:
     for ConfusionMatrix of classification"""
 
     @staticmethod
-    def point_in_line(points, lines):
+    def point_in_line(points, lines, close_mode=0):
         """point = a, line = (b1, b2)
-        point do not fall in the line means that
-            a after b1 and a before b2 (b1 < a < b2)
+        point fall in the line means that
+            a after b1 and a before b2
 
         Args:
             points: (n, )
             lines: (m, 2)
+            close_mode:
+                0: b1 < a < b2
+                1: b1 <= a < b2
+                2: b1 < a <= b2
+                3: b1 <= a <= b2
         """
-        f = (points[:, None] > lines[None, :, 0]) & (points[:, None] < lines[None, :, 1])
+        if close_mode == 0:
+            f = (points[:, None] > lines[None, :, 0]) & (points[:, None] < lines[None, :, 1])
+        elif close_mode == 1:
+            f = (points[:, None] >= lines[None, :, 0]) & (points[:, None] < lines[None, :, 1])
+        elif close_mode == 2:
+            f = (points[:, None] > lines[None, :, 0]) & (points[:, None] <= lines[None, :, 1])
+        elif close_mode == 3:
+            f = (points[:, None] >= lines[None, :, 0]) & (points[:, None] <= lines[None, :, 1])
+        else:
+            raise
         return f
 
     @staticmethod
@@ -239,7 +253,7 @@ class Overlap:
         """
 
     @staticmethod
-    def line(lines1, lines2):
+    def line(lines1, lines2, close_mode=0):
         """line1 = (a1, a2), line2 = (b1, b2),
         2 lines do not overlap means that
            a1 after b2 (a1 > b2)
@@ -248,11 +262,25 @@ class Overlap:
         Args:
             lines1: (n, 2)
             lines2: (m, 2)
+            close_mode:
+                0: ~(a1 > b2 | a2 < b1)
+                1: ~(a1 >= b2 | a2 < b1), allow (a1, b2) overlap
+                2: ~(a1 > b2 | a2 <= b1), allow (a2, b1) overlap
+                3: ~(a1 >= b2 | a2 <= b1) allow (a1, b2), (a2, b1)  overlap
         """
         a1, a2 = lines1.T
         b1, b2 = lines2.T
 
-        f = (a1[:, None] > b2[None, :]) | (a2[:, None] < b1[None, :])
+        if close_mode == 0:
+            f = (a1[:, None] > b2[None, :]) | (a2[:, None] < b1[None, :])
+        elif close_mode == 1:
+            f = (a1[:, None] >= b2[None, :]) | (a2[:, None] < b1[None, :])
+        elif close_mode == 2:
+            f = (a1[:, None] > b2[None, :]) | (a2[:, None] <= b1[None, :])
+        elif close_mode == 3:
+            f = (a1[:, None] >= b2[None, :]) | (a2[:, None] <= b1[None, :])
+        else:
+            raise
 
         return ~f
 

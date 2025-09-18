@@ -972,7 +972,7 @@ class ModelHooks:
         loop_objs, process_kwargs = self.on_predict_start(**kwargs)
         kwargs.update(process_kwargs)
 
-        total = total or len(objs[0])
+        total = total or (isinstance(objs[0], (list, tuple)) and len(objs[0])) or 1
         pbar = tqdm(total=total, desc=visualize.TextVisualize.highlight_str('Predict'))
         for i in range(0, total, batch_size):
             start_idx = i
