@@ -102,7 +102,7 @@ class SparseHead(nn.Module):
     def forward(self, hidden_state, input_ids, return_embedding: bool = True):
         token_weights = self.fcn(hidden_state)
         if not return_embedding:
-            return token_weights
+            return token_weights[:, :, 0]
 
         if self.training:
             embedding = torch.zeros(input_ids.size(0), input_ids.size(1), self.vocab_size).to(token_weights)
@@ -117,7 +117,7 @@ class SparseHead(nn.Module):
 
         unused_tokens = [self.cls_id, self.eos_id,self.pad_id, self.unk_tid]
         embedding[:, unused_tokens] *= 0.
-        return embedding[:, :, 0]
+        return embedding
 
 
 class ColbertHead(nn.Module):
