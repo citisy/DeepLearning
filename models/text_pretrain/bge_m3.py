@@ -117,7 +117,7 @@ class SparseHead(nn.Module):
 
         unused_tokens = [self.cls_id, self.eos_id,self.pad_id, self.unk_tid]
         embedding[:, unused_tokens] *= 0.
-        return embedding
+        return embedding[:, :, 0]
 
 
 class ColbertHead(nn.Module):

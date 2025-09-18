@@ -88,7 +88,7 @@ class LearnedPositionEmbedding(nn.Embedding):
 
     def forward(self, x, pad_id=0, start_pos=0):
         """make sure x.ndim >= 2 and x.shape[1] is seq_len"""
-        position_ids = self.make_position_ids(x, pad_id, start_pos).to(x.device)
+        position_ids = self.make_position_ids(x, pad_id, start_pos)
         return super().forward(position_ids)
 
 
