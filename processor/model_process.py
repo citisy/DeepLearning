@@ -999,7 +999,7 @@ class ModelHooks:
             if vis_pbar:
                 pbar.update(end_idx - start_idx)
 
-        return self.on_predict_end(**kwargs)
+        return self.on_predict_end(loop_objs, **kwargs)
 
     @torch.no_grad()
     def fragment_predict(self, *obj, **kwargs):
@@ -1045,6 +1045,6 @@ class ModelHooks:
         """visualize the model outputs usually"""
         return self.on_val_step_end(loop_objs, **kwargs)
 
-    def on_predict_end(self, process_results=dict(), **kwargs):
+    def on_predict_end(self, loop_objs, process_results=dict(), **kwargs):
         """visualize results and the return the results"""
         return process_results[self.model_name]
