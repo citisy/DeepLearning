@@ -557,7 +557,7 @@ class BaseBert(Process):
     def on_val_step_end(self, *args, **kwargs):
         """do not visualize"""
 
-    def on_val_end(self, process_results=dict(), is_visualize=False, max_vis_num=None, epoch=-1, **kwargs):
+    def on_val_end(self, loop_objs, process_results=dict(), is_visualize=False, max_vis_num=None, epoch=-1, **kwargs):
         # todo: make a file to be submitted to https://gluebenchmark.com directly
         if is_visualize:
             for name, results in process_results.items():

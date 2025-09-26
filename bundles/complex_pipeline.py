@@ -13,8 +13,8 @@ class FunAsr(Process):
         from bundles.complex_pipeline import FunAsr
 
         processor = FunAsr(
-            rec_model_dir='xxx',
             det_model_dir='xxx',
+            rec_model_dir='xxx',
             punc_model_dir='xxx',
             spk_model_dir='xxx',
         )
@@ -29,39 +29,59 @@ class FunAsr(Process):
     punc_model_dir: str
     spk_model_dir: str
 
+    det_processor_config = dict()
+    rec_processor_config = dict()
+    punc_processor_config = dict()
+    spk_processor_config = dict()
+
     def set_model(self):
         from .speech_detection import DFSMN
         from .speech_recognition import BiCifParaformer_Funasr
         from .text_classification import CTTransformer
         from .speech_pretrain import CAMPPlus
 
-        self.det_processor = DFSMN(
+        det_processor_config = dict(
             cmvn_path=f'{self.det_model_dir}/am.mvn',
             pretrain_model=f'{self.det_model_dir}/model.pt',
             device=self.device
         )
+        det_processor_config.update(self.det_processor_config)
+        self.det_processor = DFSMN(
+            **det_processor_config
+        )
         self.det_processor.init()
 
-        self.rec_processor = BiCifParaformer_Funasr(
+        rec_processor_config = dict(
             vocab_fn=f'{self.rec_model_dir}/tokens.json',
             seg_dict_path=f'{self.rec_model_dir}/seg_dict',
             cmvn_path=f'{self.rec_model_dir}/am.mvn',
             pretrain_model=f'{self.rec_model_dir}/model.pt',
             device=self.device
         )
-
+        rec_processor_config.update(self.rec_processor_config)
+        self.rec_processor = BiCifParaformer_Funasr(
+            **rec_processor_config
+        )
         self.rec_processor.init()
 
-        self.punc_processor = CTTransformer(
+        punc_processor_config = dict(
             vocab_fn=f'{self.punc_model_dir}/tokens.json',
             pretrain_model=f'{self.punc_model_dir}/model.pt',
             device=self.device
         )
+        punc_processor_config.update(self.punc_processor_config)
+        self.punc_processor = CTTransformer(
+            **punc_processor_config
+        )
         self.punc_processor.init()
 
-        self.spk_processor = CAMPPlus(
+        spk_processor_config = dict(
             pretrain_model=f'{self.spk_model_dir}/campplus_cn_common.bin',
             device=self.device
+        )
+        spk_processor_config.update(self.spk_processor_config)
+        self.spk_processor = CAMPPlus(
+            **spk_processor_config
         )
         self.spk_processor.init()
 

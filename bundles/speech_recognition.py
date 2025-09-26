@@ -74,6 +74,9 @@ class Funasr(DataHooks):
     train_dataset_ins = BaseAuDataset
     val_dataset_ins = BaseAuDataset
 
+    train_data_num: int = None
+    val_data_num: int = None
+
     cmvn_path: str
 
     def get_data(self, *args, train=True, set_task='', **kwargs) -> Optional[Iterable | Dataset | List[Dataset]]:
@@ -84,7 +87,8 @@ class Funasr(DataHooks):
             set_type=DataRegister.TRAIN if train else DataRegister.TEST,
             audio_type=DataRegister.ARRAY,
             set_task=set_task,
-            generator=False
+            generator=False,
+            max_size=self.train_data_num if train else self.val_data_num
         )[0]
 
     aug = Apply([
@@ -229,23 +233,24 @@ class BiCifParaformer(Process):
 
     def on_val_reprocess(self, loop_objs, process_results=dict(), **kwargs):
         model_results = loop_objs['model_results']
-        preds = model_results[self.model_name]['preds']
-        trues = model_results[self.model_name]['trues']
-        timestamps = model_results[self.model_name]['timestamps']
-        segments = self.tokenizer.decode_to_segments(preds)
+        for name in model_results:
+            preds = model_results[name]['preds']
+            trues = model_results[name]['trues']
+            timestamps = model_results[name]['timestamps']
+            segments = self.tokenizer.decode_to_segments(preds)
 
-        results = []
-        for segment, timestamp, true in zip(segments, timestamps, trues):
-            segment, timestamp = spliter.ToSegment().from_segment_by_word_piece_v2(segment, timestamp)
-            segment, timestamp = spliter.ToSegment().from_segment_by_merge_single_char(segment, timestamp)
-            pred = spliter.ToParagraphs().from_segments_with_zh_en_mix([segment])[0]
-            results.append(dict(
-                pred=pred,
-                true=true,
-                segment=segment,
-                timestamp=timestamp,
-            ))
-        process_results.setdefault(self.model_name, []).extend(results)
+            results = []
+            for segment, timestamp, true in zip(segments, timestamps, trues):
+                segment, timestamp = spliter.ToSegment().from_segment_by_word_piece_v2(segment, timestamp)
+                segment, timestamp = spliter.ToSegment().from_segment_by_merge_single_char(segment, timestamp)
+                pred = spliter.ToParagraphs().from_segments_with_zh_en_mix([segment])[0]
+                results.append(dict(
+                    pred=pred,
+                    true=true,
+                    segment=segment,
+                    timestamp=timestamp,
+                ))
+            process_results.setdefault(name, []).extend(results)
 
     def metric(self, **kwargs):
         process_results = self.predict(**kwargs)

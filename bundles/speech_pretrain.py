@@ -100,7 +100,7 @@ class CAMPPlus(Process):
         output['spk_embeddings'].extend(spk_embeddings)
         output['timestamps'].extend(timestamps)
 
-    def on_val_end(self, process_results=dict(), **kwargs):
+    def on_val_end(self, loop_objs, process_results=dict(), **kwargs):
         output = process_results[self.model_name]
         spk_embeddings = output['spk_embeddings']
         spk_embeddings = torch.stack(spk_embeddings)
@@ -143,5 +143,5 @@ class CAMPPlus(Process):
     def on_predict_reprocess(self, loop_objs, **kwargs):
         self.on_val_reprocess(loop_objs, **kwargs)
 
-    def on_predict_end(self, process_results=dict(), **kwargs):
-        return self.on_val_end(process_results=process_results, **kwargs)
+    def on_predict_end(self, *args, **kwargs):
+        return self.on_val_end(*args, **kwargs)

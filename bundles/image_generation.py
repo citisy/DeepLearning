@@ -96,7 +96,7 @@ class IgProcess(Process):
                         image_save_stem = f'{sub_name}{data_name}.{i}'
                         self.visualize_one(image, cache_dir, model_name, image_save_stem, **kwargs)
 
-    def on_val_end(self, process_results=dict(), save_synth=True, num_synth_per_image=64, is_visualize=False, max_vis_num=None, **kwargs):
+    def on_val_end(self, loop_objs, process_results=dict(), save_synth=True, num_synth_per_image=64, is_visualize=False, max_vis_num=None, **kwargs):
         if is_visualize and save_synth:
             results = [image for image in process_results[self.model_name]['fake_x']]
             max_vis_num = len(results)
@@ -160,7 +160,7 @@ class IgProcess(Process):
     ):
         if return_outputs:
             results = [image for image in process_results[self.model_name]['fake_x']]
-            self.on_val_end(process_results=process_results, **kwargs)
+            self.on_val_end(None, process_results=process_results, **kwargs)
             return results
 
     def visualize_synth(self, model_results, n, vis_num=0, save_to_one_dir=True, verbose=False, **kwargs):

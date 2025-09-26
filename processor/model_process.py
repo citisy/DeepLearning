@@ -893,12 +893,12 @@ class ModelHooks:
             self.on_val_reprocess(loop_objs, **kwargs)
             self.on_val_step_end(loop_objs, **kwargs)
 
-        return self.on_val_end(**kwargs)
+        return self.on_val_end(loop_objs, **kwargs)
 
     def register_val_start(self, func, **kwargs):
         self.val_start_container.update({func: kwargs})
 
-    def register_end_start(self, func, **kwargs):
+    def register_val_end(self, func, **kwargs):
         self.val_end_container.update({func: kwargs})
 
     def on_val_start(self, val_data=None, val_dataloader=None, batch_size=None, data_get_kwargs=dict(), dataloader_kwargs=dict(), epoch=-1, **kwargs):
@@ -954,10 +954,10 @@ class ModelHooks:
         """logic of predict results visualizing"""
         pass
 
-    def on_val_end(self, process_results=dict(), **kwargs):
+    def on_val_end(self, loop_objs, process_results=dict(), **kwargs):
         """save the results usually"""
         for func, params in self.val_end_container.items():
-            func(process_results=process_results, **params, **kwargs)
+            func(loop_objs=loop_objs, process_results=process_results, **params, **kwargs)
 
         return process_results
 
