@@ -53,7 +53,7 @@ class CAMPPlus(Process):
         timestamps = [ret['timestamp'] for ret in loop_inputs]
         chunk_speech, chunk_timestamps, chunk_idx = self.chunk_speech(speech, timestamps)
         chunk_speech = np.stack(chunk_speech, axis=0)
-        chunk_speech = torch.from_numpy(chunk_speech)
+        chunk_speech = torch.from_numpy(chunk_speech).to(self.device)
         model_inputs = dict(
             speech=chunk_speech,
             timestamps=chunk_timestamps,
