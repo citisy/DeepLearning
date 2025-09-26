@@ -79,9 +79,8 @@ class Funasr(DataHooks):
     def get_data(self, *args, train=True, set_task='', **kwargs) -> Optional[Iterable | Dataset | List[Dataset]]:
         from data_parse.au_data_parse.datasets.funasr import Loader, DataRegister
 
-        self.cmvn = load_cmvn(self.cmvn_path)
         loader = Loader(self.data_dir)
-        return loader(
+        return loader.load(
             set_type=DataRegister.TRAIN if train else DataRegister.TEST,
             audio_type=DataRegister.ARRAY,
             set_task=set_task,
@@ -121,6 +120,7 @@ class BiCifParaformer(Process):
         from models.speech_recognition.BiCifParaformer import Model
 
         self.model = Model()
+        self.cmvn = load_cmvn(self.cmvn_path)
 
     def load_pretrained(self):
         if hasattr(self, 'pretrain_model'):
@@ -194,14 +194,18 @@ class BiCifParaformer(Process):
                 text += self.tokenizer.eos_token
             texts.append(text)
         speech = pad_sequence(speech, batch_first=True, padding_value=0.0)
-        r = self.tokenizer.encode_paragraphs(texts)
-        return dict(
+        model_inputs = dict(
             speech=speech,
             speech_lens=speech_lens,
             texts=texts,
-            text_ids=torch.tensor(r['segments_ids'], device=self.device),
-            text_lens=torch.tensor(r['seq_lens'], device=self.device)
         )
+        if train:
+            r = self.tokenizer.encode_paragraphs(texts)
+            model_inputs.update(
+                text_ids=torch.tensor(r['segments_ids'], device=self.device),
+                text_lens=torch.tensor(r['seq_lens'], device=self.device)
+            )
+        return model_inputs
 
     def on_train_step(self, loop_objs, model_kwargs=dict(), **kwargs) -> dict:
         loop_inputs = loop_objs['loop_inputs']
@@ -232,7 +236,8 @@ class BiCifParaformer(Process):
 
         results = []
         for segment, timestamp, true in zip(segments, timestamps, trues):
-            segment, timestamp = spliter.ToSegment().from_segment_word_piece_v2(segment, timestamp)
+            segment, timestamp = spliter.ToSegment().from_segment_by_word_piece_v2(segment, timestamp)
+            segment, timestamp = spliter.ToSegment().from_segment_by_merge_single_char(segment, timestamp)
             pred = spliter.ToParagraphs().from_segments_with_zh_en_mix([segment])[0]
             results.append(dict(
                 pred=pred,
@@ -261,6 +266,35 @@ class BiCifParaformer(Process):
 
         return metric_results
 
+    sample_rate = 16000
+
+    def gen_predict_inputs(
+            self, *objs, start_idx=None, end_idx=None,
+            speech=None, speech_path=None,
+            source_speech=None, source_speech_path=None,
+            **kwargs
+    ) -> List[dict]:
+        if speech is None and speech_path:
+            if isinstance(speech_path, str):
+                speech_path = [speech_path]
+            speech = [os_lib.loader.load_audio(path, self.sample_rate) for path in speech_path]
+
+        if not isinstance(speech, list):
+            speech = [None] * start_idx + [speech] * (end_idx - start_idx)
+
+        inputs = []
+        for i in range(start_idx, end_idx):
+            per_input = dict(
+                audio=speech[i],
+                text=''
+            )
+            inputs.append(per_input)
+
+        return inputs
+
+    def on_predict_reprocess(self, loop_objs, **kwargs):
+        self.on_val_reprocess(loop_objs, **kwargs)
+
 
 class BiCifParaformer_Funasr(BiCifParaformer, Funasr):
     """
@@ -277,6 +311,10 @@ class BiCifParaformer_Funasr(BiCifParaformer, Funasr):
         )
 
         processor.init()
+
+        processor.single_predict(
+            speech_path='xxx'
+        )
 
         processor.metric(
             batch_size=batch_size,

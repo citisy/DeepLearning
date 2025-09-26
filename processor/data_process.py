@@ -268,8 +268,9 @@ class DataHooks:
             **dataloader_kwargs
         )
 
-    def get_val_dataloader(self, data_get_kwargs=dict(), dataloader_kwargs=dict()):
-        val_data = self.get_val_data(**data_get_kwargs)
+    def get_val_dataloader(self, val_data=None, data_get_kwargs=dict(), dataloader_kwargs=dict()):
+        if val_data is None:
+            val_data = self.get_val_data(**data_get_kwargs)
         val_data = self.val_data_preprocess(val_data)
         if not isinstance(val_data, Dataset):
             val_dataset = self.val_dataset_ins(val_data, augment_func=self.val_data_augment)

@@ -2,7 +2,7 @@ import logging
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import List, Optional, Dict, Union, Annotated, overload
+from typing import Iterable, Iterator, List, Optional, Dict, Union, Annotated, overload
 
 import numpy as np
 import torch
@@ -818,6 +818,7 @@ class ModelHooks:
             self,
             batch_size: int,
             val_dataloader: 'torch.utils.data.DataLoader' = None,
+            val_data: Optional[Iterable] = None,
 
             # for `get_data()`
             data_get_kwargs: dict = dict(),
@@ -834,12 +835,14 @@ class ModelHooks:
             # num for visualize
             max_vis_num: int = None,
 
+            vis_pbar=True,
+
             **kwargs
     ) -> dict:
         pass
 
     @torch.no_grad()
-    def predict(self, **kwargs) -> dict:
+    def predict(self, vis_pbar=True, **kwargs) -> dict:
         """
         do not distinguish val and test strategy
         the prediction procedure will be run the following pipelines:
@@ -871,7 +874,11 @@ class ModelHooks:
         loop_objs, process_kwargs = self.on_val_start(**kwargs)
         kwargs.update(process_kwargs)
 
-        for loop_inputs in tqdm(kwargs['val_dataloader'], desc=visualize.TextVisualize.highlight_str('Val')):
+        val_dataloader = kwargs['val_dataloader']
+        if vis_pbar:
+            val_dataloader = tqdm(val_dataloader, desc=visualize.TextVisualize.highlight_str('Val'))
+
+        for loop_inputs in val_dataloader:
             loop_objs.update(
                 loop_inputs=loop_inputs,
             )
@@ -894,12 +901,12 @@ class ModelHooks:
     def register_end_start(self, func, **kwargs):
         self.val_end_container.update({func: kwargs})
 
-    def on_val_start(self, val_dataloader=None, batch_size=None, data_get_kwargs=dict(), dataloader_kwargs=dict(), epoch=-1, **kwargs):
+    def on_val_start(self, val_data=None, val_dataloader=None, batch_size=None, data_get_kwargs=dict(), dataloader_kwargs=dict(), epoch=-1, **kwargs):
         assert self.models, 'model list is empty, it seems that you have not init the processor first, perhaps run `processor.init()` first?'
         assert batch_size, 'please set batch_size'
         dataloader_kwargs.setdefault('batch_size', batch_size)
         if val_dataloader is None:
-            val_dataloader = self.get_val_dataloader(data_get_kwargs=data_get_kwargs, dataloader_kwargs=dataloader_kwargs)
+            val_dataloader = self.get_val_dataloader(val_data=val_data, data_get_kwargs=data_get_kwargs, dataloader_kwargs=dataloader_kwargs)
 
         self.set_mode(train=False)
 
@@ -967,13 +974,14 @@ class ModelHooks:
             return ret
 
     @torch.no_grad()
-    def batch_predict(self, *objs, total=None, **kwargs):
+    def batch_predict(self, *objs, total=None, vis_pbar=True, **kwargs):
         batch_size = kwargs.setdefault('batch_size', 16)
         loop_objs, process_kwargs = self.on_predict_start(**kwargs)
         kwargs.update(process_kwargs)
 
         total = total or (isinstance(objs[0], (list, tuple)) and len(objs[0])) or 1
-        pbar = tqdm(total=total, desc=visualize.TextVisualize.highlight_str('Predict'))
+        if vis_pbar:
+            pbar = tqdm(total=total, desc=visualize.TextVisualize.highlight_str('Predict'))
         for i in range(0, total, batch_size):
             start_idx = i
             end_idx = min(i + batch_size, total)
@@ -988,7 +996,8 @@ class ModelHooks:
             )
             self.on_predict_reprocess(loop_objs, **kwargs)
             self.on_predict_step_end(loop_objs, **kwargs)
-            pbar.update(end_idx - start_idx)
+            if vis_pbar:
+                pbar.update(end_idx - start_idx)
 
         return self.on_predict_end(**kwargs)
 

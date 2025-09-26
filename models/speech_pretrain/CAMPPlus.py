@@ -125,10 +125,10 @@ class Model(nn.Module):
         if self.training:
             raise NotImplementedError
         else:
-            return self.post_process(*args, **kwargs)
+            return self.inference(*args, **kwargs)
 
-    def inference(self, x, is_final=True, segments=None, **kwargs):
-        x, _, _ = self.extract_feature(x)
+    def inference(self, speech, is_final=False, timestamps=None, **kwargs):
+        x, _, _ = self.extract_feature(speech)
 
         x = x.permute(0, 2, 1)  # (B,T,F) => (B,F,T)
         x = self.head(x)
@@ -138,10 +138,16 @@ class Model(nn.Module):
             hidden=x,
         )
         if is_final:
-            preds = self.cb_model(x)
-            outputs['preds'] = preds
-            if segments is not None:
-                outputs['segment_preds'] = self.extract_segments(segments, preds)
+            outputs.update(self.post_process(x, timestamps))
+        return outputs
+
+    def post_process(self, x, timestamps=None):
+        outputs = {}
+        preds = self.cb_model(x)
+        outputs['preds'] = preds
+        if timestamps is not None:
+            outputs['timestamps_preds'] = self.extract_segments(timestamps, preds)
+
         return outputs
 
     @staticmethod

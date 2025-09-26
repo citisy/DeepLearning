@@ -1,6 +1,13 @@
+from typing import List
+
 import torch
 import numpy as np
+
+from data_parse.nl_data_parse.pre_process import spliter
+from data_parse.nl_data_parse.pre_process.bundled import SimpleTokenizer
+from utils import torch_utils
 from .text_pretrain import TextProcessForBert, BaseBert as BertFull, FromBertHFPretrained
+from processor import Process
 
 
 class CoLA(TextProcessForBert):
@@ -139,3 +146,99 @@ class BertHF_SST2(Bert, FromBertHFPretrained, SST2):
             {'score': 0.92316}   # acc
             # benchmark: 0.9232
     """
+
+
+class CTTransformer(Process):
+    model_version = 'CTTransformer'
+
+    def set_model(self):
+        from models.text_classification.CTTransformer import Model
+        self.model = Model()
+
+    def set_tokenizer(self):
+        self.tokenizer = SimpleTokenizer.from_pretrained(
+            self.vocab_fn,
+            sp_token_dict=dict(
+                # blank='<blank>',
+                # sos='<s>',
+                # eos='</s>',
+                unk='<unk>',
+                ignore='<unk>'
+            )
+        )
+
+    def load_pretrained(self):
+        if self.pretrain_model:
+            from models.text_classification.CTTransformer import WeightConverter
+            tensor = torch.load(self.pretrain_model, map_location=torch.device('cpu'))
+            tensor = WeightConverter.from_official(tensor)
+
+            self.model.load_state_dict(tensor, strict=True)
+
+    def get_model_inputs(self, loop_inputs, train=True):
+        segments = [ret['segment'] for ret in loop_inputs]
+        segments_ids = self.tokenizer.encode_segments(segments)
+        segments_ids = torch_utils.Converter.force_to_tensors(segments_ids, self.device)
+        inputs = dict(
+            text_ids=segments_ids,
+            segments=segments,
+        )
+        return inputs
+
+    def on_val_step(self, loop_objs, model_kwargs=dict(), **kwargs) -> dict:
+        loop_inputs = loop_objs['loop_inputs']
+        model_inputs = self.get_model_inputs(loop_inputs, train=False)
+        model_inputs.update(model_kwargs)
+
+        model_results = {}
+        for name, model in self.models.items():
+            model_output = model(**model_inputs)
+            model_results[name] = model_output
+            model_results[name]['segments'] = model_inputs['segments']
+
+        return model_results
+
+    punc_list = ("，", "。", "？", "、")
+
+    def decode_segment(self, pred, segment):
+        new_segment = []
+        for punc_id, word in zip(pred, segment):
+            new_segment.append(word)
+            if punc_id > 1:
+                new_segment.append(self.punc_list[punc_id - 2])
+
+        return new_segment
+
+    def on_val_reprocess(self, loop_objs, process_results=dict(), **kwargs):
+        model_results = loop_objs['model_results']
+        preds = model_results[self.model_name]['preds']
+        segments = model_results[self.model_name]['segments']
+
+        results = []
+        for punc_ids, segment in zip(preds, segments):
+            segment = self.decode_segment(punc_ids, segment)
+            results.append(dict(
+                punc_ids=punc_ids,
+                segment=segment,
+            ))
+        process_results.setdefault(self.model_name, []).extend(results)
+
+    def gen_predict_inputs(
+            self, *objs, start_idx=None, end_idx=None,
+            segments=None,
+            **kwargs
+    ) -> List[dict]:
+        if isinstance(segments, List) and isinstance(segments[0], str):
+            segments = [None] * start_idx + [segments] * (end_idx - start_idx)
+
+        inputs = [
+            dict(
+                segment=segments[i],
+            )
+            for i in range(start_idx, end_idx)
+        ]
+
+        return inputs
+
+    def on_predict_reprocess(self, loop_objs, **kwargs):
+        self.on_val_reprocess(loop_objs, **kwargs)

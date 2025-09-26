@@ -73,11 +73,11 @@ class Model(nn.Module):
         if self.training:
             raise NotImplementedError
         else:
-            return self.post_process(*args, **kwargs)
+            return self.inference(*args, **kwargs)
 
-    def post_process(
+    def inference(
             self,
-            input_ids,  # (b, s)
+            text_ids,  # (b, s)
             caches=[],
             chunk_size=20,
             max_sentence_len=200,   # {3,4} is the end flag of a sequence.
@@ -85,16 +85,17 @@ class Model(nn.Module):
             **kwargs,
     ):
         if not caches:
-            caches = [torch.empty(0, dtype=torch.long, device=self.device) for _ in input_ids]
-        results = []
-        for ids, cache_ids in zip(input_ids, caches):
+            caches = [torch.empty(0, dtype=torch.long, device=self.device) for _ in text_ids]
+        preds = []
+        cache_ids = []
+        for ids, _cache_ids in zip(text_ids, caches):
             chunk_ids = chunker.WindowToChunkedParagraphs(max_len=chunk_size).from_paragraph(ids)
             n_chunk_seq = len(chunk_ids)
 
-            preds = []
+            _preds = []
             for si in range(n_chunk_seq):
-                per_chunk_ids = torch.tensor(chunk_ids[si]).to(self.device)
-                per_chunk_ids = torch.cat((cache_ids, per_chunk_ids), dim=0)
+                per_chunk_ids = chunk_ids[si]
+                per_chunk_ids = torch.cat((_cache_ids, per_chunk_ids), dim=0)
 
                 y = self.punc_forward(
                     ids=per_chunk_ids[None],
@@ -120,7 +121,7 @@ class Model(nn.Module):
                         eos_idx = last_comma_index
                         punc_ids[eos_idx] = self.sentence_end_id
 
-                    cache_ids = per_chunk_ids[eos_idx + 1:]
+                    _cache_ids = per_chunk_ids[eos_idx + 1:]
                     punc_ids = punc_ids[0: eos_idx + 1]
 
                 if not is_streaming_input and si == n_chunk_seq - 1:
@@ -128,19 +129,20 @@ class Model(nn.Module):
                     if punc_ids[-1] == 1:
                         punc_ids[-1] = 2
 
-                    cache_ids = torch.empty(0, dtype=torch.long, device=self.device)
+                    _cache_ids = torch.empty(0, dtype=torch.long, device=self.device)
 
-                preds.append(punc_ids)
+                _preds.append(punc_ids)
 
-            preds = torch.cat(preds)
-            results.append({
-                "preds": preds,
-                'cache_ids': cache_ids
-            })
-        return results
+            _preds = torch.cat(_preds)
+            preds.append(_preds)
+            cache_ids.append(_cache_ids)
+        return dict(
+            preds=preds,
+            cache_ids=cache_ids,
+        )
 
     def punc_forward(self, ids: torch.Tensor, seq_lens: torch.Tensor, **kwargs):
         x = self.embed(ids)
-        h, _ = self.encoder(x, seq_lens)
+        h = self.encoder(x, seq_lens)
         y = self.decoder(h)
         return y

@@ -115,7 +115,7 @@ class Model(nn.Module):
         if self.training:
             return self.fit(*args, **kwargs)
         else:
-            return self.post_process(*args, **kwargs)
+            return self.inference(*args, **kwargs)
 
 
 class SANMEncoder(nn.Module):

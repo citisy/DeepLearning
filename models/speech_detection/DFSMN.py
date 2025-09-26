@@ -11,6 +11,7 @@ import torchaudio.compliance.kaldi as kaldi
 from torch.nn.utils.rnn import pad_sequence
 
 from utils import torch_utils
+from ..bundles import WeightLoader
 
 
 class WeightConverter:
@@ -187,55 +188,55 @@ class Model(nn.Module):
             stats=stats
         )
 
-    def forward(self, x, **kwargs):
+    def forward(self, *args, **kwargs):
         if self.training:
             raise NotImplementedError
         else:
-            return self.inference(x, **kwargs)
+            return self.inference(*args, **kwargs)
 
-    def inference(self, x, is_final=True, is_streaming_input=None, chunk_size=60000, caches=None, **kwargs):
+    def inference(self, audio, is_final=True, is_streaming_input=None, chunk_size=60000, caches=None, **kwargs):
         if caches is None:
             caches = self.init_caches()
 
         chunk_stride_samples = chunk_size * self._sample_rate
         if is_streaming_input is None:
             is_streaming_input = chunk_size < 15000
-        n_chunk = np.ceil(len(x) / chunk_stride_samples).astype(int)
+        n_chunk = np.ceil(len(audio) / chunk_stride_samples).astype(int)
 
-        segments = []
+        timestamps = []
         for i in range(n_chunk):
             _is_final = is_final and i == n_chunk - 1
-            audio_sample_i = x[i * chunk_stride_samples: (i + 1) * chunk_stride_samples]
+            audio_sample_i = audio[i * chunk_stride_samples: (i + 1) * chunk_stride_samples]
 
             speech = audio_sample_i[None]
 
-            chunk_segment = self.detect_one_chunk(
+            chunk_timestamp = self.detect_one_chunk(
                 speech,
                 caches=caches,
                 is_final=_is_final,
                 is_streaming_input=is_streaming_input
             )
-            segments += chunk_segment
+            timestamps += chunk_timestamp
 
-        segments = self.merge_segments(segments)
+        timestamps = self.merge_timestamps(timestamps)
 
         return dict(
-            segments=segments,
+            timestamps=timestamps,
             caches=caches,
         )
 
-    def merge_segments(self, segments):
-        if not segments:
-            return segments
+    def merge_timestamps(self, timestamps):
+        if not timestamps:
+            return timestamps
 
-        new_segments = [segments[0]]
-        for seg in segments[1:]:
+        new_timestamps = [timestamps[0]]
+        for seg in timestamps[1:]:
             if seg[0] == -1:
-                new_segments[-1][-1] = seg[-1]
+                new_timestamps[-1][-1] = seg[-1]
             else:
-                new_segments.append(seg)
+                new_timestamps.append(seg)
 
-        return new_segments
+        return new_timestamps
 
     def detect_one_chunk(
             self,
@@ -272,11 +273,11 @@ class Model(nn.Module):
         else:
             self.detect_last_frames(stats, windows_detector)
 
-        segments = self.gen_segments(stats, is_streaming_input, is_final)
-        return segments
+        timestamps = self.gen_timestamps(stats, is_streaming_input, is_final)
+        return timestamps
 
-    def gen_segments(self, stats, is_streaming_input, is_final):
-        segments = []
+    def gen_timestamps(self, stats, is_streaming_input, is_final):
+        timestamps = []
         if len(stats.output_data_buf) > 0:
             for i in range(stats.output_data_buf_offset, len(stats.output_data_buf)):
                 data_buf = stats.output_data_buf[i]
@@ -307,10 +308,10 @@ class Model(nn.Module):
                     end_ms = data_buf.end_ms
                     stats.output_data_buf_offset += 1  # need update this parameter
 
-                segment = [start_ms, end_ms]
-                segments.append(segment)
+                timestamp = [start_ms, end_ms]
+                timestamps.append(timestamp)
 
-        return segments
+        return timestamps
 
     def compute_decibel(self, waveform):
         offsets = torch.arange(0, waveform.shape[1] - self.frame_sample_length + 1, self.frame_shift_length)

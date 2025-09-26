@@ -195,14 +195,14 @@ class CosyVoice(Process):
                 _model_inputs = dict()
                 for k, v in model_inputs.items():
                     if k in ['prompt_text_ids', 'prompt_text_ids_len', 'prompt_speech', 'text_ids', 'text_ids_len']:
-                        _model_inputs[k] = v[i:i+batch_size]
+                        _model_inputs[k] = v[i:i + batch_size]
                     else:
                         _model_inputs[k] = v
 
                 _model_inputs.update(model_kwargs)
 
                 model_outputs = model(**_model_inputs)
-                query_speeches += model_outputs['tts_speech']
+                query_speeches += model_outputs['hidden']
 
             query_speeches = math_utils.unique_gather(batch_idx, query_speeches)
             query_speeches = [torch.cat(q, dim=1).cpu() for q in query_speeches]
@@ -213,17 +213,20 @@ class CosyVoice(Process):
 
         return model_results
 
-    def gen_predict_inputs(self, *objs, start_idx=None, end_idx=None, prompt_speech_path=None, source_speech_path=None, **kwargs) -> List[dict]:
-        prompt_speech = None
-        if prompt_speech_path:
+    def gen_predict_inputs(
+            self, *objs, start_idx=None, end_idx=None,
+            prompt_speech=None, prompt_speech_path=None,
+            source_speech=None, source_speech_path=None,
+            **kwargs
+    ) -> List[dict]:
+        if prompt_speech is None and prompt_speech_path:
             prompt_speech, sr = os_lib.loader.load_audio_from_torchaudio(prompt_speech_path, backend='soundfile')
             prompt_speech = prompt_speech.mean(dim=0, keepdim=True)
             if sr != 16000:
                 assert sr > 16000, f'wav sample rate {sr} must be greater than 16000'
                 prompt_speech = torchaudio.transforms.Resample(orig_freq=sr, new_freq=16000)(prompt_speech)
 
-        source_speech = None
-        if source_speech_path:
+        if source_speech is None and source_speech_path:
             source_speech, _ = os_lib.loader.load_audio_from_torchaudio(source_speech_path)
 
         inputs = []
