@@ -1,3 +1,4 @@
+import torch.nn.functional as F
 from torch import nn
 
 from models.layers import Linear
@@ -35,9 +36,11 @@ class Head(nn.Module):
         self.fcn1 = Linear(in_features, in_features, mode='dla', act=nn.Tanh(), drop_prob=drop_prob)
         self.fcn2 = Linear(in_features, out_features, mode='dl')
 
-    def forward(self, hidden_states):
+    def forward(self, hidden_states, normalize=False):
         # take <s> token (equiv. to [CLS])
         x = hidden_states[:, 0, :]
         x = self.fcn1(x)
         x = self.fcn2(x)
+        if normalize:
+            x = F.sigmoid(x)
         return x

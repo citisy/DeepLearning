@@ -546,8 +546,13 @@ class ModelHooks:
 
         metric_kwargs = metric_kwargs.copy()
         metric_kwargs.setdefault('batch_size', batch_size)
-        metric_kwargs.setdefault('dataloader_kwargs', {})
-        metric_kwargs['dataloader_kwargs'] = configs.ConfigObjParse.merge_dict(dataloader_kwargs, metric_kwargs['dataloader_kwargs'])
+        val_data_get_kwargs = configs.ConfigObjParse.merge_dict(data_get_kwargs, metric_kwargs.get('data_get_kwargs', dict()))
+        val_dataloader_kwargs = configs.ConfigObjParse.merge_dict(dataloader_kwargs, metric_kwargs.get('dataloader_kwargs', dict()))
+        val_dataloader_kwargs['batch_size'] = metric_kwargs['batch_size']
+        metric_kwargs.update(
+            data_get_kwargs=val_data_get_kwargs,
+            dataloader_kwargs=val_data_get_kwargs,
+        )
 
         dataloader_kwargs.setdefault('batch_size', batch_size)
         if train_dataloader is None:
@@ -555,7 +560,7 @@ class ModelHooks:
 
         if check_period:
             if val_dataloader is None:
-                val_dataloader = self.get_val_dataloader(data_get_kwargs=data_get_kwargs, dataloader_kwargs=dataloader_kwargs)
+                val_dataloader = self.get_val_dataloader(data_get_kwargs=val_data_get_kwargs, dataloader_kwargs=val_dataloader_kwargs)
             metric_kwargs.setdefault('val_dataloader', val_dataloader)
             s = 'epochs' if self.check_strategy == EPOCH else 'nums'
             self.log(f'check_strategy = `{self.check_strategy}`, it will be check the training result in every {check_period} {s}')
