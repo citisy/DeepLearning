@@ -16,13 +16,12 @@ class CAMPPlus(Process):
         self.model = Model()
 
     def load_pretrained(self):
-        if self.pretrain_model:
-            from models.speech_pretrain.CAMPPlus import Model, WeightConverter
+        from models.speech_pretrain.CAMPPlus import WeightConverter
 
-            tensor = torch.load(self.pretrain_model, map_location=torch.device('cpu'))
-            tensor = WeightConverter.from_official(tensor)
+        tensor = torch.load(self.pretrained_model, map_location=torch.device('cpu'))
+        tensor = WeightConverter.from_official(tensor)
 
-            self.model.load_state_dict(tensor, strict=True)
+        self.model.load_state_dict(tensor, strict=True)
 
     def chunk_speech(self, speech, timestamps, seg_dur=1.5, seg_shift=0.75):
         chunk_timestamps = []

@@ -35,9 +35,6 @@ class SegDataset(BaseImgDataset):
 
 
 class SegProcess(Process):
-    use_scaler = True
-    use_scheduler = True
-
     out_features: int
 
     def set_optimizer(self, lr=0.001, momentum=0.9, weight_decay=1e-4, **kwargs):
@@ -382,12 +379,11 @@ class SAM_Voc(SegProcess, VocForSAM):
         )
 
     def load_pretrained(self):
-        if hasattr(self, 'pretrain_model'):
-            from models.semantic_segmentation.SAM import WeightConverter
+        from models.semantic_segmentation.SAM import WeightConverter
 
-            state_dict = torch_utils.Load.from_file(self.pretrain_model)
-            state_dict = WeightConverter.from_official(state_dict)
-            self.model.load_state_dict(state_dict, strict=False)
+        state_dict = torch_utils.Load.from_file(self.pretrained_model)
+        state_dict = WeightConverter.from_official(state_dict)
+        self.model.load_state_dict(state_dict, strict=False)
 
 
 class U2net_Voc(SegProcess, Voc):

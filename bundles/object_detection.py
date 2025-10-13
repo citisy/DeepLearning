@@ -35,9 +35,6 @@ class OdDataset(BaseImgDataset):
 
 
 class OdProcess(Process):
-    use_scaler = True
-    use_scheduler = True
-
     n_classes: int
     in_ch: int = 3
     input_size: int
@@ -508,17 +505,16 @@ class PPOCRv4Det(Process):
         self.model = Model(**Config.get(self.config_version))
 
     def load_pretrained(self):
-        if hasattr(self, 'pretrained_model'):
-            from models.object_detection.PPOCRv4_det import WeightConverter
+        from models.object_detection.PPOCRv4_det import WeightConverter
 
-            state_dict = torch_utils.Load.from_file(self.pretrained_model)
-            if self.config_version == 'teacher':
-                state_dict = WeightConverter.from_teacher(state_dict)
-            else:
-                state_dict = WeightConverter.from_student(state_dict)
-            self.model.load_state_dict(state_dict, strict=False)
-            # so silly that, import paddle will clear the logger settings, so reinit the logger
-            log_utils.logger_init()
+        state_dict = torch_utils.Load.from_file(self.pretrained_model)
+        if self.config_version == 'teacher':
+            state_dict = WeightConverter.from_teacher(state_dict)
+        else:
+            state_dict = WeightConverter.from_student(state_dict)
+        self.model.load_state_dict(state_dict, strict=False)
+        # so silly that, import paddle will clear the logger settings, so reinit the logger
+        log_utils.logger_init()
 
     def on_train_step(self, loop_objs, **kwargs) -> dict:
         loop_inputs = loop_objs['loop_inputs']

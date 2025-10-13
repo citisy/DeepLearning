@@ -18,12 +18,11 @@ class DFSMN(Process):
         self.model = Model(cmvn)
 
     def load_pretrained(self):
-        if hasattr(self, 'pretrain_model'):
-            from models.speech_detection.DFSMN import WeightConverter, WeightLoader
+        from models.speech_detection.DFSMN import WeightConverter, WeightLoader
 
-            state_dict = WeightLoader.auto_load(self.pretrain_model, map_location=self.device)
-            state_dict = WeightConverter.from_official(state_dict)
-            self.model.load_state_dict(state_dict, strict=True)
+        state_dict = WeightLoader.auto_load(self.pretrained_model, map_location=self.device)
+        state_dict = WeightConverter.from_official(state_dict)
+        self.model.load_state_dict(state_dict, strict=True)
 
     def get_model_inputs(self, loop_inputs, train=True):
         return dict(

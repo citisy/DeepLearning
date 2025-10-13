@@ -10,7 +10,7 @@ class BgeReranker(Process):
     Usage:
         model_dir = 'xxx'
         processor = BgeReranker(
-            pretrain_model=f'{model_dir}/model.safetensors',
+            pretrained_model=f'{model_dir}/model.safetensors',
             vocab_fn=f'{model_dir}/tokenizer.json',
             encoder_fn=f'{model_dir}/sentencepiece.bpe.model'
         )
@@ -34,12 +34,11 @@ class BgeReranker(Process):
         self.tokenizer = bundled.XLMRobertaTokenizer.from_pretrained(self.vocab_fn, self.encoder_fn)
 
     def load_pretrained(self):
-        if self.pretrain_model:
-            from models.text_similarity.bge_reranker import WeightConverter
-            from models.bundles import WeightLoader
-            tensors = WeightLoader.auto_load(self.pretrain_model)
-            tensors = WeightConverter.from_hf(tensors)
-            self.model.load_state_dict(tensors, strict=True)
+        from models.text_similarity.bge_reranker import WeightConverter
+        from models.bundles import WeightLoader
+        tensors = WeightLoader.auto_load(self.pretrained_model)
+        tensors = WeightConverter.from_hf(tensors)
+        self.model.load_state_dict(tensors, strict=True)
 
     def get_model_inputs(self, loop_inputs, train=True):
         pair_paragraphs = [ret['text_pair'] for ret in loop_inputs]
@@ -89,7 +88,7 @@ class BgeM3(Process):
     Usage:
         model_dir = 'xxx'
         processor = BgeM3(
-            pretrain_model=model_dir,
+            pretrained_model=model_dir,
             vocab_fn=f'{model_dir}/tokenizer.json',
             encoder_fn=f'{model_dir}/sentencepiece.bpe.model'
         )
@@ -122,16 +121,15 @@ class BgeM3(Process):
         self.tokenizer = bundled.XLMRobertaTokenizer.from_pretrained(self.vocab_fn, self.encoder_fn)
 
     def load_pretrained(self):
-        if self.pretrain_model:
-            from models.text_pretrain.bge_m3 import WeightConverter
-            from models.bundles import WeightLoader
-            tensors = {
-                'backbone': WeightLoader.auto_load(f'{self.pretrain_model}/pytorch_model.bin'),
-                'sparse': WeightLoader.auto_load(f'{self.pretrain_model}/sparse_linear.pt'),
-                'colbert': WeightLoader.auto_load(f'{self.pretrain_model}/colbert_linear.pt'),
-            }
-            tensors = WeightConverter.from_hf(tensors)
-            self.model.load_state_dict(tensors, strict=False)
+        from models.text_pretrain.bge_m3 import WeightConverter
+        from models.bundles import WeightLoader
+        tensors = {
+            'backbone': WeightLoader.auto_load(f'{self.pretrained_model}/pytorch_model.bin'),
+            'sparse': WeightLoader.auto_load(f'{self.pretrained_model}/sparse_linear.pt'),
+            'colbert': WeightLoader.auto_load(f'{self.pretrained_model}/colbert_linear.pt'),
+        }
+        tensors = WeightConverter.from_hf(tensors)
+        self.model.load_state_dict(tensors, strict=False)
 
     def get_model_inputs(self, loop_inputs, train=True):
         pair_paragraphs = [ret['text_pair'] for ret in loop_inputs]

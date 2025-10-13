@@ -85,7 +85,7 @@ class Bert_CoLA(McMetric, Bert, CoLA):
 
             # about 200M data pretrain
             # it seems that the pretraining model has significantly influenced the score
-            Process(pretrain_model='...', vocab_fn='...').run(max_epoch=5, train_batch_size=128, fit_kwargs=dict(check_period=1))
+            Process(pretrained_model='...', vocab_fn='...').run(max_epoch=5, train_batch_size=128, fit_kwargs=dict(check_period=1))
             {'score': 0.10233}  # Matthew's Corr
     """
 
@@ -98,7 +98,7 @@ class BertHF_CoLA(McMetric, Bert, FromBertHFPretrained, CoLA):
             from bundles.text_classification import BertHF_CoLA as Process
 
             # if using `bert-base-uncased` pretrain model
-            Process(pretrain_model='...', vocab_fn='...').run(max_epoch=5, train_batch_size=128, fit_kwargs=dict(check_period=1))
+            Process(pretrained_model='...', vocab_fn='...').run(max_epoch=5, train_batch_size=128, fit_kwargs=dict(check_period=1))
             {'score': 0.5481}  # Matthew's Corr
             # benchmark: 0.5653
     """
@@ -116,7 +116,7 @@ class Bert_SST2(Bert, SST2):
             {'score': 0.78899}     # acc
 
             # about 200M data pretrain
-            Process(pretrain_model='...', vocab_fn='...').run(max_epoch=5, train_batch_size=128, fit_kwargs=dict(check_period=1))
+            Process(pretrained_model='...', vocab_fn='...').run(max_epoch=5, train_batch_size=128, fit_kwargs=dict(check_period=1))
             {'score': 0.83142}     # acc
     """
 
@@ -142,7 +142,7 @@ class BertHF_SST2(Bert, FromBertHFPretrained, SST2):
             from bundles.text_classification import BertHF_SST2 as Process
 
             # if using `bert-base-uncased` pretrain model
-            Process(pretrain_model='...', vocab_fn='...').run(max_epoch=5, train_batch_size=128, fit_kwargs=dict(check_period=1))
+            Process(pretrained_model='...', vocab_fn='...').run(max_epoch=5, train_batch_size=128, fit_kwargs=dict(check_period=1))
             {'score': 0.92316}   # acc
             # benchmark: 0.9232
     """
@@ -168,12 +168,11 @@ class CTTransformer(Process):
         )
 
     def load_pretrained(self):
-        if self.pretrain_model:
-            from models.text_classification.CTTransformer import WeightConverter
-            tensor = torch.load(self.pretrain_model, map_location=torch.device('cpu'))
-            tensor = WeightConverter.from_official(tensor)
+        from models.text_classification.CTTransformer import WeightConverter
+        tensor = torch.load(self.pretrained_model, map_location=torch.device('cpu'))
+        tensor = WeightConverter.from_official(tensor)
 
-            self.model.load_state_dict(tensor, strict=True)
+        self.model.load_state_dict(tensor, strict=True)
 
     def get_model_inputs(self, loop_inputs, train=True):
         segments = [ret['segment'] for ret in loop_inputs]

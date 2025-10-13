@@ -77,26 +77,23 @@ class CosyVoice(Process):
             )
         )
 
-    use_pretrained = True
-
     def load_pretrained(self):
-        if self.use_pretrained:
-            from models.speech_generation.CosyVoice import WeightConverter
+        from models.speech_generation.CosyVoice import WeightConverter
 
-            llm_state_dict = torch.load(f'{self.model_dir}/llm.pt')
-            llm_state_dict = WeightConverter.from_official(llm_state_dict)
-            self.model.llm.load_state_dict(llm_state_dict, strict=True, assign=True)
+        llm_state_dict = torch.load(f'{self.model_dir}/llm.pt')
+        llm_state_dict = WeightConverter.from_official(llm_state_dict)
+        self.model.llm.load_state_dict(llm_state_dict, strict=True, assign=True)
 
-            flow_state_dict = torch.load(f'{self.model_dir}/flow.pt')
-            flow_state_dict = WeightConverter.from_official(flow_state_dict)
-            self.model.flow.load_state_dict(flow_state_dict, strict=True, assign=True)
+        flow_state_dict = torch.load(f'{self.model_dir}/flow.pt')
+        flow_state_dict = WeightConverter.from_official(flow_state_dict)
+        self.model.flow.load_state_dict(flow_state_dict, strict=True, assign=True)
 
-            hift_state_dict = torch.load(f'{self.model_dir}/hift.pt')
-            hift_state_dict = WeightConverter.from_official(hift_state_dict)
-            self.model.hift.load_state_dict(hift_state_dict, strict=True, assign=True)
+        hift_state_dict = torch.load(f'{self.model_dir}/hift.pt')
+        hift_state_dict = WeightConverter.from_official(hift_state_dict)
+        self.model.hift.load_state_dict(hift_state_dict, strict=True, assign=True)
 
-            spk2info = torch.load(f'{self.model_dir}/spk2info.pt')
-            self.model.front.update_spk2info(spk2info)
+        spk2info = torch.load(f'{self.model_dir}/spk2info.pt')
+        self.model.front.update_spk2info(spk2info)
 
     def set_tokenizer(self):
         from data_parse.nl_data_parse.pre_process.bundled import WhisperTokenizer

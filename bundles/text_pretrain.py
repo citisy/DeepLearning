@@ -386,8 +386,6 @@ class BaseBert(Process):
     model_version = 'bert'
     is_token_cls = True
     is_seq_cls = True
-    use_scaler = True
-    scheduler_strategy = 'step'  # step
     max_seq_len: int
 
     def set_model(self):
@@ -602,11 +600,10 @@ class FromBertHFPretrained(CheckpointHooks):
     """load pretrain model from hugging face"""
 
     def load_pretrained(self):
-        if hasattr(self, 'pretrain_model'):
-            from models.text_pretrain.bert import WeightLoader, WeightConverter
-            state_dict = WeightLoader.from_hf(self.pretrain_model)
-            state_dict = WeightConverter.from_hf(state_dict)
-            self.model.load_state_dict(state_dict, strict=False)
+        from models.text_pretrain.bert import WeightLoader, WeightConverter
+        state_dict = WeightLoader.from_hf(self.pretrained_model)
+        state_dict = WeightConverter.from_hf(state_dict)
+        self.model.load_state_dict(state_dict, strict=False)
 
 
 class BertMLM(BaseBert, FromBertHFPretrained, TextProcessForBert):
@@ -618,7 +615,7 @@ class BertMLM(BaseBert, FromBertHFPretrained, TextProcessForBert):
 
             model_dir = 'xxx'
             process = Process(
-                pretrain_model=f'{model_dir}/pytorch_model.bin',
+                pretrained_model=f'{model_dir}/pytorch_model.bin',
                 vocab_fn=f'{model_dir}/vocab.txt'
             )
             process.init()
@@ -670,7 +667,7 @@ class BgeM3(Process):
     Usage:
         model_dir = 'xxx'
         processor = BgeM3(
-            pretrain_model=model_dir,
+            pretrained_model=model_dir,
             vocab_fn=f'{model_dir}/tokenizer.json',
             encoder_fn=f'{model_dir}/sentencepiece.bpe.model'
         )
@@ -704,16 +701,15 @@ class BgeM3(Process):
         self.tokenizer = bundled.XLMRobertaTokenizer.from_pretrained(self.vocab_fn, self.encoder_fn)
 
     def load_pretrained(self):
-        if self.pretrain_model:
-            from models.text_pretrain.bge_m3 import WeightConverter
-            from models.bundles import WeightLoader
-            tensors = {
-                'backbone': WeightLoader.auto_load(f'{self.pretrain_model}/pytorch_model.bin'),
-                'sparse': WeightLoader.auto_load(f'{self.pretrain_model}/sparse_linear.pt'),
-                'colbert': WeightLoader.auto_load(f'{self.pretrain_model}/colbert_linear.pt'),
-            }
-            tensors = WeightConverter.from_hf(tensors)
-            self.model.load_state_dict(tensors, strict=False)
+        from models.text_pretrain.bge_m3 import WeightConverter
+        from models.bundles import WeightLoader
+        tensors = {
+            'backbone': WeightLoader.auto_load(f'{self.pretrained_model}/pytorch_model.bin'),
+            'sparse': WeightLoader.auto_load(f'{self.pretrained_model}/sparse_linear.pt'),
+            'colbert': WeightLoader.auto_load(f'{self.pretrained_model}/colbert_linear.pt'),
+        }
+        tensors = WeightConverter.from_hf(tensors)
+        self.model.load_state_dict(tensors, strict=False)
 
     def get_model_inputs(self, loop_inputs, train=True):
         paragraphs = [ret['text'] for ret in loop_inputs]

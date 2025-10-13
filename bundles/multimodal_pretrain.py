@@ -31,20 +31,19 @@ class DataProcessForQwen2Vl(DataHooks):
 
 
 class FromQwen2VlPretrained(CheckpointHooks):
-    pretrain_model: str | List[str]
+    pretrained_model: str | List[str]
 
     def load_pretrained(self):
-        if hasattr(self, 'pretrain_model'):
-            from models.multimodal_pretrain.Qwen2_VL import WeightLoader, WeightConverter
+        from models.multimodal_pretrain.Qwen2_VL import WeightLoader, WeightConverter
 
-            if Path(self.pretrain_model).is_dir():
-                self.pretrain_model = [str(fp) for fp in os_lib.find_all_suffixes_files(self.pretrain_model, ['.safetensors'])]
+        if Path(self.pretrained_model).is_dir():
+            self.pretrained_model = [str(fp) for fp in os_lib.find_all_suffixes_files(self.pretrained_model, ['.safetensors'])]
 
-            state_dict = WeightLoader.auto_load(self.pretrain_model)
-            state_dict = WeightConverter.from_official(state_dict)
-            self.model.load_state_dict(state_dict, strict=True, assign=True)
+        state_dict = WeightLoader.auto_load(self.pretrained_model)
+        state_dict = WeightConverter.from_official(state_dict)
+        self.model.load_state_dict(state_dict, strict=True, assign=True)
 
-            self.log(f'Loaded pretrained model!')
+        self.log(f'Loaded pretrained model!')
 
 
 class BaseQwen2Vl(Process):
@@ -58,7 +57,8 @@ class BaseQwen2Vl(Process):
             self.model = Model(**Config.get(self.config_version))
 
     def set_model_status(self):
-        self.load_pretrained()
+        if self.use_pretrained:
+            self.load_pretrained()
         if not isinstance(self.device, list):
             self.model.to(self.device)
 
@@ -156,7 +156,7 @@ class Qwen2Vl(FromQwen2VlPretrained, DataProcessForQwen2Vl, Qwen2VlPredictor):
 
             model_dir = 'xxx'
             process = Process(
-                pretrain_model=model_dir,
+                pretrained_model=model_dir,
                 vocab_fn=f'{model_dir}/vocab.json',
                 encoder_fn=f'{model_dir}/merges.txt',
                 config_version='2b'  # ['2b', '7b', '72b']

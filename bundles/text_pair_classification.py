@@ -91,7 +91,6 @@ class RTE(TextPairProcessForBert):
 
 class Bert(BertFull):
     is_token_cls = False  # only nsp strategy
-    use_scheduler = True
 
     def set_model(self):
         from models.text_pair_classification.bert import Model
@@ -110,7 +109,7 @@ class Bert_MNLI(Bert, MNLI):
             from bundles.text_pair_classification import Bert_MNLI as Process
 
             # about 200M data pretrain
-            process = Process(pretrain_model='...', vocab_fn='...')
+            process = Process(pretrained_model='...', vocab_fn='...')
             process.fit(max_epoch=5, batch_size=128, dataloader_kwargs=dict(num_workers=8))
 
             process.metric(batch_size=128, data_get_kwargs=dict(task='matched'))
@@ -129,7 +128,7 @@ class BertHF_MNLI(Bert, FromBertHFPretrained, MNLI):
             from bundles.text_pair_classification import BertHF_MNLI as Process
 
             # if using `bert-base-uncased` pretrain model
-            process = Process(pretrain_model='...', vocab_fn='...')
+            process = Process(pretrained_model='...', vocab_fn='...')
             process.init()
             process.fit(max_epoch=5, batch_size=128, dataloader_kwargs=dict(num_workers=8))
 
@@ -151,7 +150,7 @@ class Bert_QQP(Bert, QQP):
             from bundles.text_pair_classification import Bert_QQP as Process
 
             # about 200M data pretrain
-            Process(pretrain_model='...', vocab_fn='...').run(max_epoch=5, train_batch_size=128, predict_batch_size=128, check_period=1)
+            Process(pretrained_model='...', vocab_fn='...').run(max_epoch=5, train_batch_size=128, predict_batch_size=128, check_period=1)
             {'score': 0.86450/0.82584}    # acc/f1
     """
 
@@ -164,7 +163,7 @@ class BertHF_QQP(Bert, FromBertHFPretrained, QQP):
             from bundles.text_pair_classification import BertHF_QQP as Process
 
             # if using `bert-base-uncased` pretrain model
-            Process(pretrain_model='...', vocab_fn='...').run(max_epoch=5, train_batch_size=128, fit_kwargs=dict(check_period=1))
+            Process(pretrained_model='...', vocab_fn='...').run(max_epoch=5, train_batch_size=128, fit_kwargs=dict(check_period=1))
             {'score': 0.9117/0.8803}    # acc/f1
             # benchmark: 0.9071/0.8749
     """
@@ -182,7 +181,7 @@ class Bert_QNLI(Bert, QNLI):
             {'score': 0.5712}   # acc
 
             # about 200M data pretrain
-            Process(pretrain_model='...', vocab_fn='...').run(max_epoch=5, train_batch_size=128, fit_kwargs=dict(check_period=1))
+            Process(pretrained_model='...', vocab_fn='...').run(max_epoch=5, train_batch_size=128, fit_kwargs=dict(check_period=1))
             {'score': 0.8002}   # acc
 
     """
@@ -209,7 +208,7 @@ class BertHF_QNLI(Bert, FromBertHFPretrained, QNLI):
             from bundles.text_pair_classification import BertHF_QNLI as Process
 
             # if using `bert-base-uncased` pretrain model
-            Process(pretrain_model='...', vocab_fn='...').run(max_epoch=5, train_batch_size=128, fit_kwargs=dict(check_period=1))
+            Process(pretrained_model='...', vocab_fn='...').run(max_epoch=5, train_batch_size=128, fit_kwargs=dict(check_period=1))
             {'score': 0.89254}   # acc
             # benchmark: 0.9066
     """
@@ -223,7 +222,7 @@ class Bert_MRPC(Bert, MRPC):
             from bundles.text_pair_classification import Bert_QNLI as Process
 
             # about 200M data pretrain
-            Process(pretrain_model='...', vocab_fn='...').run(max_epoch=5, train_batch_size=128, fit_kwargs=dict(check_period=1))
+            Process(pretrained_model='...', vocab_fn='...').run(max_epoch=5, train_batch_size=128, fit_kwargs=dict(check_period=1))
             {'score': 0.71420/0.80032}   # acc/f1
     """
 
@@ -236,7 +235,7 @@ class BertHF_MRPC(Bert, FromBertHFPretrained, MRPC):
             from bundles.text_pair_classification import BertHF_MRPC as Process
 
             # if using `bert-base-uncased` pretrain model
-            Process(pretrain_model='...', vocab_fn='...').run(max_epoch=5, train_batch_size=128, fit_kwargs=dict(check_period=1))
+            Process(pretrained_model='...', vocab_fn='...').run(max_epoch=5, train_batch_size=128, fit_kwargs=dict(check_period=1))
             {'score': 0.8521/0.8913}   # acc/f1
             # benchmark: 0.8407/0.8885
     """
@@ -250,7 +249,7 @@ class Bert_RTE(Bert, RTE):
             from bundles.text_pair_classification import Bert_RTE as Process
 
             # about 200M data pretrain
-            Process(pretrain_model='...', vocab_fn='...').run(max_epoch=5, train_batch_size=128, fit_kwargs=dict(check_period=1))
+            Process(pretrained_model='...', vocab_fn='...').run(max_epoch=5, train_batch_size=128, fit_kwargs=dict(check_period=1))
             {'score': 0.57761}   # acc
     """
 
@@ -263,7 +262,7 @@ class BertHF_RTE(Bert, FromBertHFPretrained, RTE):
             from bundles.text_pair_classification import BertHF_RTE as Process
 
             # if using `bert-base-uncased` pretrain model
-            Process(pretrain_model='...', vocab_fn='...').run(max_epoch=5, train_batch_size=128, fit_kwargs=dict(check_period=1))
+            Process(pretrained_model='...', vocab_fn='...').run(max_epoch=5, train_batch_size=128, fit_kwargs=dict(check_period=1))
             {'score': 0.6859}   # acc
             # benchmark: 0.6570
     """

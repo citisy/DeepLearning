@@ -42,7 +42,7 @@ class FunAsr(Process):
 
         det_processor_config = dict(
             cmvn_path=f'{self.det_model_dir}/am.mvn',
-            pretrain_model=f'{self.det_model_dir}/model.pt',
+            pretrained_model=f'{self.det_model_dir}/model.pt',
             device=self.device
         )
         det_processor_config.update(self.det_processor_config)
@@ -55,7 +55,7 @@ class FunAsr(Process):
             vocab_fn=f'{self.rec_model_dir}/tokens.json',
             seg_dict_path=f'{self.rec_model_dir}/seg_dict',
             cmvn_path=f'{self.rec_model_dir}/am.mvn',
-            pretrain_model=f'{self.rec_model_dir}/model.pt',
+            pretrained_model=f'{self.rec_model_dir}/model.pt',
             device=self.device
         )
         rec_processor_config.update(self.rec_processor_config)
@@ -66,7 +66,7 @@ class FunAsr(Process):
 
         punc_processor_config = dict(
             vocab_fn=f'{self.punc_model_dir}/tokens.json',
-            pretrain_model=f'{self.punc_model_dir}/model.pt',
+            pretrained_model=f'{self.punc_model_dir}/model.pt',
             device=self.device
         )
         punc_processor_config.update(self.punc_processor_config)
@@ -76,7 +76,7 @@ class FunAsr(Process):
         self.punc_processor.init()
 
         spk_processor_config = dict(
-            pretrain_model=f'{self.spk_model_dir}/campplus_cn_common.bin',
+            pretrained_model=f'{self.spk_model_dir}/campplus_cn_common.bin',
             device=self.device
         )
         spk_processor_config.update(self.spk_processor_config)

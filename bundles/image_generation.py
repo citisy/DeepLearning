@@ -34,7 +34,6 @@ class GanOptimizer:
 
 class IgProcess(Process):
     use_early_stop = False
-    check_strategy = model_process.STEP
     val_data_num = 64 * 8
 
     input_size: int
@@ -193,9 +192,9 @@ class GanProcess(IgProcess):
             self.log(f'net {key} module info:')
             self.log(s)
 
-    def on_backward(self, loop_objs, **kwargs):
+    def on_backward(self, loop_objs, use_ema=False, **kwargs):
         """loss backward has been completed in `on_train_step()` already"""
-        if self.use_ema:
+        if use_ema:
             self.ema.step()
 
 
@@ -323,7 +322,16 @@ class WGAN_Mnist(WGAN, Mnist):
 
             from bundles.image_generation import WGAN_Mnist as Process
 
-            Process().run(max_epoch=1000, train_batch_size=64, fit_kwargs=dict(check_period=40000, max_save_weight_num=10), metric_kwargs=dict(is_visualize=True))
+            Process().run(
+                max_epoch=1000,
+                train_batch_size=64,
+                fit_kwargs=dict(
+                    check_period=40000,
+                    check_strategy='step',
+                    max_save_weight_num=10,
+                ),
+                metric_kwargs=dict(is_visualize=True)
+            )
     """
 
 
@@ -588,7 +596,11 @@ class StyleGan_Mnist(StyleGan, Mnist):
 
             Process().run(
                 max_epoch=200, train_batch_size=32,
-                fit_kwargs=dict(check_period=40000, max_save_weight_num=10),
+                fit_kwargs=dict(
+                    check_period=40000,
+                    check_strategy='step',
+                    max_save_weight_num=10,
+                ),
                 metric_kwargs=dict(is_visualize=True, max_vis_num=64 * 8),
             )
     """
@@ -603,7 +615,11 @@ class StyleGan_Lsun(StyleGan, Lsun):
 
             Process().run(
                 max_epoch=100, train_batch_size=32,
-                fit_kwargs=dict(check_period=40000, max_save_weight_num=10),
+                fit_kwargs=dict(
+                    check_period=40000,
+                    check_strategy='step',
+                    max_save_weight_num=10,
+                ),
                 metric_kwargs=dict(is_visualize=True, max_vis_num=64 * 8),
             )
     """
@@ -618,7 +634,11 @@ class StyleGan_CelebA(StyleGan, CelebA):
 
             Process().run(
                 max_epoch=50, train_batch_size=32,
-                fit_kwargs=dict(check_period=40000, max_save_weight_num=10),
+                fit_kwargs=dict(
+                    check_period=40000,
+                    check_strategy='step',
+                    max_save_weight_num=10,
+                ),
                 metric_kwargs=dict(is_visualize=True, max_vis_num=64 * 8),
             )
             {'score': 134.8424}
@@ -634,7 +654,12 @@ class StyleGan_IterCelebA(StyleGan, IterCelebA):
 
             Process().run(
                 max_epoch=10, train_batch_size=32,
-                fit_kwargs=dict(check_period=40000, max_save_weight_num=10, dataloader_kwargs=dict(shuffle=False, drop_last=True, num_workers=16)),
+                fit_kwargs=dict(
+                    check_period=40000,
+                    check_strategy='step',
+                    max_save_weight_num=10,
+                    dataloader_kwargs=dict(shuffle=False, drop_last=True, num_workers=16)
+                ),
                 metric_kwargs=dict(is_visualize=True, max_vis_num=64 * 8),
             )
             {'score': 63.01491}
@@ -701,7 +726,11 @@ class VAE_CelebA(VAE, CelebA):
 
             Process().run(
                 max_epoch=50, train_batch_size=32,
-                fit_kwargs=dict(check_period=40000, max_save_weight_num=10),
+                fit_kwargs=dict(
+                    check_period=40000,
+                    check_strategy='step',
+                    max_save_weight_num=10
+                ),
                 metric_kwargs=dict(is_visualize=True, max_vis_num=64 * 8),
             )
     """
@@ -726,7 +755,8 @@ class DiProcess(IgProcess):
     use_half = True
 
     def set_model_status(self):
-        self.load_pretrained()
+        if self.use_pretrained:
+            self.load_pretrained()
         if self.low_memory_run:
             self.model._device = self.device  # explicitly define the device for the model
             self.model.set_low_memory_run()
@@ -833,7 +863,11 @@ class Ddpm_CelebA(Ddpm, CelebA):
 
             Process().run(
                 max_epoch=50, train_batch_size=32,
-                fit_kwargs=dict(check_period=40000, max_save_weight_num=10),
+                fit_kwargs=dict(
+                    check_period=40000,
+                    check_strategy='step',
+                    max_save_weight_num=10
+                ),
                 metric_kwargs=dict(is_visualize=True, max_vis_num=64 * 8),
             )
     """
@@ -861,7 +895,11 @@ class Ddim_CelebA(Dpim, CelebA):
 
             Process().run(
                 max_epoch=50, train_batch_size=32,
-                fit_kwargs=dict(check_period=40000, max_save_weight_num=10),
+                fit_kwargs=dict(
+                    check_period=40000,
+                    check_strategy='step',
+                    max_save_weight_num=10
+                ),
                 metric_kwargs=dict(is_visualize=True, max_vis_num=64 * 8),
             )
             {'score': 64.1675}
@@ -877,7 +915,11 @@ class Ddim_CelebAHQ(Dpim, CelebAHQ):
 
             Process().run(
                 max_epoch=50, train_batch_size=32,
-                fit_kwargs=dict(check_period=40000, max_save_weight_num=10),
+                fit_kwargs=dict(
+                    check_period=40000,
+                    check_strategy='step',
+                    max_save_weight_num=10
+                ),
                 metric_kwargs=dict(is_visualize=True, max_vis_num=64 * 8),
             )
     """
@@ -887,7 +929,7 @@ class WithLora(Process):
     use_lora = False
     use_half_lora = True
     lora_wrap: 'models.tuning.lora.ModelWrap'
-    lora_pretrain_model: str
+    lora_pretrained_model: str
     lora_config = {}
 
     def init_components(self):
@@ -948,7 +990,7 @@ class WithSDLora(WithLora):
         self.log('Successfully add lora!')
 
     def load_lora_pretrain(self):
-        if hasattr(self, 'lora_pretrain_model'):
+        if hasattr(self, 'lora_pretrained_model'):
             if 'v1' in self.config_version:
                 from models.image_generation.sdv1 import WeightLoader, WeightConverter
             elif 'v2' in self.config_version:
@@ -958,16 +1000,16 @@ class WithSDLora(WithLora):
             else:
                 raise
 
-            state_dict = WeightLoader.auto_load(self.lora_pretrain_model)
+            state_dict = WeightLoader.auto_load(self.lora_pretrained_model)
             state_dict = WeightConverter.from_official_lora(state_dict)
             self.lora_wrap.load_state_dict(state_dict, strict=True)
-            self.log(f'Loaded lora pretrain model from {self.lora_pretrain_model}')
+            self.log(f'Loaded lora pretrain model from {self.lora_pretrained_model}')
 
 
 class WithSDControlNet(Process):
     use_control_net = False
     control_net_wrap: 'models.tuning.control_net.ModelWrap'
-    control_net_pretrain_model: str
+    control_net_pretrained_model: str
     control_net_config = {}
     control_net_version = 'v1.5'  # for config choose
 
@@ -987,7 +1029,7 @@ class WithSDControlNet(Process):
         self.log('Successfully add control_net!')
 
     def load_control_net_pretrain(self):
-        if hasattr(self, 'control_net_pretrain_model'):
+        if hasattr(self, 'control_net_pretrained_model'):
             if 'v1' in self.control_net_version:
                 from models.image_generation.sdv1 import WeightConverter
             elif 'v2' in self.control_net_version:
@@ -997,10 +1039,10 @@ class WithSDControlNet(Process):
             else:
                 raise
 
-            state_dict = torch_utils.Load.from_file(self.control_net_pretrain_model)
+            state_dict = torch_utils.Load.from_file(self.control_net_pretrained_model)
             state_dict = WeightConverter.from_official_controlnet(state_dict)
             self.control_net_wrap.load_state_dict(state_dict, strict=False)
-            self.log(f'Loaded control_net pretrain model from {self.control_net_pretrain_model}')
+            self.log(f'Loaded control_net pretrain model from {self.control_net_pretrained_model}')
 
     control_aug = Apply([
         Lambda(lambda image, **kwargs: cv2.Canny(image, 100, 200)),
@@ -1045,23 +1087,22 @@ class FromSDPretrained(CheckpointHooks):
     config_version = 'v1'  # for config choose
 
     def load_pretrained(self):
-        if hasattr(self, 'pretrain_model'):
-            if 'v1' in self.config_version:
-                from models.image_generation.sdv1 import WeightLoader, WeightConverter
-            elif 'v2' in self.config_version:
-                from models.image_generation.sdv2 import WeightLoader, WeightConverter
-            elif 'xl' in self.config_version:
-                from models.image_generation.sdxl import WeightLoader, WeightConverter
-            else:
-                raise
+        if 'v1' in self.config_version:
+            from models.image_generation.sdv1 import WeightLoader, WeightConverter
+        elif 'v2' in self.config_version:
+            from models.image_generation.sdv2 import WeightLoader, WeightConverter
+        elif 'xl' in self.config_version:
+            from models.image_generation.sdxl import WeightLoader, WeightConverter
+        else:
+            raise
 
-            state_dict = WeightLoader.auto_load(self.pretrain_model)
-            state_dict = WeightConverter.from_official(state_dict)
-            self.model.load_state_dict(state_dict, strict=False)
-            self.log(f'load pretrain model from {self.pretrain_model}')
+        state_dict = WeightLoader.auto_load(self.pretrained_model)
+        state_dict = WeightConverter.from_official(state_dict)
+        self.model.load_state_dict(state_dict, strict=False)
+        self.log(f'load pretrain model from {self.pretrained_model}')
 
     @classmethod
-    def from_pretrained(cls, pretrain_model, **kwargs):
+    def from_pretrained(cls, pretrained_model, **kwargs):
         raise NotImplemented
 
 
@@ -1277,7 +1318,7 @@ class SD(WithSDLora, WithSDControlNet, FromSDPretrained, SDTrainer, SDPredictor)
             from bundles.image_generation import SD as Process
 
             process = Process(
-                pretrain_model='...',
+                pretrained_model='...',
                 vocab_fn='xxx/vocab.json',
                 encoder_fn='xxx/merges.txt',
                 config_version='...',
@@ -1287,7 +1328,7 @@ class SD(WithSDLora, WithSDControlNet, FromSDPretrained, SDTrainer, SDPredictor)
 
                 # if using lora
                 # use_lora=True,
-                # lora_pretrain_model='xxx',
+                # lora_pretrained_model='xxx',
             )
             process.init()
 
@@ -1349,7 +1390,6 @@ class SD_SimpleTextImage(SD, SimpleTextImage):
                 data_dir='xxx',
 
                 use_half_lora=True,
-                use_scheduler=True,
                 use_lora=True,
 
                 model_config=dict(
@@ -1373,11 +1413,12 @@ class SD_SimpleTextImage(SD, SimpleTextImage):
                 encoder_fn='xxx/merges.txt',
 
                 config_version = 'v1.5',
-                pretrain_model='xxx',
+                pretrained_model='xxx',
             )
 
             process.run(
                 max_epoch=50, train_batch_size=16,
+                use_scheduler=True,
                 fit_kwargs=dict(check_period=1000, max_save_weight_num=10),
                 metric_kwargs=dict(is_visualize=True),
             )
@@ -1418,14 +1459,14 @@ class WithFluxLora(WithLora):
         self.log('Successfully add lora!')
 
     def load_lora_pretrain(self):
-        if hasattr(self, 'lora_pretrain_model'):
+        if hasattr(self, 'lora_pretrained_model'):
             from models.image_generation.flux import WeightConverter
             from models.bundles import WeightLoader
 
-            state_dict = WeightLoader.auto_load(self.lora_pretrain_model)
+            state_dict = WeightLoader.auto_load(self.lora_pretrained_model)
             state_dict = WeightConverter.from_official_lora(state_dict)
             self.lora_wrap.load_state_dict(state_dict, strict=True)
-            self.log(f'Loaded lora pretrain model from {self.lora_pretrain_model}!')
+            self.log(f'Loaded lora pretrain model from {self.lora_pretrained_model}!')
 
 
 class FromFluxPretrained(CheckpointHooks):
@@ -1608,7 +1649,7 @@ class Flux(WithFluxLora, FromFluxPretrained, FluxPredictor):
 
                 # if using lora
                 # use_lora=True,
-                # lora_pretrain_model='xxx',
+                # lora_pretrained_model='xxx',
                 # lora_config=dict(
                 #     r=16,
                 #     alpha=16

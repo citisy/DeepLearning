@@ -281,11 +281,10 @@ class CheckpointHooks:
         if verbose:
             self.log(f'Successfully load {save_path} !')
 
-    pretrain_model: str
+    pretrained_model: str
 
     def load_pretrained(self):
-        if hasattr(self, 'pretrain_model'):
-            self.load(self.pretrain_model, save_type=WEIGHT, include=())
+        self.load(self.pretrained_model, save_type=WEIGHT, include=())
 
     pretrained_checkpoint: str
 
@@ -330,21 +329,19 @@ class ModelHooks:
     def set_model(self):
         raise NotImplementedError
 
-    use_ema = False
     ema: Optional
 
-    def set_ema(self):
-        if self.use_ema:
-            self.ema = torch_utils.EMA(self.model)
-            self.models['ema'] = self.ema.ema_model
+    def set_ema(self, **kwargs):
+        self.ema = torch_utils.EMA(self.model)
+        self.models['ema'] = self.ema.ema_model
 
-            def save(suffix, max_save_weight_num, **kwargs):
-                torch.save(self.ema.ema_model.state_dict(), f'{self.work_dir}/{suffix}.ema.pth')
-                os_lib.FileCacher(self.work_dir, max_size=max_save_weight_num, stdout_method=self.log).delete_over_range(suffix=r'\d+\.ema\.pth')
-                self.log(f'Successfully save ema model to {self.work_dir}/{suffix}.ema.pth')
+        def save(suffix, max_save_weight_num, **kwargs):
+            torch.save(self.ema.ema_model.state_dict(), f'{self.work_dir}/{suffix}.ema.pth')
+            os_lib.FileCacher(self.work_dir, max_size=max_save_weight_num, stdout_method=self.log).delete_over_range(suffix=r'\d+\.ema\.pth')
+            self.log(f'Successfully save ema model to {self.work_dir}/{suffix}.ema.pth')
 
-            self.register_save_checkpoint(save)
-            self.log('Successfully init ema model!')
+        self.register_save_checkpoint(save)
+        self.log('Successfully init ema model!')
 
     def set_mode(self, train=True):
         for v in self.models.values():
@@ -355,48 +352,44 @@ class ModelHooks:
     def set_optimizer(self, lr=1e-3, betas=(0.9, 0.999), **kwargs):
         self.optimizer = optim.Adam(self.model.parameters(), lr=lr, betas=betas)
 
-    use_early_stop = True
-    stopper: Optional
+    early_stopper: Optional
 
-    def set_stopper(self, **kwargs):
-        if self.use_early_stop:
-            from utils.torch_utils import EarlyStopping
+    def set_early_stopper(self, check_strategy=EPOCH, **kwargs):
+        from utils.torch_utils import EarlyStopping
 
-            if self.check_strategy == EPOCH:
-                self.stopper = EarlyStopping(patience=10, min_period=10, ignore_min_score=0.1, stdout_method=self.log)
-            elif self.check_strategy == STEP:
-                self.stopper = EarlyStopping(patience=10 * 5000, min_period=10 * 5000, ignore_min_score=0.1, stdout_method=self.log)
+        if check_strategy == EPOCH:
+            self.early_stopper = EarlyStopping(patience=10, min_period=10, ignore_min_score=0.1, stdout_method=self.log)
+        elif check_strategy == STEP:
+            self.early_stopper = EarlyStopping(patience=10 * 5000, min_period=10 * 5000, ignore_min_score=0.1, stdout_method=self.log)
+        else:
+            raise ValueError(f'{check_strategy} is not supported')
+
+        self.log('Successfully init early_stopper!')
 
     scheduler: Optional
-    use_scheduler = False
-    scheduler_strategy: Annotated[
-        str,
-        'every `epoch` or every `step` to run scheduler'
-    ] = EPOCH
 
-    def set_scheduler(self, max_epoch, lr_lambda=None, lrf=0.01, train_dataloader=None, **kwargs):
-        if self.use_scheduler:
-            if self.scheduler_strategy == EPOCH:
-                if not lr_lambda:
-                    lr_lambda = torch_utils.SchedulerMaker.cosine_lr_lambda(max_epoch, lrf, **kwargs)
-                self.scheduler = optim.lr_scheduler.LambdaLR(self.optimizer, lr_lambda=lr_lambda, last_epoch=-1)
+    def set_scheduler(self, max_epoch, lr_lambda=None, lrf=0.01, train_dataloader=None, scheduler_strategy=EPOCH, **kwargs):
+        if scheduler_strategy == EPOCH:
+            if not lr_lambda:
+                lr_lambda = torch_utils.SchedulerMaker.cosine_lr_lambda(max_epoch, lrf, **kwargs)
+            self.scheduler = optim.lr_scheduler.LambdaLR(self.optimizer, lr_lambda=lr_lambda, last_epoch=-1)
 
-            elif self.scheduler_strategy == STEP:
-                from transformers import get_scheduler
+        elif scheduler_strategy == STEP:
+            from transformers import get_scheduler
 
-                self.scheduler = get_scheduler(
-                    "linear",
-                    optimizer=self.optimizer,
-                    num_warmup_steps=0,
-                    num_training_steps=max_epoch * len(train_dataloader),
-                )
+            self.scheduler = get_scheduler(
+                "linear",
+                optimizer=self.optimizer,
+                num_warmup_steps=0,
+                num_training_steps=max_epoch * len(train_dataloader),
+            )
+        self.log('Successfully init scheduler!')
 
-    use_scaler = False
     scaler: Optional
 
     def set_scaler(self, **kwargs):
-        if self.use_scaler:
-            self.scaler = torch.cuda.amp.GradScaler(enabled=True)
+        self.scaler = torch.cuda.amp.GradScaler(enabled=True)
+        self.log('Successfully init scaler!')
 
     def model_info(self, **kwargs):
         from utils.torch_utils import ModuleInfo
@@ -429,8 +422,20 @@ class ModelHooks:
             # for `torch.utils.data.DataLoader`
             dataloader_kwargs: dict = dict(),
 
+            use_ema: bool = False,
+            use_early_stopper: bool = True,
+            use_scaler: bool = False,
+            use_scheduler: bool = False,
+
+            # every epoch or every step to run scheduler
+            scheduler_strategy: str = EPOCH,
+            lrf: float = 0.01,
+
             # num of epoch/step to run training check
             check_period: int = None,
+
+            # every epoch or every step to run training check, like saving checkpoint, run the metric step, etc
+            check_strategy: str = EPOCH,
 
             # for `metric()`
             is_metric: bool = True,
@@ -491,7 +496,7 @@ class ModelHooks:
                 batch_size: for fit() and predict()
                 check_period:
                     None or 0, do not metric or save weights.
-                    >0, epoch period to metric or save weights, `self.check_strategy` also affect it
+                    >0, epoch period to metric or save weights, `check_strategy` also affect it
                 is_metric: whether to metric when training end or not
                 max_save_weight_num:
                     None,
@@ -535,7 +540,7 @@ class ModelHooks:
 
     def on_train_start(
             self, batch_size=None, max_epoch=None,
-            train_dataloader=None, val_dataloader=None, check_period=None,
+            train_dataloader=None, val_dataloader=None, check_period=None, check_strategy=EPOCH,
             metric_kwargs=dict(), data_get_kwargs=dict(), dataloader_kwargs=dict(),
             **kwargs
     ):
@@ -562,12 +567,14 @@ class ModelHooks:
             if val_dataloader is None:
                 val_dataloader = self.get_val_dataloader(data_get_kwargs=val_data_get_kwargs, dataloader_kwargs=val_dataloader_kwargs)
             metric_kwargs.setdefault('val_dataloader', val_dataloader)
-            s = 'epochs' if self.check_strategy == EPOCH else 'nums'
-            self.log(f'check_strategy = `{self.check_strategy}`, it will be check the training result in every {check_period} {s}')
+            s = 'epochs' if check_strategy == EPOCH else 'nums'
+            self.log(f'check_strategy = `{check_strategy}`, it will be check the training result in every {check_period} {s}')
 
-        for item in ('optimizer', 'stopper', 'scaler', 'scheduler'):
+        # note, item has name 'xxx', must have name with 'use_xxx' and 'set_xxx' at the same time
+        for item in ('ema', 'optimizer', 'early_stopper', 'scaler', 'scheduler'):
             if not hasattr(self, item) or getattr(self, item) is None:
-                getattr(self, f'set_{item}')(max_epoch=max_epoch, train_dataloader=train_dataloader, **kwargs)
+                if kwargs.get(f'use_{item}'):
+                    getattr(self, f'set_{item}')(max_epoch=max_epoch, train_dataloader=train_dataloader, **kwargs)
 
         for func, params in self.train_start_container.items():
             func(**params)
@@ -594,10 +601,6 @@ class ModelHooks:
 
     register_logger: bundled.LogHooks.register_logger
     log_methods: dict
-    check_strategy: Annotated[
-        str,
-        'every epoch or every step to run training check, like saving checkpoint, run the metric step, etc'
-    ] = EPOCH
 
     def on_train(self, loop_objs, **kwargs):
         max_epoch = kwargs['max_epoch']
@@ -641,26 +644,26 @@ class ModelHooks:
         """
         raise NotImplementedError
 
-    def on_backward(self, loop_objs, accumulate=None, batch_size=None, **kwargs):
+    def on_backward(self, loop_objs, accumulate=None, batch_size=None, use_ema=False, use_scaler=False, **kwargs):
         model_results = loop_objs['model_results']
         loss = model_results['loss']
 
-        if self.use_scaler:
+        if use_scaler:
             self.scaler.scale(loss).backward()
         else:
             loss.backward()
 
         if accumulate:
             if loop_objs['total_nums'] % accumulate < batch_size:
-                self._backward()
+                self._backward(use_scaler)
         else:
-            self._backward()
+            self._backward(use_scaler)
 
-        if self.use_ema:
+        if use_ema:
             self.ema.step()
 
-    def _backward(self):
-        if self.use_scaler:
+    def _backward(self, use_scaler=False):
+        if use_scaler:
             self.scaler.unscale_(self.optimizer)  # unscale gradients
             torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=10.0)  # clip gradients
             self.scaler.step(self.optimizer)  # optimizer.step
@@ -670,7 +673,11 @@ class ModelHooks:
 
         self.optimizer.zero_grad()
 
-    def on_train_step_end(self, loop_objs, more_log=False, ignore_non_loss=False, **kwargs) -> bool:
+    def on_train_step_end(
+            self, loop_objs, more_log=False, ignore_non_loss=False,
+            use_scheduler=False, scheduler_strategy=EPOCH,
+            check_strategy=EPOCH, **kwargs
+    ) -> bool:
         loop_inputs = loop_objs['loop_inputs']
         model_results = loop_objs['model_results']
 
@@ -704,19 +711,19 @@ class ModelHooks:
             **mem_info
         }, 'pbar')
 
-        if self.use_scheduler and self.scheduler_strategy == STEP:
+        if use_scheduler and scheduler_strategy == STEP:
             self.scheduler.step()
 
-        if self.check_strategy == STEP:
+        if check_strategy == STEP:
             self._check_on_train_step_end(loop_objs, **kwargs)
 
         return loop_objs.get('end_flag', False)  # cancel the training when end_flag is True
 
-    def on_train_epoch_end(self, loop_objs, **kwargs) -> bool:
+    def on_train_epoch_end(self, loop_objs, use_scheduler=False, scheduler_strategy=EPOCH, check_strategy=EPOCH, **kwargs) -> bool:
         loop_objs['epoch'] += 1
-        if self.use_scheduler and self.scheduler_strategy == EPOCH:
+        if use_scheduler and scheduler_strategy == EPOCH:
             self.scheduler.step()
-        if self.check_strategy == EPOCH:
+        if check_strategy == EPOCH:
             self._check_on_train_epoch_end(loop_objs, **kwargs)
         return loop_objs.get('end_flag', False)  # cancel the training when end_flag is True
 

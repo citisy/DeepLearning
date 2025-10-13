@@ -53,8 +53,6 @@ class SimpleTextForGpt(TextProcessForGpt):
 
 class GPT2(Process):
     model_version = 'GPT2'
-    use_scaler = True
-    scheduler_strategy = 'step'  # step
     max_seq_len: int
     max_gen_len = 20
 
@@ -132,22 +130,20 @@ class LoadGPT2FromOpenaiPretrain(CheckpointHooks):
     """load pretrain model from openai"""
 
     def load_pretrained(self):
-        if hasattr(self, 'pretrain_model'):
-            from models.text_generation.gpt2 import WeightConverter, WeightLoader
+        from models.text_generation.gpt2 import WeightConverter, WeightLoader
 
-            state_dict = WeightLoader.from_openai_tf(self.pretrain_model, n_layer=self.model.n_layer)
-            state_dict = WeightConverter.from_openai(state_dict)
-            self.model.load_state_dict(state_dict, strict=False)
+        state_dict = WeightLoader.from_openai_tf(self.pretrained_model, n_layer=self.model.n_layer)
+        state_dict = WeightConverter.from_openai(state_dict)
+        self.model.load_state_dict(state_dict, strict=False)
 
 
 class LoadGPT2FromHFPretrain(CheckpointHooks):
     """load pretrain model from huggingface"""
 
     def load_pretrained(self):
-        if hasattr(self, 'pretrain_model'):
-            from models.text_generation.gpt2 import WeightLoader, WeightConverter
-            state_dict = WeightLoader.from_hf(self.pretrain_model)
-            self.model.load_state_dict(WeightConverter.from_huggingface(state_dict), strict=False)
+        from models.text_generation.gpt2 import WeightLoader, WeightConverter
+        state_dict = WeightLoader.from_hf(self.pretrained_model)
+        self.model.load_state_dict(WeightConverter.from_huggingface(state_dict), strict=False)
 
 
 class GPT2FromOpenaiPretrain(GPT2, LoadGPT2FromOpenaiPretrain, TextProcessForGpt):
@@ -158,7 +154,7 @@ class GPT2FromOpenaiPretrain(GPT2, LoadGPT2FromOpenaiPretrain, TextProcessForGpt
             from bundles.text_generation import GPT2FromOpenaiPretrain as Process
 
             process = Process(
-                pretrain_model='...',
+                pretrained_model='...',
                 vocab_fn='xxx/vocab.json',
                 encoder_fn='xxx/merges.txt'
             )
@@ -204,8 +200,6 @@ class SimpleTextForT5(DataHooks):
 class BaseT5(Process):
     model_version = 'T5'
     config_version = 'small'
-    use_scaler = True
-    scheduler_strategy = 'step'  # step
     max_seq_len: int
     max_gen_len = 20
 
@@ -285,11 +279,10 @@ class FromT5HFPretrained(CheckpointHooks):
     """load pretrain model from huggingface"""
 
     def load_pretrained(self):
-        if hasattr(self, 'pretrain_model'):
-            from models.text_generation.T5 import WeightLoader, WeightConverter
-            state_dict = WeightLoader.from_hf(self.pretrain_model)
-            state_dict = WeightConverter.from_hf(state_dict)
-            self.model.load_state_dict(state_dict, strict=False)
+        from models.text_generation.T5 import WeightLoader, WeightConverter
+        state_dict = WeightLoader.from_hf(self.pretrained_model)
+        state_dict = WeightConverter.from_hf(state_dict)
+        self.model.load_state_dict(state_dict, strict=False)
 
 
 class T5(BaseT5, FromT5HFPretrained, SimpleTextForT5):
@@ -301,7 +294,7 @@ class T5(BaseT5, FromT5HFPretrained, SimpleTextForT5):
 
             model_dir = 'xxx'
             process = Process(
-                pretrain_model=f'{model_dir}/pytorch_model.bin',
+                pretrained_model=f'{model_dir}/pytorch_model.bin',
                 vocab_fn=f'{model_dir}/tokenizer.json',
                 encoder_fn=f'{model_dir}/spiece.model',
                 config_version='small'  # ['small', 'base', 'large', '3B', '11B']
@@ -323,18 +316,17 @@ class T5(BaseT5, FromT5HFPretrained, SimpleTextForT5):
 
 
 class FromQwen2Pretrained(CheckpointHooks):
-    pretrain_model: str | List[str]
+    pretrained_model: str | List[str]
 
     def load_pretrained(self):
-        if hasattr(self, 'pretrain_model'):
-            from models.text_generation.qwen2 import WeightLoader, WeightConverter
+        from models.text_generation.qwen2 import WeightLoader, WeightConverter
 
-            if Path(self.pretrain_model).is_dir():
-                self.pretrain_model = [str(fp) for fp in os_lib.find_all_suffixes_files(self.pretrain_model, ['.safetensors'])]
+        if Path(self.pretrained_model).is_dir():
+            self.pretrained_model = [str(fp) for fp in os_lib.find_all_suffixes_files(self.pretrained_model, ['.safetensors'])]
 
-            state_dict = WeightLoader.auto_load(self.pretrain_model)
-            state_dict = WeightConverter.from_official(state_dict)
-            self.model.load_state_dict(state_dict, strict=False, assign=True)
+        state_dict = WeightLoader.auto_load(self.pretrained_model)
+        state_dict = WeightConverter.from_official(state_dict)
+        self.model.load_state_dict(state_dict, strict=False, assign=True)
 
 
 class BaseQwen2(Process):
@@ -430,7 +422,7 @@ class Qwen2(FromQwen2Pretrained, Qwen2Predictor):
 
             model_dir = 'xxx'
             process = Process(
-                pretrain_model=model_dir,
+                pretrained_model=model_dir,
                 vocab_fn=f'{model_dir}/vocab.json',
                 encoder_fn=f'{model_dir}/merges.txt',
                 config_version='0.5b'  # ['0.5b', '1.5b', '7b', '72b']

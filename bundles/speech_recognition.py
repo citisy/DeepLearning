@@ -127,12 +127,11 @@ class BiCifParaformer(Process):
         self.cmvn = load_cmvn(self.cmvn_path)
 
     def load_pretrained(self):
-        if hasattr(self, 'pretrain_model'):
-            from models.speech_recognition.BiCifParaformer import WeightConverter, WeightLoader
+        from models.speech_recognition.BiCifParaformer import WeightConverter, WeightLoader
 
-            state_dict = WeightLoader.auto_load(self.pretrain_model, map_location=self.device)
-            state_dict = WeightConverter.from_official(state_dict)
-            self.model.load_state_dict(state_dict, strict=True)
+        state_dict = WeightLoader.auto_load(self.pretrained_model, map_location=self.device)
+        state_dict = WeightConverter.from_official(state_dict)
+        self.model.load_state_dict(state_dict, strict=True)
 
     def set_tokenizer(self):
         from data_parse.nl_data_parse.pre_process.bundled import SimpleTokenizer
@@ -312,7 +311,7 @@ class BiCifParaformer_Funasr(BiCifParaformer, Funasr):
             vocab_fn=f'{model_dir}/tokens.json',
             seg_dict_path=f'{model_dir}/seg_dict',
             cmvn_path=f'{model_dir}/am.mvn',
-            pretrain_model=f'{model_dir}/model.pt',
+            pretrained_model=f'{model_dir}/model.pt',
         )
 
         processor.init()

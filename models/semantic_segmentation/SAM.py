@@ -66,7 +66,7 @@ class WeightConverter:
         Usage:
             .. code-block:: python
 
-                state_dict = torch.load(self.pretrain_model, map_location=self.device)['state_dict']
+                state_dict = torch.load(pretrained_model, map_location=self.device)['state_dict']
                 state_dict = WeightConverter.from_official(state_dict)
                 Model(...).load_state_dict(state_dict)
         """

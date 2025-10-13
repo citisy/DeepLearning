@@ -65,20 +65,11 @@ class Process(
             # 'cpu', or id of gpu device if gpu is available
             device: Union[int, str, torch.device] = None,
 
-            use_ema: bool = False,
-            use_early_stop: bool = True,
-            use_scaler: bool = False,
-            use_scheduler: bool = False,
-
-            # every epoch or every step to run scheduler
-            scheduler_strategy: str = EPOCH,
-            lrf: float = 0.01,
+            use_pretrained: bool = True,
 
             # for wandb logging
             wandb_id: str = None,
 
-            # every epoch or every step to run training check, like saving checkpoint, run the metric step, etc
-            check_strategy: str = EPOCH,
             **kwargs
     ):
         pass
@@ -188,7 +179,7 @@ class Process(
         #     self.model.to(self.device)
         #     self.optimizer = nn.DataParallel(self.optimizer, device_ids=device_ids)
 
-        try_init_components = [self.set_model_status, self.set_ema]
+        try_init_components = [self.set_model_status]
         for components in try_init_components:
             try:
                 components()
@@ -199,8 +190,11 @@ class Process(
         self.log(f'{self.device = }')
         self.log(f'{self.models.keys() = }')
 
+    use_pretrained: bool = True
+
     def set_model_status(self):
-        self.load_pretrained()
+        if self.use_pretrained:
+            self.load_pretrained()
         if not isinstance(self.device, list):
             self.model.to(self.device)
 
