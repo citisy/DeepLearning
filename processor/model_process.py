@@ -571,6 +571,7 @@ class ModelHooks:
             self.log(f'check_strategy = `{check_strategy}`, it will be check the training result in every {check_period} {s}')
 
         # note, item has name 'xxx', must have name with 'use_xxx' and 'set_xxx' at the same time
+        kwargs.setdefault('use_optimizer', True)
         for item in ('ema', 'optimizer', 'early_stopper', 'scaler', 'scheduler'):
             if not hasattr(self, item) or getattr(self, item) is None:
                 if kwargs.get(f'use_{item}'):
