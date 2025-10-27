@@ -12,6 +12,7 @@ from torch.utils.data import Dataset
 from data_parse import DataRegister
 from data_parse.cv_data_parse.data_augmentation import crop, scale, geometry, channel, RandomApply, Apply, pixel_perturbation, Lambda
 from data_parse.cv_data_parse.datasets.base import DataVisualizer
+from models import normalizations
 from processor import Process, DataHooks, bundled, model_process, BatchIterImgDataset, CheckpointHooks
 from utils import os_lib, torch_utils, configs
 
@@ -767,6 +768,12 @@ class DiProcess(IgProcess):
 
         if self.use_half:
             self.model.set_half()
+            # note, if model init from meta, official weight of norm is float16, force to float32
+            torch_utils.ModuleManager.apply(
+                self.model,
+                lambda module: module.to(torch.float),
+                include=[normalizations.GroupNorm32],
+            )
         else:
             self.model.to(torch.float)
 
@@ -1098,7 +1105,7 @@ class FromSDPretrained(CheckpointHooks):
 
         state_dict = WeightLoader.auto_load(self.pretrained_model)
         state_dict = WeightConverter.from_official(state_dict)
-        self.model.load_state_dict(state_dict, strict=False)
+        self.model.load_state_dict(state_dict, strict=False, assign=True)
         self.log(f'load pretrain model from {self.pretrained_model}')
 
     @classmethod

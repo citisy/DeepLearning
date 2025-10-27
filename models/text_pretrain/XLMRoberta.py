@@ -72,7 +72,9 @@ class Model(nn.Module):
         self.head = self.make_head()
 
     def make_backbone(self, **backbone_config):
-        return bert.Bert(**backbone_config)
+        backbone = bert.Bert(**backbone_config)
+        backbone.embedding.position.shift = 0
+        return backbone
 
     def make_head(self, **head_config):
         return Head(self.backbone.out_features)

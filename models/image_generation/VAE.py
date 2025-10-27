@@ -103,11 +103,11 @@ class Model(nn.Module):
         self.re_parametrize = ReParametrize()
         self.post_quant_conv = nn.Conv2d(z_ch, z_ch, 1) if self.use_post_quant_conv else nn.Identity()
         self.decoder = Decoder(z_ch, img_ch, **backbone_config)
-        self.loss = Loss(self.re_parametrize, **loss_config)
+        self.criterion = Loss(self.re_parametrize, **loss_config)
         self.z_ch = z_ch
 
     def set_inference_only(self):
-        del self.loss
+        del self.criterion
 
     def forward(self, *args, **kwargs):
         if self.training:
@@ -117,7 +117,7 @@ class Model(nn.Module):
 
     def fit(self, x, sample_posterior=True, **loss_kwargs):
         z, mean, log_var = self.process(x, sample_posterior)
-        return self.loss(x, z, mean, log_var, last_layer=self.decoder.head.conv.weight, **loss_kwargs)
+        return self.criterion(x, z, mean, log_var, last_layer=self.decoder.head.conv.weight, **loss_kwargs)
 
     def inference(self, x, sample_posterior=True):
         z, mean, log_var = self.process(x, sample_posterior)
@@ -430,8 +430,18 @@ class Loss(nn.Module):
             self.disc_loss = HingeGanLoss if disc_loss == "hinge" else self.vanilla_d_loss
 
         # output log variance
-        self.logvar = nn.Parameter(torch.ones(size=()) * logvar_init)
+        self.logvar_init = logvar_init
+        self.logvar = self.make_logvar()
         torch_utils.ModuleManager.initialize_layers(self)
+
+    def _apply(self, fn, recurse=True):
+        """apply for meta load"""
+        if self.logvar.is_meta:
+            self.logvar = self.make_logvar()
+        return super()._apply(fn, recurse)
+
+    def make_logvar(self):
+        return nn.Parameter(torch.ones(size=()) * self.logvar_init)
 
     @staticmethod
     def vanilla_d_loss(logits_real, logits_fake):

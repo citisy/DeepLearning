@@ -167,6 +167,7 @@ class Model(nn.ModuleList):
         self.sampler.loss = wrap1(self.backbone, self.sampler.loss)
         self.vae.encode = wrap1(self.vae, self.vae.encode)
         self.vae.decode = wrap1(self.vae, self.vae.decode)
+        self.sampler.to(self.device)    # for init meta data
 
     def set_half(self):
         # note, vanilla sdxl vae can not convert to fp16, but bf16

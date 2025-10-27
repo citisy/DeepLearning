@@ -33,9 +33,11 @@ class WeightConverter:
 
 
 class Model(nn.Module):
-    def __init__(self):
+    def __init__(self, backbone_config=XLMRoberta.Config.backbone, model_config=dict()):
         super().__init__()
-        self.backbone = bert.Bert(**XLMRoberta.Config.backbone)
+        self.__dict__.update(model_config)
+        self.backbone = bert.Bert(**backbone_config)
+        self.backbone.embedding.position.shift = 0
         self.dense_head = DenseHead()
         self.sparse_head = SparseHead(self.backbone.out_features, 1)
         self.colbert_head = ColbertHead(self.backbone.out_features, self.backbone.out_features)
@@ -63,6 +65,34 @@ class Model(nn.Module):
             output['sparse_vecs'] = self.sparse_head(h, text_ids, return_embedding=return_sparse_embedding)
         if return_colbert:
             output['colbert_vecs'] = self.colbert_head(h, attention_mask)
+
+        return output
+
+
+class Model4Triton(Model):
+    return_dense = True,
+    return_sparse = False
+    return_sparse_embedding = False,
+    return_colbert = False,
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        del self.colbert_head
+
+    def inference(
+            self, text_ids, attention_mask,
+    ):
+        h = self.backbone(text_ids, attention_mask=attention_mask)
+
+        output = {}
+        if self.return_dense:
+            output['dense_vecs'] = self.dense_head(h, attention_mask)
+        if self.return_sparse:
+            output['sparse_vecs'] = self.sparse_head(h, text_ids, return_embedding=self.return_sparse_embedding)
+        if self.return_colbert:
+            output['colbert_vecs'] = self.colbert_head(h, attention_mask)
+
+        output = tuple([v for v in output.values()])
 
         return output
 
@@ -115,7 +145,7 @@ class SparseHead(nn.Module):
             embedding = torch.zeros(input_ids.size(0), self.vocab_size).to(token_weights)
             embedding = embedding.scatter_reduce(dim=-1, index=input_ids, src=token_weights.squeeze(-1), reduce="amax")
 
-        unused_tokens = [self.cls_id, self.eos_id,self.pad_id, self.unk_tid]
+        unused_tokens = [self.cls_id, self.eos_id, self.pad_id, self.unk_tid]
         embedding[:, unused_tokens] *= 0.
         return embedding
 

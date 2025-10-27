@@ -30,6 +30,10 @@ class Model(XLMRoberta.Model):
         return Head(self.backbone.out_features, 1)
 
 
+class Model4Triton(Model):
+    """same to Model"""
+
+
 class Head(nn.Module):
     def __init__(self, in_features, out_features, drop_prob=0):
         super().__init__()
