@@ -8,22 +8,13 @@ from torch import nn
 
 from .ddpm import extract
 from .. import bundles
+from utils import op_utils
+
+make_schedule_fn = op_utils.RegisterTables()
+make_scaling_fn = op_utils.RegisterTables()
 
 
 class Config(bundles.Config):
-    LEGACY_DDPM = 'LegacyDDPM'
-    EDM = 'Karras'
-    KARRAS = 'Karras'
-    EXPONENTIAL = 'Exponential'
-    POLY_EXPONENTIAL = 'PolyExponential'
-    VP = 'VP'
-
-    PRED_Z = 2
-    PRED_V = 3
-
-    PRED_EDM_Z = 4
-    PRED_EDM_V = 5
-
     schedule_config = dict()
 
     scaling_config = dict()
@@ -32,8 +23,8 @@ class Config(bundles.Config):
     def make_full_config(cls) -> dict:
         return {
             '': dict(
-                schedule=cls.LEGACY_DDPM,
-                scaling=cls.PRED_Z,
+                schedule='LegacyDDPMSchedule',
+                scaling='EpsScaling',
                 schedule_config=cls.schedule_config,
                 scaling_config=cls.scaling_config
             )
@@ -75,6 +66,7 @@ class Schedule(nn.Module):
         return torch.ones(1, dtype=torch.long)
 
 
+@make_schedule_fn.add_register()
 class LegacyDDPMSchedule(Schedule):
     def make_sigmas(self):
         from .ddpm import linear_beta_schedule
@@ -88,6 +80,7 @@ class LegacyDDPMSchedule(Schedule):
         return sigmas
 
 
+@make_schedule_fn.add_register()
 class EDMSchedule(Schedule):
     """Karras"""
     sigma_min = 0.002
@@ -103,6 +96,7 @@ class EDMSchedule(Schedule):
         return sigmas
 
 
+@make_schedule_fn.add_register()
 class ExponentialSchedule(Schedule):
     sigma_min = 0.002
     sigma_max = 80.0
@@ -112,6 +106,7 @@ class ExponentialSchedule(Schedule):
         return sigmas
 
 
+@make_schedule_fn.add_register()
 class PolyExponentialSchedule(Schedule):
     sigma_min = 0.002
     sigma_max = 80.0
@@ -123,6 +118,7 @@ class PolyExponentialSchedule(Schedule):
         return sigmas
 
 
+@make_schedule_fn.add_register()
 class VpSchedule(Schedule):
     eps_s = 1e-3
     beta_d = 19.9
@@ -163,6 +159,7 @@ class Scaling(nn.Module):
         raise NotImplementedError
 
 
+@make_scaling_fn.add_register()
 class EpsScaling(Scaling):
     def make_c_skip(self, sigma):
         return torch.ones_like(sigma, device=sigma.device)
@@ -174,6 +171,7 @@ class EpsScaling(Scaling):
         return noise
 
 
+@make_scaling_fn.add_register()
 class VScaling(Scaling):
     def make_c_skip(self, sigma):
         return 1.0 / (sigma ** 2 + 1.0)
@@ -185,6 +183,7 @@ class VScaling(Scaling):
         return noise
 
 
+@make_scaling_fn.add_register()
 class EDMEpsScaling(Scaling):
     sigma_data = 1.
 
@@ -201,6 +200,7 @@ class EDMEpsScaling(Scaling):
         return noise
 
 
+@make_scaling_fn.add_register()
 class EDMVScaling(Scaling):
     def make_c_skip(self, sigma):
         return 1.0 / (sigma ** 2 + 1.0)
@@ -213,30 +213,15 @@ class EDMVScaling(Scaling):
 
 
 class Sampler(nn.Module):
-    schedule_mapping = {
-        Config.LEGACY_DDPM: LegacyDDPMSchedule,
-        Config.EDM: EDMSchedule,
-        Config.EXPONENTIAL: ExponentialSchedule,
-        Config.POLY_EXPONENTIAL: PolyExponentialSchedule,
-        Config.VP: VpSchedule
-    }
-
-    scaling_mapping = {
-        Config.PRED_Z: EpsScaling,
-        Config.PRED_V: VScaling,
-        Config.PRED_EDM_Z: EDMEpsScaling,
-        Config.PRED_EDM_V: EDMVScaling
-    }
-
     self_condition = False
 
-    def __init__(self, schedule: Schedule | str, scaling: Scaling | int,
+    def __init__(self, schedule: Schedule | str, scaling: Scaling | str,
                  schedule_config=dict(), scaling_config=dict(),
                  **kwargs):
         super().__init__()
         self.__dict__.update(kwargs)
-        self.schedule = self.schedule_mapping.get(schedule, schedule)(**schedule_config)
-        self.scaling = self.scaling_mapping.get(scaling, scaling)(**scaling_config)
+        self.schedule = make_schedule_fn.get(schedule, schedule)(**schedule_config)
+        self.scaling = make_scaling_fn.get(scaling, scaling)(**scaling_config)
 
     @property
     def num_steps(self):

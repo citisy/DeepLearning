@@ -8,6 +8,7 @@ import numpy as np
 import torch
 from torch import optim
 from torch.utils.data import Dataset
+from torch import nn
 
 from data_parse import DataRegister
 from data_parse.cv_data_parse.data_augmentation import crop, scale, geometry, channel, RandomApply, Apply, pixel_perturbation, Lambda
@@ -1439,18 +1440,20 @@ class WithFluxLora(WithLora):
 
         self.lora_wrap = lora.ModelWrap(
             include=(
+                'clip',
                 'double_blocks',
-                'single_blocks'
+                'single_blocks',
             ),
             exclude=(
                 't5',
-                'clip',
                 'vae',
                 'norm',
                 'attend',
                 'embedding',
                 'act',
-                'dropout'
+                'dropout',
+                'attn_res',
+                nn.Identity
             ),
             **self.lora_config
         )

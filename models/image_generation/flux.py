@@ -10,7 +10,7 @@ from torch import Tensor, nn
 
 from utils import torch_utils
 from . import VAE
-from .k_diffusion import EpsScaling, EulerSampler, Schedule, extract
+from .k_diffusion import EpsScaling, EulerSampler, Schedule, extract, make_schedule_fn, make_scaling_fn
 from .. import attentions, bundles, normalizations
 from ..embeddings import SinusoidalEmbedding
 from ..layers import Linear
@@ -226,7 +226,15 @@ class WeightConverter:
     @classmethod
     def from_official_lora(cls, state_dict):
         """weights training from https://github.com/ostris/ai-toolkit"""
-        convert_dict = {'transformer.' + k: 'backbone.' + v for k, v in cls.diffusers_backbone_convert_dict.items()}
+        cond_convert_dict = {}
+        for k, v in CLIP.WeightConverter.openai_convert_dict.items():
+            cond_convert_dict['lora_te1.' + k] = 'clip.' + v
+
+        backbone_convert_dict = {'transformer.' + k: 'backbone.' + v for k, v in cls.diffusers_backbone_convert_dict.items()}
+        convert_dict = {
+            **cond_convert_dict,
+            **backbone_convert_dict,
+        }
         state_dict = torch_utils.Converter.convert_keys(state_dict, convert_dict)
 
         convert_dict = {
@@ -259,7 +267,7 @@ class Model(nn.Module):
         self.vae = VAE.Model(**vae_config)
         self.vae.set_inference_only()
 
-        self.sampler = FluxSampler(schedule=FluxSchedule, scaling=FluxScaling, schedule_config=dict(num_steps=20))
+        self.sampler = FluxSampler(schedule='FluxSchedule', scaling='FluxScaling', schedule_config=dict(num_steps=20))
 
     _device = None
     _dtype = None
@@ -442,11 +450,13 @@ class FluxSampler(EulerSampler):
         return x_0 * (1 - sigma) + noise * sigma
 
 
+@make_scaling_fn.add_register()
 class FluxScaling(EpsScaling):
     def make_c_in(self, sigma):
         return torch.ones_like(sigma, device=sigma.device)
 
 
+@make_schedule_fn.add_register()
 class FluxSchedule(Schedule):
     def make_sigmas(self):
         mu = 1.15
