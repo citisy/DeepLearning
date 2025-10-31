@@ -34,6 +34,8 @@ class FunAsr(Process):
     punc_processor_config = dict()
     spk_processor_config = dict()
 
+    use_pretrained = False
+
     def set_model(self):
         from .speech_detection import DFSMN
         from .speech_recognition import BiCifParaformer_Funasr

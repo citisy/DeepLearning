@@ -80,13 +80,9 @@ class Model(nn.Module):
     ):
         super().__init__()
         self.__dict__.update(model_config)
-        self.encoder = SANMEncoder(input_size=self.input_size, **encoder_config)
-        self.neck = CifPredictorV3(**head_config)
-        self.decoder = SANMDecoder(
-            vocab_size=self.vocab_size,
-            encoder_output_size=self.encoder.output_size,
-            **decoder_config,
-        )
+        self.make_encoder(**encoder_config)
+        self.make_neck(**head_config)
+        self.make_decoder(**decoder_config)
 
         if self.ctc_weight == 0.0:
             self.ctc = None
@@ -99,6 +95,19 @@ class Model(nn.Module):
             normalize_length=self.length_normalized_loss,
         )
         self.criterion_pre = MAELoss(normalize_length=self.length_normalized_loss)
+
+    def make_encoder(self, **encoder_config):
+        self.encoder = SANMEncoder(input_size=self.input_size, **encoder_config)
+
+    def make_neck(self, **head_config):
+        self.neck = CifPredictorV2(**head_config)
+
+    def make_decoder(self, **decoder_config):
+        self.decoder = SANMDecoder(
+            vocab_size=self.vocab_size,
+            encoder_output_size=self.encoder.output_size,
+            **decoder_config,
+        )
 
     def _calc_ctc_loss(
             self,
@@ -116,6 +125,25 @@ class Model(nn.Module):
             return self.fit(*args, **kwargs)
         else:
             return self.inference(*args, **kwargs)
+
+    def fit(self, speech, speech_lens, **kwargs):
+        encoder_out, encoder_out_mask = self.process(speech, speech_lens)
+        return self.loss(encoder_out, encoder_out_mask, speech_lens, **kwargs)
+
+    def inference(self, speech, speech_lens, **kwargs):
+        encoder_out, encoder_out_mask = self.process(speech, speech_lens)
+        return self.post_process(encoder_out, encoder_out_mask, speech_lens, **kwargs)
+
+    def process(self, speech, speech_lens):
+        encoder_out = self.encode(speech, speech_lens)
+        encoder_out_mask = attentions.make_pad_mask(speech_lens, max_len=encoder_out.shape[1])[:, None, :].to(encoder_out.device)
+        return encoder_out, encoder_out_mask
+
+    def post_process(self, encoder_out, encoder_out_mask, speech_lens, **kwargs):
+        raise NotImplementedError
+
+    def encode(self, x: torch.Tensor, seq_lens: torch.Tensor, **kwargs):
+        return self.encoder(x, seq_lens)
 
 
 class SANMEncoder(nn.Module):
@@ -411,7 +439,7 @@ class SANMEncoderAttention(FSMNBlock, attentions.CrossAttention2D):
 
 class SANMDecoder(nn.Module):
     """
-    code: `funasr.models.e_paraformer.decoder.ParaformerSANMDecoder`
+    code: `funasr.models.paraformer.decoder.ParaformerSANMDecoder`
     """
 
     def __init__(
@@ -421,7 +449,7 @@ class SANMDecoder(nn.Module):
             attention_heads: int = 4,
             linear_units: int = 2048,
             num_blocks: int = 16,
-            dropout_rate: float = 0.1,
+            drop_prob: float = 0.1,
             src_attention_dropout_rate: float = 0.1,
             use_output_layer: bool = True,
             att_layer_num: int = 16,
@@ -456,7 +484,7 @@ class SANMDecoder(nn.Module):
                 src_attention_dropout_rate,
             ),
             transformers.PositionWiseFeedForward(
-                attention_dim, linear_units, nn.ReLU(), dropout_rate,
+                attention_dim, linear_units, nn.ReLU(), drop_prob,
                 l1_kwargs=dict(
                     mode='lan', norm_fn=LayerNorm
                 ),
@@ -464,7 +492,7 @@ class SANMDecoder(nn.Module):
                     linear_fn=partial(nn.Linear, bias=False)
                 )
             ),
-            dropout_rate,
+            drop_prob,
         ) for _ in range(att_layer_num)])
 
         self.decoders3 = nn.ModuleList([SANMDecoderLayer(
@@ -472,7 +500,7 @@ class SANMDecoder(nn.Module):
             None,
             None,
             transformers.PositionWiseFeedForward(
-                attention_dim, linear_units, nn.ReLU(), dropout_rate,
+                attention_dim, linear_units, nn.ReLU(), drop_prob,
                 l1_kwargs=dict(
                     mode='lan', norm_fn=LayerNorm
                 ),
@@ -480,7 +508,7 @@ class SANMDecoder(nn.Module):
                     linear_fn=partial(nn.Linear, bias=False)
                 )
             ),
-            dropout_rate,
+            drop_prob,
         ) for _ in range(1)])
 
     def forward(
@@ -516,11 +544,17 @@ class SANMDecoder(nn.Module):
             if tgt_mask.size(1) != memory_mask.size(1):
                 memory_mask = torch.cat((memory_mask, memory_mask[:, -2:-1, :]), dim=1)
 
-        x = tgt
+        outputs = dict(
+            tgt=tgt,
+            tgt_mask=tgt_mask,
+            context=memory,
+            context_mask=memory_mask,
+        )
         for m in self.decoders:
-            x, tgt_mask, memory, memory_mask = m(x, tgt_mask, memory, memory_mask)
+            outputs.update(m(**outputs))
         for m in self.decoders3:
-            x, tgt_mask, memory, memory_mask = m(x, tgt_mask, memory, memory_mask)
+            outputs.update(m(**outputs))
+        x = outputs["tgt"]
         hidden = self.after_norm(x)
         x = self.output_layer(hidden)
         return x
@@ -549,7 +583,7 @@ class SANMDecoderLayer(nn.Module):
             self.norm3 = LayerNorm(size)
         self.dropout = nn.Dropout(drop_prob)
 
-    def forward(self, tgt, tgt_mask, context, context_mask=None):
+    def forward(self, tgt, tgt_mask, context, context_mask=None, **kwargs):
         """Compute decoded features.
 
         Args:
@@ -569,19 +603,24 @@ class SANMDecoderLayer(nn.Module):
         tgt = self.norm1(tgt)
         tgt = self.feed_forward(tgt)
 
+        outputs = dict()
         x = tgt
         if self.self_attn is not None:
             tgt = self.norm2(tgt)
             x = self.self_attn(tgt, tgt_mask)
             x = residual + self.dropout(x)
+            outputs['x_self_attn'] = x
 
         if self.src_attn is not None:
             residual = x
             x = self.norm3(x)
             x_src_attn = self.src_attn(x, context, context_mask)
+            outputs['x_src_attn'] = x_src_attn
             x = residual + self.dropout(x_src_attn)
 
-        return x, tgt_mask, context, context_mask
+        outputs['tgt'] = x
+
+        return outputs
 
 
 class SANMDecoderAttention(FSMNBlock):
@@ -638,9 +677,9 @@ class CrossAttention2D(nn.Module):
         return x
 
 
-class CifPredictorV3(nn.Module):
+class CifPredictorV2(nn.Module):
     """Continuous integrate-and-fire(Cif)
-    code: `funasr.models.bicif_paraformer.cif_predictor.CifPredictorV3`"""
+    code: `funasr.models.paraformer.cif_predictor.CifPredictorV2`"""
     input_dim = 512
     l_order = 1
     r_order = 1
@@ -666,46 +705,6 @@ class CifPredictorV3(nn.Module):
         self.cif_conv1d = nn.Conv1d(input_dim, input_dim, l_order + r_order + 1)
         self.cif_output = nn.Linear(input_dim, 1)
         self.dropout = nn.Dropout(p=self.drop_prob)
-        self.upsample_cnn = nn.ConvTranspose1d(input_dim, input_dim, self.upsample_times, self.upsample_times)
-        self.blstm = nn.LSTM(input_dim, input_dim, 1, bias=True, batch_first=True, dropout=0.0, bidirectional=True)
-        self.cif_output2 = nn.Linear(input_dim * 2, 1)
-
-    def get_token_num2(
-            self,
-            hidden,
-            target_label=None,
-            mask=None,
-            ignore_id=-1,
-            mask_chunk_predictor=None,
-            target_label_length=None,
-    ):
-        context = hidden.transpose(1, 2)  # (b, s, d) -> (b, d, s)
-        queries = self.pad(context)
-        output = F.relu(self.cif_conv1d(queries))
-
-        # alphas2 is an extra head for timestamp prediction
-        if not self.use_cif1_cnn:
-            _output = context
-        else:
-            _output = output
-
-        output2 = self.upsample_cnn(_output).transpose(1, 2)
-        output2, (_, _) = self.blstm(output2)
-
-        alphas2 = torch.sigmoid(self.cif_output2(output2))
-        alphas2 = torch.nn.functional.relu(alphas2 * self.smooth_factor2 - self.noise_threshold2)
-        # repeat the mask in T demension to match the upsampled length
-        if mask is not None:
-            mask2 = (
-                mask.repeat(1, self.upsample_times, 1)
-                .transpose(-1, -2)
-                .reshape(alphas2.shape[0], -1)
-            )
-            mask2 = mask2.unsqueeze(-1)
-            alphas2 = alphas2 * mask2
-        alphas2 = alphas2.squeeze(-1)
-        token_num2 = alphas2.sum(-1)
-        return token_num2
 
     def forward(
             self,
@@ -735,7 +734,8 @@ class CifPredictorV3(nn.Module):
         alphas = alphas.squeeze(-1)
         mk = mk.squeeze(-1)
         if target_label_length is not None:
-            target_length = target_label_length
+            # note
+            target_length = target_label_length.squeeze(-1)
         elif target_label is not None:
             target_length = (target_label != ignore_id).float().sum(-1)
         else:
@@ -752,8 +752,7 @@ class CifPredictorV3(nn.Module):
             token_num_int = torch.max(token_num).type(torch.int32).item()
             acoustic_embeds = acoustic_embeds[:, :token_num_int, :]
 
-        us_alphas, us_peaks = self.get_timestamp(hidden, mask, token_num)
-        return acoustic_embeds, token_num, alphas, us_alphas, us_peaks
+        return acoustic_embeds, token_num, alphas
 
     def tail_process_fn(self, hidden, alphas, mask=None):
         b, s, d = hidden.size()
@@ -779,108 +778,56 @@ class CifPredictorV3(nn.Module):
         return hidden, alphas, token_num_floor
 
     def cif(self, hidden, alphas):
-        """count embeddings"""
-        b, s, d = hidden.shape
+        fires, fire_idxs = self.cif_wo_hidden(alphas)
 
-        # loop vars
-        integrate = torch.zeros([b], device=hidden.device)
-        frame = torch.zeros([b, d], device=hidden.device)
-        # intermediate vars along time
-        list_fires = []
-        list_frames = []
+        device = hidden.device
+        dtype = hidden.dtype
+        batch_size, len_time, hidden_size = hidden.size()
+        prefix_sum_hidden = torch.cumsum(alphas.unsqueeze(-1).repeat((1, 1, hidden_size)) * hidden, dim=1)
 
-        for t in range(s):
-            alpha = alphas[:, t]
-            distribution_completion = torch.ones([b], device=hidden.device) - integrate
+        frames = prefix_sum_hidden[fire_idxs]
+        shift_frames = torch.roll(frames, 1, dims=0)
 
-            integrate += alpha
-            list_fires.append(integrate)
+        batch_len = fire_idxs.sum(1)
+        batch_idxs = torch.cumsum(batch_len, dim=0)
+        shift_batch_idxs = torch.roll(batch_idxs, 1, dims=0)
+        shift_batch_idxs[0] = 0
+        shift_frames[shift_batch_idxs] = 0
 
-            fire_place = integrate >= self.threshold
-            integrate = torch.where(
-                fire_place,
-                integrate - torch.ones([b], device=hidden.device),
-                integrate
-            )
-            cur = torch.where(fire_place, distribution_completion, alpha)
+        remains = fires - torch.floor(fires)
+        remain_frames = remains[fire_idxs].unsqueeze(-1).repeat((1, hidden_size)) * hidden[fire_idxs]
 
-            frame += cur[:, None] * hidden[:, t, :]
-            list_frames.append(frame)
-            frame = torch.where(
-                fire_place[:, None].repeat(1, d),
-                (alpha - cur)[:, None] * hidden[:, t, :],
-                frame
-            )
+        shift_remain_frames = torch.roll(remain_frames, 1, dims=0)
+        shift_remain_frames[shift_batch_idxs] = 0
 
-        fires = torch.stack(list_fires, 1)
-        frames = torch.stack(list_frames, 1)
-        embeds = []
-        token_num = torch.round(alphas.sum(-1)).int()
-        max_token_num = token_num.max()
-        for i in range(b):
-            l = torch.index_select(frames[i], 0, torch.nonzero(fires[i] >= self.threshold).squeeze())
-            # use zero embed to the last frame if not completed.
-            pad_l = torch.zeros([max_token_num - l.size(0), d], device=hidden.device)
-            embeds.append(torch.cat([l, pad_l], 0))
-        return torch.stack(embeds, 0)
+        frames = frames - shift_frames + shift_remain_frames - remain_frames
 
-    def get_timestamp(self, hidden, mask=None, token_num=None):
-        context = hidden.transpose(1, 2)
+        max_label_len = torch.round(alphas.sum(-1)).int().max()  # torch.round to calculate the max length
 
-        # an extra head for timestamp prediction
-        if self.use_cif1_cnn:
-            queries = self.pad(context)
-            output = F.relu(self.cif_conv1d(queries))
-        else:
-            output = context
-
-        output = self.upsample_cnn(output).transpose(1, 2)
-        output, (_, _) = self.blstm(output)
-
-        us_alphas = F.sigmoid(self.cif_output2(output))
-        us_alphas = F.relu(us_alphas * self.smooth_factor2 - self.noise_threshold2)
-        # repeat the mask in T demension to match the upsampled length
-        if mask is not None:
-            mask = (
-                mask.repeat(1, self.upsample_times, 1)
-                .transpose(-1, -2)
-                .reshape(us_alphas.shape[0], -1)
-                .unsqueeze(-1)
-            )  # (b, 1, s) -> (b, self.upsample_times * s, 1)
-            us_alphas = us_alphas * mask
-        us_alphas = us_alphas.squeeze(-1)
-        if token_num is not None:
-            _token_num = us_alphas.sum(-1)
-            us_alphas *= (token_num / _token_num)[:, None].repeat(1, us_alphas.size(1))
-
-        # upsampled alphas and cif_peak
-        us_cif_peak = self.cif_wo_hidden(us_alphas)
-        return us_alphas, us_cif_peak
+        frame_fires = torch.zeros(batch_size, max_label_len, hidden_size, dtype=dtype, device=device)
+        indices = torch.arange(max_label_len, device=device).expand(batch_size, -1)
+        frame_fires_idxs = indices < batch_len.unsqueeze(1)
+        frame_fires[frame_fires_idxs] = frames
+        return frame_fires
 
     def cif_wo_hidden(self, alphas):
-        threshold = self.threshold - 1e-4
         batch_size, len_time = alphas.size()
+        device = alphas.device
+        dtype = alphas.dtype
+        fires = torch.zeros(batch_size, len_time, dtype=dtype, device=device)
 
-        # loop varss
-        integrate = torch.zeros([batch_size], device=alphas.device)
-        # intermediate vars along time
-        list_fires = []
+        prefix_sum = torch.cumsum(alphas, dim=1, dtype=torch.float64).to(torch.float32)  # cumsum precision degradation cause wrong result in extreme
+        prefix_sum_floor = torch.floor(prefix_sum)
+        dislocation_prefix_sum = torch.roll(prefix_sum, 1, dims=1)
+        dislocation_prefix_sum_floor = torch.floor(dislocation_prefix_sum)
 
-        for t in range(len_time):
-            alpha = alphas[:, t]
+        dislocation_prefix_sum_floor[:, 0] = 0
+        dislocation_diff = prefix_sum_floor - dislocation_prefix_sum_floor
 
-            integrate += alpha
-            list_fires.append(integrate)
-
-            fire_place = integrate >= threshold
-            integrate = torch.where(
-                fire_place,
-                integrate - torch.ones([batch_size], device=alphas.device) * threshold,
-                integrate,
-            )
-
-        fires = torch.stack(list_fires, 1)
-        return fires
+        fire_idxs = dislocation_diff > 0
+        fires[fire_idxs] = 1
+        fires = fires + prefix_sum - prefix_sum_floor
+        return fires, fire_idxs
 
 
 class CTC(nn.Module):

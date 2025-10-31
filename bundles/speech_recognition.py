@@ -276,6 +276,7 @@ class BiCifParaformer(Process):
             self, *objs, start_idx=None, end_idx=None,
             speech=None, speech_path=None,
             source_speech=None, source_speech_path=None,
+            det_timestamp=None,
             **kwargs
     ) -> List[dict]:
         if speech is None and speech_path:
@@ -286,10 +287,17 @@ class BiCifParaformer(Process):
         if not isinstance(speech, list):
             speech = [None] * start_idx + [speech] * (end_idx - start_idx)
 
+        if det_timestamp is None or not isinstance(det_timestamp[start_idx], list):
+            det_timestamp = [None] * start_idx + [det_timestamp] * (end_idx - start_idx)
+
         inputs = []
         for i in range(start_idx, end_idx):
+            audio = speech[i]
+            det_t = det_timestamp[i]
+            if isinstance(det_t, list):
+                audio = audio[det_t[0] * 16:det_t[1] * 16]
             per_input = dict(
-                audio=speech[i],
+                audio=audio,
                 text=''
             )
             inputs.append(per_input)
@@ -317,7 +325,111 @@ class BiCifParaformer_Funasr(BiCifParaformer, Funasr):
         processor.init()
 
         processor.single_predict(
-            speech_path='xxx'
+            speech_path='xxx',
+            # det_timestamp=[0, 1000],
+        )
+
+        processor.metric(
+            batch_size=batch_size,
+            data_get_kwargs=dict(
+                set_task=set_task
+            )
+        )
+
+        processor.fit(
+            max_epoch=max_epoch,
+            batch_size=train_batch_size,
+            check_period=check_period,
+            data_get_kwargs=dict(
+                set_task=set_task,
+            ),
+            dataloader_kwargs=dict(
+                num_workers=num_workers,
+                shuffle=True
+            ),
+            metric_kwargs=dict(
+                batch_size=test_batch_size
+            ),
+            lr=lr,
+        )
+    """
+
+
+class ContextualParaformer(BiCifParaformer):
+    def set_model(self):
+        from models.speech_recognition.ContextualParaformer import Model
+
+        self.model = Model()
+        self.cmvn = load_cmvn(self.cmvn_path)
+
+    def get_model_inputs(self, loop_inputs, train=True):
+        model_inputs = super().get_model_inputs(loop_inputs, train)
+        for ret in loop_inputs:
+            if 'hotword_list' in ret:
+                hotword_list = ret['hotword_list']
+
+                r = self.tokenizer.encode_paragraphs(hotword_list)
+                hotword_ids = r['segments_ids']
+                hotword_ids.append([self.tokenizer.sos_id])
+                model_inputs.update(
+                    hotword_ids=hotword_ids
+                )
+                break
+        return model_inputs
+
+    def on_val_reprocess(self, loop_objs, process_results=dict(), **kwargs):
+        model_results = loop_objs['model_results']
+        for name in model_results:
+            preds = model_results[name]['preds']
+            trues = model_results[name]['trues']
+            segments = self.tokenizer.decode_to_segments(preds)
+
+            results = []
+            for segment, true in zip(segments, trues):
+                timestamp = [[-1, -1]] * len(segment)  # fake timestamp
+                segment, timestamp = spliter.ToSegment().from_segment_by_word_piece_v2(segment, timestamp)
+                segment, timestamp = spliter.ToSegment().from_segment_by_merge_single_char(segment, timestamp)
+                pred = spliter.ToParagraphs().from_segments_with_zh_en_mix([segment])[0]
+                results.append(dict(
+                    pred=pred,
+                    true=true,
+                    segment=segment,
+                ))
+            process_results.setdefault(name, []).extend(results)
+
+    def gen_predict_inputs(self, *objs, hotword_list=None, **kwargs) -> List[dict]:
+        inputs = super().gen_predict_inputs(*objs, **kwargs)
+        if hotword_list is not None:
+            if not isinstance(hotword_list, list):
+                hotword_list = [hotword_list]
+            for i in inputs:
+                i.update(
+                    hotword_list=hotword_list
+                )
+
+        return inputs
+
+
+class ContextualParaformer_Funasr(ContextualParaformer, Funasr):
+    """
+
+    Usage:
+        from bundles.speech_recognition import ContextualParaformer_Funasr as Processor
+
+        model_dir = 'xxx'
+        processor = Processor(
+            vocab_fn=f'{model_dir}/tokens.json',
+            seg_dict_path=f'{model_dir}/seg_dict',
+            cmvn_path=f'{model_dir}/am.mvn',
+            pretrained_model=f'{model_dir}/model.pt',
+        )
+
+        processor.init()
+
+        processor.single_predict(
+            speech_path='xxx',
+            # det_timestamp=[0, 1000],
+            hotword_list=['xxx'],
         )
 
         processor.metric(
