@@ -212,7 +212,7 @@ class BaseT5(Process):
         )
 
     def set_tokenizer(self):
-        self.tokenizer = bundled.T5Tokenizer.from_pretrained(self.vocab_fn, self.encoder_fn)
+        self.tokenizer = bundled.T5Tokenizer.from_pretrained(vocab_fn=self.vocab_fn, encoder_fn=self.encoder_fn)
 
     def set_optimizer(self, lr=1e-4, betas=(0.5, 0.999), **kwargs):
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=lr, betas=betas)

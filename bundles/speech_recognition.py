@@ -199,7 +199,7 @@ class BiCifParaformer(Process):
         speech = pad_sequence(speech, batch_first=True, padding_value=0.0)
         model_inputs = dict(
             speech=speech,
-            speech_lens=speech_lens,
+            speech_lens=torch.tensor(speech_lens).to(self.device),
             texts=texts,
         )
         if train:
@@ -454,5 +454,70 @@ class ContextualParaformer_Funasr(ContextualParaformer, Funasr):
                 batch_size=test_batch_size
             ),
             lr=lr,
+        )
+    """
+
+
+class SenseVoice(BiCifParaformer):
+    def set_model(self):
+        from models.speech_recognition.SenseVoice import Model
+
+        self.model = Model()
+        self.cmvn = load_cmvn(self.cmvn_path)
+
+    def set_tokenizer(self):
+        from data_parse.nl_data_parse.pre_process.bundled import T5Tokenizer
+
+        self.tokenizer = T5Tokenizer.from_pretrained(self.encoder_fn)
+
+    def on_val_reprocess(self, loop_objs, process_results=dict(), **kwargs):
+        model_results = loop_objs['model_results']
+        for name in model_results:
+            model_output = model_results[name]
+            sp_preds = model_output['sp_preds']
+            preds = model_output['preds']
+            trues = model_output['trues']
+            timestamps = model_output['timestamps']
+            sp_segments = self.tokenizer.decode_to_segments(sp_preds)
+            segments = self.tokenizer.decode_to_segments(preds)
+            paragraphs = self.tokenizer.decode_to_paragraphs(preds)
+
+            results = []
+            for sp_segment, segment, paragraph, timestamp, true in zip(sp_segments, segments, paragraphs, timestamps, trues):
+                new_segment = []
+                new_timestamp = []
+                for s, t in zip(segment, timestamp):
+                    if s == '':
+                        continue
+                    new_segment.append(s)
+                    new_timestamp.append(t)
+
+                results.append(dict(
+                    pred=paragraph,
+                    true=true,
+                    segment=new_segment,
+                    timestamp=new_timestamp,
+                    sp_segment=sp_segment,
+                ))
+            process_results.setdefault(name, []).extend(results)
+
+
+class SenseVoice_Funasr(SenseVoice, Funasr):
+    """
+    Usage:
+        from bundles.speech_recognition import ContextualParaformer_Funasr as Processor
+
+        model_dir = 'xxx'
+        processor = Processor(
+            encoder_fn=f'{model_dir}/chn_jpn_yue_eng_ko_spectok.bpe.model',
+            cmvn_path=f'{model_dir}/am.mvn',
+            pretrained_model=f'{model_dir}/model.pt',
+        )
+
+        processor.init()
+
+        processor.single_predict(
+            speech_path='xxx',
+            # det_timestamp=[0, 1000],
         )
     """

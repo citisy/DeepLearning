@@ -249,7 +249,7 @@ class ContextualParaformerDecoder(nn.Module):
         # contextual paraformer related
         contextual_length = torch.Tensor([contextual_info.shape[1]]).int().repeat(hs_pad.shape[0])
         contextual_mask = self.sequence_mask(contextual_length, device=memory.device)[:, None, :]
-        cx, tgt_mask, _, _ = self.bias_decoder(x_self_attn, tgt_mask, contextual_info, memory_mask=contextual_mask)
+        cx = self.bias_decoder(x_self_attn, contextual_info, memory_mask=contextual_mask)
 
         if self.bias_output is not None:
             x = torch.cat([x_src_attn, cx * clas_scale], dim=2)
@@ -295,10 +295,10 @@ class ContextualBiasDecoder(nn.Module):
         self.dropout = nn.Dropout(dropout_rate)
         self.normalize_before = normalize_before
 
-    def forward(self, tgt, tgt_mask, memory, memory_mask=None, **kwargs):
+    def forward(self, tgt, memory, memory_mask=None, **kwargs):
         x = tgt
         if self.src_attn is not None:
             if self.normalize_before:
                 x = self.norm3(x)
             x = self.dropout(self.src_attn(x, memory, memory_mask))
-        return x, tgt_mask, memory, memory_mask
+        return x

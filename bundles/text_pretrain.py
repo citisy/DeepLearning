@@ -698,7 +698,10 @@ class BgeM3(Process):
         self.model = Model()
 
     def set_tokenizer(self):
-        self.tokenizer = bundled.XLMRobertaTokenizer.from_pretrained(self.vocab_fn, self.encoder_fn)
+        self.tokenizer = bundled.XLMRobertaTokenizer.from_pretrained(
+            vocab_fn=self.vocab_fn,
+            encoder_fn=self.encoder_fn
+        )
 
     def load_pretrained(self):
         from models.text_pretrain.bge_m3 import WeightConverter

@@ -981,7 +981,7 @@ class ModelHooks:
         if not len(obj):
             obj = [None]
         ret = self.batch_predict(*[[o] for o in obj], **kwargs)
-        if isinstance(ret, list):
+        if isinstance(ret, list) and ret:
             return ret[0]
         else:
             return ret

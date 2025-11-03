@@ -1536,8 +1536,8 @@ class BaseFlux(DiProcess):
         )
 
         self.t5_tokenizer = T5Tokenizer.from_pretrained(
-            self.t5_vocab_fn,
-            self.t5_encoder_fn,
+            vocab_fn=self.t5_vocab_fn,
+            encoder_fn=self.t5_encoder_fn,
             max_seq_len=512
         )
 

@@ -36,7 +36,8 @@ class WeightConverter:
         convert_dict = {
             **cls.encoder_convert_dict,
             **cls.decoder_convert_dict,
-            'predictor': 'neck'
+            'predictor': 'neck',
+            'ctc.': 'criterion_ctc.'
         }
         state_dict = torch_utils.Converter.convert_keys(state_dict, convert_dict)
         return state_dict
@@ -66,6 +67,7 @@ class Model(nn.Module):
     eos_id: int = 2
 
     predictor_weight: float = 1.0
+    use_ctc = False
     ctc_weight: float = 0.
     lsm_weight: float = 0.0
     length_normalized_loss: bool = False
@@ -84,10 +86,10 @@ class Model(nn.Module):
         self.make_neck(**head_config)
         self.make_decoder(**decoder_config)
 
-        if self.ctc_weight == 0.0:
-            self.ctc = None
-        else:
+        if self.use_ctc:
             self.criterion_ctc = CTC(odim=self.vocab_size, encoder_output_size=self.encoder.output_size, **ctc_config)
+        else:
+            self.criterion_ctc = None
         self.criterion_att = LabelSmoothingLoss(
             size=self.vocab_size,
             padding_idx=self.ignore_id,
@@ -135,15 +137,15 @@ class Model(nn.Module):
         return self.post_process(encoder_out, encoder_out_mask, speech_lens, **kwargs)
 
     def process(self, speech, speech_lens):
-        encoder_out = self.encode(speech, speech_lens)
-        encoder_out_mask = attentions.make_pad_mask(speech_lens, max_len=encoder_out.shape[1])[:, None, :].to(encoder_out.device)
+        encoder_out, encoder_out_mask = self.encode(speech, speech_lens)
         return encoder_out, encoder_out_mask
 
     def post_process(self, encoder_out, encoder_out_mask, speech_lens, **kwargs):
         raise NotImplementedError
 
-    def encode(self, x: torch.Tensor, seq_lens: torch.Tensor, **kwargs):
-        return self.encoder(x, seq_lens)
+    def encode(self, speech: torch.Tensor, speech_lens: torch.Tensor, **kwargs):
+        attention_mask = attentions.make_pad_mask(speech_lens)[:, None, :].to(speech.device)
+        return self.encoder(speech, speech_lens, attention_mask), attention_mask
 
 
 class SANMEncoder(nn.Module):
@@ -154,93 +156,67 @@ class SANMEncoder(nn.Module):
     code:
         `funasr.models.sanm.encoder.SANMEncoder`
     """
+    input_size: int = 560
+    output_size: int = 512
+    attention_heads: int = 4
+    linear_units: int = 2048
+    num_blocks: int = 50
+    dropout_prob: float = 0.1
+    attention_dropout_prob: float = 0.1
+    norm_first: bool = True
+    concat_after: bool = False
+    kernel_size: int = 11
+    sanm_shfit: int = 0
 
-    def __init__(
-            self,
-            input_size: int = 560,
-            output_size: int = 512,
-            attention_heads: int = 4,
-            linear_units: int = 2048,
-            num_blocks: int = 50,
-            dropout_rate: float = 0.1,
-            attention_dropout_rate: float = 0.1,
-            norm_first: bool = True,
-            concat_after: bool = False,
-            kernel_size: int = 11,
-            sanm_shfit: int = 0,
-            **kwargs
-    ):
+    def __init__(self, **kwargs):
+        self.__dict__.update(kwargs)
         super().__init__()
-        self.output_size = output_size
+        self.embed = SinusoidalEmbedding(self.input_size)
 
-        self.embed = SinusoidalEmbedding(input_size)
+        self.encoders0 = nn.ModuleList([self.make_sanm_encoder(self.input_size, self.output_size) for _ in range(1)])
 
-        self.encoders0 = nn.ModuleList([SANMEncoderLayer(
+        self.encoders = nn.ModuleList([self.make_sanm_encoder(self.output_size, self.output_size) for _ in range(self.num_blocks - 1)])
+        self.after_norm = LayerNorm(self.output_size)
+
+        self.conditioning_layer = None
+        self.dropout = nn.Dropout(self.dropout_prob)
+
+    def make_sanm_encoder(self, input_size, output_size):
+        return SANMEncoderLayer(
             input_size,
             output_size,
             SANMEncoderAttention(
-                n_heads=attention_heads,
+                n_heads=self.attention_heads,
                 query_dim=input_size,
                 context_dim=input_size,
                 model_dim=output_size,
                 separate=False,
-                drop_prob=attention_dropout_rate,
-                kernel_size=kernel_size,
-                sanm_shfit=sanm_shfit,
-                out_layer=Linear(output_size, output_size, mode='ld', drop_prob=attention_dropout_rate)
+                drop_prob=self.attention_dropout_prob,
+                kernel_size=self.kernel_size,
+                sanm_shfit=self.sanm_shfit,
+                out_layer=Linear(output_size, output_size, mode='ld', drop_prob=self.attention_dropout_prob)
             ),
             transformers.PositionWiseFeedForward(
                 output_size,
-                linear_units,
+                self.linear_units,
                 nn.ReLU(),
-                dropout_rate,
+                self.dropout_prob,
             ),
-            dropout_rate,
-            norm_first,
-            concat_after,
-        ) for _ in range(1)])
+            self.dropout_prob,
+            self.norm_first,
+            self.concat_after,
+        )
 
-        self.encoders = nn.ModuleList([
-            SANMEncoderLayer(
-                output_size,
-                output_size,
-                SANMEncoderAttention(
-                    n_heads=attention_heads,
-                    query_dim=output_size,
-                    context_dim=output_size,
-                    model_dim=output_size,
-                    separate=False,
-                    drop_prob=attention_dropout_rate,
-                    kernel_size=kernel_size,
-                    sanm_shfit=sanm_shfit,
-                    out_layer=Linear(output_size, output_size, mode='ld', drop_prob=attention_dropout_rate)
-                ),
-                transformers.PositionWiseFeedForward(
-                    output_size,
-                    linear_units,
-                    nn.ReLU(),
-                    dropout_rate,
-                ),
-                dropout_rate,
-                norm_first,
-                concat_after,
-            ) for _ in range(num_blocks - 1)
-        ])
-        self.after_norm = LayerNorm(output_size)
-
-        self.conditioning_layer = None
-        self.dropout = nn.Dropout(dropout_rate)
-
-    def forward(self, x: torch.Tensor, seq_lens: torch.Tensor):
+    def forward(self, x, seq_lens, attention_mask):
         """Embed positions in tensor.
 
         Args:
             x: input tensor (B, L, D)
             seq_lens: input length (B)
+            attention_mask:
         Returns:
             position embedded tensor and mask
         """
-        attention_mask = (attentions.make_pad_mask(seq_lens)[:, None, :]).to(x.device)
         x = x * self.output_size ** 0.5
         x += self.embed(torch.arange(1, x.shape[1] + 1, device=x.device, dtype=torch.float32))[None]
 
