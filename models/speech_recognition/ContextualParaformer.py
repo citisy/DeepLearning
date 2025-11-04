@@ -5,11 +5,17 @@ import torch.nn.functional as F
 from torch import nn
 
 from . import Paraformer
-from .Paraformer import WeightConverter
-from ..bundles import WeightLoader
 from .. import attentions
 from ..text_pretrain import transformers
-from torch.nn.utils.rnn import pad_sequence
+from torch.nn.utils.rnn import pack_padded_sequence
+
+
+class WeightConverter(Paraformer.WeightConverter):
+    """https://modelscope.cn/models/iic/speech_paraformer-large-contextual_asr_nat-zh-cn-16k-common-vocab8404"""
+
+
+class WeightLoader(Paraformer.WeightLoader):
+    pass
 
 
 class Model(Paraformer.Model):
@@ -18,18 +24,18 @@ class Model(Paraformer.Model):
         - [FunASR: A Fundamental End-to-End Speech Recognition Toolkit](https://arxiv.org/abs/2305.11013)
     """
 
-    def make_decoder(self, inner_dim=512, bias_encoder_dropout_prob=0., **decoder_config):
+    def make_decoder(self, input_size=512, bias_encoder_drop_prob=0., **decoder_config):
         self.bias_encoder = nn.LSTM(
-            inner_dim, inner_dim, 1, batch_first=True, dropout=bias_encoder_dropout_prob
+            input_size, input_size, 1, batch_first=True, dropout=bias_encoder_drop_prob
         )
-        self.bias_embed = nn.Embedding(self.vocab_size, inner_dim)
+        self.bias_embed = nn.Embedding(self.vocab_size, input_size)
         self.decoder = ContextualParaformerDecoder(
             vocab_size=self.vocab_size,
             encoder_output_size=self.encoder.output_size,
             **decoder_config,
         )
 
-    def post_process(self, encoder_out, encoder_out_mask, speech_lens, hotword_ids=None, clas_scale=1.0, **kwargs):
+    def post_process(self, encoder_out, encoder_out_mask, speech_lens, **decode_kwargs):
         # predict the length of token
         pre_acoustic_embeds, token_num, _ = self.neck(encoder_out, None, encoder_out_mask, ignore_id=self.ignore_id)
 
@@ -37,11 +43,8 @@ class Model(Paraformer.Model):
         if torch.max(token_num) < 1:
             return {}
 
-        decoder_out = self.decode(
-            encoder_out, speech_lens, pre_acoustic_embeds, token_num,
-            hotword_ids=hotword_ids,
-            clas_scale=clas_scale,
-        )
+        decoder_outputs = self.decode(encoder_out, speech_lens, pre_acoustic_embeds, token_num, **decode_kwargs)
+        decoder_out = decoder_outputs['x']
 
         preds = []
         b, n, d = decoder_out.size()
@@ -57,23 +60,20 @@ class Model(Paraformer.Model):
             preds=preds,
         )
 
-    def decode(self, encoder_out, encoder_out_lens, sematic_embeds, ys_pad_lens, hotword_ids=None, clas_scale=1.0):
+    def decode(self, encoder_out, encoder_out_lens, sematic_embeds, ys_pad_lens, hotword_ids=None, hotword_lens=None, clas_scale=1.0, **kwargs):
         if hotword_ids is None:
-            hotword_ids = [torch.Tensor([1]).long().to(encoder_out.device)]  # empty hotword list
-            hw_list_pad = pad_sequence(hotword_ids, batch_first=True)
+            hotword_ids = torch.ones((1, 1), dtype=torch.long, device=encoder_out.device)
 
-            hw_embed = self.bias_embed(hw_list_pad)
+            hw_embed = self.bias_embed(hotword_ids)
             hw_embed, (h_n, _) = self.bias_encoder(hw_embed)
             hw_embed = h_n.repeat(encoder_out.shape[0], 1, 1)
         else:
-            hw_lengths = [len(i) for i in hotword_ids]
-            hw_list_pad = pad_sequence([torch.Tensor(i).long() for i in hotword_ids], batch_first=True).to(encoder_out.device)
-            hw_embed = self.bias_embed(hw_list_pad)
-            hw_embed = nn.utils.rnn.pack_padded_sequence(hw_embed, hw_lengths, batch_first=True, enforce_sorted=False)
+            hw_embed = self.bias_embed(hotword_ids)
+            hw_embed = pack_padded_sequence(hw_embed, hotword_lens, batch_first=True, enforce_sorted=False)
             _, (h_n, _) = self.bias_encoder(hw_embed)
             hw_embed = h_n.repeat(encoder_out.shape[0], 1, 1)
 
-        decoder_out = self.decoder(
+        decoder_outputs = self.decoder(
             encoder_out,
             encoder_out_lens,
             sematic_embeds,
@@ -81,9 +81,9 @@ class Model(Paraformer.Model):
             contextual_info=hw_embed,
             clas_scale=clas_scale,
         )
+        decoder_outputs['x'] = F.log_softmax(decoder_outputs['x'], dim=-1)
 
-        decoder_out = F.log_softmax(decoder_out, dim=-1)
-        return decoder_out
+        return decoder_outputs
 
 
 class ContextualParaformerDecoder(nn.Module):
@@ -264,7 +264,10 @@ class ContextualParaformerDecoder(nn.Module):
         x = outputs["tgt"]
         hidden = self.after_norm(x)
         x = self.output_layer(hidden)
-        return x
+        return dict(
+            hidden=hidden,
+            x=x
+        )
 
     @staticmethod
     def sequence_mask(lengths, maxlen=None, dtype=torch.float32, device=None):

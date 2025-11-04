@@ -3,11 +3,14 @@ import torch.nn.functional as F
 from torch import nn
 
 from . import Paraformer
-from ..bundles import WeightLoader
 from .. import attentions
 
 
 class WeightConverter(Paraformer.WeightConverter):
+    """https://modelscope.cn/models/iic/speech_paraformer-large-vad-punc_asr_nat-zh-cn-16k-common-vocab8404-pytorch"""
+
+
+class WeightLoader(Paraformer.WeightLoader):
     pass
 
 
@@ -21,7 +24,7 @@ class Model(Paraformer.Model):
     def make_neck(self, **head_config):
         self.neck = CifPredictorV3(**head_config)
 
-    def post_process(self, encoder_out, encoder_out_mask, speech_lens, **kwargs):
+    def post_process(self, encoder_out, encoder_out_mask, speech_lens, **decode_kwargs):
         # predict the length of token
         pre_acoustic_embeds, token_num, alphas, us_alphas, us_peaks = self.neck(encoder_out, None, encoder_out_mask, ignore_id=self.ignore_id)
 
@@ -29,7 +32,8 @@ class Model(Paraformer.Model):
         if torch.max(token_num) < 1:
             return {}
 
-        decoder_out = self.decode(encoder_out, speech_lens, pre_acoustic_embeds, token_num)
+        decoder_outputs = self.decode(encoder_out, speech_lens, pre_acoustic_embeds, token_num, **decode_kwargs)
+        decoder_out = decoder_outputs['x']
 
         preds = []
         timestamps = []
@@ -53,10 +57,10 @@ class Model(Paraformer.Model):
             timestamps=timestamps,
         )
 
-    def decode(self, encoder_out, encoder_out_lens, sematic_embeds, ys_pad_lens):
-        decoder_out = self.decoder(encoder_out, encoder_out_lens, sematic_embeds, ys_pad_lens)
-        decoder_out = F.log_softmax(decoder_out, dim=-1)
-        return decoder_out
+    def decode(self, encoder_out, encoder_out_lens, sematic_embeds, ys_pad_lens, **kwargs):
+        decoder_outputs = self.decoder(encoder_out, encoder_out_lens, sematic_embeds, ys_pad_lens)
+        decoder_outputs['x'] = F.log_softmax(decoder_outputs['x'], dim=-1)
+        return decoder_outputs
 
     start_end_threshold = 5
     max_token_duration = 12  # 3 times upsampled

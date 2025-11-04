@@ -11,6 +11,7 @@ from .. import attentions, embeddings
 from ..layers import Linear
 from ..losses import LabelSmoothingLoss, MAELoss
 from ..text_pretrain import transformers
+from ..bundles import WeightLoader
 
 
 class WeightConverter:
@@ -59,7 +60,6 @@ class Model(nn.Module):
         - https://mp.weixin.qq.com/s/xQ87isj5_wxWiQs4qUXtVw
     """
 
-    input_size: int = 560
     vocab_size: int = 8404
     ignore_id: int = -1
     blank_id: int = 0
@@ -99,7 +99,7 @@ class Model(nn.Module):
         self.criterion_pre = MAELoss(normalize_length=self.length_normalized_loss)
 
     def make_encoder(self, **encoder_config):
-        self.encoder = SANMEncoder(input_size=self.input_size, **encoder_config)
+        self.encoder = SANMEncoder(**encoder_config)
 
     def make_neck(self, **head_config):
         self.neck = CifPredictorV2(**head_config)
@@ -161,8 +161,8 @@ class SANMEncoder(nn.Module):
     attention_heads: int = 4
     linear_units: int = 2048
     num_blocks: int = 50
-    dropout_prob: float = 0.1
-    attention_dropout_prob: float = 0.1
+    drop_prob: float = 0.1
+    attention_drop_prob: float = 0.1
     norm_first: bool = True
     concat_after: bool = False
     kernel_size: int = 11
@@ -179,7 +179,7 @@ class SANMEncoder(nn.Module):
         self.after_norm = LayerNorm(self.output_size)
 
         self.conditioning_layer = None
-        self.dropout = nn.Dropout(self.dropout_prob)
+        self.dropout = nn.Dropout(self.drop_prob)
 
     def make_sanm_encoder(self, input_size, output_size):
         return SANMEncoderLayer(
@@ -191,18 +191,18 @@ class SANMEncoder(nn.Module):
                 context_dim=input_size,
                 model_dim=output_size,
                 separate=False,
-                drop_prob=self.attention_dropout_prob,
+                drop_prob=self.attention_drop_prob,
                 kernel_size=self.kernel_size,
                 sanm_shfit=self.sanm_shfit,
-                out_layer=Linear(output_size, output_size, mode='ld', drop_prob=self.attention_dropout_prob)
+                out_layer=Linear(output_size, output_size, mode='ld', drop_prob=self.attention_drop_prob)
             ),
             transformers.PositionWiseFeedForward(
                 output_size,
                 self.linear_units,
                 nn.ReLU(),
-                self.dropout_prob,
+                self.drop_prob,
             ),
-            self.dropout_prob,
+            self.drop_prob,
             self.norm_first,
             self.concat_after,
         )
@@ -427,6 +427,7 @@ class SANMDecoder(nn.Module):
             num_blocks: int = 16,
             drop_prob: float = 0.1,
             src_attention_dropout_rate: float = 0.1,
+            use_embed: bool = True,
             use_output_layer: bool = True,
             att_layer_num: int = 16,
             kernel_size: int = 11,
@@ -436,9 +437,11 @@ class SANMDecoder(nn.Module):
         super().__init__()
 
         attention_dim = encoder_output_size
-        self.embed = nn.Sequential(
-            nn.Embedding(vocab_size, attention_dim),
-        )
+        if use_embed:
+            # only for count loss
+            self.embed = nn.Sequential(
+                nn.Embedding(vocab_size, attention_dim),
+            )
 
         self.after_norm = LayerNorm(attention_dim)
         self.output_layer = nn.Linear(attention_dim, vocab_size) if use_output_layer else nn.Identity()
@@ -533,7 +536,36 @@ class SANMDecoder(nn.Module):
         x = outputs["tgt"]
         hidden = self.after_norm(x)
         x = self.output_layer(hidden)
-        return x
+        return dict(
+            hidden=hidden,
+            x=x
+        )
+
+    def forward_asf6(
+            self,
+            hs_pad: torch.Tensor,
+            hlens: torch.Tensor,
+            ys_in_pad: torch.Tensor,
+            ys_in_lens: torch.Tensor,
+    ):
+
+        tgt = ys_in_pad
+        tgt_mask = attentions.make_pad_mask(ys_in_lens).to(device=tgt.device)
+
+        memory = hs_pad
+        memory_mask = attentions.make_pad_mask(hlens).to(device=memory.device)
+
+        outputs = dict(
+            tgt=tgt,
+            tgt_mask=tgt_mask,
+            context=memory,
+            context_mask=memory_mask,
+        )
+        for m in self.decoders[:5]:
+            outputs.update(m(**outputs))
+
+        attn_mat = self.decoders[5].get_attn_mat(**outputs)
+        return attn_mat
 
 
 class SANMDecoderLayer(nn.Module):
@@ -598,6 +630,25 @@ class SANMDecoderLayer(nn.Module):
 
         return outputs
 
+    def get_attn_mat(self, tgt, tgt_mask, context, context_mask=None, **kwargs):
+        residual = tgt
+        tgt = self.norm1(tgt)
+        tgt = self.feed_forward(tgt)
+
+        x = tgt
+        if self.self_attn is not None:
+            tgt = self.norm2(tgt)
+            x = self.self_attn(tgt, tgt_mask)
+            x = residual + x
+
+        x = self.norm3(x)
+        q, k, v = self.src_attn.forward_in(x, context)
+        scale = q.shape[-1] ** -0.5
+        sim = torch.matmul(q, k.transpose(-2, -1)) * scale
+        sim = attentions.mask_values(sim, context_mask, use_min=True)
+        attn = F.softmax(sim, dim=-1)
+        return attn
+
 
 class SANMDecoderAttention(FSMNBlock):
     """actually it has no attention layers"""
@@ -655,7 +706,8 @@ class CrossAttention2D(nn.Module):
 
 class CifPredictorV2(nn.Module):
     """Continuous integrate-and-fire(Cif)
-    code: `funasr.models.paraformer.cif_predictor.CifPredictorV2`"""
+    code: `funasr.models.paraformer.cif_predictor.CifPredictorV2`
+    without timestamps predicting"""
     input_dim = 512
     l_order = 1
     r_order = 1

@@ -11,7 +11,7 @@ from data_parse.au_data_parse.data_augmentation import Apply, feature, perturbat
 from data_parse.nl_data_parse.pre_process import cleaner, spliter
 from metrics import text_generation
 from processor import BaseDataset, DataHooks, Process
-from utils import os_lib
+from utils import os_lib, torch_utils
 
 
 def load_cmvn(cmvn_file):
@@ -371,8 +371,12 @@ class ContextualParaformer(BiCifParaformer):
                 r = self.tokenizer.encode_paragraphs(hotword_list)
                 hotword_ids = r['segments_ids']
                 hotword_ids.append([self.tokenizer.sos_id])
+                hotword_ids = [torch.tensor(i, device=self.device) for i in hotword_ids]
+                hotword_lens = [len(i) for i in hotword_ids]
+                hotword_ids = pad_sequence(hotword_ids, batch_first=True)
                 model_inputs.update(
-                    hotword_ids=hotword_ids
+                    hotword_ids=hotword_ids,
+                    hotword_lens=hotword_lens
                 )
                 break
         return model_inputs
@@ -456,6 +460,56 @@ class ContextualParaformer_Funasr(ContextualParaformer, Funasr):
             lr=lr,
         )
     """
+
+
+class SeacoParaformer(BiCifParaformer):
+    def set_model(self):
+        from models.speech_recognition.SeacoParaformer import Model, Config
+
+        self.model = Model(**Config.get(''))
+        self.cmvn = load_cmvn(self.cmvn_path)
+
+    def load_pretrained(self):
+        from models.speech_recognition.SeacoParaformer import WeightConverter, WeightLoader
+
+        state_dict = WeightLoader.auto_load(self.pretrained_model, map_location=self.device)
+        state_dict = WeightConverter.from_official(state_dict)
+        self.model.load_state_dict(state_dict, strict=True)
+
+    def get_model_inputs(self, loop_inputs, train=True):
+        model_inputs = super().get_model_inputs(loop_inputs, train)
+        for ret in loop_inputs:
+            if 'hotword_list' in ret:
+                hotword_list = ret['hotword_list']
+
+                r = self.tokenizer.encode_paragraphs(hotword_list)
+                hotword_ids = r['segments_ids']
+                hotword_ids.append([self.tokenizer.sos_id])
+                hotword_ids = [torch.tensor(i, device=self.device) for i in hotword_ids]
+                hotword_lens = [len(i) for i in hotword_ids]
+                hotword_ids = pad_sequence(hotword_ids, batch_first=True)
+                model_inputs.update(
+                    hotword_ids=hotword_ids,
+                    hotword_lens=hotword_lens
+                )
+                break
+        return model_inputs
+
+    def gen_predict_inputs(self, *objs, hotword_list=None, **kwargs) -> List[dict]:
+        inputs = super().gen_predict_inputs(*objs, **kwargs)
+        if hotword_list is not None:
+            if not isinstance(hotword_list, list):
+                hotword_list = [hotword_list]
+            for i in inputs:
+                i.update(
+                    hotword_list=hotword_list
+                )
+
+        return inputs
+
+
+class SeacoParaformer_Funasr(SeacoParaformer, Funasr):
+    pass
 
 
 class SenseVoice(BiCifParaformer):
