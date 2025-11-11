@@ -45,19 +45,8 @@ class SegProcess(Process):
         images = torch.stack(images)
         # images = images / 255
 
-        effective_areas = []
-        for ret in loop_inputs:
-            h, w = images.shape[-2:]
-            pad_info = ret['crop.Pad']
-            t = pad_info.get('t', 0)
-            d = pad_info.get('d', 0)
-            l = pad_info.get('l', 0)
-            r = pad_info.get('r', 0)
-            effective_areas.append([l, w - r, t, h - d])
-
         r = dict(
             x=images,
-            effective_areas=effective_areas
         )
         if train:
             label_masks = [torch.from_numpy(ret.pop('label_mask')).to(self.device, non_blocking=True, dtype=torch.long) for ret in loop_inputs]
@@ -102,7 +91,10 @@ class SegProcess(Process):
         model_results = {}
         for name, model in self.models.items():
             outputs = model(**inputs)
-            outputs = outputs.cpu().numpy().astype(np.uint8)
+            if isinstance(outputs, torch.Tensor):
+                outputs = outputs.cpu().numpy()
+            else:
+                outputs = outputs['preds'].cpu().numpy()
 
             preds = []
             for (output, ret) in zip(outputs, loop_inputs):
@@ -190,7 +182,7 @@ class SegProcess(Process):
         model_results = loop_objs['model_results']
         self.visualize(loop_objs, len(model_results), **kwargs)
 
-    def on_predict_end(self, process_results=dict(), **kwargs) -> List:
+    def on_predict_end(self, loop_objs, process_results=dict(), **kwargs) -> List:
         return process_results[self.model_name]['preds']
 
 
@@ -365,7 +357,7 @@ class SAM_Voc(SegProcess, VocForSAM):
     Usage:
         .. code-block:: python
 
-            from bundles.semantic_segment import DeeplabV3_Voc as Process
+            from bundles.semantic_segment import SAM_Voc as Process
     """
 
     model_version = 'SAM'
@@ -385,9 +377,44 @@ class SAM_Voc(SegProcess, VocForSAM):
         state_dict = WeightConverter.from_official(state_dict)
         self.model.load_state_dict(state_dict, strict=False)
 
+    def get_model_inputs(self, loop_inputs, train=True):
+        r = super().get_model_inputs(loop_inputs, train)
+        x = r['x']
+
+        effective_areas = []
+        for ret in loop_inputs:
+            h, w = x.shape[-2:]
+            pad_info = ret['crop.Pad']
+            t = pad_info.get('t', 0)
+            d = pad_info.get('d', 0)
+            l = pad_info.get('l', 0)
+            r = pad_info.get('r', 0)
+            effective_areas.append([l, w - r, t, h - d])
+
+        r.update(
+            effective_areas=effective_areas
+        )
+        return r
+
 
 class U2net_Voc(SegProcess, Voc):
+    """
+    Usage:
+        .. code-block:: python
+
+            from bundles.semantic_segment import U2net_Voc as Process
+
+            process = Process(
+                pretrained_model='xxx/u2net.pth'
+            )
+            process.init()
+
+            r = process.single_predict(
+                'xxx.png',
+            )
+    """
     model_version = 'U2net'
+    config_version = 'base'
 
     input_size = 320
 
@@ -411,6 +438,52 @@ class U2net_Voc(SegProcess, Voc):
     ])
 
     def set_model(self):
-        from models.semantic_segmentation.u2net import Model
+        from models.semantic_segmentation.u2net import Model, Config
 
-        self.model = Model(self.in_ch)
+        self.model = Model(
+            self.in_ch,
+            **Config.get(self.config_version)
+        )
+
+    def load_pretrained(self):
+        from models.semantic_segmentation.u2net import WeightConverter
+
+        tensors = torch_utils.Load.from_file(self.pretrained_model, map_location=self.device)
+        tensors = WeightConverter.from_official(tensors)
+        self.model.load_state_dict(tensors, strict=True)
+        self.log(f'Loaded pretrained model from {self.pretrained_model}')
+
+    def visualize(self, loop_objs, n, **kwargs):
+        model_results = loop_objs['model_results']
+        loop_inputs = loop_objs['loop_inputs']
+
+        for name, results in model_results.items():
+            vis_trues = []
+            vis_preds = []
+            for i in range(n):
+                gt_ret = loop_inputs[i]
+                image = gt_ret['ori_image']
+                pred = results['preds'][i]
+
+                pred_image = np.concatenate([image, pred[:, :, None]], axis=-1)
+
+                if 'ori_label_mask' in gt_ret:
+                    true = gt_ret['ori_label_mask']
+                else:
+                    true = np.zeros(image.shape[:2], dtype=image.dtype) + 255
+                true_image = np.concatenate([image, true[:, :, None]], axis=-1)
+
+                vis_trues.append(dict(
+                    _id=gt_ret['_id'],
+                    image=true_image,
+                ))
+                vis_preds.append(dict(
+                    image=pred_image
+                ))
+
+            visualizer = DataVisualizer(f'{self.cache_dir}/{loop_objs.get("epoch", "")}/{name}', verbose=False, pbar=False)
+            cache_image = visualizer(vis_trues, vis_preds, return_image=True)
+            self.get_log_trace(bundled.WANDB).setdefault(f'val_image/{name}', []).extend(
+                [self.wandb.Image(cv2.cvtColor(img, cv2.COLOR_BGR2RGB), caption=Path(str(r['_id'])).stem)
+                 for img, r in zip(cache_image, vis_trues)]
+            )

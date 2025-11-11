@@ -155,7 +155,7 @@ class IgProcess(Process):
         )
 
     def on_predict_end(
-            self,
+            self, loop_objs,
             return_outputs=True, process_results=dict(),
             **kwargs
     ):
