@@ -27,6 +27,8 @@ def _load_images(images, b, start_idx, end_idx):
 
 
 class ClsProcess(Process):
+    multi_classifier = False
+
     def get_model_inputs(self, loop_inputs, train=True):
         images = [torch.from_numpy(ret.pop('image')).to(self.device, non_blocking=True, dtype=torch.float) for ret in loop_inputs]
         images = torch.stack(images)
@@ -64,16 +66,25 @@ class ClsProcess(Process):
 
         return metric_results
 
-    def on_val_step(self, loop_objs, **kwargs) -> dict:
+    def on_val_step(self, loop_objs, top_k=1, thresh=0, **kwargs) -> dict:
         loop_inputs = loop_objs['loop_inputs']
         inputs = self.get_model_inputs(loop_inputs, train=False)
         model_results = {}
         for name, model in self.models.items():
             outputs = model(**inputs)
+            model_pred = outputs['pred']
+            if self.multi_classifier:
+                preds = []
+                argsort = model_pred.argsort(descending=True)
+                for arg in argsort:
+                    keep = arg[:top_k].cpu().numpy().tolist()
+                    preds.append(keep)
+            else:
+                preds = model_pred.argmax(1).cpu().numpy().tolist()
 
             model_results[name] = dict(
-                outputs=outputs['pred'],
-                preds=outputs['pred'].argmax(1).cpu().numpy().tolist(),
+                model_pred=model_pred,
+                preds=preds,
             )
 
         return model_results
@@ -117,6 +128,20 @@ class ClsProcess(Process):
             rets.append(dict(image=image))
 
         return rets
+
+    def on_predict_reprocess(self, loop_objs, process_results=dict(), return_keys=('preds',), **kwargs):
+        model_results = loop_objs['model_results']
+        ret = process_results.setdefault(self.model_name, {})
+        preds = ret.setdefault('preds', [])
+        _preds = model_results[self.model_name]['preds']
+        preds.extend(_preds)
+        if hasattr(self, 'classes'):
+            classes = ret.setdefault('classes', [])
+            if self.multi_classifier:
+                _classes = [[self.classes[p] for p in pred] for pred in _preds]
+            else:
+                _classes = [self.classes[pred] for pred in _preds]
+            classes.extend(_classes)
 
 
 class Mnist(DataHooks):
@@ -230,12 +255,12 @@ class ImageNet(DataHooks):
     val_aug = scale.LetterBox()
 
     post_aug = Apply([
+        channel.BGR2RGB(),
         pixel_perturbation.MinMax(),
         pixel_perturbation.Normalize(
             mean=[0.485, 0.456, 0.406],
             std=[0.229, 0.224, 0.225]
         ),
-        channel.BGR2RGB(),
         channel.HWC2CHW()
     ])
 
@@ -563,10 +588,70 @@ class ViT_ImageNet(ClsProcess, ImageNet):
             {'p': 0.7049180212308521, 'r': 0.86, 'f': 0.7747742727054547, 'score': 0.7747742727054547}
     """
     model_version = 'ViT'
+    config_version = 'B_16'
 
     def set_model(self):
-        from models.image_classification.ViT import Model
-        self.model = Model(self.in_ch, self.input_size, self.out_features)
+        from models.image_classification.ViT import Model, Config
+        self.model = Model(
+            in_ch=self.in_ch,
+            input_size=self.input_size,
+            out_features=self.out_features,
+            **Config.get(self.config_version)
+        )
 
     def set_optimizer(self, lr=0.001, momentum=0.9, weight_decay=1e-4, **kwargs):
         self.optimizer = optim.SGD(self.model.parameters(), lr=lr, momentum=momentum, weight_decay=weight_decay)
+
+
+class Vit_ImageNet_Pretrained(ViT_ImageNet):
+    """pretrained_model from https://modelscope.cn/models/iic/cv_vit-base_image-classification_Dailylife-labels/summary
+
+    Usage:
+        .. code-block:: python
+
+            from bundles.image_classification import Vit_ImageNet_Pretrained as Process
+
+            process = Process(
+                pretrained_model='xxx/pytorch_model.pt'
+            )
+            process.init()
+
+            process.single_predict(
+                'xxx.png',
+                top_k=5
+            )
+    """
+    out_features = 1296
+    config_version = 'B_16_H_12'
+    multi_classifier = True
+
+    val_aug = scale.RuderLetterBox(
+        mid_dst=256,
+        interpolation=3
+    )
+
+    post_aug = Apply([
+        channel.Keep3Dims(),
+        channel.Keep3Channels(),
+        channel.BGR2RGB(),
+        pixel_perturbation.Normalize(
+            mean=[123.675, 116.28, 103.53],
+            std=[58.395, 57.12, 57.375],
+        ),
+        channel.HWC2CHW()
+    ])
+
+    def load_pretrained(self):
+        from models.image_classification.ViT import WeightConverter
+        from utils import torch_utils
+
+        tensor = torch_utils.Load.from_ckpt(self.pretrained_model)
+
+        state_dict = tensor['state_dict']
+        meta = tensor['meta']
+
+        self.classes = meta['CLASSES']
+
+        state_dict = WeightConverter.from_modelscope(state_dict)
+        self.model.load_state_dict(state_dict, strict=True)
+        self.log('Loaded pretrained success!')

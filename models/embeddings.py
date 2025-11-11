@@ -2,7 +2,7 @@ import math
 
 import torch
 from einops.layers.torch import Rearrange
-from torch import nn
+from torch import Tensor, nn
 
 
 def make_pos_div_term(embedding_dim, theta):
@@ -94,13 +94,16 @@ class LearnedPositionEmbedding(nn.Embedding):
         return super().forward(position_ids)
 
 
-class LearnedPositionEmbeddingV2(PositionalEmbedding):
-    def __init__(self, *arg, **kwargs):
-        super().__init__(*arg, **kwargs)
-        self.alpha = nn.Parameter(torch.ones(1))
+class LearnedPositionEmbedding3D(nn.Module):
+    def __init__(self, num_embeddings, embedding_dim, alpha=1):
+        super().__init__()
+        self.weight = nn.Parameter(torch.zeros(num_embeddings, embedding_dim))
+        self.alpha = alpha
 
-    def make_embedding(self, seq_len, **kwargs):
-        return self.alpha * self.weight[:, :seq_len]
+    def forward(self, x, **kwargs):
+        """make sure x.ndim >= 2 and x.shape[1] is seq_len"""
+        b, s = x.shape[:2]
+        return torch.repeat_interleave(self.alpha * self.weight[:s][None], b, dim=0)
 
 
 class SinusoidalEmbedding(nn.Module):
