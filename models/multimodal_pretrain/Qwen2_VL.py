@@ -392,10 +392,10 @@ class Model(nn.Module):
     ):
         inputs_embeds = self.vlm.embed_tokens(input_ids)
 
-        if image_pixel_values is not None:
+        if image_pixel_values is not None and len(image_pixel_values):
             inputs_embeds = self.make_image_embeds(input_ids, image_pixel_values, image_grid_thw, inputs_embeds, **kwargs)
 
-        if video_pixel_values is not None:
+        if video_pixel_values is not None and len(video_pixel_values):
             inputs_embeds = self.make_video_embeds(input_ids, video_pixel_values, video_grid_thw, inputs_embeds, **kwargs)
 
         return inputs_embeds

@@ -26,7 +26,21 @@ class DataProcessForQwen2Vl(DataHooks):
         if train:
             raise NotImplementedError
 
-        ret.update(self.post_aug(dst=self.input_size, **ret))
+        if 'image' in ret and ret['image'] is not None:
+            ret.update(self.post_aug(dst=self.input_size, **ret))
+
+        if 'image_group' in ret and ret['image_group'] is not None:
+            image_group = []
+            for image in ret['image_group']:
+                image_group.append(self.post_aug(dst=self.input_size, image=image)['image'])
+            ret['image_group'] = image_group
+
+        if 'video' in ret and ret['video'] is not None:
+            video = []
+            for image in ret['video']:
+                video.append(self.post_aug(dst=self.input_size, image=image)['image'])
+            ret['video'] = video
+
         return ret
 
 
@@ -85,20 +99,38 @@ class Qwen2VlPredictor(BaseQwen2Vl):
         model_inputs = []
         for ret in loop_inputs:
             image = ret['image']
+            image_group = ret['image_group']
             text = ret['text']
+            video = ret['video']
+
+            content = [
+                {
+                    "type": "text",
+                    "text": text
+                }
+            ]
+            if image is not None:
+                content.append({
+                    "type": "image",
+                    "image": image
+                })
+
+            if image_group is not None:
+                for image in image_group:
+                    content.append({
+                        "type": "image",
+                        "image": image
+                    })
+
+            if video is not None:
+                content.append({
+                    "type": "video",
+                    "video": video
+                })
 
             messages = [{
                 "role": "user",
-                "content": [
-                    {
-                        "type": "image",
-                        "image": image,
-                    },
-                    {
-                        "type": "text",
-                        "text": text
-                    },
-                ],
+                "content": content,
             },
             ]
             prompt_inputs = self.tokenizer.encode_dialog(messages)
@@ -131,14 +163,33 @@ class Qwen2VlPredictor(BaseQwen2Vl):
 
         return model_results
 
-    def gen_predict_inputs(self, *objs, start_idx=None, end_idx=None, text=None, image=None, **kwargs) -> List[dict]:
+    def gen_predict_inputs(self, *objs, start_idx=None, end_idx=None, text=None, image=None, image_group=None, video=None, num_pts=4, **kwargs) -> List[dict]:
         if isinstance(image, str):
             image = os_lib.loader.load_img(image)
 
-        return [dict(
-            image=image,
-            text=text
-        )] * (end_idx - start_idx)
+        if isinstance(video, str):
+            video = os_lib.loader.load_video_from_decord(video, num_pts=num_pts)
+
+        rets = []
+        for i in range(start_idx, end_idx):
+            _text = text[i] if isinstance(text, list) else text
+            _image = image[i] if isinstance(image, list) else image
+            _image_group = image_group[i] if isinstance(image_group, list) and isinstance(image_group[0], list) else image_group
+            _video = video[i] if isinstance(video, list) else video
+
+            if isinstance(_image_group, list):
+                for j in range(len(_image_group)):
+                    if isinstance(_image_group[j], str):
+                        _image_group[j] = os_lib.loader.load_img(_image_group[j])
+
+            rets.append(dict(
+                image=_image,
+                image_group=_image_group,
+                text=_text,
+                video=_video,
+            ))
+
+        return rets
 
     def on_predict_reprocess(self, loop_objs, process_results=dict(), **kwargs):
         model_results = loop_objs['model_results']
