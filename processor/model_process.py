@@ -1042,7 +1042,7 @@ class ModelHooks:
         return loop_inputs
 
     def on_predict_step(self, loop_inputs, **kwargs):
-        return self.on_val_step(loop_inputs, **kwargs)
+        return self.on_val_step(loop_inputs, val=False, **kwargs)
 
     def on_predict_reprocess(self, loop_objs, process_results=dict(), return_keys=(), **kwargs):
         """prepare true and pred label for `visualize()`
@@ -1056,7 +1056,7 @@ class ModelHooks:
 
     def on_predict_step_end(self, loop_objs, **kwargs):
         """visualize the model outputs usually"""
-        return self.on_val_step_end(loop_objs, **kwargs)
+        return self.on_val_step_end(loop_objs, val=False, **kwargs)
 
     def on_predict_end(self, loop_objs, process_results=dict(), **kwargs):
         """visualize results and the return the results"""

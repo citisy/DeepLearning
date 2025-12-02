@@ -1,22 +1,25 @@
+from pathlib import Path
 from typing import List
 
+import numpy as np
 from torch import nn
 
 from data_parse.nl_data_parse.pre_process import spliter
 from processor import Process
-from utils import os_lib
+from utils import cv_utils, os_lib, configs
 
 
 class FunAsr(Process):
     """
     Usage:
-        from bundles.complex_pipeline import FunAsr
+        from bundles.complex_pipeline import FunAsr as Process
 
-        processor = FunAsr(
-            det_model_dir='xxx',
-            rec_model_dir='xxx',
-            punc_model_dir='xxx',
-            spk_model_dir='xxx',
+        model_dir = 'xxx'
+        processor = Process(
+            det_model_dir=f'{model_dir}/speech_fsmn_vad_zh-cn-16k-common-pytorch',
+            rec_model_dir=f'{model_dir}/speech_paraformer-large-vad-punc_asr_nat-zh-cn-16k-common-vocab8404-pytorch',
+            punc_model_dir=f'{model_dir}/punc_ct-transformer_zh-cn-common-vocab272727-pytorch',
+            spk_model_dir=f'{model_dir}/speech_campplus_sv_zh-cn_16k-common',
         )
 
         processor.init()
@@ -37,21 +40,29 @@ class FunAsr(Process):
     use_pretrained = False
 
     def set_model(self):
+        self.set_det_model()
+        self.set_rec_model()
+        self.set_punc_model()
+        self.set_spk_model()
+
+        self.model = nn.Module()  # placeholder
+
+    def set_det_model(self):
         from .speech_detection import DFSMN
-        from .speech_recognition import BiCifParaformer_Funasr
-        from .text_classification import CTTransformer
-        from .speech_pretrain import CAMPPlus
 
         det_processor_config = dict(
             cmvn_path=f'{self.det_model_dir}/am.mvn',
             pretrained_model=f'{self.det_model_dir}/model.pt',
             device=self.device
         )
-        det_processor_config.update(self.det_processor_config)
+        det_processor_config = configs.ConfigObjParse.merge_dict(det_processor_config, self.det_processor_config)
         self.det_processor = DFSMN(
             **det_processor_config
         )
         self.det_processor.init()
+
+    def set_rec_model(self):
+        from .speech_recognition import BiCifParaformer_Funasr
 
         rec_processor_config = dict(
             vocab_fn=f'{self.rec_model_dir}/tokens.json',
@@ -60,34 +71,38 @@ class FunAsr(Process):
             pretrained_model=f'{self.rec_model_dir}/model.pt',
             device=self.device
         )
-        rec_processor_config.update(self.rec_processor_config)
+        rec_processor_config = configs.ConfigObjParse.merge_dict(rec_processor_config, self.rec_processor_config)
         self.rec_processor = BiCifParaformer_Funasr(
             **rec_processor_config
         )
         self.rec_processor.init()
+
+    def set_punc_model(self):
+        from .text_classification import CTTransformer
 
         punc_processor_config = dict(
             vocab_fn=f'{self.punc_model_dir}/tokens.json',
             pretrained_model=f'{self.punc_model_dir}/model.pt',
             device=self.device
         )
-        punc_processor_config.update(self.punc_processor_config)
+        punc_processor_config = configs.ConfigObjParse.merge_dict(punc_processor_config, self.punc_processor_config)
         self.punc_processor = CTTransformer(
             **punc_processor_config
         )
         self.punc_processor.init()
 
+    def set_spk_model(self):
+        from .speech_pretrain import CAMPPlus
+
         spk_processor_config = dict(
             pretrained_model=f'{self.spk_model_dir}/campplus_cn_common.bin',
             device=self.device
         )
-        spk_processor_config.update(self.spk_processor_config)
+        spk_processor_config = configs.ConfigObjParse.merge_dict(spk_processor_config, self.spk_processor_config)
         self.spk_processor = CAMPPlus(
             **spk_processor_config
         )
         self.spk_processor.init()
-
-        self.model = nn.Module()
 
     @staticmethod
     def get_chunk_spks(chunk_timestamps, chunk_segments, timestamps_preds):
@@ -114,7 +129,7 @@ class FunAsr(Process):
             rec_batch_size=8, spk_batch_size=16,
             **kwargs
     ) -> dict:
-        audio = loop_objs['loop_inputs'][0]['audio']
+        audio = loop_objs['loop_inputs'][0]['audio']    # todo: only support single predict
 
         det_outputs = self.det_processor.single_predict(
             speech=audio,
@@ -226,6 +241,117 @@ class FunAsr(Process):
         return [dict(
             audio=speech[i],
         ) for i in range(start_idx, end_idx)]
+
+    def on_predict_reprocess(self, loop_objs, **kwargs):
+        self.on_val_reprocess(loop_objs, **kwargs)
+
+
+class PPOCRv4(Process):
+    """
+    from bundles.complex_pipeline import PPOCRv4 as Process
+
+    model_dir = 'xxx'
+    process = Process(
+        det_model_dir=f'{model_dir}/ch_PP-OCRv4_det_server_train',
+        rec_model_dir=f'{model_dir}/ch_PP-OCRv4_rec_server_train',
+        rec_processor_config=dict(
+            vocab_fn=f'{model_dir}/ppocr_keys_v1.txt'
+        )
+    )
+    process.init()
+
+    process.single_predict('xxx.png')
+    """
+    model_version = 'PPOCRv4'
+
+    det_model_dir: str
+    rec_model_dir: str
+
+    det_processor_config = dict()
+    rec_processor_config = dict()
+
+    use_pretrained = False
+
+    def set_model(self):
+        self.set_det_model()
+        self.set_rec_model()
+
+        self.model = nn.Module()  # placeholder
+
+    def set_det_model(self):
+        from .object_detection import PPOCRv4Det_Icdar
+
+        det_processor_config = dict(
+            pretrained_model=f'{self.det_model_dir}/best_accuracy.pdparams',
+            device=self.device
+        )
+        det_processor_config = configs.ConfigObjParse.merge_dict(det_processor_config, self.det_processor_config)
+        self.det_processor = PPOCRv4Det_Icdar(
+            **det_processor_config
+        )
+        self.det_processor.init()
+
+    def set_rec_model(self):
+        from .text_recognition import PPOCRv4Rec_MJSynth
+
+        rec_processor_config = dict(
+            pretrained_model=f'{self.rec_model_dir}/best_accuracy.pdparams',    # only for teacher model
+            device=self.device
+        )
+        rec_processor_config = configs.ConfigObjParse.merge_dict(rec_processor_config, self.rec_processor_config)
+        self.rec_processor = PPOCRv4Rec_MJSynth(
+            **rec_processor_config
+        )
+        self.rec_processor.init()
+
+    def on_val_step(
+            self, loop_objs,
+            det_kwargs=dict(), rec_kwargs=dict(),
+            rec_batch_size=8,
+            **kwargs
+    ) -> dict:
+        image = loop_objs['loop_inputs'][0]['image']    # todo: only support single predict
+
+        det_outputs = self.det_processor.single_predict(image, vis_pbar=False, **det_kwargs)
+        segmentations = det_outputs['preds'][0]['segmentations']
+        rec_images = []
+        for points in segmentations:
+            rec_image = cv_utils.ImageCrop.points_to_rectangle(image, points)
+            dst_img_height, dst_img_width = rec_image.shape[0:2]
+            if dst_img_height / dst_img_width >= 1.5:
+                rec_image = np.rot90(image)
+            rec_images.append(rec_image)
+
+        rec_outputs = self.rec_processor.batch_predict(rec_images, batch_size=rec_batch_size, vis_pbar=False, **rec_kwargs)
+        paragraphs = rec_outputs['preds']
+
+        outputs = []
+        for points, paragraph in zip(segmentations, paragraphs):
+            outputs.append(dict(
+                paragraph=paragraph,
+                points=points,
+            ))
+
+        model_results = {
+            self.model_name: outputs
+        }
+        return model_results
+
+    def on_val_reprocess(self, loop_objs, process_results=dict(), **kwargs):
+        model_results = loop_objs['model_results']
+        process_results.setdefault(self.model_name, []).append(model_results[self.model_name])
+
+    def gen_predict_inputs(self, *objs, start_idx=None, end_idx=None, **kwargs) -> List[dict]:
+        images = objs[0][start_idx: end_idx]
+        ids = [Path(image).name if isinstance(image, str) else f'{i}.png' for i, image in zip(range(start_idx, end_idx), images)]
+        images = [os_lib.loader.load_img(image, channel_fixed_3=True) if isinstance(image, str) else image for image in images]
+        rets = []
+        for _id, image in zip(ids, images):
+            rets.append(dict(
+                _id=_id,
+                image=image
+            ))
+        return rets
 
     def on_predict_reprocess(self, loop_objs, **kwargs):
         self.on_val_reprocess(loop_objs, **kwargs)

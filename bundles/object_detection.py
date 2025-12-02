@@ -497,8 +497,6 @@ class PPOCRv4Det(Process):
     model_version = 'PPOCRv4_det'
     config_version = 'teacher'
 
-    pretrained_model: str
-
     def set_model(self):
         from models.object_detection.PPOCRv4_det import Model, Config
 
@@ -628,6 +626,29 @@ class PPOCRv4Det(Process):
                 pred['_id'] = ret['_id']
                 preds.append(pred)
 
+    def gen_predict_inputs(self, *objs, start_idx=None, end_idx=None, **kwargs) -> List[dict]:
+        images = objs[0][start_idx: end_idx]
+        ids = [Path(image).name if isinstance(image, str) else f'{i}.png' for i, image in zip(range(start_idx, end_idx), images)]
+        images = [os_lib.loader.load_img(image, channel_fixed_3=True) if isinstance(image, str) else image for image in images]
+        rets = []
+        for _id, image in zip(ids, images):
+            rets.append(dict(
+                _id=_id,
+                image=image
+            ))
+        return rets
+
+    def on_predict_reprocess(self, loop_objs, process_results=dict(), **kwargs):
+        loop_inputs = loop_objs['loop_inputs']
+        model_results = loop_objs['model_results']
+
+        for name, results in model_results.items():
+            r = process_results.setdefault(name, dict())
+            preds = r.setdefault('preds', [])
+            for ret, pred in zip(loop_inputs, results['preds']):
+                pred['_id'] = ret['_id']
+                preds.append(pred)
+
 
 class IcdarDataset(BaseImgDataset):
     def process_one(self, idx):
@@ -709,4 +730,28 @@ class Icdar(DataHooks):
 
 
 class PPOCRv4Det_Icdar(PPOCRv4Det, Icdar):
-    pass
+    """
+    from bundles.object_detection import PPOCRv4Det_Icdar as Process
+
+    model_dir = 'xxx'
+    process = Process(
+        config_version='student',
+        pretrained_model=f'{model_dir}/ch_PP-OCRv4_det_train/best_accuracy.pdparams',
+        # config_version='teacher',
+        # pretrained_model=f'{model_dir}/ch_PP-OCRv4_det_server_train/best_accuracy.pdparams',
+    )
+    process.init()
+
+    process.fit(
+        use_ema=True,
+        use_scheduler=True,
+        scheduler_strategy='step',
+        batch_size=16,
+        metric_kwargs=dict(
+            is_visualize=True,
+            max_vis_num=10
+        )
+    )
+
+    process.single_predict('xxx.png')
+    """

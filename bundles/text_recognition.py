@@ -1,3 +1,5 @@
+from typing import List
+
 import cv2
 import torch
 from torch import optim
@@ -7,10 +9,20 @@ from data_parse import DataRegister
 from pathlib import Path
 from data_parse.cv_data_parse.datasets.base import DataVisualizer
 from processor import Process, DataHooks, bundled, BaseImgDataset, MixDataset, IterImgDataset
-from utils import os_lib
+from utils import log_utils, os_lib, torch_utils
 
 
 class TrProcess(Process):
+    word_dict: dict
+
+    def set_tokenizer(self):
+        vocab = os_lib.loader.auto_load(self.vocab_fn)
+        self.word_dict = {c: i for i, c in enumerate(vocab)}
+
+    def save_vocab(self, vocab):
+        saver = os_lib.Saver(stdout_method=self.log)
+        saver.auto_save(vocab, f'{self.work_dir}/{self.vocab_fn}')
+
     def set_optimizer(self, lr=0.0005, **kwargs):
         self.optimizer = optim.Adam(self.model.parameters(), lr=lr)
 
@@ -61,13 +73,14 @@ class TrProcess(Process):
 
         return model_results
 
-    def on_val_reprocess(self, loop_objs, process_results=dict(), **kwargs):
+    def on_val_reprocess(self, loop_objs, process_results=dict(), val=True, **kwargs):
         model_results = loop_objs['model_results']
         loop_inputs = loop_objs['loop_inputs']
 
         for name, results in model_results.items():
             r = process_results.setdefault(name, dict())
-            r.setdefault('trues', []).extend([ret['text'] for ret in loop_inputs])
+            if val:
+                r.setdefault('trues', []).extend([ret['text'] for ret in loop_inputs])
             r.setdefault('preds', []).extend(results['preds'])
 
     def visualize(self, loop_objs, n, **kwargs):
@@ -100,12 +113,13 @@ class DataProcess(DataHooks):
     ], probs=[0.2])
 
     post_aug = Apply([
-        scale.LetterBox(
-            pad_type=(crop.RIGHT, crop.DOWN),
-            fill=(0, 0, 0),
-            interpolation=4
-        ),
-        # scale.Proportion(interpolation=4, choice_type=scale.SHORTEST),    # val step use this
+        # scale.LetterBox(
+        #     pad_type=(crop.RIGHT, crop.DOWN),
+        #     fill=(0, 0, 0),
+        #     interpolation=4
+        # ),
+        scale.Proportion(interpolation=4, choice_type=scale.SHORTEST),
+        crop.Corner(fill=(0, 0, 0), pad_type=1),
         channel.Keep3Dims(),
         # pixel_perturbation.MinMax(),
         # pixel_perturbation.Normalize(0.5, 0.5),
@@ -120,17 +134,6 @@ class DataProcess(DataHooks):
         ret.update(self.post_aug(**ret))
 
         return ret
-
-    word_dict: dict
-    vocab_fn: str
-
-    def set_tokenizer(self):
-        vocab = os_lib.loader.auto_load(self.vocab_fn)
-        self.word_dict = {c: i for i, c in enumerate(vocab)}
-
-    def save_vocab(self, vocab):
-        saver = os_lib.Saver(stdout_method=self.log)
-        saver.auto_save(vocab, f'{self.work_dir}/{self.vocab_fn}')
 
 
 class MJSynth(DataProcess):
@@ -329,3 +332,67 @@ class Svtr_MJSynth(Svtr, MJSynth):
             Process().run(max_epoch=500, train_batch_size=256, predict_batch_size=256)
             {'score': 0.7962}
     """
+
+
+class PPOCRv4Rec(TrProcess):
+    model_version = 'PPOCRv4_rec'
+    config_version = 'teacher'
+
+    def set_model(self):
+        from models.text_recognition.PPOCRv4_rec import Model, Config
+
+        self.model = Model(
+            id2char=self.word_dict,
+            **Config.get(self.config_version),
+        )
+
+    def load_pretrained(self):
+        from models.text_recognition.PPOCRv4_rec import WeightConverter
+
+        state_dict = torch_utils.Load.from_file(self.pretrained_model)
+        if self.config_version == 'teacher':
+            state_dict = WeightConverter.from_teacher(state_dict)
+        else:
+            state_dict = WeightConverter.from_student(state_dict)
+        self.model.load_state_dict(state_dict, strict=False)
+        # so silly that, import paddle will clear the logger settings, so reinit the logger
+        log_utils.logger_init()
+
+    def set_tokenizer(self):
+        words = os_lib.loader.load_txt(self.vocab_fn)
+        words = [''] + words + [' ']
+        self.word_dict = dict(enumerate(words))
+
+    def gen_predict_inputs(self, *objs, start_idx=None, end_idx=None, **kwargs) -> List[dict]:
+        images = objs[0][start_idx: end_idx]
+        ids = [Path(image).name if isinstance(image, str) else f'{i}.png' for i, image in zip(range(start_idx, end_idx), images)]
+        images = [os_lib.loader.load_img(image, channel_fixed_3=True) if isinstance(image, str) else image for image in images]
+        rets = []
+        for _id, image in zip(ids, images):
+            rets.append(dict(
+                _id=_id,
+                image=image
+            ))
+        return rets
+
+    def on_predict_reprocess(self, *args, **kwargs):
+        return self.on_val_reprocess(*args, val=False, **kwargs)
+
+
+class PPOCRv4Rec_MJSynth(PPOCRv4Rec, MJSynth):
+    """
+    from bundles.text_recognition import PPOCRv4Rec_MJSynth as Process
+
+    model_dir = 'xxx'
+    process = Process(
+        config_version='student',
+        pretrained_model=f'{model_dir}/ch_PP-OCRv4_rec_train/student.pdparams',
+        # config_version='teacher',
+        # pretrained_model=f'{model_dir}/ch_PP-OCRv4_rec_server_train/best_accuracy.pdparams',
+
+        vocab_fn=f'{model_dir}/ppocr_keys_v1.txt'
+    )
+    process.init()
+    process.single_predict('xxx.png')
+    """
+    input_size = (1000, 48)
