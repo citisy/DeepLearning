@@ -3,7 +3,7 @@ from torch import nn
 from torch.nn import functional as F
 
 from utils import torch_utils
-from .. import bundles, activations, attentions
+from .. import bundles, activations, attentions, normalizations
 from ..image_classification.ViT import VisionEmbedding
 from ..text_pretrain.transformers import DecoderEmbedding, TransformerSequential
 
@@ -338,33 +338,38 @@ class VisionTransformer(nn.Module):
     def __init__(
             self, image_size, hidden_size, patch_size, output_size=None,
             num_attention_heads=12, num_hidden_layers=12, ff_ratio=4.0,
-            is_proj=True, separate=True,
-            act_type='FasterGELU', attend_type='FlashAttend',
+            is_proj=True, separate=True, patch_bias=True,
+            act_type='FasterGELU', attend_type='FlashAttend', norm_type='LayerNorm32',
             use_checkpoint=True
     ):
         super().__init__()
 
         self.use_checkpoint = use_checkpoint
-        self.embedding = VisionEmbedding(hidden_size, image_size, patch_size)
-        self.norm1 = nn.LayerNorm(hidden_size)
+        self.embedding = VisionEmbedding(hidden_size, image_size, patch_size, patch_bias=patch_bias)
+        self.norm1 = normalizations.LayerNorm32(hidden_size)
         self.encoder = TransformerSequential(
             hidden_size, num_attention_heads, int(hidden_size * ff_ratio), norm_first=True,
+            norm_fn=normalizations.make_norm_fn.get(norm_type),
             attend_fn=attentions.make_attend_fn.get(attend_type),
             fn_kwargs=dict(separate=separate),
             ff_kwargs=dict(act=activations.make_act_fn.get(act_type)()),
             num_blocks=num_hidden_layers,
             use_checkpoint=use_checkpoint
         )
-        self.norm2 = nn.LayerNorm(hidden_size)
+        self.norm2 = normalizations.LayerNorm32(hidden_size)
         if is_proj:
             self.proj = nn.Linear(hidden_size, output_size, bias=False)
         else:
             self.proj = nn.Identity()
 
-    def backbone(self, image):
+    def backbone(
+            self,
+            image=None,
+            **encoder_kwargs
+    ):
         x = self.embedding(image)
         x = self.norm1(x)
-        x = self.encoder(x)
+        x = self.encoder(x, **encoder_kwargs)
         return x
 
     def neck(self, x):
@@ -405,16 +410,18 @@ class TextTransformer(nn.Module):
             num_blocks=num_hidden_layers,
             use_checkpoint=use_checkpoint
         )
-        self.norm = nn.LayerNorm(hidden_size)
+        self.norm = normalizations.LayerNorm32(hidden_size)
         if is_proj:
             self.proj = nn.Linear(hidden_size, output_size, bias=False)
         else:
             self.proj = nn.Identity()
 
-    def backbone(self,
-                 sequence=None,
-                 attention_mask=None,
-                 **encoder_kwargs):
+    def backbone(
+            self,
+            sequence=None,
+            attention_mask=None,
+            **encoder_kwargs
+    ):
         x = self.embedding(sequence)
 
         causal_attention_mask = attentions.make_causal_attention_mask(x).to(dtype=torch.bool)

@@ -156,9 +156,9 @@ class Backbone(nn.Module):
 
 
 class VisionEmbedding(nn.Module):
-    def __init__(self, embed_dim, image_size, patch_size):
+    def __init__(self, embed_dim, image_size, patch_size, patch_bias=True):
         super().__init__()
-        self.patch = embeddings.PatchEmbedding(embed_dim, patch_size, bias=True)
+        self.patch = embeddings.PatchEmbedding(embed_dim, patch_size, bias=patch_bias)
         self.cls = nn.Parameter(torch.randn(embed_dim))
 
         # note, add 1 is in order to apply the class_embedding

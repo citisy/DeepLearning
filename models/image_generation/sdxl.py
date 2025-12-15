@@ -305,7 +305,7 @@ class Model(ldm.Model):
             uc_values=uc_values
         )
 
-    def diffuse(self, x, time, c_values=None, uc_values=None, scale=7.5, **backbone_kwargs):
+    def process(self, x, time, c_values=None, uc_values=None, scale=7.5, **backbone_kwargs):
         if uc_values is not None:
             x = torch.cat([x] * 2)
             time = torch.cat([time] * 2)

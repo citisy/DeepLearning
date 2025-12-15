@@ -110,6 +110,7 @@ class MetaAconC(nn.Module):
 
 @make_act_fn.add_register()
 class Swish(nn.Module):
+    """same to nn.SiLU()"""
     def __init__(self, inplace=True):
         super(Swish, self).__init__()
         self.inplace = inplace

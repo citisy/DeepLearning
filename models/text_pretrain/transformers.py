@@ -106,6 +106,7 @@ class TransformerBlock(nn.Module):
             attend=None, de_attend=None, attend_fn=None, de_attend_fn=None,
             feed_forward_fn=None, norm_fn=None,
             fn_kwargs=dict(), de_fn_kwargs=dict(), ff_kwargs=dict(),
+            fn_res_kwargs=dict(), de_fn_res_kwargs=dict(), ff_res_kwargs=dict(),
             attend_fn_kwargs=dict(), de_attend_fn_kwargs=dict(), norm_kwargs=dict(),
     ):
         super().__init__()
@@ -128,33 +129,45 @@ class TransformerBlock(nn.Module):
             **attention_kwargs,
             **fn_kwargs
         }
-        de_fn_kwargs = {
-            **attention_kwargs,
-            **de_fn_kwargs
-        }
         ff_kwargs = {
             'drop_prob': drop_prob,
             **ff_kwargs
         }
+        fn_res_kwargs = {
+            'norm': norm_fn(hidden_size, **norm_kwargs),
+            'norm_first': norm_first,
+            **fn_res_kwargs
+        }
+        ff_res_kwargs = {
+            'norm': norm_fn(hidden_size, **norm_kwargs),
+            'norm_first': norm_first,
+            **ff_res_kwargs
+        }
 
         self.attn_res = Residual(
             attention_fn(attend=attend, **fn_kwargs),  # SelfAttention
-            norm=norm_fn(hidden_size, **norm_kwargs),
-            norm_first=norm_first
+            **fn_res_kwargs
         )
 
         self.is_decode = is_decode
         if is_decode:
+            de_fn_kwargs = {
+                **attention_kwargs,
+                **de_fn_kwargs
+            }
+            de_fn_res_kwargs = {
+                'norm': norm_fn(hidden_size, **norm_kwargs),
+                'norm_first': norm_first,
+                **de_fn_res_kwargs
+            }
             self.de_attn_res = Residual(
                 de_attention_fn(attend=de_attend, **de_fn_kwargs),  # CrossAttention
-                norm=norm_fn(hidden_size, **norm_kwargs),
-                norm_first=norm_first
+                **de_fn_res_kwargs
             )
 
         self.ff_res = Residual(
             feed_forward_fn(hidden_size, ff_hidden_size, **ff_kwargs),
-            norm=norm_fn(hidden_size, **norm_kwargs),
-            norm_first=norm_first
+            **ff_res_kwargs
         )
 
     def forward(self, x, context=None, attention_mask=None, context_mask=None, **attn_kwargs):

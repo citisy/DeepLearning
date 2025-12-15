@@ -142,7 +142,8 @@ class Model(nn.Module):
             ff_hidden_size=None, is_gated_act=False, ff_act_type='ReLU',
             num_hidden_layers=12,
             n_relative_buckets=32, relative_max_distance=128,
-            drop_prob=0.1):
+            drop_prob=0.1, share_rel_weights=True
+    ):
         super().__init__()
         ff_hidden_size = ff_hidden_size or hidden_size * 4
 
@@ -159,7 +160,7 @@ class Model(nn.Module):
                 bias=False
             )
         )
-        attend_kwargs = dict(
+        attend_fn_kwargs = dict(
             n_relative_buckets=n_relative_buckets,
             relative_max_distance=relative_max_distance,
             n_heads=num_attention_heads
@@ -168,17 +169,19 @@ class Model(nn.Module):
             act=activations.make_act_fn.get(ff_act_type)(),
             bias=False,
         )
-        self.encoder_relative_bias = nn.Embedding(n_relative_buckets, num_attention_heads)
+        self.encoder_relative_bias = nn.Embedding(n_relative_buckets, num_attention_heads) if share_rel_weights else None
         self.encoder = TransformerSequential(
             hidden_size, num_attention_heads, ff_hidden_size,
             norm_first=True,
             norm_fn=T5LayerNorm,
             drop_prob=drop_prob,
             fn_kwargs=fn_kwargs,
-            attend=T5ScaleAttend(
+            attend_fn=T5ScaleAttend,
+            attend_fn_kwargs=dict(
                 relative_bias=self.encoder_relative_bias,
+                relative_bias_fn=None if share_rel_weights else nn.Embedding,
                 is_relative_bidirectional=True,
-                **attend_kwargs
+                **attend_fn_kwargs
             ),
             feed_forward_fn=llama.FeedForward if is_gated_act else PositionWiseFeedForward,
             ff_kwargs=ff_kwargs,
@@ -186,7 +189,7 @@ class Model(nn.Module):
         )
         self.encoder_norm = T5LayerNorm(hidden_size)
 
-        self.decoder_relative_bias = nn.Embedding(n_relative_buckets, num_attention_heads)
+        self.decoder_relative_bias = nn.Embedding(n_relative_buckets, num_attention_heads) if share_rel_weights else None
         self.decoder = TransformerSequential(
             hidden_size, num_attention_heads, hidden_size * 4,
             is_decode=True,
@@ -195,10 +198,12 @@ class Model(nn.Module):
             drop_prob=drop_prob,
             fn_kwargs=fn_kwargs,
             de_fn_kwargs=fn_kwargs,
-            attend=T5ScaleAttend(
+            attend_fn=T5ScaleAttend,
+            attend_fn_kwargs=dict(
                 relative_bias=self.decoder_relative_bias,
+                relative_bias_fn=None if share_rel_weights else nn.Embedding,
                 is_relative_bidirectional=False,
-                **attend_kwargs
+                **attend_fn_kwargs
             ),
             de_attend=T5ScaleAttend(),
             feed_forward_fn=llama.FeedForward if is_gated_act else PositionWiseFeedForward,
@@ -293,10 +298,12 @@ class T5ScaleAttend(attentions.ScaleAttend):
 
     def __init__(
             self, drop_prob=0.,
-            relative_bias=None, n_relative_buckets=None, n_heads=None,
+            relative_bias=None, relative_bias_fn=None, n_relative_buckets=None, n_heads=None,
             relative_max_distance=None, is_relative_bidirectional=False,
     ):
         super().__init__(drop_prob=drop_prob)
+        if relative_bias is None and relative_bias_fn is not None:
+            relative_bias = relative_bias_fn(n_relative_buckets, n_heads)
         self.relative_bias = relative_bias
         self.n_relative_buckets = n_relative_buckets
         self.n_heads = n_heads

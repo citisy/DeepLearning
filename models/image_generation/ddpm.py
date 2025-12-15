@@ -203,7 +203,8 @@ class Model(nn.ModuleList):
         self.backbone = UNetModel(self.hidden_ch, **backbone_config)
         self.head = nn.Conv2d(self.hidden_ch, self.img_ch, 1)
 
-    def diffuse(self, x, time, x_self_cond=None, **backbone_kwargs):
+    def process(self, x, time, x_self_cond=None, **backbone_kwargs):
+        """diffuse process"""
         x = self.in_module(x, x_self_cond)
         x = self.backbone(x, time, **backbone_kwargs)
         x = self.head(x)
@@ -217,18 +218,18 @@ class Model(nn.ModuleList):
 
     def fit(self, x, **kwargs):
         # if training, x is x0, the real image
-        return {'loss': self.sampler.loss(self.diffuse, x, **kwargs)}
+        return {'loss': self.sampler.loss(self.process, x, **kwargs)}
 
     def inference(self, x, **kwargs):
         # if inference, x is x_T, the noise
-        return self.sampler(self.diffuse, x, **kwargs)
+        return self.sampler(self.process, x, **kwargs)
 
     @property
-    def diffuse_in_ch(self):
+    def process_in_ch(self):
         """channels of x_t"""
         return self.img_ch
 
-    def diffuse_in_size(self, image_size=None):
+    def process_in_size(self, image_size=None):
         """size of x_t"""
         image_size = image_size or self.image_size
         if isinstance(image_size, int):
@@ -236,7 +237,7 @@ class Model(nn.ModuleList):
         return image_size
 
     def gen_x_t(self, batch_size, image_size=None):
-        return torch.randn((batch_size, self.diffuse_in_ch, *self.diffuse_in_size(image_size)[::-1]), device=self.device, dtype=self.dtype)
+        return torch.randn((batch_size, self.process_in_ch, *self.process_in_size(image_size)[::-1]), device=self.device, dtype=self.dtype)
 
 
 class Sampler(nn.Module):
@@ -541,7 +542,7 @@ class UNetModel(nn.Module):
             self.downs.append(nn.ModuleList([
                 make_res(in_ch, in_ch),
                 make_res(in_ch, in_ch),
-                RMSNorm(in_ch),
+                normalizations.RMSNorm3D(in_ch),
                 self.make_attn(in_ch, head_dim=attn_dim_heads[i], n_heads=attn_heads[i], is_bottom=is_bottom),
                 nn.Conv2d(in_ch, out_ch, 3, padding=1) if is_bottom else Downsample(in_ch, out_ch),
             ]))
@@ -561,7 +562,7 @@ class UNetModel(nn.Module):
             self.ups.append(nn.ModuleList([
                 make_res(out_ch + in_ch, out_ch),
                 make_res(out_ch + in_ch, out_ch),
-                RMSNorm(out_ch),
+                normalizations.RMSNorm3D(out_ch),
                 self.make_attn(out_ch, head_dim=attn_dim_heads[i], n_heads=attn_heads[i], is_bottom=is_bottom),
                 nn.Conv2d(out_ch, in_ch, 3, padding=1) if is_top else Upsample(out_ch, in_ch),
             ]))
@@ -573,8 +574,8 @@ class UNetModel(nn.Module):
     def make_attn(self, in_ch, n_heads, head_dim, is_bottom, n_mem_size=4):
         attn = attentions.CrossAttention3D if is_bottom else partial(
             attentions.LinearAttention3D,
-            attend=attentions.LearnedMemoryLinearAttend(n_heads, head_dim, n_mem_size),
-            out_fn=Conv(n_heads * head_dim, n_heads * head_dim, 1, mode='cn', norm=RMSNorm(in_ch)),
+            attend=attentions.LearnedMemoryLinearAttendWrapper(n_heads, head_dim, n_mem_size),
+            out_fn=Conv(n_heads * head_dim, n_heads * head_dim, 1, mode='cn', norm=normalizations.RMSNorm3D(in_ch)),
         )
         return attn(in_ch, head_dim=head_dim, n_heads=n_heads)
 
@@ -666,12 +667,3 @@ class ResnetBlock(nn.Module):
 
         h = self.out_layers(h)
         return h + self.proj(x)
-
-
-class RMSNorm(nn.Module):
-    def __init__(self, dim):
-        super().__init__()
-        self.g = nn.Parameter(torch.ones(1, dim, 1, 1))
-
-    def forward(self, x):
-        return F.normalize(x, dim=1) * self.g * (x.shape[1] ** 0.5)

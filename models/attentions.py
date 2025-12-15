@@ -292,6 +292,10 @@ class CrossAttention3D(nn.Module):
         context_dim = context_dim or model_dim
         self.scale = head_dim ** -0.5
         self.n_heads = n_heads
+        self.model_dim = model_dim
+        self.head_dim = head_dim
+        self.query_dim = query_dim
+        self.context_dim = context_dim
         self.use_conv = use_conv
         self.separate = separate
 

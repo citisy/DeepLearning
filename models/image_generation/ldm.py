@@ -270,10 +270,10 @@ class Model(ddim.Model):
         self.vae = vae
 
     @property
-    def diffuse_in_ch(self):
+    def process_in_ch(self):
         return self.vae.z_ch
 
-    def diffuse_in_size(self, image_size=None):
+    def process_in_size(self, image_size=None):
         image_size = image_size or self.image_size
         if isinstance(image_size, int):
             image_size = (image_size, image_size)
@@ -289,7 +289,7 @@ class Model(ddim.Model):
         z, _, _ = self.vae.encode(x)
         x0 = self.scale_factor * z
 
-        return self.sampler.loss(self.diffuse, x0, **kwargs)
+        return self.sampler.loss(self.process, x0, **kwargs)
 
     def inference(self, x=None, text_ids=None, mask_x=None, image_size=None, **kwargs):
         """
@@ -327,7 +327,7 @@ class Model(ddim.Model):
             x, z0, i0 = self.make_image_cond(x, **kwargs)
             kwargs.update(i0=i0)
 
-        z = self.sampler(self.diffuse, x, **kwargs)
+        z = self.sampler(self.process, x, **kwargs)
         z = z / self.scale_factor
 
         if x is not None and len(x) and mask_x is not None and len(mask_x):
@@ -378,7 +378,7 @@ class Model(ddim.Model):
         xt = self.sampler.q_sample(x0, t, noise=noise)
         return xt, z, i0
 
-    def diffuse(self, x, time, cond=None, un_cond=None, scale=7.5, **backbone_kwargs):
+    def process(self, x, time, cond=None, un_cond=None, scale=7.5, **backbone_kwargs):
         if un_cond is not None:
             x = torch.cat([x] * 2)
             time = torch.cat([time] * 2)

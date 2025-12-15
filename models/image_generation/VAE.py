@@ -86,25 +86,32 @@ class WeightConverter:
 class Model(nn.Module):
     """vae from ldm"""
 
+    img_ch = 3
+
     use_quant_conv = True
     use_post_quant_conv = True
 
     scale_factor = 1.
     shift_factor = 0.
 
-    def __init__(self, img_ch=3, backbone_config=Config.backbone_8x8x64, loss_config=Config.loss, **kwargs):
+    def __init__(self, backbone_config=Config.backbone_8x8x64, loss_config=Config.loss, **kwargs):
         super().__init__()
         self.__dict__.update(kwargs)
 
-        z_ch = backbone_config["z_ch"]
-
-        self.encoder = Encoder(img_ch, **backbone_config)
-        self.quant_conv = nn.Conv2d(self.encoder.out_channels, 2 * z_ch, 1) if self.use_quant_conv else nn.Identity()
+        self.set_encoder(**backbone_config)
         self.re_parametrize = ReParametrize()
-        self.post_quant_conv = nn.Conv2d(z_ch, z_ch, 1) if self.use_post_quant_conv else nn.Identity()
-        self.decoder = Decoder(z_ch, img_ch, **backbone_config)
+        self.set_decoder(**backbone_config)
         self.criterion = Loss(self.re_parametrize, **loss_config)
-        self.z_ch = z_ch
+        self.z_ch = self.encoder.z_ch
+
+    def set_encoder(self, **backbone_config):
+        self.encoder = Encoder(self.img_ch, **backbone_config)
+        self.quant_conv = nn.Conv2d(self.encoder.out_channels, 2 * self.encoder.z_ch, 1) if self.use_quant_conv else nn.Identity()
+
+    def set_decoder(self, **backbone_config):
+        z_ch = self.encoder.z_ch
+        self.post_quant_conv = nn.Conv2d(z_ch, z_ch, 1) if self.use_post_quant_conv else nn.Identity()
+        self.decoder = Decoder(z_ch, self.img_ch, **backbone_config)
 
     def set_inference_only(self):
         del self.criterion
@@ -132,12 +139,27 @@ class Model(nn.Module):
         h = self.encoder(x)
         h = self.quant_conv(h)
         z, mean, log_var = self.re_parametrize(h, sample_posterior=sample_posterior)
-        z = self.scale_factor * (z - self.shift_factor)
+
+        scale_factor = self.scale_factor
+        if isinstance(scale_factor, torch.Tensor):
+            scale_factor = scale_factor.to(z)
+        shift_factor = self.shift_factor
+        if isinstance(shift_factor, torch.Tensor):
+            shift_factor = shift_factor.to(z)
+
+        z = scale_factor * (z - shift_factor)
         return z, mean, log_var
 
     def decode(self, z):
+        scale_factor = self.scale_factor
+        if isinstance(scale_factor, torch.Tensor):
+            scale_factor = scale_factor.to(z)
+        shift_factor = self.shift_factor
+        if isinstance(shift_factor, torch.Tensor):
+            shift_factor = shift_factor.to(z)
+
         z = self.post_quant_conv(z)
-        z = z / self.scale_factor + self.shift_factor
+        z = z / scale_factor + shift_factor
         z = self.decoder(z)
         return z
 
@@ -220,11 +242,13 @@ class NeckBlock(nn.Module):
 
 
 class Encoder(nn.Module):
-    def __init__(self, in_ch, unit_ch=128, z_ch=64,
-                 ch_mult=(1, 1, 2, 2, 4, 4), num_res_blocks=2, attn_layers=(-1, -2),
-                 drop_prob=0.0, resample_with_conv=True, time_emb_ch=0, groups=32,
-                 double_z=True, attn_type=Config.VANILLA,
-                 **ignore_kwargs):
+    def __init__(
+            self, in_ch, unit_ch=128, z_ch=64,
+            ch_mult=(1, 1, 2, 2, 4, 4), num_res_blocks=2, attn_layers=(-1, -2),
+            drop_prob=0.0, resample_with_conv=True, time_emb_ch=0, groups=32,
+            double_z=True, attn_type=Config.VANILLA,
+            **ignore_kwargs
+    ):
         super().__init__()
         num_layers = len(ch_mult)
         attn_layers = [i % num_layers for i in attn_layers]
@@ -256,6 +280,7 @@ class Encoder(nn.Module):
         self.head = Conv(in_ch, out_ch, 3, mode='nac', norm=make_norm(groups, in_ch), act=activations.Swish())
         self.out_channels = out_ch
         self.down_scale = 2 ** (num_layers - 1)
+        self.z_ch = z_ch
 
     def forward(self, x, time_emb=None):
         h = self.conv_in(x)
@@ -322,11 +347,13 @@ class ReParametrize(nn.Module):
 
 
 class Decoder(nn.Module):
-    def __init__(self, in_ch, out_ch, unit_ch=128,
-                 ch_mult=(1, 1, 2, 2, 4, 4), num_res_blocks=2, attn_layers=(-1, -2),
-                 drop_prob=0.0, resample_with_conv=True,
-                 give_pre_end=False, tanh_out=False, groups=32,
-                 attn_type=Config.VANILLA, **ignore_kwargs):
+    def __init__(
+            self, in_ch, out_ch, unit_ch=128,
+            ch_mult=(1, 1, 2, 2, 4, 4), num_res_blocks=2, attn_layers=(-1, -2),
+            drop_prob=0.0, resample_with_conv=True,
+            give_pre_end=False, tanh_out=False, groups=32,
+            attn_type=Config.VANILLA, **ignore_kwargs
+    ):
         super().__init__()
         time_emb_ch = 0
         self.in_channels = in_ch

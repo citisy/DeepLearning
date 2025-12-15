@@ -5,11 +5,11 @@ from einops.layers.torch import Rearrange
 from torch import Tensor, nn
 
 
-def make_pos_div_term(embedding_dim, theta):
+def make_pos_div_term(embedding_dim, theta, dtype=torch.float32):
     # exp{-d / D * log{\theta}} = \theta ^ {-d / D}
     # same to
     # div_term = 1.0 / (theta ** (torch.arange(0, embedding_dim, 2)[: (embedding_dim // 2)].float() / embedding_dim))
-    div_term = (torch.arange(0, embedding_dim, 2).float() * -(math.log(theta) / embedding_dim)).exp()
+    div_term = (torch.arange(0, embedding_dim, 2).type(dtype) * -(math.log(theta) / embedding_dim)).exp()
     return div_term
 
 
@@ -172,20 +172,20 @@ class RotaryEmbedding(nn.Module):
             self._register()
         return super()._apply(fn, recurse)
 
-    def _register(self):
-        div_term = make_pos_div_term(self.embedding_dim, self.theta)
+    def _register(self, dtype=torch.float32):
+        div_term = make_pos_div_term(self.embedding_dim, self.theta, dtype)
         self.register_buffer('div_term', div_term, persistent=False)
 
     def make_weights(self, seq_len):
         position = torch.arange(0, seq_len).to(self.div_term)
         # equal to
         # freqs = torch.einsum("...n,d->...nd", position, self.div_term)
-        freqs = torch.outer(position, self.div_term).float()
+        freqs = torch.outer(position, self.div_term)
 
         weights = torch.polar(torch.ones_like(freqs), freqs)
         return weights
 
-    def forward(self, x, start_pos=0, weights=None):
+    def forward(self, x, start_pos=0, weights=None, **kwargs):
         """x: (b s n d)
         y_{d-1} = x_{d-1}cos(w_{d/2}) - x_{d}sin(w_{d/2}), d in {1,3,5,...}
         y_{d} = x_{d}cos(w_{d/2}) + x_{d-1}sin(w_{d/2}), d in {2,4,6,...}

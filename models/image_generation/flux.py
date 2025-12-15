@@ -73,6 +73,14 @@ class Config(bundles.Config):
         )
     )
 
+    sampler = dict(
+        schedule='FluxSchedule',
+        scaling='XScaling',
+        schedule_config=dict(
+            num_steps=20
+        )
+    )
+
     default_model = 'dev'
 
     @classmethod
@@ -83,6 +91,7 @@ class Config(bundles.Config):
                 clip_config=cls.clip,
                 backbone_config=cls.official_backbone,
                 vae_config=cls.vae,
+                sampler_config=cls.sampler,
             ),
 
             'dev.di': dict(
@@ -90,6 +99,7 @@ class Config(bundles.Config):
                 clip_config=cls.clip,
                 backbone_config=cls.diffusers_backbone,
                 vae_config=cls.vae,
+                sampler_config=cls.sampler,
             ),
         }
 
@@ -252,7 +262,7 @@ class Model(nn.Module):
 
     image_size = (768, 768)
 
-    def __init__(self, t5_config=Config.t5_xxl, clip_config=Config.clip, backbone_config=Config.backbone, vae_config=Config.vae, **kwargs):
+    def __init__(self, t5_config=Config.t5_xxl, clip_config=Config.clip, backbone_config=Config.backbone, vae_config=Config.vae, sampler_config=Config.sampler, **kwargs):
         super().__init__()
         self.__dict__.update(kwargs)
 
@@ -267,7 +277,7 @@ class Model(nn.Module):
         self.vae = VAE.Model(**vae_config)
         self.vae.set_inference_only()
 
-        self.sampler = FluxSampler(schedule='FluxSchedule', scaling='FluxScaling', schedule_config=dict(num_steps=20))
+        self.sampler = FluxSampler(**sampler_config)
 
     _device = None
     _dtype = None
@@ -281,10 +291,10 @@ class Model(nn.Module):
         return torch_utils.ModuleInfo.possible_dtype(self) if self._dtype is None else self._dtype
 
     @property
-    def flow_in_ch(self):
+    def process_in_ch(self):
         return self.vae.z_ch
 
-    def flow_in_size(self, image_size=None):
+    def process_in_size(self, image_size=None):
         image_size = image_size or self.image_size
         if isinstance(image_size, int):
             image_size = (image_size, image_size)
@@ -313,15 +323,13 @@ class Model(nn.Module):
         self.sampler.to(self.device)
 
     def set_half(self):
-        # note, vanilla sdxl vae can not convert to fp16, but bf16
-        # or use a special vae checkpoint, e.g. https://huggingface.co/madebyollin/sdxl-vae-fp16-fix
         dtype = torch.bfloat16
 
         torch_utils.ModuleManager.apply(
             self,
             lambda module: module.to(dtype),
             include=['t5', 'clip', 'backbone', 'vae'],
-            exclude=[normalizations.GroupNorm32]
+            exclude=[normalizations.GroupNorm32, normalizations.RMSNorm]
         )
 
         self.t5.encode = partial(torch_utils.ModuleManager.assign_dtype_run, self.t5, self.t5.encode, dtype, force_effect_module=False)
@@ -352,7 +360,7 @@ class Model(nn.Module):
         txt_ids = torch.zeros(bs, txt.shape[1], 3, device=x.device)
         vec = self.clip.encode(clip_text_ids)['pooler_output']
 
-        z = self.sampler(self.flow, x, txt=txt, txt_ids=txt_ids, vec=vec, **kwargs)
+        z = self.sampler(self.process, x, txt=txt, txt_ids=txt_ids, vec=vec, **kwargs)
 
         if x is not None and len(x) and mask_x is not None and len(mask_x):
             # todo: apply for different conditioning_key
@@ -363,7 +371,8 @@ class Model(nn.Module):
 
         return images
 
-    def flow(self, img, t_vec, txt, txt_ids, vec, img_cond=None, **kwargs):
+    def process(self, img, t_vec, txt, txt_ids, vec, img_cond=None, **kwargs):
+        """flow process"""
         bs, c, H, W = img.shape
         h = H // 2
         w = W // 2
@@ -393,7 +402,7 @@ class Model(nn.Module):
 
     def gen_x_t(self, batch_size, image_size=None):
         return torch.randn(
-            (batch_size, self.flow_in_ch, *self.flow_in_size(image_size)[::-1]),  # (b, c, h, w)
+            (batch_size, self.process_in_ch, *self.process_in_size(image_size)[::-1]),  # (b, c, h, w)
             device=self.device, dtype=self.dtype,
             # generator=torch.Generator(device=self.device),  # note, necessary
         )
@@ -438,7 +447,7 @@ class FluxSampler(EulerSampler):
         c_skip, c_out, c_in, c_noise = self.scaling(possible_sigma)
         c_skip, c_out, c_in = c_skip[:, None, None, None], c_out[:, None, None, None], c_in[:, None, None, None]
 
-        d = diffuse_func(c_in * x_t, c_noise, **diffuse_kwargs) * c_out + x_t * c_skip
+        d = diffuse_func(c_in * x_t, c_noise, **diffuse_kwargs) * c_out + x_t * c_skip  # note, use c_noise as time
 
         d = (x_t - d) / sigma_hat
         dt = next_sigma - sigma_hat
@@ -458,11 +467,12 @@ class FluxScaling(EpsScaling):
 
 @make_schedule_fn.add_register()
 class FluxSchedule(Schedule):
+    mu = 1.15
+    sigma = 1.
+
     def make_sigmas(self):
-        mu = 1.15
-        sigma = 1.
         timesteps = (torch.arange(1, self.timesteps + 1, 1) / self.timesteps)
-        sigmas = math.exp(mu) / (math.exp(mu) + (1 / timesteps - 1) ** sigma)
+        sigmas = math.exp(self.mu) / (math.exp(self.mu) + (1 / timesteps - 1) ** self.sigma)
         sigmas = torch.cat([sigmas.new_zeros([1]), sigmas])
         return sigmas
 

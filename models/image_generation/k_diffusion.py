@@ -5,8 +5,9 @@ import torch
 import torch.nn.functional as F
 from einops import reduce
 from torch import nn
+from tqdm import tqdm
 
-from .ddpm import extract
+from .ddpm import extract, append_dims
 from .. import bundles
 from utils import op_utils
 
@@ -88,7 +89,7 @@ class EDMSchedule(Schedule):
     rho = 7.0
 
     def make_sigmas(self):
-        ramp = torch.linspace(0, 1, self.timesteps)
+        ramp = torch.linspace(0, 1, self.timesteps + 1)
         min_inv_rho = self.sigma_min ** (1 / self.rho)
         max_inv_rho = self.sigma_max ** (1 / self.rho)
         sigmas = (max_inv_rho + ramp * (min_inv_rho - max_inv_rho)) ** self.rho
@@ -102,7 +103,7 @@ class ExponentialSchedule(Schedule):
     sigma_max = 80.0
 
     def make_sigmas(self):
-        sigmas = torch.linspace(math.log(self.sigma_max), math.log(self.sigma_min), self.timesteps).exp()
+        sigmas = torch.linspace(math.log(self.sigma_max), math.log(self.sigma_min), self.timesteps + 1).exp()
         return sigmas
 
 
@@ -113,7 +114,7 @@ class PolyExponentialSchedule(Schedule):
     rho = 1.0
 
     def make_sigmas(self):
-        ramp = torch.linspace(1, 0, self.timesteps) ** self.rho
+        ramp = torch.linspace(1, 0, self.timesteps + 1) ** self.rho
         sigmas = torch.exp(ramp * (math.log(self.sigma_max) - math.log(self.sigma_min)) + math.log(self.sigma_min))
         return sigmas
 
@@ -125,7 +126,7 @@ class VpSchedule(Schedule):
     beta_min = 0.1
 
     def make_sigmas(self):
-        t = torch.linspace(1, self.eps_s, self.timesteps)
+        t = torch.linspace(1, self.eps_s, self.timesteps + 1)
         sigmas = torch.sqrt(torch.exp(self.beta_d * t ** 2 / 2 + self.beta_min * t) - 1)
         return sigmas
 
@@ -184,6 +185,12 @@ class VScaling(Scaling):
 
 
 @make_scaling_fn.add_register()
+class XScaling(EpsScaling):
+    def make_c_in(self, sigma):
+        return torch.ones_like(sigma, device=sigma.device)
+
+
+@make_scaling_fn.add_register()
 class EDMEpsScaling(Scaling):
     sigma_data = 1.
 
@@ -233,7 +240,7 @@ class Sampler(nn.Module):
     def q_sample(self, x0, sigma, noise=None):
         raise NotImplementedError
 
-    def forward(self, diffuse_func, x_t, i0=None, callback_fn=None, num_steps=None, **p_sample_kwargs):
+    def forward(self, diffuse_func, x_t, i0=None, callback_fn=None, num_steps=None, vis_pbar=False, **p_sample_kwargs):
         timestep_seq = self.schedule.make_timesteps(i0, num_steps=num_steps)
         num_steps = num_steps or len(timestep_seq)
         # previous sequence
@@ -242,7 +249,10 @@ class Sampler(nn.Module):
         if callback_fn:
             callback_fn(x_t, self.schedule.timesteps)
 
-        for i in reversed(range(len(timestep_seq))):
+        pbar = list(reversed(range(len(timestep_seq))))
+        if vis_pbar:
+            pbar = tqdm(pbar)
+        for i in pbar:
             self_cond = x_0 if self.self_condition else None
             x_t, x_0 = self.p_sample(diffuse_func, x_t, timestep_seq[i], prev_t=timestep_prev_seq[i], x_self_cond=self_cond, num_steps=num_steps, **p_sample_kwargs)
 
@@ -320,7 +330,7 @@ class EulerSampler(Sampler):
         c_skip, c_out, c_in, c_noise = self.scaling(possible_sigma)
         possible_t = self.sigma_to_idx(c_noise)
         possible_t = possible_t - 1
-        c_skip, c_out, c_in, c_noise = c_skip[:, None, None, None], c_out[:, None, None, None], c_in[:, None, None, None], c_noise[:, None, None, None]
+        c_skip, c_out, c_in, c_noise = [append_dims(c, len(x_t.shape)) for c in (c_skip, c_out, c_in, c_noise)]
 
         d = diffuse_func(c_in * x_t, possible_t, **diffuse_kwargs) * c_out + x_t * c_skip
 

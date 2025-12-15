@@ -9,41 +9,58 @@ make_norm_fn.add_register()(nn.GroupNorm)
 
 
 @make_norm_fn.add_register()
-class RMSNorm2D(nn.Module):
-    """input: (b, s, d)"""
+class RMSNorm(nn.Module):
+    """
+    dim:
+        2 -> (b, s, d)  where channel_first=False
+        3 -> (b, c, h, w) where channel_first=True
+        4 -> (b, c, t, h, w) where channel_first=True
+    """
 
-    def __init__(self, dim, eps=1e-6):
+    def __init__(self, num_channels, dim=2, bias=False, channel_first=False, eps=1e-6):
         super().__init__()
-        self.weight = nn.Parameter(torch.ones(dim))
+        if isinstance(num_channels, int):
+            num_channels = (num_channels, *[1] * (dim - 1)) if channel_first else (num_channels,)
+        self.weight = nn.Parameter(torch.ones(num_channels))
+        self.bias = nn.Parameter(torch.zeros(num_channels)) if bias else 0.
         self.eps = eps
+        self.channel_first = channel_first
 
     def _norm(self, x):
-        # n = F.normalize(x, dim=2, eps=self.eps) * (x.shape[1] ** 0.5)
-        n = x * torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + self.eps)
+        """norm(x) = x / \\sqrt{\\mean{x^2} + e}"""
+        # same to
+        # n = F.normalize(x, dim=1 if self.channel_first else -1, eps=self.eps) * (x.shape[1] ** 0.5)
+        n = x * torch.rsqrt(x.pow(2).mean((1 if self.channel_first else -1), keepdim=True) + self.eps)
         return n
 
     def forward(self, x):
-        n = self._norm(x.float()).type_as(x)
-        return n * self.weight
+        n = self._norm(x.float())
+        y = n * self.weight + self.bias
+        return y.type_as(x)
 
 
 @make_norm_fn.add_register()
-class RMSNorm3D(nn.Module):
-    """input: (b, c, h, w)"""
+class RMSNorm2D(RMSNorm):
+    def __init__(self, *args, **kwargs):
+        kwargs.setdefault('dim', 2)
+        kwargs.setdefault('channel_first', False)
+        super().__init__(*args, **kwargs)
 
-    def __init__(self, dim, eps=1e-6):
-        super().__init__()
-        self.weight = nn.Parameter(torch.ones(1, dim, 1, 1))
-        self.eps = eps
 
-    def _norm(self, x):
-        # n = F.normalize(x, dim=1, eps=self.eps) * (x.shape[1] ** 0.5)
-        n = x * torch.rsqrt(x.pow(1).mean(1, keepdim=True) + self.eps)
-        return n
+@make_norm_fn.add_register()
+class RMSNorm3D(RMSNorm):
+    def __init__(self, *args, **kwargs):
+        kwargs.setdefault('dim', 3)
+        kwargs.setdefault('channel_first', True)
+        super().__init__(*args, **kwargs)
 
-    def forward(self, x):
-        n = self._norm(x.float()).type_as(x)
-        return n * self.weight
+
+@make_norm_fn.add_register()
+class RMSNorm4D(RMSNorm):
+    def __init__(self, *args, **kwargs):
+        kwargs.setdefault('dim', 4)
+        kwargs.setdefault('channel_first', True)
+        super().__init__(*args, **kwargs)
 
 
 @make_norm_fn.add_register()
@@ -65,6 +82,18 @@ class LayerNorm2d(nn.Module):
         x = (x - u) / torch.sqrt(s + self.eps)
         x = self.weight[:, None, None] * x + self.bias[:, None, None]
         return x
+
+
+@make_norm_fn.add_register()
+class LayerNorm32(nn.LayerNorm):
+    """forced to use fp32"""
+
+    def forward(self, x):
+        if self.elementwise_affine and self.weight.dtype is not torch.float32:
+            # check the weight
+            return super().forward(x)
+        else:
+            return super().forward(x.float()).type(x.dtype)
 
 
 @make_norm_fn.add_register()

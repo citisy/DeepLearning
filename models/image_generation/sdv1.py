@@ -69,7 +69,7 @@ class Model(ldm.Model):
 class CLIPEmbedder(nn.Module):
     def __init__(self, layer=Config.RAW_HIDDEN, layer_idx=None, return_pooled=False, **kwargs):
         super().__init__()
-        self.transformer = CLIP.TextModel(**kwargs)
+        self.set_transformer(**kwargs)
 
         self.max_length = kwargs['max_seq_len']
         self.output_size = kwargs['output_size']
@@ -77,6 +77,9 @@ class CLIPEmbedder(nn.Module):
         self.layer_idx = layer_idx
         self.return_pooled = return_pooled
         self.callback = Callback(layer_idx)
+
+    def set_transformer(self, **kwargs):
+        self.transformer = CLIP.TextModel(**kwargs)
 
     def forward(self, text_ids, **kwargs):
         x = self.transformer.text_model.backbone(text_ids, callback_fn=self.callback)
