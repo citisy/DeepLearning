@@ -126,8 +126,14 @@ class CAMPPlus(Process):
         if not isinstance(speech, list):
             speech = [None] * start_idx + [speech] * (end_idx - start_idx)
 
-        if isinstance(timestamps, list) and not isinstance(timestamps[0], list):
+        if not isinstance(timestamps, list):
             timestamps = [None] * start_idx + [timestamps] * (end_idx - start_idx)
+
+        for i in range(start_idx, end_idx):
+            if timestamps[i] is None:
+                timestamps[i] = [0, speech[i].shape[0] // 16]
+            elif not isinstance(timestamps[i], list):
+                timestamps[i] = [timestamps[i]]
 
         inputs = []
         for i in range(start_idx, end_idx):

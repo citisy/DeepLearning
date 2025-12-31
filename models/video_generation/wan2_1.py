@@ -286,6 +286,25 @@ class Model(nn.Module):
 
         self.sampler = k_diffusion.EulerSampler(**sampler_config)
 
+    def set_low_memory_run(self):
+        # Not critical to run single batch for decoding strategy, but reduce more GPU memory
+        self.vae.encode = partial(torch_utils.ModuleManager.single_batch_run, self.vae, self.vae.encode)
+        self.vae.decode = partial(torch_utils.ModuleManager.single_batch_run, self.vae, self.vae.decode)
+
+        def wrap1(module, func):
+            # note, device would be changed after model initialization.
+            def wrap2(*args, **kwargs):
+                return torch_utils.ModuleManager.low_memory_run(module, func, self.device, *args, **kwargs)
+
+            return wrap2
+
+        self.t5.encode = wrap1(self.t5, self.t5.encode)
+        self.clip.encode = wrap1(self.clip, self.clip.encode)
+        self.vae.encode = wrap1(self.vae, self.vae.encode)
+        self.vae.decode = wrap1(self.vae, self.vae.decode)
+        self.sampler.forward = wrap1(self.backbone, self.sampler.forward)
+        self.sampler.to(self.device)
+
     def set_half(self):
         dtype = torch.bfloat16
 
@@ -325,7 +344,7 @@ class Model(nn.Module):
         else:
             return self.inference(**kwargs)
 
-    def inference(self, x=None, text_ids=None, image_size=None, num_frame=None, **kwargs):
+    def inference(self, x=None, text_ids=None, image_size=None, num_frame=81, **kwargs):
         b = len(text_ids)
 
         txt_cond = self.make_txt_cond(text_ids, **kwargs)
@@ -378,15 +397,15 @@ class Model(nn.Module):
         x = torch.concat([
             torch.nn.functional.interpolate(images[:, None].cpu(), size=(h, w), mode='bicubic').transpose(1, 2),
             torch.zeros(b, c, num_frame - 1, h, w)
-        ], dim=2).to(images)    # (b, c, frame_size, h, w)
+        ], dim=2).to(images)  # (b, c, frame_size, h, w)
         y, _, _ = self.vae.encode(x, sample_posterior=False)
         hw = y.shape[-2:]
 
         mask = torch.ones(b, num_frame, *hw, device=self.device)
-        mask[:, 1:] = 0      # mask all but the first frame
-        mask = torch.concat([torch.repeat_interleave(mask[:, 0:1], repeats=4, dim=1), mask[:, 1:]], dim=1)    # Be a multiple of 4
+        mask[:, 1:] = 0  # mask all but the first frame
+        mask = torch.concat([torch.repeat_interleave(mask[:, 0:1], repeats=4, dim=1), mask[:, 1:]], dim=1)  # Be a multiple of 4
         mask = mask.view(b, mask.shape[1] // 4, 4, *hw)
-        mask = mask.transpose(1, 2)   # (b, 4, frame_size, h, w)
+        mask = mask.transpose(1, 2)  # (b, 4, frame_size, h, w)
 
         y = torch.concat([mask, y], dim=1)
         return y
@@ -397,7 +416,7 @@ class Model(nn.Module):
             time = torch.cat([time] * 2)
             cond = torch.cat([un_cond, cond])
 
-        z = self.backbone(x=x, t=time, context=cond)
+        z = self.backbone(x=x, t=time, context=cond, **backbone_kwargs)
         if un_cond is not None:
             e_t_uncond, e_t = z.chunk(2)
             e_t = e_t_uncond + scale * (e_t - e_t_uncond)
