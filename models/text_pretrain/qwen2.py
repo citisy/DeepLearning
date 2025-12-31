@@ -4,7 +4,6 @@ import torch
 from einops.layers.torch import Rearrange
 from torch import nn
 
-from data_parse.nl_data_parse.pre_process.decoder import beam_search
 from utils import torch_utils
 from .. import attentions, bundles, embeddings, normalizations
 from ..layers import Linear
@@ -92,14 +91,13 @@ class WeightConverter:
     @classmethod
     def from_official(cls, state_dict):
         state_dict = torch_utils.Converter.convert_keys(state_dict, cls.convert_dict)
-        if 'head.weight' not in state_dict:
-            state_dict['head.weight'] = state_dict['embedding.weight']
         return state_dict
 
 
 class Model(nn.Module):
-    """https://github.com/QwenLM/Qwen2-VL"""
-    padding_idx = None
+    """https://github.com/QwenLM/Qwen2"""
+    pad_id = None
+    ignore_id = -100
     eos_ids = [151645, 151643]
 
     def __init__(self, decoder_config=Config._7b_decoder, model_config={}):
@@ -107,34 +105,48 @@ class Model(nn.Module):
         self.__dict__.update(model_config)
 
         self.decoder = Decoder(**decoder_config)
-        self.embedding = nn.Embedding(self.decoder.vocab_size, self.decoder.hidden_size, self.padding_idx)
-        # not sure if it affects the training yet
-        self.head = embeddings.EmbeddingSim(self.embedding.weight)
-
-    def _apply(self, fn, recurse=True):
-        """apply for meta load"""
-        if self.head.weight.is_meta:
-            self.head.weight = self.embedding.weight
-        return super()._apply(fn, recurse)
+        self.embedding = nn.Embedding(self.decoder.vocab_size, self.decoder.hidden_size, self.pad_id)
+        self.criterion = nn.CrossEntropyLoss(reduction='mean', ignore_index=self.ignore_id)
 
     def make_caches(self):
-        return [dict() for i in range(self.decoder.num_blocks)]
+        return [dict() for _ in range(self.decoder.num_blocks)]
 
     def forward(self, *args, **kwargs):
         if self.training:
-            raise NotImplementedError()
+            return self.fit(*args, **kwargs)
         else:
             return self.inference(*args, **kwargs)
+
+    def fit(self, text_ids, label_ids, **decode_kwargs):
+        logits = self.decode(text_ids, past_kvs=self.make_caches(), **decode_kwargs)
+        return dict(
+            logits=logits,
+            loss=self.loss(logits, label_ids),
+        )
+
+    def loss(self, logits, label_ids):
+        logits = logits.float()
+        loss = self.criterion(
+            logits.view(-1, logits.size(-1)),
+            label_ids.contiguous().view(-1)
+        )
+        return loss
 
     def inference(self, text_ids, **decode_kwargs):
         return self.decode(text_ids, **decode_kwargs)
 
-    def decode(self, x, start_pos=0, **decoder_kwargs):
+    def decode(self, x, start_pos=0, attention_mask=None, **decoder_kwargs):
         x = self.embedding(x)
-        attention_mask = attentions.make_causal_attention_mask(x, start_pos=start_pos)
+        if attention_mask is None:
+            attention_mask = attentions.make_causal_attention_mask(x, start_pos=start_pos)
         x = self.decoder(x, attention_mask=attention_mask, start_pos=start_pos, **decoder_kwargs)
         x = self.head(x)
         return x
+
+    def head(self, x):
+        # note, share weights
+        y = x.matmul(self.embedding.weight.transpose(1, 0))
+        return y
 
 
 class Decoder(nn.Module):

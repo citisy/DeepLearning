@@ -334,7 +334,7 @@ class Model(nn.Module):
             if vlm_past_kvs is None:
                 vlm_past_kvs = self.make_caches()
 
-            preds = beam_search(text_ids, seq_lens, self.decode, eos_ids=self.eos_ids, vlm_past_kvs=vlm_past_kvs, **decode_kwargs)
+            preds = beam_search(text_ids, seq_lens, self.decode, eos_ids=self.eos_ids, vlm_past_kvs=vlm_past_kvs, **decode_kwargs)['preds']
 
             return dict(
                 preds=preds,

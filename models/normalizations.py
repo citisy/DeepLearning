@@ -34,7 +34,7 @@ class RMSNorm(nn.Module):
         return n
 
     def forward(self, x):
-        n = self._norm(x.float())
+        n = self._norm(x.float()).type_as(self.weight)
         y = n * self.weight + self.bias
         return y.type_as(x)
 

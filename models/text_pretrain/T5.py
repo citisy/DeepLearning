@@ -212,8 +212,6 @@ class Model(nn.Module):
         )
         self.decoder_norm = T5LayerNorm(hidden_size)
 
-        self.head = embeddings.EmbeddingSim(self.embedding.weight)
-
     def set_encoder_only(self):
         del self.decoder_relative_bias
         del self.decoder
@@ -264,6 +262,11 @@ class Model(nn.Module):
 
     def post_process(self, x, **decode_kwargs):
         return self.decode(x, **decode_kwargs)
+
+    def head(self, x):
+        # note, share weights
+        y = x.matmul(self.embedding.weight.transpose(1, 0))
+        return y
 
 
 class T5LayerNorm(nn.Module):

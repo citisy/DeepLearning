@@ -1,14 +1,13 @@
-import re
 from pathlib import Path
 from typing import List
 
-import numpy as np
-import pandas as pd
 import torch
+from torch.nn.utils.rnn import pad_sequence
 
-from data_parse.nl_data_parse.pre_process import bundled, dict_maker, cleaner, snack
-from processor import Process, DataHooks, BaseDataset, CheckpointHooks, IterIterDataset
-from utils import math_utils, os_lib, torch_utils
+from data_parse.nl_data_parse.pre_process import bundled
+from processor import BaseDataset, CheckpointHooks, DataHooks, Process
+from utils import os_lib, torch_utils
+from . import text_pretrain
 
 
 class TextProcessForGpt(DataHooks):
@@ -329,59 +328,43 @@ class FromQwen2Pretrained(CheckpointHooks):
         self.model.load_state_dict(state_dict, strict=False, assign=True)
 
 
-class BaseQwen2(Process):
-    config_version: str = '0.5b'
-
-    def set_model(self):
-        from models.text_generation.qwen2 import Model, Config
-
-        with torch.device('meta'):
-            self.model = Model(**Config.get(self.config_version))
-
-    def set_tokenizer(self):
-        from data_parse.nl_data_parse.pre_process.bundled import Qwen2Tokenizer
-
-        self.tokenizer = Qwen2Tokenizer.from_pretrained(
-            vocab_fn=self.vocab_fn,
-            encoder_fn=self.encoder_fn
-        )
-
-    def get_model_inputs(self, loop_inputs, train=True):
-        if train:
-            raise NotImplementedError
-        else:
-            return self.get_model_val_inputs(loop_inputs)
-
-
-class Qwen2Predictor(BaseQwen2):
+class Qwen2Predictor(Process):
     def get_model_val_inputs(self, loop_inputs):
-        model_inputs = []
+        text_ids = []
+        seq_lens = []
+        per_seq_lens = []
+
         for ret in loop_inputs:
-            messages = ret['messages']
-            model_input = self.tokenizer.encode_dialog(messages)
-            model_input['input_ids'] = model_input.pop('segments_ids')
-            model_input = torch_utils.Converter.force_to_tensors(model_input, self.device)
-            model_inputs.append(model_input)
+            text_ids.append(ret['segment_ids'])
+            seq_lens.append(ret['seq_lens'])
+            if 'per_seq_lens' in ret:
+                per_seq_lens.append(ret['per_seq_lens'])
+            else:
+                per_seq_lens.append([len(ret['segment_ids'])])
+
+        model_inputs = dict(
+            text_ids=text_ids,
+            seq_lens=seq_lens,
+            per_seq_lens=per_seq_lens,
+        )
+        model_inputs = torch_utils.Converter.force_to_tensors(model_inputs, self.device)
+        model_inputs['text_ids'] = pad_sequence(model_inputs['text_ids'], batch_first=True, padding_value=self.tokenizer.pad_id)
 
         return model_inputs
 
     def on_val_step(self, loop_objs, model_kwargs=dict(), **kwargs) -> dict:
         loop_inputs = loop_objs['loop_inputs']
         model_inputs = self.get_model_inputs(loop_inputs, train=False)
+        per_seq_lens = model_inputs.pop('per_seq_lens')
 
         model_results = {}
         for name, model in self.models.items():
-            generated_ids = []
-            per_seq_lens = []
-            for model_input in model_inputs:
-                per_seq_lens.extend(model_input.pop('per_seq_lens'))
-                model_output = model(**model_input, **model_kwargs)
-
-                preds = model_output['preds']
-                preds = preds.cpu().numpy()
-
-                seq_lens = model_input['seq_lens']
-                generated_ids += [pred[seq_len:-1] for seq_len, pred in zip(seq_lens, preds)]
+            model_output = model(**model_inputs, **model_kwargs)
+            preds = model_output['preds']
+            preds = preds.cpu().numpy()
+            seq_lens = model_inputs['seq_lens']
+            end_pos = model_output['end_pos']
+            generated_ids = [pred[seq_len:end_p] for seq_len, pred, end_p in zip(seq_lens, preds, end_pos)]
 
             model_results[name] = dict(
                 generated_ids=generated_ids,
@@ -390,16 +373,23 @@ class Qwen2Predictor(BaseQwen2):
 
         return model_results
 
-    def gen_predict_inputs(self, *objs, start_idx=None, end_idx=None, messages=None, content=None, **kwargs) -> List[dict]:
-        if messages is None:
-            messages = [
-                {"role": "system", "content": "You are a helpful assistant."},
-                {"role": "user", "content": content}
-            ]
+    def gen_predict_inputs(self, *objs, start_idx=None, end_idx=None, messages=None, content=None, text=None, **kwargs) -> List[dict]:
+        if not isinstance(text, list):
+            text = [None] * start_idx + [text] * (end_idx - start_idx)
 
-        return [dict(
-            messages=messages
-        )] * (end_idx - start_idx)
+        if not isinstance(content, list):
+            content = [None] * start_idx + [content] * (end_idx - start_idx)
+
+        if messages is None:
+            messages = [None] * start_idx
+            for i in range(start_idx, end_idx):
+                messages.append([
+                    {"role": "system", "content": "You are a helpful assistant."},
+                    {"role": "user", "content": content[i]}
+                ])
+
+        ret = [dict(messages=messages[i], text=text[i]) for i in range(start_idx, end_idx)]
+        return ret
 
     def on_predict_reprocess(self, loop_objs, process_results=dict(), **kwargs):
         model_results = loop_objs['model_results']
@@ -413,12 +403,16 @@ class Qwen2Predictor(BaseQwen2):
         process_results.setdefault(self.model_name, []).extend(results)
 
 
-class Qwen2(FromQwen2Pretrained, Qwen2Predictor):
+class Qwen2ForPretrainText(text_pretrain.Qwen2ForPretrainText, FromQwen2Pretrained, Qwen2Predictor):
+    """see `Qwen2ForChatText`"""
+
+
+class Qwen2ForChatText(text_pretrain.Qwen2ForChatText, FromQwen2Pretrained, Qwen2Predictor):
     """
     Usage:
         .. code-block:: python
 
-            from bundles.text_generation import Qwen2 as Process
+            from bundles.text_generation import Qwen2ForChatText as Process
 
             model_dir = 'xxx'
             process = Process(
@@ -430,9 +424,15 @@ class Qwen2(FromQwen2Pretrained, Qwen2Predictor):
 
             process.init()
 
-            # todo: only support single predict
+            #### predict
             content = '简单介绍一下大模型。'
-            process.single_predict(content=content)['text']
+            process.single_predict(
+                content=content,
+                model_kwargs=dict(
+                    max_gen_len=512,
+                    top_k=10
+                ),
+            )['text']
             # '大模型是一种计算机视觉模型，它能够模拟人类视觉感知，能够识别和理解图像中的物体、形状、颜色等特征，并能够进行分类、识别、预测等任务。大模型可以用于图像识别、自然语言处理、计算机视觉等领域。'
 
             past_kvs = process.model.make_caches()
@@ -468,4 +468,37 @@ class Qwen2(FromQwen2Pretrained, Qwen2Predictor):
                 )
             )
             print(response['text'])
+
+            #### train
+            process.fit(
+                batch_size=16,
+                max_epoch=2,
+                data_get_kwargs=dict(
+                    fn='xxx.jsonl',
+                    cacher_kwargs=dict(
+                        host='xxx',
+                        port=xxx,
+                        password='xxx',
+                        db=0,
+                        verbose=False
+                    ),
+                ),
+                data_preprocess_kwargs=dict(
+                    is_preprocess=True    # Only run on the first time
+                ),
+                dataloader_kwargs=dict(
+                    num_workers=8,
+                    shuffle=True
+                ),
+                use_early_stopper=False,
+                # use_scaler=True,
+                scheduler_strategy='step',
+                check_strategy='step',
+                check_period=100000,
+                is_metric=False,
+                init_weight=True,
+
+                max_save_weight_num=5,
+                accumulate=8*16,
+            )
     """

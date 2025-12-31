@@ -1,15 +1,16 @@
 import logging
+import os
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Iterable, Iterator, List, Optional, Dict, Union, Annotated, overload
+from typing import Annotated, Dict, Iterable, List, Optional, Union, overload
 
 import numpy as np
 import torch
 from torch import nn, optim
 from tqdm import tqdm
 
-from utils import os_lib, configs, visualize, log_utils, torch_utils
+from utils import configs, converter, log_utils, os_lib, torch_utils, visualize
 from . import bundled, data_process
 
 MODEL = 'model'
@@ -257,7 +258,7 @@ class CheckpointHooks:
 
     def load_state_dict(self, state_dict: dict, include=None, exclude=None, cache=False, **kwargs):
         if self.model_name in state_dict:
-            self.model.load_state_dict(state_dict.pop(self.model_name), strict=False)
+            self.model.load_state_dict(state_dict.pop(self.model_name), strict=False, assign=True)
         self._load_state_dict(state_dict, include, exclude, cache)
 
     def _load_state_dict(self, state_dict: dict, include=None, exclude=None, cache=False):
@@ -288,14 +289,18 @@ class CheckpointHooks:
 
     pretrained_checkpoint: str
 
-    def load_pretrained_checkpoint(self, raw_tensors=True) -> dict:
+    def load_pretrained_checkpoint(self, raw_tensors=True, **kwargs) -> dict:
         if hasattr(self, 'pretrained_checkpoint'):
-            pretrained_checkpoint = Path(self.pretrained_checkpoint)
+            pretrained_checkpoint = self.pretrained_checkpoint
+            if not os.path.exists(pretrained_checkpoint):
+                pretrained_checkpoint = os.path.join(self.work_dir, pretrained_checkpoint)
+            pretrained_checkpoint = Path(pretrained_checkpoint)
             return self.load(
-                self.pretrained_checkpoint,
+                str(pretrained_checkpoint),
                 additional_path=f'{pretrained_checkpoint.parent}/{pretrained_checkpoint.stem}.additional.pth',
                 save_type=WEIGHT,
-                raw_tensors=raw_tensors
+                raw_tensors=raw_tensors,
+                **kwargs
             )
         else:
             return {}
@@ -388,6 +393,7 @@ class ModelHooks:
     scaler: Optional
 
     def set_scaler(self, **kwargs):
+        # todo, don't use for bfloat16
         self.scaler = torch.cuda.amp.GradScaler(enabled=True)
         self.log('Successfully init scaler!')
 
@@ -416,6 +422,9 @@ class ModelHooks:
             train_dataloader: 'torch.utils.data.DataLoader' = None,
             val_dataloader: 'torch.utils.data.DataLoader' = None,
 
+            # for `data_preprocess()`
+            data_preprocess_kwargs: dict = dict(),
+
             # for `get_data()`
             data_get_kwargs: dict = dict(),
 
@@ -429,7 +438,6 @@ class ModelHooks:
 
             # every epoch or every step to run scheduler
             scheduler_strategy: str = EPOCH,
-            lrf: float = 0.01,
 
             # num of epoch/step to run training check
             check_period: int = None,
@@ -541,13 +549,31 @@ class ModelHooks:
     def on_train_start(
             self, batch_size=None, max_epoch=None,
             train_dataloader=None, val_dataloader=None, check_period=None, check_strategy=EPOCH,
-            metric_kwargs=dict(), data_get_kwargs=dict(), dataloader_kwargs=dict(),
+            init_weight=False, load_checkpoint=False, is_metric=True,
+            metric_kwargs=dict(), data_get_kwargs=dict(), data_preprocess_kwargs=dict(), dataloader_kwargs=dict(),
             **kwargs
     ):
         assert self.models, 'model list is empty, it seems that you have not init the processor first, perhaps run `processor.init()` first?'
         assert batch_size, 'please set batch_size'
         assert max_epoch, 'please set max_epoch'
         self.log(f'{batch_size = }')
+
+        loop_objs = dict(
+            end_flag=False,
+            last_check_time=time.time(),
+        )
+
+        for c in self.counters_keys:
+            loop_objs.setdefault(c, 0)
+
+        if init_weight:
+            self.model.to_empty(device=self.device)
+            torch_utils.ModuleManager.initialize_layers(self.model)
+
+        if load_checkpoint:
+            state_dict = self.load_pretrained_checkpoint()
+            loop_objs.update(state_dict.get('loop_objs', {}))
+        self.set_mode(train=True)
 
         metric_kwargs = metric_kwargs.copy()
         metric_kwargs.setdefault('batch_size', batch_size)
@@ -561,11 +587,11 @@ class ModelHooks:
 
         dataloader_kwargs.setdefault('batch_size', batch_size)
         if train_dataloader is None:
-            train_dataloader = self.get_train_dataloader(data_get_kwargs=data_get_kwargs, dataloader_kwargs=dataloader_kwargs)
+            train_dataloader = self.get_train_dataloader(data_get_kwargs=data_get_kwargs, data_preprocess_kwargs=data_preprocess_kwargs, dataloader_kwargs=dataloader_kwargs)
 
-        if check_period:
+        if is_metric:
             if val_dataloader is None:
-                val_dataloader = self.get_val_dataloader(data_get_kwargs=val_data_get_kwargs, dataloader_kwargs=val_dataloader_kwargs)
+                val_dataloader = self.get_val_dataloader(data_get_kwargs=val_data_get_kwargs, data_preprocess_kwargs=data_preprocess_kwargs, dataloader_kwargs=val_dataloader_kwargs)
             metric_kwargs.setdefault('val_dataloader', val_dataloader)
             s = 'epochs' if check_strategy == EPOCH else 'nums'
             self.log(f'check_strategy = `{check_strategy}`, it will be check the training result in every {check_period} {s}')
@@ -579,19 +605,6 @@ class ModelHooks:
 
         for func, params in self.train_start_container.items():
             func(**params)
-
-        state_dict = self.load_pretrained_checkpoint()
-        self.set_mode(train=True)
-
-        loop_objs = dict(
-            end_flag=False,
-            last_check_time=time.time(),
-        )
-
-        for c in self.counters_keys:
-            loop_objs.setdefault(c, 0)
-
-        loop_objs.update(state_dict.get('loop_objs', {}))
 
         process_kwargs = dict(
             train_dataloader=train_dataloader,
@@ -833,6 +846,9 @@ class ModelHooks:
             val_dataloader: 'torch.utils.data.DataLoader' = None,
             val_data: Optional[Iterable] = None,
 
+            # for `data_preprocess()`
+            data_preprocess_kwargs: dict = dict(),
+
             # for `get_data()`
             data_get_kwargs: dict = dict(),
 
@@ -914,19 +930,23 @@ class ModelHooks:
     def register_val_end(self, func, **kwargs):
         self.val_end_container.update({func: kwargs})
 
-    def on_val_start(self, val_data=None, val_dataloader=None, batch_size=None, data_get_kwargs=dict(), dataloader_kwargs=dict(), epoch=-1, **kwargs):
+    def on_val_start(self, val_data=None, val_dataloader=None, batch_size=None, load_checkpoint=False, data_get_kwargs=dict(), dataloader_kwargs=dict(), epoch=-1, **kwargs):
         assert self.models, 'model list is empty, it seems that you have not init the processor first, perhaps run `processor.init()` first?'
         assert batch_size, 'please set batch_size'
         dataloader_kwargs.setdefault('batch_size', batch_size)
         if val_dataloader is None:
             val_dataloader = self.get_val_dataloader(val_data=val_data, data_get_kwargs=data_get_kwargs, dataloader_kwargs=dataloader_kwargs)
 
-        self.set_mode(train=False)
-
         loop_objs = dict(
             vis_num=0,
             epoch=epoch
         )
+
+        if load_checkpoint:
+            state_dict = self.load_pretrained_checkpoint(exclude=['optimizer'])
+            loop_objs.update(state_dict.get('loop_objs', {}))
+
+        self.set_mode(train=False)
 
         process_kwargs = dict(
             val_dataloader=val_dataloader,
@@ -980,7 +1000,7 @@ class ModelHooks:
     def single_predict(self, *obj, **kwargs):
         if not len(obj):
             obj = [None]
-        ret = self.batch_predict(*[[o] for o in obj], **kwargs)
+        ret = self.batch_predict(*[[o] for o in obj], vis_pbar=False, **kwargs)
         if isinstance(ret, list) and ret:
             return ret[0]
         else:
@@ -1019,13 +1039,19 @@ class ModelHooks:
         """Tear large inputs to pieces for prediction, and then, merge the results and restore them"""
         raise NotImplementedError
 
-    def on_predict_start(self, **kwargs):
+    def on_predict_start(self, load_checkpoint=False, **kwargs):
         assert self.models, 'model list is empty, it seems that you have not init the processor first, perhaps run `processor.init()` first?'
 
-        self.set_mode(train=False)
         loop_objs = dict(
             vis_num=0
         )
+
+        if load_checkpoint:
+            state_dict = self.load_pretrained_checkpoint(exclude=['optimizer'])
+            loop_objs.update(state_dict.get('loop_objs', {}))
+
+        self.set_mode(train=False)
+
         process_kwargs = dict(
             process_results=dict(),
         )
@@ -1049,10 +1075,7 @@ class ModelHooks:
         reprocess data will be cached in predict_container"""
         model_results = loop_objs['model_results']
         ret = process_results.setdefault(self.model_name, {})
-        for k in return_keys:
-            if k in model_results[self.model_name]:
-                data = ret.setdefault(k, [])
-                data.extend(model_results[self.model_name][k])
+        converter.TypeFmtConvert.list_dict_to_dict_list(model_results[self.model_name], ret, keep_keys=return_keys)
 
     def on_predict_step_end(self, loop_objs, **kwargs):
         """visualize the model outputs usually"""

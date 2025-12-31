@@ -167,7 +167,6 @@ class Model(nn.Module):
             num_blocks=n_layer
         )
         self.norm = nn.LayerNorm(hidden_size)
-        self.embedding_sim = embeddings.EmbeddingSim(self.embedding.token.weight)
 
     def forward(self, *args, **kwargs):
         if self.training:
@@ -194,5 +193,10 @@ class Model(nn.Module):
         mask = attentions.make_causal_attention_mask(x)
         x = self.decoder(x, attention_mask=mask, **decoder_kwargs)
         x = self.norm(x)
-        x = self.embedding_sim(x)
+        x = self.head(x)
         return x
+
+    def head(self, x):
+        # note, share weights
+        y = x.matmul(self.embedding.weight.transpose(1, 0))
+        return y

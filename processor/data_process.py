@@ -1,4 +1,5 @@
 import copy
+import json
 import os
 from typing import Optional, Iterable, List, Annotated
 
@@ -9,7 +10,7 @@ from utils import os_lib
 
 
 class BaseDataset(Dataset):
-    def __init__(self, iter_data, augment_func=None, **kwargs):
+    def __init__(self, iter_data=None, augment_func=None, **kwargs):
         self.iter_data = iter_data
         self.augment_func = augment_func
         self.__dict__.update(**kwargs)
@@ -237,6 +238,34 @@ class MixDataset(BaseDataset):
         return sum(self.length)
 
 
+class IterRedisDataset(BaseDataset):
+    """for multiprocess with lager file"""
+
+    def __init__(self, *args, cacher_kwargs=dict(), **kwargs):
+        super().__init__(*args, **kwargs)
+        self.cacher = os_lib.RedisCacher(**cacher_kwargs)
+
+    def __len__(self):
+        return self.cacher.client.dbsize()
+
+    def __getitem__(self, idx):
+        ret = self.cacher.get_one(idx)
+        ret = {
+            k.decode('utf8') if isinstance(k, bytes) else k: v.decode('utf8') if isinstance(v, bytes) else v
+            for k, v in ret.items()
+        }
+        if self.augment_func:
+            ret = self.augment_func(ret)
+
+        return ret
+
+    def preprocess(self):
+        self.cacher.delete_all()
+        for i, ret in enumerate(self.iter_data):
+            ret = {k: json.dumps(v) if isinstance(v, (dict, list)) else v for k, v in ret.items()}
+            self.cacher.cache_one(ret, i)
+
+
 class DataHooks:
     train_dataset_ins = BaseImgDataset
     val_dataset_ins = BaseImgDataset
@@ -246,9 +275,9 @@ class DataHooks:
     ] = ''
     data_dir: Annotated[str, 'for loading the train or test data']
 
-    def get_train_dataloader(self, data_get_kwargs=dict(), dataloader_kwargs=dict()):
+    def get_train_dataloader(self, data_preprocess_kwargs=dict(), data_get_kwargs=dict(), dataloader_kwargs=dict()):
         train_data = self.get_train_data(**data_get_kwargs)
-        train_data = self.train_data_preprocess(train_data)
+        train_data = self.train_data_preprocess(train_data, **data_preprocess_kwargs)
 
         if not isinstance(train_data, Dataset):
             train_dataset = self.train_dataset_ins(
@@ -268,10 +297,10 @@ class DataHooks:
             **dataloader_kwargs
         )
 
-    def get_val_dataloader(self, val_data=None, data_get_kwargs=dict(), dataloader_kwargs=dict()):
+    def get_val_dataloader(self, val_data=None, data_preprocess_kwargs=dict(), data_get_kwargs=dict(), dataloader_kwargs=dict()):
         if val_data is None:
             val_data = self.get_val_data(**data_get_kwargs)
-        val_data = self.val_data_preprocess(val_data)
+        val_data = self.val_data_preprocess(val_data, **data_preprocess_kwargs)
         if not isinstance(val_data, Dataset):
             val_dataset = self.val_dataset_ins(val_data, augment_func=self.val_data_augment)
         else:
@@ -292,14 +321,14 @@ class DataHooks:
     def get_data(self, *args, train=True, **kwargs) -> Optional[Iterable | Dataset | List[Dataset]]:
         raise NotImplementedError
 
-    def train_data_preprocess(self, iter_data):
-        return self.data_preprocess(iter_data, train=True)
+    def train_data_preprocess(self, iter_data, **kwargs):
+        return self.data_preprocess(iter_data, train=True, **kwargs)
 
     def train_data_augment(self, ret) -> dict:
         return self.data_augment(ret, train=True)
 
-    def val_data_preprocess(self, iter_data):
-        return self.data_preprocess(iter_data, train=False)
+    def val_data_preprocess(self, iter_data, **kwargs):
+        return self.data_preprocess(iter_data, train=False, **kwargs)
 
     def val_data_augment(self, ret) -> dict:
         return self.data_augment(ret, train=False)
@@ -316,7 +345,7 @@ class DataHooks:
     def predict_data_restore(self, ret) -> dict:
         return self.val_data_restore(ret)
 
-    def data_preprocess(self, iter_data, train=True):
+    def data_preprocess(self, iter_data, train=True, **kwargs):
         return iter_data
 
     def data_augment(self, ret, train=True) -> dict:
