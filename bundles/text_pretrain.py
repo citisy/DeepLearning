@@ -1,5 +1,6 @@
 import json
 import re
+from pathlib import Path
 from typing import Iterable, List, Optional
 
 import numpy as np
@@ -11,7 +12,7 @@ from tqdm import tqdm
 
 from data_parse.nl_data_parse.pre_process import bundled, cleaner, dict_maker, snack
 from processor import BaseDataset, CheckpointHooks, DataHooks, IterIterDataset, Process, model_process, data_process
-from utils import math_utils, os_lib, torch_utils, visualize
+from utils import configs, math_utils, os_lib, torch_utils, visualize
 
 
 class RandomChoiceTextPairsDataset(BaseDataset):
@@ -757,9 +758,6 @@ class BgeM3(Process):
         return inputs
 
 
-
-
-
 class PretrainText(DataHooks):
     dataset_version = 'simple_pretrain_text'
     train_dataset_ins = data_process.IterRedisDataset
@@ -782,49 +780,27 @@ class PretrainText(DataHooks):
 
     def data_augment(self, ret, train=True) -> dict:
         text = ret['text']
-        ret = self.tokenizer.encode_segment([text], pad_type=snack.DO_NOT_PAD)
-        ret = {k: v[0] for k, v in ret.items()}
-        return ret
-
-
-class ChatText(DataHooks):
-    dataset_version = 'simple_chat_text'
-    train_dataset_ins = data_process.IterRedisDataset
-    val_dataset_ins = data_process.IterRedisDataset
-
-    def get_train_data(self, *args, fn=None, cacher_kwargs=dict(), train_data_num=None, data_loader_kwargs=dict(), **kwargs) -> Optional[Iterable | Dataset | List[Dataset]]:
-        from data_parse.nl_data_parse.datasets.SimpleChatText import Loader
-        loader = Loader(self.data_dir, **data_loader_kwargs)
-        iter_data = loader.load(
-            generator=True,
-            fn=fn,
-            max_size=train_data_num
-        )[0]
-        dataset_ins = self.train_dataset_ins
-        return dataset_ins(
-            iter_data,
-            augment_func=self.train_data_augment,
-            cacher_kwargs=cacher_kwargs
-        )
-
-    def data_augment(self, ret, train=True) -> dict:
-        messages = ret['messages']
-        if isinstance(messages, str):
-            messages = json.loads(messages)
-        ret = self.tokenizer.encode_dialog(messages)
+        if not text.startswith(self.tokenizer.bos_token):
+            text = self.tokenizer.bos_token + text
+        ret = self.tokenizer.encode_paragraph(text, pad_type=snack.DO_NOT_PAD)
+        ret['text'] = text
         return ret
 
 
 class BaseQwen2(Process):
     model_version = 'qwen2'
-    config_version: str = '0.5b'
     max_seq_len = 512
+
+    config_version: str = '0.5b'
+    model_configs = dict()
 
     def set_model(self):
         from models.text_generation.qwen2 import Model, Config
 
+        model_configs = Config.get(self.config_version)
+        model_configs = configs.ConfigObjParse.merge_dict(model_configs, self.model_configs)
         with torch.device('meta'):
-            self.model = Model(**Config.get(self.config_version))
+            self.model = Model(**model_configs)
 
     def set_tokenizer(self):
         from data_parse.nl_data_parse.pre_process.bundled import Qwen2Tokenizer
@@ -842,6 +818,20 @@ class BaseQwen2(Process):
             return self.get_model_val_inputs(loop_inputs)
 
 
+class FromQwen2Pretrained(CheckpointHooks):
+    pretrained_model: str | List[str]
+
+    def load_pretrained(self):
+        from models.text_generation.qwen2 import WeightLoader, WeightConverter
+
+        if Path(self.pretrained_model).is_dir():
+            self.pretrained_model = [str(fp) for fp in os_lib.find_all_suffixes_files(self.pretrained_model, ['.safetensors'])]
+
+        state_dict = WeightLoader.auto_load(self.pretrained_model)
+        state_dict = WeightConverter.from_official(state_dict)
+        self.model.load_state_dict(state_dict, strict=False, assign=True)
+
+
 class Qwen2Trainer(Process):
     def set_optimizer(self, lr=5e-4, **kwargs):
         self.optimizer = optim.AdamW(self.model.parameters(), lr=lr)
@@ -850,7 +840,7 @@ class Qwen2Trainer(Process):
         from torch.optim.lr_scheduler import CosineAnnealingLR
         assert scheduler_strategy == model_process.STEP
         accumulate = accumulate or batch_size
-        total_optimizer_steps = (len(train_dataloader) // accumulate) * max_epoch
+        total_optimizer_steps = (len(train_dataloader.dataset) // accumulate) * max_epoch
         self.scheduler = CosineAnnealingLR(self.optimizer, T_max=total_optimizer_steps, eta_min=lr / 10)
 
     def train_data_preprocess(self, iter_data, is_preprocess=False, **kwargs):
@@ -891,9 +881,5 @@ class Qwen2Trainer(Process):
         return output
 
 
-class Qwen2ForPretrainText(BaseQwen2, Qwen2Trainer, PretrainText):
-    pass
-
-
-class Qwen2ForChatText(BaseQwen2, Qwen2Trainer, ChatText):
+class Qwen2ForPretrainText(BaseQwen2, Qwen2Trainer, PretrainText, FromQwen2Pretrained):
     pass

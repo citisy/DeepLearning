@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 from typing import List
 
@@ -5,7 +6,7 @@ import torch
 from torch.nn.utils.rnn import pad_sequence
 
 from data_parse.nl_data_parse.pre_process import bundled
-from processor import BaseDataset, CheckpointHooks, DataHooks, Process
+from processor import BaseDataset, CheckpointHooks, DataHooks, Process, data_process
 from utils import os_lib, torch_utils
 from . import text_pretrain
 
@@ -314,18 +315,33 @@ class T5(BaseT5, FromT5HFPretrained, SimpleTextForT5):
     dataset_version = 'huggingface_pretrain'
 
 
-class FromQwen2Pretrained(CheckpointHooks):
-    pretrained_model: str | List[str]
+class ChatText(DataHooks):
+    dataset_version = 'simple_chat_text'
+    train_dataset_ins = data_process.IterRedisDataset
+    val_dataset_ins = data_process.IterRedisDataset
 
-    def load_pretrained(self):
-        from models.text_generation.qwen2 import WeightLoader, WeightConverter
+    def get_train_data(self, *args, fn=None, cacher_kwargs=dict(), train_data_num=None, data_loader_kwargs=dict(), **kwargs):
+        from data_parse.nl_data_parse.datasets.SimpleChatText import Loader
+        loader = Loader(self.data_dir, **data_loader_kwargs)
+        iter_data = loader.load(
+            generator=True,
+            fn=fn,
+            max_size=train_data_num
+        )[0]
+        dataset_ins = self.train_dataset_ins
+        return dataset_ins(
+            iter_data,
+            augment_func=self.train_data_augment,
+            cacher_kwargs=cacher_kwargs
+        )
 
-        if Path(self.pretrained_model).is_dir():
-            self.pretrained_model = [str(fp) for fp in os_lib.find_all_suffixes_files(self.pretrained_model, ['.safetensors'])]
-
-        state_dict = WeightLoader.auto_load(self.pretrained_model)
-        state_dict = WeightConverter.from_official(state_dict)
-        self.model.load_state_dict(state_dict, strict=False, assign=True)
+    def data_augment(self, ret, train=True) -> dict:
+        messages = ret['messages']
+        if isinstance(messages, str):
+            messages = json.loads(messages)
+        ret = self.tokenizer.encode_dialog(messages)
+        ret['messages'] = messages
+        return ret
 
 
 class Qwen2Predictor(Process):
@@ -403,11 +419,11 @@ class Qwen2Predictor(Process):
         process_results.setdefault(self.model_name, []).extend(results)
 
 
-class Qwen2ForPretrainText(text_pretrain.Qwen2ForPretrainText, FromQwen2Pretrained, Qwen2Predictor):
+class Qwen2ForPretrainText(text_pretrain.Qwen2ForPretrainText, Qwen2Predictor):
     """see `Qwen2ForChatText`"""
 
 
-class Qwen2ForChatText(text_pretrain.Qwen2ForChatText, FromQwen2Pretrained, Qwen2Predictor):
+class Qwen2ForChatText(text_pretrain.BaseQwen2, text_pretrain.Qwen2Trainer, Qwen2Predictor, ChatText, text_pretrain.FromQwen2Pretrained):
     """
     Usage:
         .. code-block:: python
@@ -490,8 +506,8 @@ class Qwen2ForChatText(text_pretrain.Qwen2ForChatText, FromQwen2Pretrained, Qwen
                     num_workers=8,
                     shuffle=True
                 ),
-                use_early_stopper=False,
                 # use_scaler=True,
+                use_scheduler=True,
                 scheduler_strategy='step',
                 check_strategy='step',
                 check_period=100000,

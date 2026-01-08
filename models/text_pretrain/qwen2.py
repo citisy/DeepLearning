@@ -96,7 +96,7 @@ class WeightConverter:
 
 class Model(nn.Module):
     """https://github.com/QwenLM/Qwen2"""
-    pad_id = None
+    pad_id = 151643
     ignore_id = -100
     eos_ids = [151645, 151643]
 

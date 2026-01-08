@@ -11,7 +11,7 @@ class Model(Model):
         if past_kvs is None:
             past_kvs = self.make_caches()
 
-        model_outputs = beam_search(text_ids, seq_lens, self.decode, eos_ids=self.eos_ids, past_kvs=past_kvs, **decode_kwargs)
+        model_outputs = beam_search(text_ids, seq_lens, self.decode, eos_ids=self.eos_ids, pad_id=self.pad_id, past_kvs=past_kvs, **decode_kwargs)
 
         torch_utils.ModuleManager.torch_gc()
 
