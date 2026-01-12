@@ -269,6 +269,8 @@ class IterRedisDataset(BaseDataset):
 class DataHooks:
     train_dataset_ins = BaseImgDataset
     val_dataset_ins = BaseImgDataset
+    train_dataloader_ins = DataLoader
+    val_dataloader_ins = DataLoader
     dataset_version: Annotated[
         str,
         'for work_dir and cache_dir'
@@ -291,7 +293,7 @@ class DataHooks:
         dataloader_kwargs.setdefault('shuffle', True)
         dataloader_kwargs.setdefault('pin_memory', True)
 
-        return DataLoader(
+        return self.train_dataloader_ins(
             train_dataset,
             collate_fn=train_dataset.collate_fn if hasattr(train_dataset, 'collate_fn') else None,
             **dataloader_kwargs
@@ -306,7 +308,7 @@ class DataHooks:
         else:
             val_dataset = val_data
 
-        return DataLoader(
+        return self.val_dataloader_ins(
             val_dataset,
             collate_fn=val_dataset.collate_fn,
             **dataloader_kwargs

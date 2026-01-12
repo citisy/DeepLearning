@@ -1218,9 +1218,9 @@ class WanCrossAttention2D(attentions.CrossAttention2D):
 
 
 class WanRotaryEmbedding(embeddings.RotaryEmbedding):
-    def _register(self, dtype=torch.float64):
+    def initialize_layers(self, dtype=torch.float64):
         # note, use fp64
-        super()._register(dtype=dtype)
+        super().initialize_layers(dtype=dtype)
 
     def forward(self, x, grid_sizes=None, weights=None, **kwargs):
         dtype = x.dtype

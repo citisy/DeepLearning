@@ -232,7 +232,7 @@ class SANMEncoder(nn.Module):
 
 
 class SinusoidalEmbedding(embeddings.SinusoidalEmbedding):
-    def _register(self):
+    def initialize_layers(self):
         div_term = (torch.arange(self.embedding_dim / 2).float() * -(math.log(self.theta) / (self.embedding_dim / 2 - 1))).exp()
         self.register_buffer('div_term', div_term, persistent=False)
 

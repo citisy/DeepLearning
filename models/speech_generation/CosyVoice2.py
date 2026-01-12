@@ -453,15 +453,15 @@ class CausalConditionalCFM(CosyVoice.ConditionalCFM):
     def __init__(self, **decoder_kwargs):
         nn.Module.__init__(self)
         self.estimator = CausalConditionalDecoder(**decoder_kwargs)
-        self._register()
+        self.initialize_layers()
 
-    def _register(self):
+    def initialize_layers(self):
         self.register_buffer('rand_noise', torch.randn([1, 80, 50 * 300]), persistent=False)
 
     def _apply(self, fn, recurse=True):
         """apply for meta load"""
         if self.rand_noise.is_meta:
-            self._register()
+            self.initialize_layers()
         return super()._apply(fn, recurse)
 
     def forward(self, mu, mask, n_timesteps, temperature=1.0, spks=None, cond=None, stream=False, cache=None):

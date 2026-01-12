@@ -93,7 +93,7 @@ class CheckpointHooks:
                 if False, the fmt of weight file is liked, `{model_name: {weight_names: weights}}`
         """
         if additional_path:
-            state_dict = self.model.state_dict()
+            state_dict = self.model_state_dict()
             if not raw_tensors:
                 state_dict = {self.model_name: state_dict}
             torch.save(state_dict, save_path, **kwargs)
@@ -104,11 +104,11 @@ class CheckpointHooks:
 
         else:
             if raw_tensors:
-                ckpt = self.model.state_dict()
+                ckpt = self.model_state_dict()
 
             else:
                 ckpt = {
-                    self.model_name: self.model.state_dict(),
+                    self.model_name: self.model_state_dict(),
                     **additional_items
                 }
 
@@ -117,7 +117,7 @@ class CheckpointHooks:
                 self.log(f'Successfully saved to {save_path} !')
 
     def save_safetensors(self, save_path, verbose=True, **kwargs):
-        torch_utils.Export.to_safetensors(self.model.state_dict(), save_path)
+        torch_utils.Export.to_safetensors(self.model_state_dict(), save_path)
         if verbose:
             self.log(f'Successfully saved to {save_path} !')
 
@@ -187,6 +187,9 @@ class CheckpointHooks:
                     state_dict[name] = var
 
         return state_dict
+
+    def model_state_dict(self):
+        return self.model.state_dict()
 
     def load(self, save_path, save_type=WEIGHT, **kwargs):
         func = self.load_funcs.get(save_type)
@@ -570,8 +573,11 @@ class ModelHooks:
             loop_objs.setdefault(c, 0)
 
         if init_weight:
-            self.model.to_empty(device=self.device)
+            if torch_utils.ModuleInfo.possible_device(self.model) == torch.device('meta'):
+                # todo, some buffers set to zero also, required to reinit them
+                self.model.to_empty(device=self.device)
             torch_utils.ModuleManager.initialize_layers(self.model)
+            self.model.to(self.device)
 
         metric_kwargs = metric_kwargs.copy()
         metric_kwargs.setdefault('batch_size', batch_size)

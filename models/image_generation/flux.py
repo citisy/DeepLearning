@@ -578,9 +578,9 @@ class FluxRotaryEmbedding(nn.Module):
         super().__init__()
         self.embedding_dims = embedding_dims
         self.theta = theta
-        self._register()
+        self.initialize_layers()
 
-    def _register(self):
+    def initialize_layers(self):
         # note, support for meta device init
         div_terms = []
         for embedding_dim in self.embedding_dims:
@@ -592,7 +592,7 @@ class FluxRotaryEmbedding(nn.Module):
     def _apply(self, fn, recurse=True):
         """apply for meta load"""
         if self.div_terms[0].is_meta:
-            self._register()
+            self.initialize_layers()
         return super()._apply(fn, recurse)
 
     def make_weights(self, positions):

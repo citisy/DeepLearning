@@ -838,9 +838,10 @@ class Qwen2Trainer(Process):
 
     def set_scheduler(self, max_epoch, lr=5e-4, train_dataloader=None, accumulate=None, batch_size=None, scheduler_strategy=model_process.EPOCH, **kwargs):
         from torch.optim.lr_scheduler import CosineAnnealingLR
-        assert scheduler_strategy == model_process.STEP
+        assert scheduler_strategy == model_process.STEP, NotImplementedError(f'{scheduler_strategy} is not supported')
         accumulate = accumulate or batch_size
         total_optimizer_steps = (len(train_dataloader.dataset) // accumulate) * max_epoch
+        assert total_optimizer_steps > 0, f'total_optimizer_steps is {total_optimizer_steps}, which is not greater than 0'
         self.scheduler = CosineAnnealingLR(self.optimizer, T_max=total_optimizer_steps, eta_min=lr / 10)
 
     def train_data_preprocess(self, iter_data, is_preprocess=False, **kwargs):

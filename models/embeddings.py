@@ -40,9 +40,9 @@ class PositionalEmbedding(nn.Module):
         self.is_shortcut = is_shortcut
         self.factor = factor
         self.dropout = nn.Dropout(drop_prob)
-        self._register()
+        self.initialize_layers()
 
-    def _register(self, num_embeddings=None):
+    def initialize_layers(self, num_embeddings=None):
         if num_embeddings is None:
             num_embeddings = self.num_embeddings
 
@@ -59,13 +59,13 @@ class PositionalEmbedding(nn.Module):
     def _apply(self, fn, recurse=True):
         """apply for meta load"""
         if self.weight.is_meta:
-            self._register()
+            self.initialize_layers()
         return super()._apply(fn, recurse)
 
     def extend_weight(self, seq_len):
         """Reset the positional encodings."""
         if self.weight.shape[1] < seq_len:
-            self._register(seq_len)
+            self.initialize_layers(seq_len)
 
     def make_embedding(self, seq_len, **kwargs):
         return self.weight[:, :seq_len]
@@ -112,16 +112,16 @@ class SinusoidalEmbedding(nn.Module):
         self.embedding_dim = embedding_dim
         self.theta = theta
         self.factor = factor
-        self._register()
+        self.initialize_layers()
 
-    def _register(self):
+    def initialize_layers(self):
         div_term = make_pos_div_term(self.embedding_dim, self.theta)
         self.register_buffer('div_term', div_term, persistent=False)
 
     def _apply(self, fn, recurse=True):
         """apply for meta load"""
         if self.div_term.is_meta:
-            self._register()
+            self.initialize_layers()
         return super()._apply(fn, recurse)
 
     def forward(self, x):
@@ -164,15 +164,15 @@ class RotaryEmbedding(nn.Module):
         super().__init__()
         self.embedding_dim = embedding_dim
         self.theta = theta
-        self._register()
+        self.initialize_layers()
 
     def _apply(self, fn, recurse=True):
         """apply for meta load"""
         if self.div_term.is_meta:
-            self._register()
+            self.initialize_layers()
         return super()._apply(fn, recurse)
 
-    def _register(self, dtype=torch.float32):
+    def initialize_layers(self, dtype=torch.float32):
         div_term = make_pos_div_term(self.embedding_dim, self.theta, dtype)
         self.register_buffer('div_term', div_term, persistent=False)
 

@@ -670,7 +670,7 @@ class EspnetRelPositionalEncoding(embeddings.PositionalEmbedding):
     See : Appendix B in https://arxiv.org/abs/1901.02860
     """
 
-    def _register(self, num_embeddings=None):
+    def initialize_layers(self, num_embeddings=None):
         if num_embeddings is None:
             num_embeddings = self.num_embeddings
 
@@ -697,7 +697,7 @@ class EspnetRelPositionalEncoding(embeddings.PositionalEmbedding):
     def extend_weight(self, seq_len):
         """Reset the positional encodings."""
         if self.weight.shape[1] < seq_len * 2 - 1:
-            self._register(seq_len)
+            self.initialize_layers(seq_len)
 
     def make_embedding(self, seq_len, start_pos=0) -> torch.Tensor:
         """ For getting encoding in a stream fashion
@@ -1464,7 +1464,7 @@ class ConditionalDecoder(nn.Module):
 
 
 class SinusoidalEmbedding(embeddings.SinusoidalEmbedding):
-    def _register(self):
+    def initialize_layers(self):
         # note, different here
         half_dim = self.embedding_dim // 2
         div_term = (torch.arange(half_dim).float() * -(math.log(self.theta) / (half_dim - 1))).exp()

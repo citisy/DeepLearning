@@ -155,29 +155,14 @@ class Process(
 
     def init_components(self):
         torch_utils.setup_seed()
-        if torch.cuda.is_available():
-            if isinstance(self.device, (str, int)) and self.device != 'cpu':
-                self.device = torch.device(f"cuda:{self.device}")
-            elif self.device is None:  # default None, use cuda:0 possible
-                self.device = torch.device('cuda')
-        else:
-            self.device = torch.device('cpu')
 
+        self.set_device()
         self.set_tokenizer()
 
         if not hasattr(self, 'model') or self.model is None:
             self.set_model()
 
         self.models[self.model_name] = self.model
-
-        # todo: multi device
-        # if isinstance(self.device, list):
-        #     assert torch.cuda.device_count() >= len(self.device)
-        #     device_ids = self.device
-        #     self.device = torch.device(f"cuda:{self.device[0]}")
-        #     self.model = nn.DataParallel(self.model, device_ids=device_ids)
-        #     self.model.to(self.device)
-        #     self.optimizer = nn.DataParallel(self.optimizer, device_ids=device_ids)
 
         try_init_components = [self.set_model_status]
         for components in try_init_components:
@@ -189,6 +174,15 @@ class Process(
         self.log(f'{torch.__version__ = }')
         self.log(f'{self.device = }')
         self.log(f'{self.models.keys() = }')
+
+    def set_device(self):
+        if torch.cuda.is_available():
+            if isinstance(self.device, (str, int)) and self.device != 'cpu':
+                self.device = torch.device(f"cuda:{self.device}")
+            elif self.device is None:  # default None, use cuda:0 possible
+                self.device = torch.device('cuda')
+        else:
+            self.device = torch.device('cpu')
 
     use_pretrained: bool = True
 
@@ -223,6 +217,69 @@ class Process(
         )
         for k, v in r.items():
             self.log({k: v})
+
+
+def ddp_process_wrap(process: Process):
+    """
+    Usage:
+        xxx.py:
+            @ddp_process_wrap
+            class Process():
+                ...
+
+        # !/bin/bash
+        torchrun --nproc_per_node=2 --nnodes=1 xxx.py
+
+    """
+    from torch.utils.data import DataLoader
+
+    local_rank = torch_utils.init_distributed_mode()
+
+    class DDPDataLoader(DataLoader):
+        def __init__(self, dataset, *args, shuffle=True, **kwargs):
+            sampler = torch.utils.data.distributed.DistributedSampler(dataset, shuffle=shuffle)
+            kwargs.update(
+                sampler=sampler,
+                shuffle=False
+            )
+            super().__init__(dataset, *args, **kwargs)
+
+    class Wrap(process):
+        train_dataloader_ins = DDPDataLoader
+        val_dataloader_ins = DDPDataLoader
+
+        def set_device(self):
+            self.device = torch.device(f"cuda:{local_rank}")
+
+        def init(self):
+            super().init()
+
+            def set_ddp():
+                self.model = torch.nn.parallel.DistributedDataParallel(
+                    self.model,
+                    device_ids=[local_rank],
+                    output_device=local_rank,
+                    # static_graph=True
+                )
+
+            self.register_train_start(set_ddp)
+
+        def _check_on_train_step_end(self, *arg, **kwargs):
+            if local_rank == 0:
+                super()._check_on_train_step_end(*arg, **kwargs)
+
+        def _check_on_train_epoch_end(self, *arg, **kwargs):
+            if local_rank == 0:
+                super()._check_on_train_epoch_end(*arg, **kwargs)
+
+        def model_state_dict(self):
+            if isinstance(self.model, torch.nn.parallel.DistributedDataParallel):
+                state_dict = self.model.module.state_dict()
+            else:
+                state_dict = self.model.state_dict()
+            return state_dict
+
+    return Wrap
 
 
 class ParamsSearch:
