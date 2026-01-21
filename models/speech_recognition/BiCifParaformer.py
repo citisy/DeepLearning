@@ -187,7 +187,8 @@ class Model(Paraformer.Model):
             sematic_embeds = pre_acoustic_embeds
 
         # 1. Forward decoder
-        decoder_out = self.decoder(encoder_out, encoder_out_lens, sematic_embeds, ys_pad_lens)
+        decoder_outputs = self.decoder(encoder_out, encoder_out_lens, sematic_embeds, ys_pad_lens)
+        decoder_out = decoder_outputs['x']
 
         # 2. Compute attention loss
         loss_att = self.criterion_att(decoder_out, ys_pad)
@@ -203,7 +204,8 @@ class Model(Paraformer.Model):
         else:
             ys_pad_embed = self.decoder.embed(ys_pad_masked)
         with torch.no_grad():
-            decoder_out = self.decoder(encoder_out, encoder_out_lens, pre_acoustic_embeds, ys_pad_lens)
+            decoder_outputs = self.decoder(encoder_out, encoder_out_lens, pre_acoustic_embeds, ys_pad_lens)
+            decoder_out = decoder_outputs['x']
             pred_tokens = decoder_out.argmax(-1)
             nonpad_positions = ys_pad.ne(self.ignore_id)
             seq_lens = nonpad_positions.sum(1)
@@ -258,7 +260,7 @@ class CifPredictorV3(nn.Module):
         self.pad = nn.ConstantPad1d((l_order, r_order), 0)
         self.cif_conv1d = nn.Conv1d(input_dim, input_dim, l_order + r_order + 1)
         self.cif_output = nn.Linear(input_dim, 1)
-        self.dropout = nn.Dropout(p=self.drop_prob)
+        self.dropout = nn.Dropout(self.drop_prob)
         self.upsample_cnn = nn.ConvTranspose1d(input_dim, input_dim, self.upsample_times, self.upsample_times)
         self.blstm = nn.LSTM(input_dim, input_dim, 1, bias=True, batch_first=True, dropout=0.0, bidirectional=True)
         self.cif_output2 = nn.Linear(input_dim * 2, 1)

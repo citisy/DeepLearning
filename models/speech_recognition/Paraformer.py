@@ -140,12 +140,15 @@ class Model(nn.Module):
         encoder_out, encoder_out_mask = self.encode(speech, speech_lens)
         return encoder_out, encoder_out_mask
 
-    def post_process(self, encoder_out, encoder_out_mask, speech_lens, **kwargs):
-        raise NotImplementedError
-
     def encode(self, speech: torch.Tensor, speech_lens: torch.Tensor, **kwargs):
         attention_mask = attentions.make_pad_mask(speech_lens)[:, None, :].to(speech.device)
         return self.encoder(speech, speech_lens, attention_mask), attention_mask
+
+    def post_process(self, encoder_out, encoder_out_mask, speech_lens, **kwargs):
+        raise NotImplementedError
+
+    def loss(self, *args, **kwargs):
+        raise NotImplementedError
 
 
 class SANMEncoder(nn.Module):
@@ -220,7 +223,7 @@ class SANMEncoder(nn.Module):
         x = x * self.output_size ** 0.5
         x += self.embed(torch.arange(1, x.shape[1] + 1, device=x.device, dtype=torch.float32))[None]
 
-        # x = self.dropout(x)
+        x = self.dropout(x)
         for m in self.encoders0:
             x = m(x, attention_mask)
 
@@ -281,7 +284,6 @@ class SANMEncoderLayer(nn.Module):
         if self.is_concat:
             self.concat_linear = nn.Linear(size + size, size)
         self.stochastic_depth_rate = stochastic_depth_rate
-        self.dropout_rate = drop_prob
 
     def forward(self, x, attention_mask, cache=None, mask_shift_chunk=None, mask_att_chunk_encoder=None):
         """Compute encoded features.
@@ -732,7 +734,7 @@ class CifPredictorV2(nn.Module):
         self.pad = nn.ConstantPad1d((l_order, r_order), 0)
         self.cif_conv1d = nn.Conv1d(input_dim, input_dim, l_order + r_order + 1)
         self.cif_output = nn.Linear(input_dim, 1)
-        self.dropout = nn.Dropout(p=self.drop_prob)
+        self.dropout = nn.Dropout(self.drop_prob)
 
     def forward(
             self,
@@ -864,8 +866,7 @@ class CTC(nn.Module):
     Args:
         odim: dimension of outputs
         encoder_output_size: number of encoder projection units
-        dropout_rate: dropout rate (0.0 ~ 1.0)
-        ctc_type: builtin or warpctc
+        drop_prob: dropout prob (0.0 ~ 1.0)
         reduce: reduce the CTC loss into a scalar
     """
 
@@ -873,15 +874,15 @@ class CTC(nn.Module):
             self,
             odim: int,
             encoder_output_size: int,
-            dropout_rate: float = 0.0,
+            drop_prob: float = 0.0,
             reduce: bool = True,
             ignore_nan_grad: bool = True,
     ):
         super().__init__()
-        self.dropout_rate = dropout_rate
         self.ctc_lo = nn.Linear(encoder_output_size, odim)
         self.ignore_nan_grad = ignore_nan_grad
         self.criterion = nn.CTCLoss(reduction="none")
+        self.dropout = nn.Dropout(drop_prob)
         self.reduce = reduce
 
     def forward(self, hs_pad, hlens, ys_pad, ys_lens):
@@ -894,7 +895,7 @@ class CTC(nn.Module):
             ys_lens: batch of lengths of character sequence (B)
         """
         # hs_pad: (B, L, NProj) -> ys_hat: (B, L, Nvocab)
-        ys_hat = self.ctc_lo(F.dropout(hs_pad, p=self.dropout_rate))
+        ys_hat = self.ctc_lo(self.dropout(hs_pad))
 
         # ys_hat: (B, L, D) -> (L, B, D)
         ys_hat = ys_hat.transpose(0, 1)
