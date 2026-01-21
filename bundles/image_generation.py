@@ -50,7 +50,7 @@ class IgProcess(Process):
             real_x=[],
         )
 
-        def set_fid_cls_model():
+        def set_fid_cls_model(**kwargs):
             if self.use_fid_cls_model and not hasattr(self, 'fid_cls_model'):
                 from metrics import image_generation
 

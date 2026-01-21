@@ -244,7 +244,7 @@ def ddp_process_wrap(process: Process):
             )
             super().__init__(dataset, *args, **kwargs)
 
-    class Wrap(process):
+    class DDPProcess(process):
         train_dataloader_ins = DDPDataLoader
         val_dataloader_ins = DDPDataLoader
 
@@ -254,7 +254,7 @@ def ddp_process_wrap(process: Process):
         def init(self):
             super().init()
 
-            def set_ddp():
+            def set_ddp(**kwargs):
                 self.model = torch.nn.parallel.DistributedDataParallel(
                     self.model,
                     device_ids=[local_rank],
@@ -279,7 +279,101 @@ def ddp_process_wrap(process: Process):
                 state_dict = self.model.state_dict()
             return state_dict
 
-    return Wrap
+    return DDPProcess
+
+
+def ds_process_wrap(process: Process):
+    """
+    Usage:
+        xxx.py:
+            @ds_process_wrap
+            class Process():
+                ...
+
+        # !/bin/bash
+        deepspeed --num_gpus=N xxx.py
+
+    """
+    from torch.utils.data import DataLoader
+    import argparse
+    import deepspeed  # pip install deepspeed
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--local_rank', type=int, default=-1)
+    args = parser.parse_args()
+
+    local_rank = args.local_rank
+
+    deepspeed.init_distributed()
+
+    class DDPDataLoader(DataLoader):
+        def __init__(self, dataset, *args, shuffle=True, **kwargs):
+            sampler = torch.utils.data.distributed.DistributedSampler(dataset, shuffle=shuffle)
+            kwargs.update(
+                sampler=sampler,
+                shuffle=False
+            )
+            super().__init__(dataset, *args, **kwargs)
+
+    class DSProcess(process):
+        train_dataloader_ins = DDPDataLoader
+        val_dataloader_ins = DDPDataLoader
+
+        # see https://www.deepspeed.ai/docs/config-json/
+        ds_config: dict = {
+            # "zero_optimization": {
+            #     "stage": 0,
+            #     "contiguous_gradients": True,
+            #     "overlap_comm": True
+            # },
+        }
+
+        def set_device(self):
+            self.device = torch.device(f"cuda:{local_rank}")
+
+        def init(self):
+            super().init()
+
+            def set_ddp(process_kwargs={}, **kwargs):
+                train_dataloader = process_kwargs['train_dataloader']
+                ds_config = self.ds_config
+                ds_config.setdefault('train_micro_batch_size_per_gpu', train_dataloader.batch_size)
+                self.model, self.optimizer, _, self.scheduler = deepspeed.initialize(
+                    args=args,
+                    model=self.model,
+                    optimizer=self.optimizer,
+                    lr_scheduler=self.scheduler,
+                    config=ds_config,
+                )
+
+            self.register_train_start(set_ddp)
+
+        def on_backward(self, loop_objs, accumulate=None, batch_size=None, use_ema=False, use_scaler=False, **kwargs):
+            model_results = loop_objs['model_results']
+            loss = model_results['loss']
+
+            # runs backpropagation
+            self.model.backward(loss)
+
+            # weight update
+            self.model.step()
+
+        def _check_on_train_step_end(self, *arg, **kwargs):
+            if local_rank == 0:
+                super()._check_on_train_step_end(*arg, **kwargs)
+
+        def _check_on_train_epoch_end(self, *arg, **kwargs):
+            if local_rank == 0:
+                super()._check_on_train_epoch_end(*arg, **kwargs)
+
+        def model_state_dict(self):
+            if isinstance(self.model, deepspeed.runtime.engine.DeepSpeedEngine):
+                state_dict = self.model.module.state_dict()
+            else:
+                state_dict = self.model.state_dict()
+            return state_dict
+
+    return DSProcess
 
 
 class ParamsSearch:

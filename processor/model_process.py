@@ -261,7 +261,7 @@ class CheckpointHooks:
 
     def load_state_dict(self, state_dict: dict, include=None, exclude=None, cache=False, **kwargs):
         if self.model_name in state_dict:
-            self.model.load_state_dict(state_dict.pop(self.model_name), strict=False, assign=True)
+            self.model.load_state_dict(state_dict.pop(self.model_name), strict=True, assign=True)
         self._load_state_dict(state_dict, include, exclude, cache)
 
     def _load_state_dict(self, state_dict: dict, include=None, exclude=None, cache=False):
@@ -363,12 +363,10 @@ class ModelHooks:
     early_stopper: Optional
 
     def set_early_stopper(self, check_strategy=EPOCH, **kwargs):
-        from utils.torch_utils import EarlyStopping
-
         if check_strategy == EPOCH:
-            self.early_stopper = EarlyStopping(patience=10, min_period=10, ignore_min_score=0.1, stdout_method=self.log)
+            self.early_stopper = torch_utils.EarlyStopping(patience=10, min_period=10, ignore_min_score=0.1, stdout_method=self.log)
         elif check_strategy == STEP:
-            self.early_stopper = EarlyStopping(patience=10 * 5000, min_period=10 * 5000, ignore_min_score=0.1, stdout_method=self.log)
+            self.early_stopper = torch_utils.EarlyStopping(patience=10 * 5000, min_period=10 * 5000, ignore_min_score=0.1, stdout_method=self.log)
         else:
             raise ValueError(f'{check_strategy} is not supported')
 
@@ -597,8 +595,11 @@ class ModelHooks:
             if val_dataloader is None:
                 val_dataloader = self.get_val_dataloader(data_get_kwargs=val_data_get_kwargs, data_preprocess_kwargs=data_preprocess_kwargs, dataloader_kwargs=val_dataloader_kwargs)
             metric_kwargs.setdefault('val_dataloader', val_dataloader)
-            s = 'epochs' if check_strategy == EPOCH else 'nums'
-            self.log(f'check_strategy = `{check_strategy}`, it will be check the training result in every {check_period} {s}')
+
+            if check_strategy == EPOCH:
+                self.log(f'check_strategy = `{check_strategy}`, it will be check the training result in every {check_period} epochs!')
+            elif check_strategy == STEP:
+                self.log(f'check_strategy = `{check_strategy}`, it will be check the training result in every {check_period} nums, {check_period // batch_size} steps!')
 
         # note, item has name 'xxx', must have name with 'use_xxx' and 'set_xxx' at the same time
         kwargs.setdefault('use_optimizer', True)
@@ -607,13 +608,13 @@ class ModelHooks:
                 if kwargs.get(f'use_{item}'):
                     getattr(self, f'set_{item}')(max_epoch=max_epoch, train_dataloader=train_dataloader, batch_size=batch_size, **kwargs)
 
-        for func, params in self.train_start_container.items():
-            func(**params)
-
         process_kwargs = dict(
             train_dataloader=train_dataloader,
             metric_kwargs=metric_kwargs,
         )
+
+        for func, params in self.train_start_container.items():
+            func(process_kwargs=process_kwargs, **kwargs, **params)
 
         # note, put load_checkpoint at last
         if load_checkpoint:
@@ -840,19 +841,20 @@ class ModelHooks:
         self.log(f'val log: score: {scores}')
         self.set_mode(train=True)
 
-        if hasattr(self, 'stopper'):
+        if hasattr(self, 'early_stopper'):
             score = results[self.model_name]['score']
-            if score > self.stopper.best_score:
+            if score > self.early_stopper.best_score:
                 if not isinstance(max_save_weight_num, int) or max_save_weight_num > 0:
                     self.save_pretrained_checkpoint('best', max_save_weight_num, state_dict)
 
-            loop_objs['end_flag'] = loop_objs['end_flag'] or self.stopper(check_num, score)
+            loop_objs['end_flag'] = loop_objs['end_flag'] or self.early_stopper(check_num, score)
+            self.log(f'Best results observed at period {self.early_stopper.best_period}, and best score is {self.early_stopper.best_score}')
 
     def on_train_end(self, **kwargs):
         for func, params in self.train_end_container.items():
             func(**params)
 
-        for item in ('optimizer', 'stopper', 'scaler'):
+        for item in ('optimizer', 'early_stopper', 'scaler'):
             if hasattr(self, item):
                 delattr(self, item)
 
@@ -977,7 +979,7 @@ class ModelHooks:
         )
 
         for func, params in self.val_start_container.items():
-            func(**params)
+            func(process_kwargs=process_kwargs, **kwargs, **params)
 
         return loop_objs, process_kwargs
 
