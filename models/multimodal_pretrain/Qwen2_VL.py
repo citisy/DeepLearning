@@ -327,10 +327,10 @@ class Model(nn.Module):
 
     def inference(
             self,
-            text_ids, content_generator=True, seq_lens=None, vlm_past_kvs=None,
+            text_ids, generate_content=True, seq_lens=None, vlm_past_kvs=None,
             **decode_kwargs
     ):
-        if content_generator:
+        if generate_content:
             if vlm_past_kvs is None:
                 vlm_past_kvs = self.make_caches()
 

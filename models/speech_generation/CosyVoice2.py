@@ -123,7 +123,7 @@ class Qwen2LM(CosyVoice.TransformerLM):
         out_ids = [[] for _ in range(batch_size)]
         out_lens = torch.zeros(batch_size, device=lm_input.device, dtype=torch.long) + max_len
         eos_flag = [False] * batch_size
-        past_kvs = self.llm.model.make_caches()
+        past_kvs = self.llm.model.decoder.make_caches()
         start_pos = 0
         for i in range(max_len):
             y_pred = self.llm(

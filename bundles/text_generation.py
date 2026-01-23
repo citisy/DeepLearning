@@ -1,13 +1,13 @@
+import copy
 import json
-from pathlib import Path
 from typing import List
 
 import torch
 from torch.nn.utils.rnn import pad_sequence
 
-from data_parse.nl_data_parse.pre_process import bundled
+from data_parse.nl_data_parse.pre_process import bundled, snack
 from processor import BaseDataset, CheckpointHooks, DataHooks, Process, data_process
-from utils import os_lib, torch_utils
+from utils import torch_utils
 from . import text_pretrain
 
 
@@ -409,14 +409,15 @@ class Qwen2Predictor(Process):
 
     def on_predict_reprocess(self, loop_objs, process_results=dict(), **kwargs):
         model_results = loop_objs['model_results']
-        generated_ids = model_results[self.model_name]['generated_ids']
-        per_seq_lens = model_results[self.model_name]['per_seq_lens']
-        texts = self.tokenizer.decode_to_segments(generated_ids)
-        results = [dict(
-            text=text,
-            per_seq_len=per_seq_len
-        ) for text, per_seq_len in zip(texts, per_seq_lens)]
-        process_results.setdefault(self.model_name, []).extend(results)
+        for name, ret in model_results.items():
+            generated_ids = ret['generated_ids']
+            per_seq_lens = ret['per_seq_lens']
+            texts = self.tokenizer.decode_to_segments(generated_ids)
+            results = [dict(
+                text=text,
+                per_seq_len=per_seq_len
+            ) for text, per_seq_len in zip(texts, per_seq_lens)]
+            process_results.setdefault(name, []).extend(results)
 
 
 class Qwen2ForPretrainText(text_pretrain.Qwen2ForPretrainText, Qwen2Predictor):
@@ -518,3 +519,97 @@ class Qwen2ForChatText(text_pretrain.BaseQwen2, text_pretrain.Qwen2Trainer, Qwen
                 accumulate=8*16,
             )
     """
+
+
+class ChatTextTrainDataWithDpo(ChatText):
+    dataset_version = 'simple_dpo_chat_text'
+
+    def get_train_data(self, *args, fn=None, cacher_kwargs=dict(), train_data_num=None, data_loader_kwargs=dict(), **kwargs):
+        from data_parse.nl_data_parse.datasets.SimpleDpoChatText import Loader
+        loader = Loader(self.data_dir, **data_loader_kwargs)
+        iter_data = loader.load(
+            generator=True,
+            fn=fn,
+            max_size=train_data_num
+        )[0]
+        dataset_ins = self.train_dataset_ins
+        return dataset_ins(
+            iter_data,
+            augment_func=self.train_data_augment,
+            cacher_kwargs=cacher_kwargs
+        )
+
+    def train_data_augment(self, ret, train=True) -> dict:
+        ret_ = {}
+        for k in ['chosen', 'rejected']:
+            messages = ret[k]
+            if isinstance(messages, str):
+                messages = json.loads(messages)
+            tmp = self.tokenizer.encode_dialog(messages)
+            tmp['messages'] = messages
+            ret_[k] = tmp
+        return ret_
+
+
+class Qwen2TrainerWithDpo(text_pretrain.Qwen2Trainer):
+    def init(self):
+        super().init()
+
+        def add_dpo(**kwargs):
+            from models.tuning.dpo import ModelWrap
+
+            ref_model = copy.deepcopy(self.model)
+            dpo_wrap = ModelWrap(ref_model, self.model.decode, ref_model.decode)
+            self.model = dpo_wrap.wrap(self.model)
+            self.dpo_wrap = dpo_wrap
+            self.models['dpo'] = ref_model
+
+        self.register_train_start(add_dpo)
+
+    def get_model_train_inputs(self, loop_inputs):
+        segment_ids = []
+        attention_mask = []
+        chosen_idx = []
+
+        for ret in loop_inputs:
+            for k in ['chosen', 'rejected']:
+                segment_ids.append(ret[k]['segment_ids'])
+                seq_lens = ret[k]['seq_lens']
+                per_seq_lens = ret[k]['per_seq_lens']
+                # ignore the first two content
+                valid_segment_tags = [i >= per_seq_lens[0] + per_seq_lens[1] for i in range(seq_lens)]
+                attention_mask.append(valid_segment_tags)
+                chosen_idx.append(k == 'chosen')
+
+        segment_ids = snack.align(
+            segment_ids,
+            max_seq_len=self.tokenizer.max_seq_len,
+            pad_obj=self.tokenizer.pad_id,
+            pad_type=snack.MAX_LEN
+        )
+
+        attention_mask = snack.align(
+            attention_mask,
+            max_seq_len=self.tokenizer.max_seq_len,
+            pad_obj=False,
+            pad_type=snack.MAX_LEN
+        )
+
+        segment_ids = torch.tensor(segment_ids)
+        attention_mask = torch.tensor(attention_mask)
+        text_ids = segment_ids[:, :-1]
+        label_ids = segment_ids.clone()[:, 1:]
+        attention_mask = attention_mask[:, 1:]
+
+        model_inputs = dict(
+            text_ids=text_ids,
+            label_ids=label_ids,
+            attention_mask=attention_mask,
+            chosen_idx=chosen_idx,
+        )
+        model_inputs = torch_utils.Converter.force_to_tensors(model_inputs, self.device)
+        return model_inputs
+
+
+class Qwen2ForChatTextWithDpo(Qwen2ForChatText, Qwen2TrainerWithDpo, ChatTextTrainDataWithDpo):
+    pass

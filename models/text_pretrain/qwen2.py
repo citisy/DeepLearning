@@ -108,9 +108,6 @@ class Model(nn.Module):
         self.embedding = nn.Embedding(self.decoder.vocab_size, self.decoder.hidden_size, self.pad_id)
         self.criterion = nn.CrossEntropyLoss(reduction='mean', ignore_index=self.ignore_id)
 
-    def make_caches(self):
-        return [dict() for _ in range(self.decoder.num_blocks)]
-
     def forward(self, *args, **kwargs):
         if self.training:
             return self.fit(*args, **kwargs)
@@ -118,7 +115,7 @@ class Model(nn.Module):
             return self.inference(*args, **kwargs)
 
     def fit(self, text_ids, label_ids, **decode_kwargs):
-        logits = self.decode(text_ids, past_kvs=self.make_caches(), **decode_kwargs)
+        logits = self.decode(text_ids, past_kvs=self.decoder.make_caches(), **decode_kwargs)
         return dict(
             logits=logits,
             loss=self.loss(logits, label_ids),
@@ -200,6 +197,9 @@ class Decoder(nn.Module):
     def dtype(self):
         return torch_utils.ModuleInfo.possible_dtype(self) if self._dtype is None else self._dtype
 
+    def make_caches(self):
+        return [dict() for _ in range(self.num_blocks)]
+
     def forward(
             self,
             inputs_embeds=None, attention_mask=None,
@@ -207,6 +207,9 @@ class Decoder(nn.Module):
     ):
         if attention_mask is None:
             attention_mask = attentions.make_causal_attention_mask(inputs_embeds, start_pos=start_pos)
+
+        if past_kvs is None:
+            past_kvs = self.make_caches()
 
         hidden_states = inputs_embeds
 
