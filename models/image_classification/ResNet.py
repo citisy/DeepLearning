@@ -2,7 +2,7 @@ import torch
 from torch import nn
 
 from utils import torch_utils, math_utils
-from . import BaseImgClsModel
+from . import BaseImgClsModel, make_backbone_fn
 from .. import bundles
 from ..layers import Conv, Linear, Residual
 
@@ -173,6 +173,7 @@ class Model4Export(Model):
         self.register_buffer('std', std, persistent=False)
 
     def forward(self, x):
+        x = self.pre_process(x)
         x = self.process(x)
         x = x.to(torch.float16)
         return x
@@ -185,6 +186,7 @@ class Model4Export(Model):
         return x
 
 
+@make_backbone_fn.add_register('resnet')
 class Backbone(nn.Sequential):
     def __init__(self, in_ch=3, bias=False, backbone_config=Config.resnet18_backbone, add_block: nn.Module = None, **block_config):
         self.in_channels = in_ch

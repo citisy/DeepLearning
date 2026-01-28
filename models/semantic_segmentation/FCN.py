@@ -3,8 +3,7 @@ from torch import nn
 from torch.nn import functional as F
 from . import BaseSemSegModel
 from ..layers import Conv, Linear, ConvInModule, OutModule, ConvT
-# from ..image_classifier.VGG import Backbone, VGG16_config
-from ..image_classification.ResNet import Backbone, Res50_config, Res101_config
+from ..image_classification.ResNet import Backbone, Config
 from utils.torch_utils import ModuleManager
 
 
@@ -23,7 +22,7 @@ class Model(BaseSemSegModel):
 
         # self.backbone = Backbone(VGG16_config)
         if backbone is None:
-            config = Res50_config[:3]
+            config = Config.resnet50_backbone[:3]
             self.backbone = Backbone(self.input.out_channels, backbone_config=config)
         else:
             self.backbone = backbone

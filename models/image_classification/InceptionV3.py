@@ -1,6 +1,7 @@
 import torch
 from torch import nn
-from ..layers import Conv, Linear, ConvInModule, OutModule, BaseImgClsModel
+from ..layers import Conv, Linear, ConvInModule, OutModule
+from . import BaseImgClsModel
 
 # from torchvision.models.inception.inception_v3
 # (1*1 out_ch, 3*3 in_ch, 3*3 out_ch, 5*5 in_ch, 5*5 out_ch, pool out_ch)
@@ -77,28 +78,28 @@ class Backbone(nn.Sequential):
 
 
 class InceptionB(nn.Module):
-    def __init__(self, in_ch, *out_ches, is_bn=True):
+    def __init__(self, in_ch, *out_ches, is_norm=True):
         super().__init__()
 
         self.in_ch = in_ch
         self.out_ch = out_ches[0] + out_ches[2] + out_ches[4] + out_ches[5]
 
-        self.conv1 = Conv(in_ch, out_ches[0], 1, is_norm=is_bn)
+        self.conv1 = Conv(in_ch, out_ches[0], 1, is_norm=is_norm)
 
         self.conv3 = nn.Sequential(
-            Conv(in_ch, out_ches[1], 1, is_norm=is_bn),
-            Conv(out_ches[1], out_ches[2], 3, is_norm=is_bn),
+            Conv(in_ch, out_ches[1], 1, is_norm=is_norm),
+            Conv(out_ches[1], out_ches[2], 3, is_norm=is_norm),
         )
 
         self.conv5 = nn.Sequential(
-            Conv(in_ch, out_ches[3], 1, is_norm=is_bn),
-            Conv(out_ches[3], out_ches[4], 3, is_norm=is_bn),
-            Conv(out_ches[4], out_ches[4], 3, is_norm=is_bn)
+            Conv(in_ch, out_ches[3], 1, is_norm=is_norm),
+            Conv(out_ches[3], out_ches[4], 3, is_norm=is_norm),
+            Conv(out_ches[4], out_ches[4], 3, is_norm=is_norm)    # different form InceptionA here
         )
 
         self.pool = nn.Sequential(
             nn.MaxPool2d(3, 1, padding=1),
-            Conv(in_ch, out_ches[5], 1, is_norm=is_bn)
+            Conv(in_ch, out_ches[5], 1, is_norm=is_norm)
         )
 
     def forward(self, x):
@@ -115,31 +116,31 @@ class InceptionB(nn.Module):
 
 
 class InceptionC(nn.Module):
-    def __init__(self, in_ch, *out_ches, is_bn=True):
+    def __init__(self, in_ch, *out_ches, is_norm=True):
         super().__init__()
 
         self.in_ch = in_ch
         self.out_ch = out_ches[0] + out_ches[2] + out_ches[4] + out_ches[5]
 
-        self.conv1 = Conv(in_ch, out_ches[0], 1, is_norm=is_bn)
+        self.conv1 = Conv(in_ch, out_ches[0], 1, is_norm=is_norm)
 
         self.conv3 = nn.Sequential(
-            Conv(in_ch, out_ches[1], 1, is_norm=is_bn),
-            Conv(out_ches[1], out_ches[1], (1, 7), is_norm=is_bn),
-            Conv(out_ches[1], out_ches[2], (7, 1), is_norm=is_bn),
+            Conv(in_ch, out_ches[1], 1, is_norm=is_norm),
+            Conv(out_ches[1], out_ches[1], (1, 7), is_norm=is_norm),  # different form InceptionB here
+            Conv(out_ches[1], out_ches[2], (7, 1), is_norm=is_norm),
         )
 
         self.conv5 = nn.Sequential(
-            Conv(in_ch, out_ches[3], 1, is_norm=is_bn),
-            Conv(out_ches[3], out_ches[3], (1, 7), is_norm=is_bn),
-            Conv(out_ches[3], out_ches[3], (7, 1), is_norm=is_bn),
-            Conv(out_ches[3], out_ches[3], (1, 7), is_norm=is_bn),
-            Conv(out_ches[3], out_ches[4], (7, 1), is_norm=is_bn),
+            Conv(in_ch, out_ches[3], 1, is_norm=is_norm),
+            Conv(out_ches[3], out_ches[3], (1, 7), is_norm=is_norm),
+            Conv(out_ches[3], out_ches[3], (7, 1), is_norm=is_norm),  # different form InceptionB here
+            Conv(out_ches[3], out_ches[3], (1, 7), is_norm=is_norm),
+            Conv(out_ches[3], out_ches[4], (7, 1), is_norm=is_norm),
         )
 
         self.pool = nn.Sequential(
             nn.MaxPool2d(3, 1, padding=1),
-            Conv(in_ch, out_ches[5], 1, is_norm=is_bn)
+            Conv(in_ch, out_ches[5], 1, is_norm=is_norm)
         )
 
     def forward(self, x):
@@ -156,28 +157,28 @@ class InceptionC(nn.Module):
 
 
 class InceptionD(nn.Module):
-    def __init__(self, in_ch, *out_ches, is_bn=True):
+    def __init__(self, in_ch, *out_ches, is_norm=True):
         super().__init__()
 
         self.in_ch = in_ch
         self.out_ch = out_ches[0] + out_ches[2] * 2 + out_ches[4] * 2 + out_ches[5]
 
-        self.conv1 = Conv(in_ch, out_ches[0], 1, is_norm=is_bn)
+        self.conv1 = Conv(in_ch, out_ches[0], 1, is_norm=is_norm)
 
-        self.conv3_1 = Conv(in_ch, out_ches[1], 1, is_norm=is_bn)
-        self.conv3_2 = Conv(out_ches[1], out_ches[2], (1, 3), is_norm=is_bn)
-        self.conv3_3 = Conv(out_ches[2], out_ches[2], (3, 1), is_norm=is_bn)
+        self.conv3_1 = Conv(in_ch, out_ches[1], 1, is_norm=is_norm)
+        self.conv3_2 = Conv(out_ches[1], out_ches[2], (1, 3), is_norm=is_norm)
+        self.conv3_3 = Conv(out_ches[2], out_ches[2], (3, 1), is_norm=is_norm)
 
         self.conv5_1 = nn.Sequential(
-            Conv(in_ch, out_ches[3], 1, is_norm=is_bn),
-            Conv(out_ches[3], out_ches[4], 3, is_norm=is_bn),
+            Conv(in_ch, out_ches[3], 1, is_norm=is_norm),
+            Conv(out_ches[3], out_ches[4], 3, is_norm=is_norm),
         )
-        self.conv5_2 = Conv(out_ches[4], out_ches[4], (1, 3), is_norm=is_bn)
-        self.conv5_3 = Conv(out_ches[4], out_ches[4], (3, 1), is_norm=is_bn)
+        self.conv5_2 = Conv(out_ches[4], out_ches[4], (1, 3), is_norm=is_norm)
+        self.conv5_3 = Conv(out_ches[4], out_ches[4], (3, 1), is_norm=is_norm)
 
         self.pool = nn.Sequential(
             nn.MaxPool2d(3, 1, padding=1),
-            Conv(in_ch, out_ches[5], 1, is_norm=is_bn)
+            Conv(in_ch, out_ches[5], 1, is_norm=is_norm)
         )
 
     def forward(self, x):

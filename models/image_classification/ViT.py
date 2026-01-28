@@ -2,7 +2,7 @@ import torch
 from torch import nn
 
 from utils import torch_utils
-from . import BaseImgClsModel
+from . import BaseImgClsModel, make_backbone_fn
 from .. import bundles
 from ..text_pretrain.transformers import TransformerSequential
 from .. import attentions, embeddings
@@ -117,6 +117,7 @@ class Model(BaseImgClsModel):
         )
 
 
+@make_backbone_fn.add_register('ViT')
 class Backbone(nn.Module):
     def __init__(self, in_ch=3, input_size=256, embed_dim=1024,
                  patch_size=32, ff_hidden_size=2048, depth=6, heads=8, drop_prob=0.1,

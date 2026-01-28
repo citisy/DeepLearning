@@ -5,7 +5,7 @@ from torch import nn, Tensor
 import torch.nn.functional as F
 from ..layers import Conv, Linear, ConvInModule
 from . import cls_nms
-from ..image_classification import GetBackbone
+from ..image_classification import make_backbone_fn
 from utils.torch_utils import ModuleManager
 
 in_module_config = dict(
@@ -62,9 +62,16 @@ class Model(nn.Module):
         if backbone is None:
             # note that, if use `torch.cuda.amp.autocast(True)`, it would become slower
             # it is the problem with torchvision.models.mobilenet
-            self.backbone = GetBackbone.get_mobilenet_v2()
+            from torchvision.models.mobilenet import MobileNetV2
+
+            backbone = MobileNetV2(**backbone_config).features
+            backbone.out_channels = 1280
+            self.backbone = backbone
         elif isinstance(backbone, str):
-            self.backbone = GetBackbone.get_one(backbone, backbone_config)
+            from ..image_classification import init_register
+
+            init_register()
+            self.backbone = make_backbone_fn.get(backbone)(**backbone_config)
         else:
             self.backbone = backbone
 

@@ -1,17 +1,21 @@
+import warnings
+
 from torch import nn
-import torch.nn.functional as F
-from utils.torch_utils import ModuleManager
 from ..layers import ConvInModule, Linear, OutModule
+from utils import op_utils
+
+make_backbone_fn = op_utils.RegisterTables()
 
 
 class BaseImgClsModel(nn.Module):
-    """a template to make a image classifier model by yourself"""
+    """a template to make an image classifier model"""
 
     def __init__(
             self,
             in_ch=3, input_size=None, out_features=None,
             in_module=None, backbone=None, neck=None, head=None, out_module=None,
-            backbone_in_ch=None, backbone_input_size=None, head_hidden_features=1000, drop_prob=0.4
+            backbone_in_ch=None, backbone_input_size=None, head_hidden_features=1000, drop_prob=0.1,
+            is_multi_label=False
     ):
         super().__init__()
 
@@ -31,8 +35,10 @@ class BaseImgClsModel(nn.Module):
             Linear(self.backbone.out_channels, head_hidden_features, mode='dla', drop_prob=drop_prob),
             out_module or OutModule(out_features, in_features=head_hidden_features)
         )
-
-        ModuleManager.initialize_layers(self)
+        if is_multi_label:
+            self.criterion = nn.BCEWithLogitsLoss()
+        else:
+            self.criterion = nn.CrossEntropyLoss()
 
     def forward(self, *args, **kwargs):
         if self.training:
@@ -57,68 +63,29 @@ class BaseImgClsModel(nn.Module):
         return x
 
     def loss(self, pred_label, true_label):
-        return F.cross_entropy(pred_label, true_label)
+        """
+        Args:
+            pred_label: (b, n_features) in [-inf, +inf] without activation
+            true_label:
+                if multi_label: (b, n_labels) in {0, 1}
+                if not multi_label: (b, ) in {0, 1, ..., n_labels-1}
+
+        """
+        return self.criterion(pred_label, true_label)
 
 
-class GetBackbone:
-    @classmethod
-    def get_one(cls, name='ResNet', default_config=dict()):
-        backbones = {
-            'Vgg': cls.get_vgg,
-            'ResNet': cls.get_resnet,
-            'MobileNet': cls.get_mobilenet,
-            'MobileNetV2': cls.get_mobilenet_v2
-        }
+def init_register():
+    import os
+    import glob
 
-        return backbones[name](default_config)
+    __all__ = []
+    modules = glob.glob(os.path.dirname(__file__) + "/*.py")
 
-    @staticmethod
-    def get_resnet(default_config=dict()):
-        # from torchvision.models.resnet import BasicBlock, ResNet as Model
-        # model = Model(BasicBlock, [2, 2, 2, 2])
-        # backbone = ...   # todo
-        # backbone.out_channels = 1280
-
-        from .ResNet import Backbone, Res34_config
-
-        default_config = default_config or dict(backbone_config=Res34_config)
-        backbone = Backbone(**default_config)
-        return backbone
-
-    @staticmethod
-    def get_resnet50():
-        from .ResNet import Backbone, Res50_config
-
-        backbone = Backbone(**Res50_config)
-        return backbone
-
-    @staticmethod
-    def get_resnet101():
-        from .ResNet import Backbone, Res101_config
-
-        backbone = Backbone(**Res101_config)
-        return backbone
-
-    @staticmethod
-    def get_mobilenet(default_config=dict()):
-        from .MobileNetV1 import Backbone, default_config as config
-
-        default_config = default_config or dict(backbone_config=config)
-        backbone = Backbone(**default_config)
-        return backbone
-
-    @staticmethod
-    def get_mobilenet_v2(default_config=dict()):
-        from torchvision.models.mobilenet import MobileNetV2 as Model
-
-        backbone = Model(**default_config).features
-        backbone.out_channels = 1280
-        return backbone
-
-    @staticmethod
-    def get_vgg(default_config=dict()):
-        from .VGG import Backbone, VGG19_config
-
-        default_config = default_config or dict(backbone_config=VGG19_config)
-        backbone = Backbone(**default_config)
-        return backbone
+    for module in modules:
+        module_name = os.path.basename(module)[:-3]
+        if module_name != '__init__':
+            try:
+                exec(f"from .{module_name} import *")
+                __all__.append(module_name)
+            except Exception as e:
+                warnings.warn(f"import {module_name} error: {e}")

@@ -93,27 +93,27 @@ class Backbone(nn.Module):
 
 
 class InceptionA(nn.Module):
-    def __init__(self, in_ch, *out_ches, is_bn=True):
+    def __init__(self, in_ch, *out_ches, is_norm=True):
         super().__init__()
 
         self.in_ch = in_ch
         self.out_ch = out_ches[0] + out_ches[2] + out_ches[4] + out_ches[5]
 
-        self.conv1 = Conv(in_ch, out_ches[0], 1, is_norm=is_bn)
+        self.conv1 = Conv(in_ch, out_ches[0], 1, is_norm=is_norm)
 
         self.conv3 = nn.Sequential(
-            Conv(in_ch, out_ches[1], 1, is_norm=is_bn),
-            Conv(out_ches[1], out_ches[2], 3, is_norm=is_bn),
+            Conv(in_ch, out_ches[1], 1, is_norm=is_norm),
+            Conv(out_ches[1], out_ches[2], 3, is_norm=is_norm),
         )
 
         self.conv5 = nn.Sequential(
-            Conv(in_ch, out_ches[3], 1, is_norm=is_bn),
-            Conv(out_ches[3], out_ches[4], 5, is_norm=is_bn)
+            Conv(in_ch, out_ches[3], 1, is_norm=is_norm),
+            Conv(out_ches[3], out_ches[4], 5, is_norm=is_norm)
         )
 
         self.pool = nn.Sequential(
             nn.MaxPool2d(3, 1, padding=1),
-            Conv(in_ch, out_ches[5], 1, is_norm=is_bn)
+            Conv(in_ch, out_ches[5], 1, is_norm=is_norm)
         )
 
     def forward(self, x):
