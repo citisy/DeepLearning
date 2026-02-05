@@ -452,7 +452,7 @@ class Qwen2ForChatText(text_pretrain.BaseQwen2, text_pretrain.Qwen2Trainer, Qwen
             )['text']
             # '大模型是一种计算机视觉模型，它能够模拟人类视觉感知，能够识别和理解图像中的物体、形状、颜色等特征，并能够进行分类、识别、预测等任务。大模型可以用于图像识别、自然语言处理、计算机视觉等领域。'
 
-            past_kvs = process.model.make_caches()
+            past_kvs = process.model.decoder.make_caches()
 
             # Custom management kv caches
             # first usage

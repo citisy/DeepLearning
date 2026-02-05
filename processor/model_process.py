@@ -371,9 +371,9 @@ class ModelHooks:
 
     def set_early_stopper(self, check_strategy=EPOCH, **kwargs):
         if check_strategy == EPOCH:
-            self.early_stopper = torch_utils.EarlyStopping(patience=10, min_period=10, ignore_min_score=0.1, stdout_method=self.log)
+            self.early_stopper = torch_utils.EarlyStopping(patience=10, min_period=10, ignore_min_score=0.001, stdout_method=self.log)
         elif check_strategy == STEP:
-            self.early_stopper = torch_utils.EarlyStopping(patience=10 * 5000, min_period=10 * 5000, ignore_min_score=0.1, stdout_method=self.log)
+            self.early_stopper = torch_utils.EarlyStopping(patience=10 * 5000, min_period=10 * 5000, ignore_min_score=0.001, stdout_method=self.log)
         else:
             raise ValueError(f'{check_strategy} is not supported')
 
@@ -402,6 +402,7 @@ class ModelHooks:
 
     def set_scaler(self, **kwargs):
         # todo, don't use for bfloat16
+        # todo, AssertionError: No inf checks were recorded for this optimizer.
         self.scaler = torch.cuda.amp.GradScaler(enabled=True)
         self.log('Successfully init scaler!')
 
@@ -587,10 +588,12 @@ class ModelHooks:
             loop_objs.setdefault(c, 0)
 
         if init_weight:
+            strict = False
             if torch_utils.ModuleInfo.possible_device(self.model) == torch.device('meta'):
                 # todo, some buffers set to zero also, required to reinit them
                 self.model.to_empty(device=self.device)
-            torch_utils.ModuleManager.initialize_layers(self.model)
+                strict = True   # note, force to initialize with strict mode, to avoid some layers not initialized when loading model with meta mode
+            torch_utils.ModuleManager.initialize_layers(self.model, strict=strict)
             self.model.to(self.device)
 
         metric_kwargs = metric_kwargs.copy()

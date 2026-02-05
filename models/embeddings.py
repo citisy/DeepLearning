@@ -177,13 +177,16 @@ class RotaryEmbedding(nn.Module):
         self.register_buffer('div_term', div_term, persistent=False)
 
     def make_weights(self, seq_len):
-        position = torch.arange(0, seq_len).to(self.div_term)
-        # equal to
-        # freqs = torch.einsum("...n,d->...nd", position, self.div_term)
-        freqs = torch.outer(position, self.div_term)
+        device = self.div_term.device
+        # Force float32 (see https://github.com/huggingface/transformers/pull/29285)
+        with torch.autocast(device_type=device.type, dtype=torch.float32):
+            position = torch.arange(0, seq_len).to(self.div_term)
+            # equal to
+            # freqs = torch.einsum("...n,d->...nd", position, self.div_term)
+            freqs = torch.outer(position, self.div_term)
 
-        weights = torch.polar(torch.ones_like(freqs), freqs)
-        return weights
+            weights = torch.polar(torch.ones_like(freqs), freqs)
+            return weights
 
     def forward(self, x, start_pos=0, weights=None, **kwargs):
         """x: (b s n d)

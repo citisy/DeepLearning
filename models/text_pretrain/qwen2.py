@@ -152,6 +152,7 @@ class Decoder(nn.Module):
             vocab_size=151936,
             hidden_size=3584, ff_hidden_size=18944,
             num_heads=28, num_blocks=28, num_kv_heads=4,
+            rot_theta=1000000.0,
             use_checkpoint=False
     ):
         super().__init__()
@@ -161,7 +162,7 @@ class Decoder(nn.Module):
         self.num_blocks = num_blocks
         self.num_heads = num_heads
 
-        self.rot_embedding = RotaryEmbedding(hidden_size // num_heads, theta=1000000.0)
+        self.rot_embedding = RotaryEmbedding(hidden_size // num_heads, theta=rot_theta)
 
         self.blocks = transformers.TransformerSequential(
             hidden_size, num_heads, ff_hidden_size,
@@ -240,17 +241,19 @@ class Decoder(nn.Module):
 
 class RotaryEmbedding(embeddings.RotaryEmbedding):
     def make_weights(self, seq_len):
-        position_ids = torch.arange(0, seq_len, device=self.div_term.device).float()[None]
-        inv_freq_expanded = self.div_term[None, :, None].float().expand(position_ids.shape[0], -1, 1)
-        position_ids_expanded = position_ids[:, None, :].float()
+        device = self.div_term.device
         # Force float32 (see https://github.com/huggingface/transformers/pull/29285)
-        freqs = (inv_freq_expanded.float() @ position_ids_expanded.float()).transpose(1, 2)
-        emb = torch.cat((freqs, freqs), dim=-1)
-        cos = emb.cos()[:, :, None, :]
-        sin = emb.sin()[:, :, None, :]
-        return cos, sin
+        with torch.autocast(device_type=device.type, dtype=torch.float32):
+            position_ids = torch.arange(0, seq_len, device=device)[None]
+            inv_freq_expanded = self.div_term[None, :, None].expand(position_ids.shape[0], -1, 1)
+            position_ids_expanded = position_ids[:, None, :]
+            freqs = (inv_freq_expanded.float() @ position_ids_expanded.float()).transpose(1, 2)
+            emb = torch.cat((freqs, freqs), dim=-1)
+            cos = emb.cos()[:, :, None, :]
+            sin = emb.sin()[:, :, None, :]
+            return cos, sin
 
-    def forward(self, x, start_pos=0, weights=None):
+    def forward(self, x, start_pos=0, weights=None, **kwargs):
         """x: (b s n d)
         y_{d-1} = x_{d-1}cos(w_{d/2}) - x_{d}sin(w_{d/2}), d in {1,3,5,...}
         y_{d} = x_{d}cos(w_{d/2}) + x_{d-1}sin(w_{d/2}), d in {2,4,6,...}
@@ -259,13 +262,13 @@ class RotaryEmbedding(embeddings.RotaryEmbedding):
             weights = self.make_weights(x.shape[1])
 
         cos, sin = weights
-        cos = cos.to(x)
-        sin = sin.to(x)
+        # cos = cos.to(x)
+        # sin = sin.to(x)
         s = x.shape[1]
         cos = cos[:, start_pos:start_pos + s, :, :]
         sin = sin[:, start_pos:start_pos + s, :, :]
 
-        _x = x
+        _x = x.type_as(cos)
         y = (_x * cos) + (self.rotate_half(_x) * sin)
         return y.type_as(x)
 
@@ -280,7 +283,7 @@ class QwenSdpaAttention(nn.Module):
     """cross attention"""
 
     def __init__(self, n_heads=None, model_dim=None, head_dim=None, n_kv_heads=None,
-                 drop_prob=0., attend=None, out_layer=None, **fn_kwargs):
+                 drop_prob=0.1, attend=None, out_layer=None, **fn_kwargs):
         super().__init__()
         n_heads, model_dim, head_dim = attentions.get_attention_input(n_heads, model_dim, head_dim)
         query_dim = model_dim
@@ -299,7 +302,7 @@ class QwenSdpaAttention(nn.Module):
         self.view_out = Rearrange('b n s dk -> b s (n dk)')
         self.to_out = Linear(model_dim, query_dim, mode='l', bias=False, **fn_kwargs) if out_layer is None else out_layer
 
-        self.attend = QwenSdpaAttendWrapper() if attend is None else attend
+        self.attend = QwenSdpaAttendWrapper(drop_prob=drop_prob) if attend is None else attend
 
     def forward(self, q, k=None, v=None, attention_mask=None, **attend_kwargs):
         q, k, v = attentions.get_qkv(q, k, v)

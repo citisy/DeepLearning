@@ -851,25 +851,32 @@ class Qwen2Trainer(Process):
         return iter_data
 
     def get_model_train_inputs(self, loop_inputs):
-        segment_ids = []
+        text_ids = []
+        label_ids = []
 
         for ret in loop_inputs:
-            segment_ids.append(ret['segment_ids'])
+            segment_ids = ret['segment_ids']
+            text_ids.append(segment_ids)
+            label_ids.append(segment_ids[1:])
 
-        segment_ids = snack.align(
-            segment_ids,
+        text_ids = snack.align(
+            text_ids,
             max_seq_len=self.tokenizer.max_seq_len,
             pad_obj=self.tokenizer.pad_id,
-            pad_type=snack.MAX_LEN
+            # pad_type=snack.MAX_LEN
         )
-        segment_ids = torch_utils.Converter.force_to_tensors(segment_ids, self.device)
-        text_ids = segment_ids[:, :-1]
-        label_ids = segment_ids.clone()[:, 1:]
-        label_ids[label_ids == self.tokenizer.pad_id] = -100  # set ignore id
+        label_ids = snack.align(
+            label_ids,
+            max_seq_len=self.tokenizer.max_seq_len,
+            end_obj=self.tokenizer.pad_id,
+            pad_obj=self.tokenizer.pad_id,
+            # pad_type=snack.MAX_LEN
+        )
         model_inputs = dict(
             text_ids=text_ids,
             label_ids=label_ids,
         )
+        model_inputs = torch_utils.Converter.force_to_tensors(model_inputs, self.device)
         return model_inputs
 
     def on_train_step(self, loop_objs, model_kwargs=dict(), **kwargs) -> dict:

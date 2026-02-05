@@ -16,12 +16,12 @@ make_attend_fn = op_utils.RegisterTables()
 
 def get_attention_input(n_heads=None, model_dim=None, head_dim=None):
     if n_heads and model_dim:
-        assert model_dim % n_heads == 0
+        assert model_dim % n_heads == 0, f'model_dim must be divisible by n_heads, where n_heads={n_heads}, model_dim={model_dim}'
         head_dim = model_dim // n_heads
     elif n_heads and head_dim:
         model_dim = n_heads * head_dim
     elif model_dim and head_dim:
-        assert model_dim % head_dim == 0
+        assert model_dim % head_dim == 0, f'head_dim must be divisible by n_heads, where n_heads={n_heads}, head_dim={head_dim}'
         n_heads = model_dim // head_dim
     else:
         raise ValueError('Must set two of [n_heads, model_dim, head_dim] at the same time')
@@ -283,7 +283,7 @@ class CrossAttention3D(nn.Module):
 
     def __init__(
             self, n_heads=None, model_dim=None, head_dim=None, query_dim=None, context_dim=None,
-            use_conv=True, separate=True, drop_prob=0., attend=None, out_layer=None,
+            use_conv=True, separate=True, drop_prob=0.1, attend=None, out_layer=None,
             qkv_fn_kwargs=dict(), out_fn_kwargs=dict(), **fn_kwargs
     ):
         super().__init__()
@@ -414,7 +414,7 @@ class ScaleAttend(nn.Module):
     """Scaled Dot-Product Attention
     attn(q, k, v) = softmax(qk'/sqrt(dk))*v"""
 
-    def __init__(self, drop_prob=0., **kwargs):
+    def __init__(self, drop_prob=0.1, **kwargs):
         super().__init__()
         self.dropout = nn.Dropout(drop_prob)
 
@@ -440,7 +440,7 @@ class ScaleAttend(nn.Module):
 
 @make_attend_fn.add_register()
 class ScaleAttendWithXformers(nn.Module):
-    def __init__(self, drop_prob=0., **kwargs):
+    def __init__(self, drop_prob=0.1, **kwargs):
         super().__init__()
         # faster and less memory
         # requires pytorch > 2.0
@@ -554,7 +554,7 @@ class FlashAttend(nn.Module):
     ```
     """
 
-    def __init__(self, drop_prob=0.):
+    def __init__(self, drop_prob=0.1):
         super().__init__()
         from packaging import version
         assert version.parse(torch.__version__) >= version.parse("2.0.0")

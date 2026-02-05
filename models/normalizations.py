@@ -26,6 +26,9 @@ class RMSNorm(nn.Module):
         self.eps = eps
         self.channel_first = channel_first
 
+    def initialize_layers(self):
+        self.weight.data.fill_(1.)
+
     def _norm(self, x):
         """norm(x) = x / \\sqrt{\\mean{x^2} + e}"""
         # same to
