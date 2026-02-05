@@ -10,27 +10,51 @@ from .. import attentions, embeddings
 
 class Config(bundles.Config):
     backbone_B_16 = dict(
-        in_ch=3,
-        input_size=224,
-        embed_dim=768,
         patch_size=16,
-        ff_hidden_size=3072,
         depth=12,
         heads=8,
-        dropout=0.1,
-        emb_dropout=0.1
+        embed_dim=768,
+        ff_hidden_size=3072,
     )
 
     backbone_B_16_H_12 = dict(
-        in_ch=3,
-        input_size=224,
-        embed_dim=768,
         patch_size=16,
-        ff_hidden_size=3072,
         depth=12,
         heads=12,
-        dropout=0.1,
-        emb_dropout=0.1
+        embed_dim=768,
+        ff_hidden_size=3072,
+    )
+
+    backbone_B_32 = dict(
+        patch_size=32,
+        depth=12,
+        heads=12,
+        embed_dim=768,
+        ff_hidden_size=3072,
+    )
+
+    backbone_L_16 = dict(
+        patch_size=16,
+        depth=24,
+        heads=16,
+        embed_dim=1024,
+        ff_hidden_size=4096,
+    )
+
+    backbone_L_32 = dict(
+        patch_size=32,
+        depth=24,
+        heads=16,
+        embed_dim=1024,
+        ff_hidden_size=4096,
+    )
+
+    backbone_H_14 = dict(
+        patch_size=14,
+        depth=32,
+        heads=16,
+        embed_dim=1280,
+        ff_hidden_size=5120,
     )
 
     default_model = 'B_16'
@@ -59,8 +83,33 @@ class WeightConverter:
         return state_dict
 
     @classmethod
+    def from_torchvision(cls, state_dict):
+        """see also `torchvision.models.vision_transformer`"""
+        convert_dict = {
+            'class_token': 'backbone.embedding.cls',
+            'conv_proj': 'backbone.embedding.patch.fn.0',
+            'encoder.pos_embedding': 'backbone.embedding.position.weight',
+            'encoder.layers.encoder_layer_{0}.ln_1': 'backbone.encoder.{0}.attn_res.norm',
+            'encoder.layers.encoder_layer_{0}.self_attention.in_proj_': 'backbone.encoder.{0}.attn_res.fn.to_qkv.',
+            'encoder.layers.encoder_layer_{0}.self_attention.out_proj': 'backbone.encoder.{0}.attn_res.fn.to_out.linear',
+            'encoder.layers.encoder_layer_{0}.ln_2': 'backbone.encoder.{0}.ff_res.norm',
+            'encoder.layers.encoder_layer_{0}.mlp.linear_1': 'backbone.encoder.{0}.ff_res.fn.0.linear',
+            'encoder.layers.encoder_layer_{0}.mlp.linear_2': 'backbone.encoder.{0}.ff_res.fn.1.linear',
+            'encoder.ln': 'backbone.final_norm',
+            'heads.head': 'head.0'
+        }
+
+        state_dict = torch_utils.Converter.convert_keys(state_dict, convert_dict)
+        state_dict['backbone.embedding.cls'] = state_dict['backbone.embedding.cls'][0, 0]
+        state_dict['backbone.embedding.position.weight'] = state_dict['backbone.embedding.position.weight'][0]
+        return state_dict
+
+    @classmethod
     def from_modelscope(cls, state_dict):
-        """https://modelscope.cn/models/iic/cv_vit-base_image-classification_Dailylife-labels/summary"""
+        """
+        - https://modelscope.cn/models/iic/cv_vit-base_image-classification_ImageNet-labels/summary
+        - https://modelscope.cn/models/iic/cv_vit-base_image-classification_Dailylife-labels/summary
+        """
         convert_dict = {
             'backbone.cls_token': 'backbone.embedding.cls',
             'backbone.pos_embed': 'backbone.embedding.position.weight',
@@ -95,7 +144,7 @@ class Model(BaseImgClsModel):
 
     def __init__(
             self,
-            out_features, in_ch=3, input_size=256,
+            out_features, in_ch=3, input_size=224,
             out_module=None, backbone_config=Config.backbone_B_16, **kwargs
     ):
         backbone_config.setdefault('in_ch', in_ch)
@@ -119,9 +168,11 @@ class Model(BaseImgClsModel):
 
 @make_backbone_fn.add_register('ViT')
 class Backbone(nn.Module):
-    def __init__(self, in_ch=3, input_size=256, embed_dim=1024,
-                 patch_size=32, ff_hidden_size=2048, depth=6, heads=8, drop_prob=0.1,
-                 **kwargs):
+    def __init__(
+            self, in_ch=3, input_size=224, embed_dim=768,
+            patch_size=16, ff_hidden_size=3072, depth=12, heads=8, drop_prob=0.1,
+            **kwargs
+    ):
         super().__init__()
 
         self.in_ch = in_ch

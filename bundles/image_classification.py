@@ -27,7 +27,7 @@ def _load_images(images, b, start_idx, end_idx):
 
 
 class ClsProcess(Process):
-    multi_classifier = False
+    is_multi_label = False
 
     def get_model_inputs(self, loop_inputs, train=True):
         images = [torch.from_numpy(ret.pop('image')).to(self.device, non_blocking=True, dtype=torch.float) for ret in loop_inputs]
@@ -73,7 +73,7 @@ class ClsProcess(Process):
         for name, model in self.models.items():
             outputs = model(**inputs)
             model_pred = outputs['pred']
-            if self.multi_classifier:
+            if self.is_multi_label:
                 preds = []
                 argsort = model_pred.argsort(descending=True)
                 for arg in argsort:
@@ -103,12 +103,12 @@ class ClsProcess(Process):
 
         for name, results in model_results.items():
             vis_rets = []
-            for i in range(n):
+            for i in range(min(n, len(loop_inputs))):
                 ret = loop_inputs[i]
                 _p = results['preds'][i]
                 _id = Path(ret['_id'])
                 vis_rets.append(dict(
-                    _id=f'{_id.stem}({ret["_class"]}_{_p}){_id.suffix}',
+                    _id=f'({ret["_class"]}_{_p})_{_id.name}',
                     image=ret['ori_image']
                 ))
 
@@ -137,7 +137,7 @@ class ClsProcess(Process):
         preds.extend(_preds)
         if hasattr(self, 'classes'):
             classes = ret.setdefault('classes', [])
-            if self.multi_classifier:
+            if self.is_multi_label:
                 _classes = [[self.classes[p] for p in pred] for pred in _preds]
             else:
                 _classes = [self.classes[pred] for pred in _preds]
@@ -239,7 +239,7 @@ class ImageNet(DataHooks):
 
             loader = Loader(self.data_dir)
             loader.on_end_filter = filter_func
-            iter_data = loader(set_type=DataRegister.VAL, image_type=DataRegister.PATH, generator=False)[0]
+            iter_data = loader.load(set_type=DataRegister.VAL, image_type=DataRegister.PATH, generator=False)[0]
             iter_data = list(map(convert_func, iter_data))
 
             return iter_data
@@ -255,6 +255,8 @@ class ImageNet(DataHooks):
     val_aug = scale.LetterBox()
 
     post_aug = Apply([
+        channel.Keep3Dims(),
+        channel.Keep3Channels(),
         channel.BGR2RGB(),
         pixel_perturbation.MinMax(),
         pixel_perturbation.Normalize(
@@ -623,7 +625,7 @@ class Vit_ImageNet_Pretrained(ViT_ImageNet):
     """
     out_features = 1296
     config_version = 'B_16_H_12'
-    multi_classifier = True
+    is_multi_label = True
 
     val_aug = scale.RuderLetterBox(
         mid_dst=256,
