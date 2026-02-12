@@ -103,6 +103,7 @@ class Process(
         'for marking the base model',
         "self.default_model_path = f'{self.work_dir}/{self.model_name}.pth'"
     ] = 'model'
+    local_rank: int = 0
 
     @classmethod
     def help(cls):
@@ -233,8 +234,6 @@ def ddp_process_wrap(process: Process):
     """
     from torch.utils.data import DataLoader
 
-    local_rank = torch_utils.init_distributed_mode()
-
     class DDPDataLoader(DataLoader):
         def __init__(self, dataset, *args, shuffle=True, **kwargs):
             sampler = torch.utils.data.distributed.DistributedSampler(dataset, shuffle=shuffle)
@@ -245,11 +244,12 @@ def ddp_process_wrap(process: Process):
             super().__init__(dataset, *args, **kwargs)
 
     class DDPProcess(process):
+        local_rank = torch_utils.init_distributed_mode()
         train_dataloader_ins = DDPDataLoader
         val_dataloader_ins = DDPDataLoader
 
         def set_device(self):
-            self.device = torch.device(f"cuda:{local_rank}")
+            self.device = torch.device(f"cuda:{self.local_rank}")
 
         def init(self):
             super().init()
@@ -257,19 +257,24 @@ def ddp_process_wrap(process: Process):
             def set_ddp(**kwargs):
                 self.model = torch.nn.parallel.DistributedDataParallel(
                     self.model,
-                    device_ids=[local_rank],
-                    output_device=local_rank,
+                    device_ids=[self.local_rank],
+                    output_device=self.local_rank,
                     # static_graph=True
                 )
 
             self.register_train_start(set_ddp)
 
+        def init_logs(self):
+            # todo, make sure whether use logger in the sub process?
+            if self.local_rank == 0:
+                super().init_logs()
+
         def _check_on_train_step_end(self, *arg, **kwargs):
-            if local_rank == 0:
+            if self.local_rank == 0:
                 super()._check_on_train_step_end(*arg, **kwargs)
 
         def _check_on_train_epoch_end(self, *arg, **kwargs):
-            if local_rank == 0:
+            if self.local_rank == 0:
                 super()._check_on_train_epoch_end(*arg, **kwargs)
 
         def model_state_dict(self):
@@ -302,8 +307,6 @@ def ds_process_wrap(process: Process):
     parser.add_argument('--local_rank', type=int, default=-1)
     args = parser.parse_args()
 
-    local_rank = args.local_rank
-
     deepspeed.init_distributed()
 
     class DDPDataLoader(DataLoader):
@@ -316,6 +319,7 @@ def ds_process_wrap(process: Process):
             super().__init__(dataset, *args, **kwargs)
 
     class DSProcess(process):
+        local_rank = args.local_rank
         train_dataloader_ins = DDPDataLoader
         val_dataloader_ins = DDPDataLoader
 
@@ -329,7 +333,7 @@ def ds_process_wrap(process: Process):
         }
 
         def set_device(self):
-            self.device = torch.device(f"cuda:{local_rank}")
+            self.device = torch.device(f"cuda:{self.local_rank}")
 
         def init(self):
             super().init()
@@ -348,6 +352,11 @@ def ds_process_wrap(process: Process):
 
             self.register_train_start(set_ddp)
 
+        def init_logs(self):
+            # todo, make sure whether use logger in the sub process?
+            if self.local_rank == 0:
+                super().init_logs()
+
         def on_backward(self, loop_objs, accumulate=None, batch_size=None, use_ema=False, use_scaler=False, **kwargs):
             model_results = loop_objs['model_results']
             loss = model_results['loss']
@@ -359,11 +368,11 @@ def ds_process_wrap(process: Process):
             self.model.step()
 
         def _check_on_train_step_end(self, *arg, **kwargs):
-            if local_rank == 0:
+            if self.local_rank == 0:
                 super()._check_on_train_step_end(*arg, **kwargs)
 
         def _check_on_train_epoch_end(self, *arg, **kwargs):
-            if local_rank == 0:
+            if self.local_rank == 0:
                 super()._check_on_train_epoch_end(*arg, **kwargs)
 
         def model_state_dict(self):

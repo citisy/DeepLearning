@@ -292,7 +292,7 @@ class CheckpointHooks:
 
     pretrained_checkpoint: str
 
-    def load_pretrained_checkpoint(self, raw_tensors=True, **kwargs) -> dict:
+    def load_pretrained_checkpoint(self, raw_tensors=True, load_additional_checkpoint=True, **kwargs) -> dict:
         if hasattr(self, 'pretrained_checkpoint'):
             pretrained_checkpoint = self.pretrained_checkpoint
             if not os.path.exists(pretrained_checkpoint):
@@ -300,7 +300,7 @@ class CheckpointHooks:
             pretrained_checkpoint = Path(pretrained_checkpoint)
             return self.load(
                 str(pretrained_checkpoint),
-                additional_path=f'{pretrained_checkpoint.parent}/{pretrained_checkpoint.stem}.additional.pth',
+                additional_path=f'{pretrained_checkpoint.parent}/{pretrained_checkpoint.stem}.additional.pth' if load_additional_checkpoint else None,
                 save_type=WEIGHT,
                 raw_tensors=raw_tensors,
                 **kwargs
@@ -313,7 +313,7 @@ class ModelHooks:
     trace: bundled.LogHooks.trace
     log: bundled.LogHooks.log
     log_trace: bundled.LogHooks.log_trace
-    device: Optional[str]
+    device: Optional[str | torch.device]
     register_save_checkpoint: CheckpointHooks.register_save_checkpoint
     state_dict: CheckpointHooks.state_dict
     save_pretrained_checkpoint: CheckpointHooks.save_pretrained_checkpoint
@@ -332,9 +332,9 @@ class ModelHooks:
         self.val_start_container: List[list] = []
         self.val_end_container: List[list] = []
 
-        def _load_checkpoint(load_checkpoint=False, loop_objs=None, **kwargs):
+        def _load_checkpoint(load_checkpoint=False, loop_objs=None, load_additional_checkpoint=True, **kwargs):
             if load_checkpoint:
-                state_dict = self.load_pretrained_checkpoint()
+                state_dict = self.load_pretrained_checkpoint(load_additional_checkpoint=load_additional_checkpoint)
                 loop_objs.update(state_dict.get('loop_objs', {}))
 
         self.register_train_start(_load_checkpoint)
@@ -403,7 +403,8 @@ class ModelHooks:
     def set_scaler(self, **kwargs):
         # todo, don't use for bfloat16
         # todo, AssertionError: No inf checks were recorded for this optimizer.
-        self.scaler = torch.cuda.amp.GradScaler(enabled=True)
+        self.scaler = torch.amp.GradScaler(self.device.type, enabled=True)
+        self.scaler.max_norm = 10.0
         self.log('Successfully init scaler!')
 
     def model_info(self, **kwargs):
@@ -412,15 +413,6 @@ class ModelHooks:
         s, infos = ModuleInfo.std_profile(self.model, **kwargs)
         self.log(s)
         return infos
-
-    def model_visual(self):
-        """https://github.com/spfrommer/torchexplorer
-        sudo apt-get install libgraphviz-dev graphviz
-        pip install torchexplorer
-        todo: there are some bugs, for example, do not support dict type output. Find another better visual tool.
-        """
-        import torchexplorer
-        torchexplorer.watch(self.model, log=['io', 'params'], disable_inplace=True, backend='standalone')
 
     @overload
     def fit(
@@ -453,9 +445,13 @@ class ModelHooks:
 
             # every epoch or every step to run training check, like saving checkpoint, run the metric step, etc
             check_strategy: str = EPOCH,
+            check_period_trace: str | tuple = (bundled.LOGGING, bundled.WANDB),
 
-            init_weight=False,
-            load_checkpoint=False,
+            init_weight: bool = False,
+            load_checkpoint: bool = False,
+
+            # only work on `load_checkpoint=True`
+            load_additional_checkpoint: bool = True,
 
             # for `metric()`
             is_metric: bool = True,
@@ -475,6 +471,8 @@ class ModelHooks:
 
             # if True, while occur nan output, training will be stopped
             ignore_non_loss: bool = False,
+
+            step_end_log: str | tuple = 'pbar',
 
             # the value is
             # None,
@@ -592,7 +590,7 @@ class ModelHooks:
             if torch_utils.ModuleInfo.possible_device(self.model) == torch.device('meta'):
                 # todo, some buffers set to zero also, required to reinit them
                 self.model.to_empty(device=self.device)
-                strict = True   # note, force to initialize with strict mode, to avoid some layers not initialized when loading model with meta mode
+                strict = True  # note, force to initialize with strict mode, to avoid some layers not initialized when loading model with meta mode
             torch_utils.ModuleManager.initialize_layers(self.model, strict=strict)
             self.model.to(self.device)
 
@@ -652,6 +650,7 @@ class ModelHooks:
             self.register_logger('pbar', pbar.set_postfix)
 
             loop_objs['max_epoch_steps'] = len(train_dataloader)
+            # todo, load cur_epoch_nums from checkpoint
             for loop_inputs in pbar:
                 loop_objs.update(
                     loop_inputs=loop_inputs,
@@ -709,7 +708,7 @@ class ModelHooks:
     def _backward(self, use_scaler=False):
         if use_scaler:
             self.scaler.unscale_(self.optimizer)  # unscale gradients
-            torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=10.0)  # clip gradients
+            torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=self.scaler.max_norm)  # clip gradients
             self.scaler.step(self.optimizer)  # optimizer.step
             self.scaler.update()
         else:
@@ -718,9 +717,10 @@ class ModelHooks:
         self.optimizer.zero_grad()
 
     def on_train_step_end(
-            self, loop_objs, more_log=False, ignore_non_loss=False,
-            use_scheduler=False, scheduler_strategy=EPOCH,
-            check_strategy=EPOCH, **kwargs
+            self, loop_objs,
+            more_log=False, ignore_non_loss=False, step_end_log='pbar',
+            use_scheduler=False, scheduler_strategy=EPOCH, check_strategy=EPOCH,
+            **kwargs
     ) -> bool:
         loop_inputs = loop_objs['loop_inputs']
         model_results = loop_objs['model_results']
@@ -755,7 +755,7 @@ class ModelHooks:
             **losses,
             'lr': self.optimizer.param_groups[0]['lr'],
             **mem_info
-        }, 'pbar')
+        }, step_end_log)
 
         if use_scheduler and scheduler_strategy == STEP:
             self.scheduler.step()
@@ -773,36 +773,44 @@ class ModelHooks:
             self._check_on_train_epoch_end(loop_objs, **kwargs)
         return loop_objs.get('end_flag', False)  # cancel the training when end_flag is True
 
-    def _check_on_train_step_end(self, loop_objs, check_period=None, batch_size=None, max_save_weight_num=None, is_metric=True, max_epoch=None, **kwargs):
+    def _check_on_train_step_end(
+            self, loop_objs,
+            batch_size=None, max_save_weight_num=None, is_metric=True, max_epoch=None,
+            check_period=None, check_period_trace=(bundled.LOGGING, bundled.WANDB),
+            **kwargs
+    ):
         total_nums = loop_objs['total_nums']
         cur_epoch = loop_objs['epoch']
         cur_epoch_steps = loop_objs['cur_epoch_steps'] - 1  # cur_epoch_steps will be increased before the check
         max_epoch_steps = loop_objs['max_epoch_steps']
         if (check_period and total_nums % check_period < batch_size) or (cur_epoch == max_epoch - 1 and cur_epoch_steps == max_epoch_steps - 1):
-            self.trace({'total_nums': total_nums}, (bundled.LOGGING, bundled.WANDB))
+            self.trace({'total_nums': total_nums}, check_period_trace)
 
-            state_dict = self._check_train(loop_objs, max_save_weight_num, total_nums, **kwargs)
+            state_dict = self._check_train(loop_objs, max_save_weight_num, total_nums, check_period_trace=check_period_trace, **kwargs)
             if is_metric:
-                self._check_metric(loop_objs, state_dict, total_nums, max_save_weight_num, **kwargs)
+                self._check_metric(loop_objs, state_dict, total_nums, max_save_weight_num, check_period_trace=check_period_trace, **kwargs)
 
-            self.log_trace(bundled.LOGGING)
-            self.log_trace(bundled.WANDB)
+            self.log_trace(check_period_trace)
 
-    def _check_on_train_epoch_end(self, loop_objs, check_period=None, max_save_weight_num=None, is_metric=True, max_epoch=None, **kwargs):
+    def _check_on_train_epoch_end(
+            self, loop_objs,
+            max_save_weight_num=None, is_metric=True, max_epoch=None,
+            check_period=None, check_period_trace=(bundled.LOGGING, bundled.WANDB),
+            **kwargs
+    ):
         cur_epoch = loop_objs['epoch'] - 1  # cur_epoch will be increased before the check
         cur_epoch_steps = loop_objs['cur_epoch_steps'] - 1  # cur_epoch_steps will be increased before the check
         max_epoch_steps = loop_objs['max_epoch_steps']
-        self.trace({'epoch': cur_epoch}, (bundled.LOGGING, bundled.WANDB))
+        self.trace({'epoch': cur_epoch}, check_period_trace)
 
         if (check_period and cur_epoch % check_period == check_period - 1) or (cur_epoch == max_epoch - 1 and cur_epoch_steps == max_epoch_steps - 1):
             state_dict = self._check_train(loop_objs, max_save_weight_num, cur_epoch, **kwargs)
             if is_metric:
                 self._check_metric(loop_objs, state_dict, cur_epoch, max_save_weight_num, **kwargs)
 
-        self.log_trace(bundled.LOGGING)
-        self.log_trace(bundled.WANDB)
+        self.log_trace(check_period_trace)
 
-    def _check_train(self, loop_objs, max_save_weight_num, check_num, **kwargs):
+    def _check_train(self, loop_objs, max_save_weight_num, check_num, check_period_trace=(bundled.LOGGING, bundled.WANDB), **kwargs):
         """
 
         Args:
@@ -818,7 +826,7 @@ class ModelHooks:
         losses = loop_objs.get('losses')
         if losses is not None:
             for k, v in losses.items():
-                self.trace({f'loss/{k}': v}, (bundled.LOGGING, bundled.WANDB))
+                self.trace({f'loss/{k}': v}, check_period_trace)
                 if np.isnan(v) or np.isinf(v):
                     loop_objs['end_flag'] = True
                     self.log(f'Train will be stop soon, got {v} value from {k}')
@@ -831,7 +839,7 @@ class ModelHooks:
         last_check_time = loop_objs.get('last_check_time')
         if last_check_time is not None:
             now = time.time()
-            self.trace({'time_consume': (now - last_check_time) / 60}, (bundled.LOGGING, bundled.WANDB))
+            self.trace({'time_consume': (now - last_check_time) / 60}, check_period_trace)
             loop_objs['last_check_time'] = now
 
         state_dict = self.state_dict()
@@ -845,7 +853,7 @@ class ModelHooks:
 
         return state_dict
 
-    def _check_metric(self, loop_objs, state_dict, check_num, max_save_weight_num, metric_kwargs=dict(), **kwargs):
+    def _check_metric(self, loop_objs, state_dict, check_num, max_save_weight_num, metric_kwargs=dict(), check_period_trace=(bundled.LOGGING, bundled.WANDB), **kwargs):
         results = self.metric(epoch=loop_objs['epoch'], total_nums=loop_objs['total_nums'], **metric_kwargs)
         scores = {}
         for name, result in results.items():
@@ -853,7 +861,8 @@ class ModelHooks:
                 if k.startswith('score'):
                     scores[f'val_score/{name}.{k}'] = v
 
-        self.trace(scores, bundled.WANDB)
+        self.trace(scores, check_period_trace)
+        # no log when check_period is epoch, log here again specially
         self.log(f'val log: score: {scores}')
         self.set_mode(train=True)
 

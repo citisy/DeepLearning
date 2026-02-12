@@ -883,7 +883,7 @@ class Qwen2Trainer(Process):
         loop_inputs = loop_objs['loop_inputs']
         model_inputs = self.get_model_inputs(loop_inputs, train=True)
 
-        with torch.amp.autocast(device_type=str(self.device), dtype=torch.bfloat16):
+        with torch.amp.autocast(device_type=self.device.type, dtype=torch.bfloat16):
             output = self.model(**model_inputs)
 
         return output

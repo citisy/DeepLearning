@@ -60,6 +60,9 @@ class LogHooks:
     def init_wandb(self):
         if self.use_wandb:
             try:
+                # note, can replace wandb to swanlab now
+                # import swanlab
+                # wandb = swanlab
                 import wandb
             except ImportError:
                 wandb = log_utils.FakeWandb()
@@ -73,8 +76,9 @@ class LogHooks:
         self.register_train_start(self._wandb_init)
         self.register_train_end(wandb.finish)
 
-    def _wandb_init(self, *args, **kwargs):
+    def _wandb_init(self, *args, wandb_api_key=None, **kwargs):
         # only init wandb runner before training
+        self.wandb.login(api_key=wandb_api_key)
         wandb_run = self.wandb.init(
             project=self.model_version,
             name=self.dataset_version,
