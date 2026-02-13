@@ -112,7 +112,7 @@ class ClsProcess(Process):
                     image=ret['ori_image']
                 ))
 
-            DataVisualizer(f'{self.cache_dir}/{loop_objs["epoch"]}/{name}', verbose=False, pbar=False)(vis_rets)
+            DataVisualizer(f'{self.cache_dir}/{self.counter.cur_period}/{name}', verbose=False, pbar=False)(vis_rets)
             self.get_log_trace(bundled.WANDB).setdefault(f'val_image/{name}', []).extend(
                 [self.wandb.Image(cv2.cvtColor(ret['image'], cv2.COLOR_BGR2RGB), caption=ret['_id']) for ret in vis_rets]
             )

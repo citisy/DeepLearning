@@ -259,7 +259,7 @@ class WGAN(GanProcess):
         self.optimizer.optimizer_d.zero_grad()
 
         # note that, to avoid G so strong, training G once while training D iter_gap times
-        if 0 < loop_objs['total_nums'] < 1000 or loop_objs['total_nums'] % 20000 < batch_size:
+        if 0 < self.counter.cur_nums < 1000 or self.counter.cur_nums % 20000 < batch_size:
             iter_gap = 3000
         else:
             iter_gap = 150

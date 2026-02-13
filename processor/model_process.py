@@ -12,7 +12,7 @@ from tqdm import tqdm
 
 from utils import configs, converter, log_utils, os_lib, torch_utils, visualize
 from . import bundled, data_process
-
+from functools import partial
 MODEL = 'model'
 WEIGHT = 'weight'
 SAFETENSORS = 'safetensors'
@@ -178,7 +178,7 @@ class CheckpointHooks:
             'date': datetime.now().isoformat()
         }
 
-        for name in ('optimizer', 'stopper', 'counters', 'wandb_id'):
+        for name in ('optimizer', 'stopper', 'counter', 'wandb_id'):
             if hasattr(self, name):
                 var = getattr(self, name)
                 if hasattr(var, 'state_dict'):
@@ -292,7 +292,7 @@ class CheckpointHooks:
 
     pretrained_checkpoint: str
 
-    def load_pretrained_checkpoint(self, raw_tensors=True, load_additional_checkpoint=True, **kwargs) -> dict:
+    def load_pretrained_checkpoint(self, raw_tensors=True, **kwargs) -> dict:
         if hasattr(self, 'pretrained_checkpoint'):
             pretrained_checkpoint = self.pretrained_checkpoint
             if not os.path.exists(pretrained_checkpoint):
@@ -300,7 +300,7 @@ class CheckpointHooks:
             pretrained_checkpoint = Path(pretrained_checkpoint)
             return self.load(
                 str(pretrained_checkpoint),
-                additional_path=f'{pretrained_checkpoint.parent}/{pretrained_checkpoint.stem}.additional.pth' if load_additional_checkpoint else None,
+                additional_path=f'{pretrained_checkpoint.parent}/{pretrained_checkpoint.stem}.additional.pth',
                 save_type=WEIGHT,
                 raw_tensors=raw_tensors,
                 **kwargs
@@ -332,12 +332,20 @@ class ModelHooks:
         self.val_start_container: List[list] = []
         self.val_end_container: List[list] = []
 
-        def _load_checkpoint(load_checkpoint=False, loop_objs=None, load_additional_checkpoint=True, **kwargs):
+        def _load_checkpoint(
+                load_checkpoint=False, load_checkpoint_include=None, load_checkpoint_exclude=None,
+                **kwargs
+        ):
             if load_checkpoint:
-                state_dict = self.load_pretrained_checkpoint(load_additional_checkpoint=load_additional_checkpoint)
-                loop_objs.update(state_dict.get('loop_objs', {}))
+                state_dict = self.load_pretrained_checkpoint(include=load_checkpoint_include, exclude=load_checkpoint_exclude)
 
-        self.register_train_start(_load_checkpoint)
+        self.register_train_start(_load_checkpoint, 'load_checkpoint')
+        self.register_val_start(partial(_load_checkpoint, exclude=['optimizer']), 'load_checkpoint')
+
+    counter: torch_utils.Counter
+
+    def set_counter(self):
+        self.counter = torch_utils.Counter()
 
     model: nn.Module
 
@@ -450,18 +458,12 @@ class ModelHooks:
             init_weight: bool = False,
             load_checkpoint: bool = False,
 
-            # only work on `load_checkpoint=True`
-            load_additional_checkpoint: bool = True,
-
             # for `metric()`
             is_metric: bool = True,
             metric_kwargs: dict = dict(),
 
             # for model run
             model_kwargs: dict = dict(),
-
-            # which vars will be recorded when training
-            _counters: Optional[tuple] = ('cur_epoch_nums',),
 
             # num for accumulate if not None
             accumulate: int = None,
@@ -563,8 +565,6 @@ class ModelHooks:
     def register_train_end(self, func, name=None, insert_idx=-1, **kwargs):
         self.register_container(self.train_end_container, func, name, insert_idx, **kwargs)
 
-    counters_keys = ['epoch', 'total_nums', 'total_steps', 'check_nums']
-
     def on_train_start(
             self, batch_size=None, max_epoch=None,
             train_dataloader=None, val_dataloader=None, check_period=None, check_strategy=EPOCH,
@@ -582,8 +582,8 @@ class ModelHooks:
             last_check_time=time.time(),
         )
 
-        for c in self.counters_keys:
-            loop_objs.setdefault(c, 0)
+        self.counter.reset()
+        self.counter.check_strategy = check_strategy
 
         if init_weight:
             strict = False
@@ -644,12 +644,12 @@ class ModelHooks:
         max_epoch = kwargs['max_epoch']
         train_dataloader = kwargs['train_dataloader']
 
-        for i in range(loop_objs['epoch'], max_epoch):
+        for i in range(self.counter.cur_epoch, max_epoch):
             self.on_train_epoch_start(loop_objs, **kwargs)
             pbar = tqdm(train_dataloader, desc=visualize.TextVisualize.highlight_str(f'Train {i}/{max_epoch}'))
             self.register_logger('pbar', pbar.set_postfix)
 
-            loop_objs['max_epoch_steps'] = len(train_dataloader)
+            self.counter.total_epoch_steps = len(train_dataloader)
             # todo, load cur_epoch_nums from checkpoint
             for loop_inputs in pbar:
                 loop_objs.update(
@@ -670,9 +670,8 @@ class ModelHooks:
             if self.on_train_epoch_end(loop_objs, **kwargs):
                 break
 
-    def on_train_epoch_start(self, loop_objs, _counters=('cur_epoch_nums', 'cur_epoch_steps'), **kwargs):
-        for c in _counters:
-            loop_objs[c] = 0
+    def on_train_epoch_start(self, loop_objs, **kwargs):
+        self.counter.reset_epoch()
 
     def on_train_step_start(self, loop_objs, **kwargs):
         pass
@@ -697,7 +696,7 @@ class ModelHooks:
             loss.backward()
 
         if accumulate:
-            if loop_objs['total_nums'] % accumulate < batch_size:
+            if self.counter.cur_nums % accumulate < batch_size:
                 self._backward(use_scaler)
         else:
             self._backward(use_scaler)
@@ -725,11 +724,7 @@ class ModelHooks:
         loop_inputs = loop_objs['loop_inputs']
         model_results = loop_objs['model_results']
 
-        loop_objs['total_nums'] += len(loop_inputs)
-        loop_objs['total_steps'] += 1
-        loop_objs['cur_epoch_steps'] += 1
-        loop_objs['cur_epoch_nums'] += len(loop_inputs)
-        loop_objs['check_nums'] += len(loop_inputs)
+        self.counter.update_step(len(loop_inputs))
 
         losses = {}
         for k, v in model_results.items():
@@ -742,7 +737,7 @@ class ModelHooks:
                     # count mean losses from each check period
                     loop_objs[n] = loop_objs.get(n, 0) + v
                     losses[k] = v
-                    losses[f'mean_{k}'] = loop_objs[n] / loop_objs['check_nums']
+                    losses[f'mean_{k}'] = loop_objs[n] / self.counter.cur_period_nums
 
         loop_objs['losses'] = losses
 
@@ -766,7 +761,7 @@ class ModelHooks:
         return loop_objs.get('end_flag', False)  # cancel the training when end_flag is True
 
     def on_train_epoch_end(self, loop_objs, use_scheduler=False, scheduler_strategy=EPOCH, check_strategy=EPOCH, **kwargs) -> bool:
-        loop_objs['epoch'] += 1
+        self.counter.update_epoch()
         if use_scheduler and scheduler_strategy == EPOCH:
             self.scheduler.step()
         if check_strategy == EPOCH:
@@ -779,16 +774,15 @@ class ModelHooks:
             check_period=None, check_period_trace=(bundled.LOGGING, bundled.WANDB),
             **kwargs
     ):
-        total_nums = loop_objs['total_nums']
-        cur_epoch = loop_objs['epoch']
-        cur_epoch_steps = loop_objs['cur_epoch_steps'] - 1  # cur_epoch_steps will be increased before the check
-        max_epoch_steps = loop_objs['max_epoch_steps']
-        if (check_period and total_nums % check_period < batch_size) or (cur_epoch == max_epoch - 1 and cur_epoch_steps == max_epoch_steps - 1):
-            self.trace({'total_nums': total_nums}, check_period_trace)
+        if (
+                (check_period and self.counter.cur_nums % check_period < batch_size)
+                or (self.counter.cur_epoch == max_epoch - 1 and self.counter.cur_epoch_steps == self.counter.total_epoch_steps)
+        ):
+            self.trace({'total_nums': self.counter.cur_nums}, check_period_trace)
 
-            state_dict = self._check_train(loop_objs, max_save_weight_num, total_nums, check_period_trace=check_period_trace, **kwargs)
+            state_dict = self._check_train(loop_objs, max_save_weight_num, self.counter.cur_nums, check_period_trace=check_period_trace, **kwargs)
             if is_metric:
-                self._check_metric(loop_objs, state_dict, total_nums, max_save_weight_num, check_period_trace=check_period_trace, **kwargs)
+                self._check_metric(loop_objs, state_dict, self.counter.cur_nums, max_save_weight_num, check_period_trace=check_period_trace, **kwargs)
 
             self.log_trace(check_period_trace)
 
@@ -798,12 +792,12 @@ class ModelHooks:
             check_period=None, check_period_trace=(bundled.LOGGING, bundled.WANDB),
             **kwargs
     ):
-        cur_epoch = loop_objs['epoch'] - 1  # cur_epoch will be increased before the check
-        cur_epoch_steps = loop_objs['cur_epoch_steps'] - 1  # cur_epoch_steps will be increased before the check
-        max_epoch_steps = loop_objs['max_epoch_steps']
+        cur_epoch = self.counter.cur_epoch - 1  # cur_epoch will be increased before the check
         self.trace({'epoch': cur_epoch}, check_period_trace)
-
-        if (check_period and cur_epoch % check_period == check_period - 1) or (cur_epoch == max_epoch - 1 and cur_epoch_steps == max_epoch_steps - 1):
+        if (
+                (check_period and cur_epoch % check_period == check_period - 1)
+                or (cur_epoch == max_epoch - 1 and self.counter.cur_epoch_steps == self.counter.total_epoch_steps)
+        ):
             state_dict = self._check_train(loop_objs, max_save_weight_num, cur_epoch, **kwargs)
             if is_metric:
                 self._check_metric(loop_objs, state_dict, cur_epoch, max_save_weight_num, **kwargs)
@@ -831,8 +825,9 @@ class ModelHooks:
                     loop_objs['end_flag'] = True
                     self.log(f'Train will be stop soon, got {v} value from {k}')
 
+            # reset check vars each check period
+            self.counter.reset_period()
             for k in loop_objs:
-                # reset check vars each check period
                 if k.startswith('check_'):
                     loop_objs[k] = 0
 
@@ -843,7 +838,6 @@ class ModelHooks:
             loop_objs['last_check_time'] = now
 
         state_dict = self.state_dict()
-        state_dict['loop_objs'] = {c: loop_objs[c] for c in self.counters_keys}
 
         if not isinstance(max_save_weight_num, int):  # None
             self.save_pretrained_checkpoint('last', max_save_weight_num, state_dict)
@@ -854,7 +848,7 @@ class ModelHooks:
         return state_dict
 
     def _check_metric(self, loop_objs, state_dict, check_num, max_save_weight_num, metric_kwargs=dict(), check_period_trace=(bundled.LOGGING, bundled.WANDB), **kwargs):
-        results = self.metric(epoch=loop_objs['epoch'], total_nums=loop_objs['total_nums'], **metric_kwargs)
+        results = self.metric(**metric_kwargs)
         scores = {}
         for name, result in results.items():
             for k, v in result.items():
@@ -988,13 +982,7 @@ class ModelHooks:
 
         loop_objs = dict(
             vis_num=0,
-            epoch=epoch,
-            total_nums=total_nums
         )
-
-        if load_checkpoint:
-            state_dict = self.load_pretrained_checkpoint(exclude=['optimizer'])
-            loop_objs.update(state_dict.get('loop_objs', {}))
 
         self.set_mode(train=False)
 
@@ -1065,6 +1053,7 @@ class ModelHooks:
         total = total or (isinstance(objs[0], (list, tuple)) and len(objs[0])) or 1
         if vis_pbar:
             pbar = tqdm(total=total, desc=visualize.TextVisualize.highlight_str('Predict'))
+            self.register_logger('predict_pbar', pbar.update)
         for i in range(0, total, batch_size):
             start_idx = i
             end_idx = min(i + batch_size, total)
@@ -1079,8 +1068,7 @@ class ModelHooks:
             )
             self.on_predict_reprocess(loop_objs, **kwargs)
             self.on_predict_step_end(loop_objs, **kwargs)
-            if vis_pbar:
-                pbar.update(end_idx - start_idx)
+            self.log(end_idx - start_idx, 'predict_pbar')
 
         return self.on_predict_end(loop_objs, **kwargs)
 
@@ -1096,15 +1084,15 @@ class ModelHooks:
             vis_num=0
         )
 
-        if load_checkpoint:
-            state_dict = self.load_pretrained_checkpoint(exclude=['optimizer'])
-            loop_objs.update(state_dict.get('loop_objs', {}))
-
         self.set_mode(train=False)
 
         process_kwargs = dict(
             process_results=dict(),
         )
+
+        for name, func, params in self.val_start_container:
+            func(process_kwargs=process_kwargs, **kwargs, **params)
+
         return loop_objs, process_kwargs
 
     def gen_predict_inputs(self, *objs, start_idx=None, end_idx=None, **kwargs) -> List[dict]:

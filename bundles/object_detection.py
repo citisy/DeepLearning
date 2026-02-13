@@ -165,7 +165,7 @@ class OdProcess(Process):
                 vis_preds.append(pred)
 
             cls_alias = self.__dict__.get('cls_alias')
-            cache_image = DataVisualizer(f'{self.cache_dir}/{loop_objs["epoch"]}/{name}', verbose=False, pbar=False)(
+            cache_image = DataVisualizer(f'{self.cache_dir}/{self.counter.cur_period}/{name}', verbose=False, pbar=False)(
                 vis_trues, vis_preds, return_image=True, cls_alias=cls_alias
             )
             self.get_log_trace(bundled.WANDB).setdefault(f'val_image/{name}', []).extend(

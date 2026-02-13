@@ -159,6 +159,7 @@ class Process(
 
         self.set_device()
         self.set_tokenizer()
+        self.set_counter()
 
         if not hasattr(self, 'model') or self.model is None:
             self.set_model()

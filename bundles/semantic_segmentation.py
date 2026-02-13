@@ -149,7 +149,7 @@ class SegProcess(Process):
                     image=pred_image
                 ))
 
-            visualizer = DataVisualizer(f'{self.cache_dir}/{loop_objs.get("epoch", "")}/{name}', verbose=False, pbar=False)
+            visualizer = DataVisualizer(f'{self.cache_dir}/{self.counter.cur_period}/{name}', verbose=False, pbar=False)
             cache_image = visualizer(vis_trues, vis_preds, return_image=True)
             self.get_log_trace(bundled.WANDB).setdefault(f'val_image/{name}', []).extend(
                 [self.wandb.Image(cv2.cvtColor(img, cv2.COLOR_BGR2RGB), caption=Path(str(r['_id'])).stem)
