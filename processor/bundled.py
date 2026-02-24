@@ -61,8 +61,7 @@ class LogHooks:
         if self.use_wandb:
             try:
                 # note, can replace wandb to swanlab now
-                # import swanlab
-                # wandb = swanlab
+                # import swanlab as wandb
                 import wandb
             except ImportError:
                 wandb = log_utils.FakeWandb()

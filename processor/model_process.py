@@ -13,6 +13,7 @@ from tqdm import tqdm
 from utils import configs, converter, log_utils, os_lib, torch_utils, visualize
 from . import bundled, data_process
 from functools import partial
+
 MODEL = 'model'
 WEIGHT = 'weight'
 SAFETENSORS = 'safetensors'
@@ -261,7 +262,7 @@ class CheckpointHooks:
 
     def load_state_dict(self, state_dict: dict, include=None, exclude=None, cache=False, **kwargs):
         if self.model_name in state_dict:
-            self.model.load_state_dict(state_dict.pop(self.model_name), strict=True, assign=True)
+            self.model.load_state_dict(state_dict.pop(self.model_name), strict=True, assign=torch_utils.ModuleInfo.possible_device(self.model) == torch.device('meta'))
         self._load_state_dict(state_dict, include, exclude, cache)
 
     def _load_state_dict(self, state_dict: dict, include=None, exclude=None, cache=False):
@@ -573,9 +574,13 @@ class ModelHooks:
             **kwargs
     ):
         assert self.models, 'model list is empty, it seems that you have not init the processor first, perhaps run `processor.init()` first?'
-        assert batch_size, 'please set batch_size'
-        assert max_epoch, 'please set max_epoch'
+        assert batch_size, 'please set `batch_size`'
+        assert max_epoch, 'please set `max_epoch`'
         self.log(f'{batch_size = }')
+        if check_strategy == EPOCH:
+            self.log(f'check_strategy = `{check_strategy}`, it will be check the training result in every {check_period} epochs!')
+        elif check_strategy == STEP:
+            self.log(f'check_strategy = `{check_strategy}`, it will be check the training result in every {check_period} nums, {check_period // batch_size} steps!')
 
         loop_objs = dict(
             end_flag=False,
@@ -585,38 +590,35 @@ class ModelHooks:
         self.counter.reset()
         self.counter.check_strategy = check_strategy
 
-        if init_weight:
-            strict = False
-            if torch_utils.ModuleInfo.possible_device(self.model) == torch.device('meta'):
-                # todo, some buffers set to zero also, required to reinit them
+        is_meta = torch_utils.ModuleInfo.possible_device(self.model) == torch.device('meta')
+        if init_weight or is_meta:
+            if not init_weight:
+                self.log(f'Found `init_weight=False`, but found the weight of model is meta also, force to init it before, otherwise will cause some except bugs!', level=logging.WARNING)
+            if is_meta:
                 self.model.to_empty(device=self.device)
-                strict = True  # note, force to initialize with strict mode, to avoid some layers not initialized when loading model with meta mode
-            torch_utils.ModuleManager.initialize_layers(self.model, strict=strict)
+            torch_utils.ModuleManager.initialize_layers(
+                self.model,
+                strict=is_meta  # note, force to initialize with strict mode, to avoid some layers not initialized when loading model with meta mode
+            )
             self.model.to(self.device)
-
-        metric_kwargs = metric_kwargs.copy()
-        metric_kwargs.setdefault('batch_size', batch_size)
-        val_data_get_kwargs = configs.ConfigObjParse.merge_dict(data_get_kwargs, metric_kwargs.get('data_get_kwargs', dict()))
-        val_dataloader_kwargs = configs.ConfigObjParse.merge_dict(dataloader_kwargs, metric_kwargs.get('dataloader_kwargs', dict()))
-        val_dataloader_kwargs['batch_size'] = metric_kwargs['batch_size']
-        metric_kwargs.update(
-            data_get_kwargs=val_data_get_kwargs,
-            dataloader_kwargs=val_data_get_kwargs,
-        )
 
         dataloader_kwargs.setdefault('batch_size', batch_size)
         if train_dataloader is None:
             train_dataloader = self.get_train_dataloader(data_get_kwargs=data_get_kwargs, data_preprocess_kwargs=data_preprocess_kwargs, dataloader_kwargs=dataloader_kwargs)
 
         if is_metric:
+            metric_kwargs = metric_kwargs.copy()
+            metric_kwargs.setdefault('batch_size', batch_size)
+            val_data_get_kwargs = configs.ConfigObjParse.merge_dict(data_get_kwargs, metric_kwargs.get('data_get_kwargs', dict()))
+            val_dataloader_kwargs = configs.ConfigObjParse.merge_dict(dataloader_kwargs, metric_kwargs.get('dataloader_kwargs', dict()))
+            val_dataloader_kwargs['batch_size'] = metric_kwargs['batch_size']
+            metric_kwargs.update(
+                data_get_kwargs=val_data_get_kwargs,
+                dataloader_kwargs=val_data_get_kwargs,
+            )
             if val_dataloader is None:
                 val_dataloader = self.get_val_dataloader(data_get_kwargs=val_data_get_kwargs, data_preprocess_kwargs=data_preprocess_kwargs, dataloader_kwargs=val_dataloader_kwargs)
             metric_kwargs.setdefault('val_dataloader', val_dataloader)
-
-            if check_strategy == EPOCH:
-                self.log(f'check_strategy = `{check_strategy}`, it will be check the training result in every {check_period} epochs!')
-            elif check_strategy == STEP:
-                self.log(f'check_strategy = `{check_strategy}`, it will be check the training result in every {check_period} nums, {check_period // batch_size} steps!')
 
         # note, item has name 'xxx', must have name with 'use_xxx' and 'set_xxx' at the same time
         kwargs.setdefault('use_optimizer', True)
@@ -973,7 +975,7 @@ class ModelHooks:
     def register_val_end(self, func, name=None, insert_idx=-1, **kwargs):
         self.register_container(self.val_end_container, func, name, insert_idx, **kwargs)
 
-    def on_val_start(self, val_data=None, val_dataloader=None, batch_size=None, load_checkpoint=False, data_get_kwargs=dict(), dataloader_kwargs=dict(), epoch=-1, total_nums=-1, **kwargs):
+    def on_val_start(self, val_data=None, val_dataloader=None, batch_size=None, data_get_kwargs=dict(), dataloader_kwargs=dict(), epoch=-1, total_nums=-1, **kwargs):
         assert self.models, 'model list is empty, it seems that you have not init the processor first, perhaps run `processor.init()` first?'
         assert batch_size, 'please set batch_size'
         dataloader_kwargs.setdefault('batch_size', batch_size)
@@ -1077,7 +1079,7 @@ class ModelHooks:
         """Tear large inputs to pieces for prediction, and then, merge the results and restore them"""
         raise NotImplementedError
 
-    def on_predict_start(self, load_checkpoint=False, **kwargs):
+    def on_predict_start(self, **kwargs):
         assert self.models, 'model list is empty, it seems that you have not init the processor first, perhaps run `processor.init()` first?'
 
         loop_objs = dict(
