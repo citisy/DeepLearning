@@ -6,7 +6,7 @@ from utils import torch_utils
 
 
 class ModelWrap:
-    """
+    """Direct Preference Optimization(DPO)
     References:
         paper:
             - [Direct Preference Optimization: Your Language Model is Secretly a Reward Model](https://arxiv.org/pdf/2305.18290)
@@ -20,8 +20,8 @@ class ModelWrap:
             model_wrap.wrap(model)
 
             # define your train step
-            opti = ...
-            model(data)
+            ...
+            out = model(data)
             ...
     """
 
@@ -60,20 +60,19 @@ class ModelWrap:
         logps = (logps * attention_mask).sum(dim=1) / seq_lengths.squeeze()
         return logps
 
+    def dewrap(self):
+        raise NotImplementedError
+
 
 class DpoLoss(nn.Module):
     def forward(self, policy_chosen_logps, policy_rejected_logps, ref_chosen_logps, ref_rejected_logps, beta=0.1):
-        pi_logratios = policy_chosen_logps - policy_rejected_logps
-        ref_logratios = ref_chosen_logps - ref_rejected_logps
+        policy_loss = policy_chosen_logps - policy_rejected_logps
+        ref_loss = ref_chosen_logps - ref_rejected_logps
 
-        loss = -F.logsigmoid(beta * (pi_logratios - ref_logratios)).mean()
-
-        # only for logging
-        loss_chosen = beta * (policy_chosen_logps - ref_chosen_logps).detach().mean()
-        loss_rejected = beta * (policy_rejected_logps - ref_rejected_logps).detach().mean()
+        loss = -F.logsigmoid(beta * (policy_loss - ref_loss)).mean()
 
         return {
             'loss': loss,
-            'loss.chosen': loss_chosen,
-            'loss.rejected': loss_rejected,
+            'loss.policy': policy_loss.detach().mean(),
+            'loss.ref': ref_loss.detach().mean(),
         }

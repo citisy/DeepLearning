@@ -21,7 +21,7 @@ class TextProcessForGpt(DataHooks):
     train_data_num = None
     val_data_num = None
 
-    def data_preprocess(self, iter_data, train=True):
+    def data_preprocess(self, iter_data, train=True, **kwargs):
         paragraphs = [ret['text'] for ret in iter_data]
         # ['hello world!'] -> [['hello', ' world', '!']]
         segments = self.tokenizer.spliter.from_paragraphs(paragraphs)
@@ -612,4 +612,24 @@ class Qwen2TrainerWithDpo(text_pretrain.Qwen2Trainer):
 
 
 class Qwen2ForChatTextWithDpo(Qwen2ForChatText, Qwen2TrainerWithDpo, ChatTextTrainDataWithDpo):
+    pass
+
+
+class Qwen2TrainerWithDistill(text_pretrain.Qwen2Trainer):
+    def init(self):
+        super().init()
+
+        def add_distill(distill_kwargs=dict(), **kwargs):
+            from models.tuning.distill import ModelWrap
+
+            model_wrap = ModelWrap(**distill_kwargs)
+            self.model = model_wrap.wrap(self.model)
+            self.model_wrap = model_wrap
+            model_wrap.teacher.to(self.device)
+            # self.models['teacher'] = model_wrap.teacher
+
+        self.register_train_start(add_distill)
+
+
+class Qwen2ForChatTextWithDistill(Qwen2ForChatText, Qwen2TrainerWithDistill):
     pass

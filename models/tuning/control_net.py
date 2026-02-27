@@ -62,6 +62,7 @@ class ModelWrap:
     def dewrap(self):
         self.model.backbone.forward = self.backbone_forward
         del self.model.control_model
+        return self.model
 
     def load_state_dict(self, state_dict, strict=False, **kwargs):
         state_dict = {k.replace('backbone.control_model.', ''): v for k, v in state_dict.items()}

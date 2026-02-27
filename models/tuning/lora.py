@@ -98,7 +98,7 @@ class ModelWrap:
     Usages:
         .. code-block:: python
 
-            model = ...
+            model = Model()
             model_wrap = ModelWrap(include=['to_qkv'])
             model_wrap.wrap(model)
 
@@ -113,7 +113,7 @@ class ModelWrap:
 
             # load the additional weight
             model_wrap.load_state_dict(state_dict)
-            # or load directly by model with wraped
+            # or load directly by model with wrapped
             model.load_state_dict(state_dict, strict=False)
     """
 
@@ -195,8 +195,12 @@ class ModelWrap:
             if hasattr(layer, 'fuse'):
                 layer.fuse()
 
+        return self.model
+
     def dewrap(self):
         for full_name in self.layers:
             layer = torch_utils.ModuleManager.get_module_by_name(self.model, full_name)
             if hasattr(layer, 'fuse'):
                 layer.dewrap()
+
+        return self.model

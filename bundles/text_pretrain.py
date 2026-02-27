@@ -143,7 +143,7 @@ class TextProcessForBert(DataProcessForBert):
 
     is_chunk = False
 
-    def data_preprocess(self, iter_data, train=True):
+    def data_preprocess(self, iter_data, train=True, **kwargs):
         paragraphs = [ret['text'] for ret in iter_data]
         # ['bert-base-uncased'] -> [['bert', '-', 'base', '-', 'un', '##cased']]
         segments = self.tokenizer.spliter.from_paragraphs(paragraphs)
@@ -315,10 +315,12 @@ class LargeSimpleTextForBert(DataProcessForBert):
         def gen_func():
             loader = Loader(self.data_dir)
 
-            if train:
-                iter_data = loader.load(set_type=DataRegister.TRAIN, max_size=self.train_data_num, return_label=self.is_seq_cls, generator=True)[0]
-            else:
-                iter_data = loader.load(set_type=DataRegister.TEST, max_size=self.val_data_num, return_label=self.is_seq_cls, generator=True)[0]
+            iter_data = loader.load(
+                set_type=DataRegister.TRAIN if train else DataRegister.TEST,
+                max_size=self.train_data_num if train else self.val_data_num,
+                return_label=self.is_seq_cls,
+                generator=True
+            )[0]
 
             rets = []
             for i, ret in enumerate(iter_data):
@@ -345,10 +347,10 @@ class LargeSimpleTextForBert(DataProcessForBert):
         p.daemon = True
         p.start()
 
-        if train:
-            return IterIterBatchDataset(q, length=self.one_step_data_num, augment_func=self.train_data_augment)
-        else:
-            return IterIterBatchDataset(q, length=self.one_step_data_num, augment_func=self.val_data_augment)
+        return IterIterBatchDataset(
+            q, length=self.one_step_data_num,
+            augment_func=self.train_data_augment if train else self.val_data_augment
+        )
 
     def data_augment(self, rets, train=True) -> List[dict]:
         """preprocess + data_augment"""
@@ -368,10 +370,12 @@ class SOP(DataProcessForBert):
         from data_parse.nl_data_parse.datasets.SimpleText import Loader, DataRegister
         loader = Loader(self.data_dir)
 
-        if train:
-            return loader.load(set_type=DataRegister.TRAIN, max_size=self.train_data_num, return_label=False, generator=False)[0]
-        else:
-            return loader.load(set_type=DataRegister.TEST, max_size=self.val_data_num, return_label=False, generator=False)[0]
+        return loader.load(
+            set_type=DataRegister.TRAIN if train else DataRegister.TEST,
+            max_size=self.train_data_num if train else self.val_data_num,
+            return_label=False,
+            generator=False
+        )[0]
 
     def make_vocab(self):
         return TextProcessForBert.make_vocab(self)
@@ -379,7 +383,7 @@ class SOP(DataProcessForBert):
     def count_seq_len(self):
         return TextProcessForBert.count_seq_len(self)
 
-    def data_preprocess(self, iter_data, train=True):
+    def data_preprocess(self, iter_data, train=True, **kwargs):
         return TextProcessForBert.data_preprocess(self, iter_data, train)
 
     def data_augment(self, ret, train=True) -> dict:
