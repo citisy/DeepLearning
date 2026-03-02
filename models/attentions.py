@@ -769,3 +769,7 @@ class MemoryRotaryAttendWrapper(nn.Module):
         q, k, v = [self.view_out(x).contiguous() for x in (q, k, v)]
         attn = self.base_layer(q, k, v, **kwargs)
         return attn
+
+
+make_attend_fn.add_register('ScaleAttendWithDynamicMemory')(partial(DynamicMemoryAttendWrapper, base_layer_fn=ScaleAttend))
+make_attend_fn.add_register('FlashAttendWithDynamicMemory')(partial(DynamicMemoryAttendWrapper, base_layer_fn=FlashAttend))

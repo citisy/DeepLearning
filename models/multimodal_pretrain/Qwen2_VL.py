@@ -12,14 +12,6 @@ from data_parse.nl_data_parse.pre_process.decoder import beam_search
 
 
 class Config(bundles.Config):
-    LayerNorm = 'LayerNorm'
-    RMSNorm2D = 'RMSNorm2D'
-
-    ScaleAttend = 'ScaleAttend'
-    FlashAttend = 'FlashAttend'
-    DynamicMemoryScaleAttend = 'DynamicMemoryScaleAttend'
-    DynamicMemoryFlashAttend = 'DynamicMemoryFlashAttend'
-
     _2b_vit_config = dict(
         output_size=1536
     )
@@ -112,8 +104,6 @@ class WeightConverter:
         }
 
         state_dict = torch_utils.Converter.convert_keys(state_dict, convert_dict)
-        if 'head.weight' not in state_dict:
-            state_dict['head.weight'] = state_dict['vlm.embed_tokens.weight']
         return state_dict
 
 
@@ -123,6 +113,9 @@ class Model(nn.Module):
     video_token_id = 151656
     vision_start_token_id = 151652
     eos_ids = [151645, 151643]
+    ignore_id = -100
+
+    share_head = True
 
     def __init__(self, vit_config=Config._2b_vit_config, vlm_config=Config._2b_vlm_config, model_config={}):  # noqa
         super().__init__()
@@ -130,13 +123,12 @@ class Model(nn.Module):
 
         self.vit = Vit(**vit_config)
         self.vlm = Vlm(**vlm_config)
-        self.head = nn.Linear(self.vlm.hidden_size, self.vlm.vocab_size, bias=False)
-        # note, officially use `vlm.embed_tokens.weight`!!!
-        self.head.weight = self.vlm.embed_tokens.weight
+        if self.share_head:
+            self.head = lambda x: x.matmul(self.vlm.embed_tokens.weight.transpose(1, 0))
+        else:
+            self.head = nn.Linear(self.vlm.hidden_size, self.vlm.vocab_size, bias=False)
 
-        self.criterion = nn.CrossEntropyLoss()
-
-        self.rope_deltas = None
+        self.criterion = nn.CrossEntropyLoss(reduction='mean', ignore_index=self.ignore_id)
 
     _device = None
     _dtype = None
@@ -155,17 +147,17 @@ class Model(nn.Module):
         torch_utils.ModuleManager.apply(
             self,
             lambda module: module.to(dtype),
-            exclude=[normalizations.RMSNorm2D]
+            exclude=[normalizations.RMSNorm2D, embeddings.RotaryEmbedding]
         )
 
         self.forward = partial(torch_utils.ModuleManager.assign_dtype_run, self, self.forward, dtype, force_effect_module=False)
 
     def get_rope_index(
             self,
-            input_ids: torch.LongTensor,
+            text_ids: torch.LongTensor,
             image_grid_thw: Optional[torch.LongTensor] = None,
             video_grid_thw: Optional[torch.LongTensor] = None,
-            attention_mask: Optional[torch.Tensor] = None,
+            pad_mask: Optional[torch.Tensor] = None,
     ):
         """copy from `transformers`
         Calculate the 3D rope index based on image and video's temporal, height and width in LLM.
@@ -181,7 +173,7 @@ class Model(nn.Module):
                 width position_ids: [0, 1, 2, 3, 4]
 
             For vision and text embedding sequence, we calculate 3D rotary position embedding for vision part
-            and 1D rotary position embeddin for text part.
+            and 1D rotary position embedding for text part.
             Examples:
                 Assume we have a video input with 3 temporal patches, 2 height patches and 2 width patches.
                 input_ids: [V V V V V V V V V V V V T T T T T], here V is for vision.
@@ -194,53 +186,46 @@ class Model(nn.Module):
                 Here we calculate the text start position_ids as the max vision position_ids plus 1.
 
         Args:
-            input_ids (`torch.LongTensor` of shape `(batch_size, sequence_length)`):
+            text_ids (`torch.LongTensor` of shape `(batch_size, sequence_length)`):
                 Indices of input sequence tokens in the vocabulary. Padding will be ignored by default should you provide
                 it.
             image_grid_thw (`torch.LongTensor` of shape `(num_images, 3)`, *optional*):
                 The temporal, height and width of feature shape of each image in LLM.
             video_grid_thw (`torch.LongTensor` of shape `(num_videos, 3)`, *optional*):
                 The temporal, height and width of feature shape of each video in LLM.
-            attention_mask (`torch.Tensor` of shape `(batch_size, sequence_length)`, *optional*):
-                Mask to avoid performing attention on padding token indices. Mask values selected in `[0, 1]`:
-
-                - 1 for tokens that are **not masked**,
-                - 0 for tokens that are **masked**.
+            pad_mask (`torch.Tensor` of shape `(batch_size, sequence_length)`, *optional*):
+                Mask to avoid performing attention on padding token indices.
 
         Returns:
             position_ids (`torch.LongTensor` of shape `(3, batch_size, sequence_length)`)
             mrope_position_deltas (`torch.Tensor` of shape `(batch_size)`)
         """
-        spatial_merge_size = self.vit.spatial_merge_size
-        image_token_id = self.image_token_id
-        video_token_id = self.video_token_id
-        vision_start_token_id = self.vision_start_token_id
+        device = text_ids.device
+        dtype = text_ids.dtype
         mrope_position_deltas = []
-        if input_ids is not None and (image_grid_thw is not None or video_grid_thw is not None):
-            total_input_ids = input_ids
-            if attention_mask is None:
-                attention_mask = torch.ones_like(total_input_ids)
-            position_ids = torch.ones(
-                3, input_ids.shape[0], input_ids.shape[1], dtype=input_ids.dtype, device=input_ids.device
-            )
+        if image_grid_thw is not None or video_grid_thw is not None:
+            total_input_ids = text_ids
+            if pad_mask is None:
+                pad_mask = torch.ones_like(total_input_ids, dtype=torch.bool)
+            position_ids = torch.ones(3, text_ids.shape[0], text_ids.shape[1], dtype=dtype, device=device)
             image_index, video_index = 0, 0
-            for i, input_ids in enumerate(total_input_ids):
-                input_ids = input_ids[attention_mask[i] == 1]
-                vision_start_indices = torch.argwhere(input_ids == vision_start_token_id).squeeze(1)
-                vision_tokens = input_ids[vision_start_indices + 1]
-                image_nums = (vision_tokens == image_token_id).sum()
-                video_nums = (vision_tokens == video_token_id).sum()
-                input_tokens = input_ids.tolist()
+            for i, text_ids in enumerate(total_input_ids):
+                text_ids = text_ids[pad_mask[i]]
+                vision_start_indices = torch.argwhere(text_ids == self.vision_start_token_id).squeeze(1)
+                vision_tokens = text_ids[vision_start_indices + 1]
+                image_nums = (vision_tokens == self.image_token_id).sum()
+                video_nums = (vision_tokens == self.video_token_id).sum()
+                input_tokens = text_ids.tolist()
                 llm_pos_ids_list: list = []
                 st = 0
                 remain_images, remain_videos = image_nums, video_nums
                 for _ in range(image_nums + video_nums):
-                    if image_token_id in input_tokens and remain_images > 0:
-                        ed_image = input_tokens.index(image_token_id, st)
+                    if self.image_token_id in input_tokens and remain_images > 0:
+                        ed_image = input_tokens.index(self.image_token_id, st)
                     else:
                         ed_image = len(input_tokens) + 1
-                    if video_token_id in input_tokens and remain_videos > 0:
-                        ed_video = input_tokens.index(video_token_id, st)
+                    if self.video_token_id in input_tokens and remain_videos > 0:
+                        ed_video = input_tokens.index(self.video_token_id, st)
                     else:
                         ed_video = len(input_tokens) + 1
                     if ed_image < ed_video:
@@ -263,8 +248,8 @@ class Model(nn.Module):
                         ed = ed_video
                     llm_grid_t, llm_grid_h, llm_grid_w = (
                         t.item(),
-                        h.item() // spatial_merge_size,
-                        w.item() // spatial_merge_size,
+                        h.item() // self.vit.spatial_merge_size,
+                        w.item() // self.vit.spatial_merge_size,
                     )
                     text_len = ed - st
 
@@ -283,33 +268,26 @@ class Model(nn.Module):
                     llm_pos_ids_list.append(torch.arange(text_len).view(1, -1).expand(3, -1) + st_idx)
 
                 llm_positions = torch.cat(llm_pos_ids_list, dim=1).reshape(3, -1)
-                position_ids[..., i, attention_mask[i] == 1] = llm_positions.to(position_ids.device)
+                position_ids[..., i, pad_mask[i]] = llm_positions.to(device)
                 mrope_position_deltas.append(llm_positions.max() + 1 - len(total_input_ids[i]))
-            mrope_position_deltas = torch.tensor(mrope_position_deltas, device=input_ids.device).unsqueeze(1)
+            mrope_position_deltas = torch.tensor(mrope_position_deltas, device=device).unsqueeze(1)
             return position_ids, mrope_position_deltas
         else:
-            if attention_mask is not None:
-                position_ids = attention_mask.long().cumsum(-1) - 1
-                position_ids.masked_fill_(attention_mask == 0, 1)
-                position_ids = position_ids.unsqueeze(0).expand(3, -1, -1).to(input_ids.device)
+            if pad_mask is not None:
+                position_ids = pad_mask.long().cumsum(-1) - 1
+                position_ids.masked_fill_(~pad_mask, 1)
+                position_ids = position_ids.unsqueeze(0).expand(3, -1, -1).to(device)
                 max_position_ids = position_ids.max(0, keepdim=False)[0].max(-1, keepdim=True)[0]
-                mrope_position_deltas = max_position_ids + 1 - attention_mask.shape[-1]
+                mrope_position_deltas = max_position_ids + 1 - pad_mask.shape[-1]
             else:
                 position_ids = (
-                    torch.arange(input_ids.shape[1], device=input_ids.device)
+                    torch.arange(text_ids.shape[1], device=device)
                     .view(1, 1, -1)
-                    .expand(3, input_ids.shape[0], -1)
+                    .expand(3, text_ids.shape[0], -1)
                 )
-                mrope_position_deltas = torch.zeros(
-                    [input_ids.shape[0], 1],
-                    device=input_ids.device,
-                    dtype=input_ids.dtype,
-                )
+                mrope_position_deltas = torch.zeros([text_ids.shape[0], 1], device=device, dtype=dtype)
 
             return position_ids, mrope_position_deltas
-
-    def make_caches(self):
-        return [dict() for i in range(self.vlm.num_blocks)]
 
     def forward(self, *args, **kwargs):
         if self.training:
@@ -317,60 +295,63 @@ class Model(nn.Module):
         else:
             return self.inference(*args, **kwargs)
 
-    def fit(self, text_ids, trues=None, **kwargs):
-        preds = self.decode(text_ids)
-        outputs = dict(
-            preds=preds
+    def fit(self, text_ids, label_ids, **kwargs):
+        logits = self.decode(text_ids)
+        return dict(
+            logits=logits,
+            **self.loss(logits, label_ids)
         )
-        outputs['loss'] = self.loss(trues, preds)
-        return outputs
 
-    def inference(
-            self,
-            text_ids, generate_content=True, seq_lens=None, vlm_past_kvs=None,
-            **decode_kwargs
-    ):
-        if generate_content:
-            if vlm_past_kvs is None:
-                vlm_past_kvs = self.make_caches()
+    def loss(self, logits, label_ids):
+        # Upcast to float if we need to compute the loss to avoid potential precision issues
+        logits = logits.float()
+        # Shift so that tokens < n predict n
+        shift_logits = logits[..., :-1, :].contiguous()
+        shift_labels = label_ids[..., 1:].contiguous()
+        # Flatten the tokens
+        shift_logits = shift_logits.view(-1, self.vlm.vocab_size)
+        shift_labels = shift_labels.view(-1)
+        loss = self.criterion(shift_logits, shift_labels)
+        return {
+            'loss': loss
+        }
 
-            preds = beam_search(text_ids, seq_lens, self.decode, eos_ids=self.eos_ids, vlm_past_kvs=vlm_past_kvs, **decode_kwargs)['preds']
-
-            return dict(
-                preds=preds,
-                vlm_past_kvs=vlm_past_kvs
-            )
-        else:
-            return self.decode(text_ids, **decode_kwargs)
+    def inference(self, text_ids, **decode_kwargs):
+        return dict(
+            logits=self.decode(text_ids, **decode_kwargs),
+        )
 
     def decode(
             self,
-            input_ids=None,
+            text_ids=None, pad_mask=None,
             image_pixel_values=None, image_grid_thw=None,
             video_pixel_values=None, video_grid_thw=None,
-            start_pos=0, vlm_past_kvs=None,
-            **kwargs
+            start_pos=0, caches=dict(),
+            **vlm_kwargs
     ):
         inputs_embeds = self.make_input_embeds(
-            input_ids,
+            text_ids,
             image_pixel_values=image_pixel_values if start_pos == 0 else None, image_grid_thw=image_grid_thw,
             video_pixel_values=video_pixel_values if start_pos == 0 else None, video_grid_thw=video_grid_thw,
         )
 
-        # calculate RoPE index once per generation in the pre-fill stage only
+        batch_size, seq_length, _ = inputs_embeds.shape
+        device = inputs_embeds.device
+
         if start_pos == 0:
-            attention_mask = torch.ones((1, inputs_embeds.shape[1])).to(inputs_embeds)
-            position_ids, rope_deltas = self.get_rope_index(input_ids, image_grid_thw, video_grid_thw, attention_mask)
-            self.rope_deltas = rope_deltas
+            # calculate RoPE index once per generation in the pre-fill stage only
+            if pad_mask is None:
+                seq_lens = torch.full((batch_size,), seq_length, dtype=torch.long, device=device)
+                pad_mask = attentions.make_pad_mask(seq_lens, max_len=seq_length)
+            position_ids, rope_deltas = self.get_rope_index(text_ids, image_grid_thw, video_grid_thw, pad_mask)
+            caches['rope_deltas'] = rope_deltas
 
-        # then use the prev pre-calculated rope-deltas to get the correct position ids
         else:
-            batch_size, seq_length, _ = inputs_embeds.shape
-
-            delta = self.rope_deltas + start_pos
+            # then use the prev pre-calculated rope-deltas to get the correct position ids
+            delta = caches['rope_deltas'] + start_pos
             delta = delta.repeat_interleave(batch_size // delta.shape[0], dim=0)
 
-            position_ids = torch.arange(seq_length, device=inputs_embeds.device)
+            position_ids = torch.arange(seq_length, device=device)
             position_ids = position_ids.view(1, -1).expand(batch_size, -1)
             position_ids = position_ids.add(delta)
             position_ids = position_ids.unsqueeze(0).expand(3, -1, -1)
@@ -378,8 +359,8 @@ class Model(nn.Module):
         hidden_states = self.vlm(
             position_ids=position_ids,
             inputs_embeds=inputs_embeds,
-            past_kvs=vlm_past_kvs,
-            start_pos=start_pos
+            start_pos=start_pos,
+            **vlm_kwargs
         )
         hidden_states = self.head(hidden_states)
         return hidden_states
@@ -417,37 +398,6 @@ class Model(nn.Module):
         inputs_embeds = inputs_embeds.masked_scatter(video_mask, video_embeds)
         return inputs_embeds
 
-    def loss(self, trues, preds):
-        # Upcast to float if we need to compute the loss to avoid potential precision issues
-        preds = preds.float()
-        # Shift so that tokens < n predict n
-        shift_logits = preds[..., :-1, :].contiguous()
-        shift_labels = trues[..., 1:].contiguous()
-        # Flatten the tokens
-        shift_logits = shift_logits.view(-1, self.config.vocab_size)
-        shift_labels = shift_labels.view(-1)
-        loss = self.criterion(shift_logits, shift_labels)
-        return loss
-
-
-def make_norm(*args, name=Config.LayerNorm, **kwargs):
-    mapping = {
-        Config.LayerNorm: nn.LayerNorm,
-        Config.RMSNorm2D: normalizations.RMSNorm2D,
-    }
-    kwargs.setdefault('eps', 1e-6)
-    return mapping[name](*args, **kwargs)
-
-
-def make_base_attend_fn(name=Config.ScaleAttend):
-    mapping = {
-        Config.ScaleAttend: attentions.ScaleAttend,
-        Config.FlashAttend: attentions.FlashAttend,
-        Config.DynamicMemoryScaleAttend: partial(attentions.DynamicMemoryAttendWrapper, base_layer_fn=attentions.ScaleAttend),
-        Config.DynamicMemoryFlashAttend: partial(attentions.DynamicMemoryAttendWrapper, base_layer_fn=attentions.FlashAttend),
-    }
-    return mapping[name]
-
 
 class Vit(nn.Module):
     """Vision Transformer"""
@@ -457,7 +407,7 @@ class Vit(nn.Module):
             in_ch=3, embed_dim=1280, output_size=1536,
             patch_size=14, temporal_patch_size=2, spatial_merge_size=2,
             num_heads=16, mlp_ratio=4, num_blocks=32,
-            base_attend_name=Config.ScaleAttend,
+            attend_type='FlashAttend',
             use_checkpoint=False,
             **kwargs
     ):
@@ -476,7 +426,7 @@ class Vit(nn.Module):
             attend_fn=attentions.RotaryAttendWrapper,
             attend_fn_kwargs=dict(
                 embedding=self.rot_embedding,
-                base_layer_fn=make_base_attend_fn(base_attend_name),
+                base_layer_fn=attentions.make_attend_fn.get(attend_type),
             ),
             fn_kwargs=dict(
                 separate=False,
@@ -484,7 +434,7 @@ class Vit(nn.Module):
             ff_kwargs=dict(
                 act=activations.FasterGELU(),
             ),
-            norm_fn=make_norm,
+            norm_fn=partial(nn.LayerNorm, eps=1e-6),
             norm_first=True,
 
             num_blocks=num_blocks,
@@ -628,7 +578,7 @@ class PatchMerger(nn.Module):
     def __init__(self, output_size: int, input_size: int, spatial_merge_size: int = 2) -> None:
         super().__init__()
         self.hidden_size = input_size * (spatial_merge_size ** 2)
-        self.ln_q = make_norm(input_size)
+        self.ln_q = nn.LayerNorm(input_size, eps=1e-6)
         self.mlp = nn.Sequential(
             nn.Linear(self.hidden_size, self.hidden_size),
             nn.GELU(),
@@ -648,7 +598,7 @@ class Vlm(nn.Module):
             pad_token_id=None, vocab_size=151936,
             hidden_size=1536, ff_hidden_size=8960,
             num_heads=12, num_kv_heads=2, num_blocks=28,
-            base_attend_name=Config.DynamicMemoryScaleAttend, norm_name=Config.RMSNorm2D,
+            attend_type='FlashAttendWithDynamicMemory',
             use_checkpoint=False
     ):
         super().__init__()
@@ -669,23 +619,20 @@ class Vlm(nn.Module):
             attend_fn=qwen2.QwenSdpaAttendWrapper,
             attend_fn_kwargs=dict(
                 embedding=self.rot_embedding,
-                base_layer_fn=make_base_attend_fn(base_attend_name),
+                base_layer_fn=attentions.make_attend_fn.get(attend_type),
             ),
             feed_forward_fn=llama.FeedForward,
             ff_kwargs=dict(
                 bias=False,
             ),
-            norm_fn=make_norm,
-            norm_kwargs=dict(
-                name=norm_name
-            ),
+            norm_fn=normalizations.RMSNorm2D,
             norm_first=True,
 
             num_blocks=num_blocks,
             use_checkpoint=use_checkpoint
 
         )
-        self.norm = make_norm(hidden_size, name=norm_name)
+        self.norm = normalizations.RMSNorm2D(hidden_size)
 
     _device = None
     _dtype = None
@@ -698,10 +645,13 @@ class Vlm(nn.Module):
     def dtype(self):
         return torch_utils.ModuleInfo.possible_dtype(self) if self._dtype is None else self._dtype
 
+    def make_caches(self):
+        return [dict() for _ in range(self.num_blocks)]
+
     def forward(
             self,
             input_ids=None, inputs_embeds=None, attention_mask=None, position_ids=None,
-            past_kvs=None, start_pos=0
+            past_kvs=None, start_pos=0, **ignore_kwargs
     ):
         if inputs_embeds is None:
             inputs_embeds = self.embed_tokens(input_ids)
@@ -713,11 +663,10 @@ class Vlm(nn.Module):
 
         hidden_states = inputs_embeds
 
-        per_block_kwargs = []
-        for past_kv in past_kvs:
-            per_block_kwargs.append(dict(
-                cache_fn=partial(attentions.DynamicMemoryAttendWrapper.cache, past_kv=past_kv),
-            ))
+        per_block_kwargs = [dict() for _ in range(self.num_blocks)]
+        if past_kvs:
+            for i, past_kv in enumerate(past_kvs):
+                per_block_kwargs[i]['cache_fn'] = partial(attentions.DynamicMemoryAttendWrapper.cache, past_kv=past_kv)
 
         hidden_states = self.blocks(
             hidden_states, attention_mask=attention_mask,
@@ -737,17 +686,20 @@ class MRotaryEmbedding(RotaryEmbedding2D):
     mrope_section = [16, 24, 24] * 2
 
     def make_weights(self, position_ids):
-        inv_freq_expanded = self.div_term[None, None, :, None].float().expand(3, position_ids.shape[1], -1, 1)
-        position_ids_expanded = position_ids[:, :, None, :].float()  # shape (3, bs, 1, positions)
-        inv_freq_expanded = inv_freq_expanded.to(position_ids_expanded)
-        freqs = (inv_freq_expanded @ position_ids_expanded).transpose(2, 3)
-        emb = torch.cat((freqs, freqs), dim=-1)
-        cos = emb.cos()
-        sin = emb.sin()
-        cos = torch.cat([m[i % 3] for i, m in enumerate(cos.split(self.mrope_section, dim=-1))], dim=-1)[:, :, None, :]
-        sin = torch.cat([m[i % 3] for i, m in enumerate(sin.split(self.mrope_section, dim=-1))], dim=-1)[:, :, None, :]
+        device = self.div_term.device
+        # Force float32 (see https://github.com/huggingface/transformers/pull/29285)
+        with torch.autocast(device_type=device.type, dtype=torch.float32):
+            inv_freq_expanded = self.div_term[None, None, :, None].float().expand(3, position_ids.shape[1], -1, 1)
+            position_ids_expanded = position_ids[:, :, None, :].float()  # shape (3, bs, 1, positions)
+            inv_freq_expanded = inv_freq_expanded.to(position_ids_expanded)
+            freqs = (inv_freq_expanded @ position_ids_expanded).transpose(2, 3)
+            emb = torch.cat((freqs, freqs), dim=-1)
+            cos = emb.cos()
+            sin = emb.sin()
+            cos = torch.cat([m[i % 3] for i, m in enumerate(cos.split(self.mrope_section, dim=-1))], dim=-1)[:, :, None, :]
+            sin = torch.cat([m[i % 3] for i, m in enumerate(sin.split(self.mrope_section, dim=-1))], dim=-1)[:, :, None, :]
 
-        return cos, sin
+            return cos, sin
 
     def forward(self, x, position_ids=None, weights=None):
         if weights is None:

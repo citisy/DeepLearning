@@ -175,8 +175,8 @@ class Model(nn.Module):
             loss=loss,
         )
         if self.use_moe:
-            mask = attentions.make_pad_mask(seq_lens, max_len=label_ids.shape[1])
-            moe_loss = self.moe_criterion(ff_caches, mask)
+            pad_mask = attentions.make_pad_mask(seq_lens, max_len=label_ids.shape[1])
+            moe_loss = self.moe_criterion(ff_caches, pad_mask)
             out['loss'] = loss + moe_loss
             out['loss.moe'] = moe_loss
         return out
@@ -203,6 +203,7 @@ class Decoder(nn.Module):
             hidden_size=3584, ff_hidden_size=18944,
             num_heads=28, num_blocks=28, num_kv_heads=4,
             rot_theta=1000000.0,
+            attend_type='FlashAttendWithDynamicMemory',
             ff_type='GateFeedForward', ff_kwargs=dict(bias=False),
             use_checkpoint=False
     ):
@@ -224,7 +225,7 @@ class Decoder(nn.Module):
             attend_fn=QwenSdpaAttendWrapper,
             attend_fn_kwargs=dict(
                 embedding=self.rot_embedding,
-                base_layer=attentions.DynamicMemoryAttendWrapper(attentions.FlashAttend())
+                base_layer_fn=attentions.make_attend_fn.get(attend_type)
             ),
             feed_forward_fn=transformers.make_ff_fn.get(ff_type),
             ff_kwargs=ff_kwargs,
@@ -258,9 +259,6 @@ class Decoder(nn.Module):
     ):
         if attention_mask is None:
             attention_mask = attentions.make_causal_attention_mask(inputs_embeds, start_pos=start_pos)
-
-        if past_kvs is None:
-            past_kvs = self.make_caches()
 
         hidden_states = inputs_embeds
 
