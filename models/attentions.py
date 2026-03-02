@@ -43,6 +43,9 @@ def make_causal_attention_mask(x=None, det_shape=None, len_dim=1, start_pos=0):
         len_dim (int): dim of sequence lengths
         start_pos (int): num of kv caches' seq len
 
+    Returns:
+        torch.Tensor: mask, shape of (b, 1, seq_len, seq_len + start_pos)
+
     e.g.:
         x.shape=(b, 3, -1)
 
@@ -83,6 +86,9 @@ def make_pad_mask(lens, x=None, len_dim=1, max_len=None):
         x (Tensor): higher priority than `lens` for counting max_len
         len_dim (int): for getting max_len, gives the dims of sequence lengths, x.shape[length_dim] is max_len
         max_len:
+
+    Returns:
+        torch.Tensor: mask, shape of (b, max_len)
 
     Examples:
         >>> lens = [5, 3, 2]
@@ -624,7 +630,8 @@ class DynamicMemoryAttendWrapper(nn.Module):
 
     def forward(self, q, k, v, attention_mask=None, cache_fn=None, **kwargs):
         """q,k,v: (b,n,s,d)"""
-        k, v = cache_fn(k, v)  # only support inplace mode, see `cache_fn` to get more info
+        if cache_fn:
+            k, v = cache_fn(k, v)  # only support inplace mode, see `cache_fn` to get more info
         return self.base_layer(q, k, v, attention_mask=attention_mask, **kwargs)
 
     @staticmethod
