@@ -833,7 +833,7 @@ class FromQwen2Pretrained(CheckpointHooks):
 
         state_dict = WeightLoader.auto_load(self.pretrained_model)
         state_dict = WeightConverter.from_official(state_dict)
-        self.model.load_state_dict(state_dict, strict=False, assign=True)
+        self.model.load_state_dict(state_dict, strict=True, assign=True)
 
 
 class Qwen2Trainer(Process):
@@ -857,11 +857,13 @@ class Qwen2Trainer(Process):
     def get_model_train_inputs(self, loop_inputs):
         text_ids = []
         label_ids = []
+        seq_lens = []
 
         for ret in loop_inputs:
             segment_ids = ret['segment_ids']
             text_ids.append(segment_ids)
             label_ids.append(segment_ids[1:])
+            seq_lens.append(ret['seq_lens'])
 
         text_ids = snack.align(
             text_ids,
@@ -879,6 +881,7 @@ class Qwen2Trainer(Process):
         model_inputs = dict(
             text_ids=text_ids,
             label_ids=label_ids,
+            seq_lens=seq_lens
         )
         model_inputs = torch_utils.Converter.force_to_tensors(model_inputs, self.device)
         return model_inputs

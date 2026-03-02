@@ -7,7 +7,7 @@ from torch import nn
 from utils import torch_utils
 from .. import attentions, bundles, embeddings, normalizations
 from ..layers import Linear
-from ..text_pretrain import llama, transformers
+from ..text_pretrain import transformers, llama, MoE  # register ff_fn
 
 
 class Config(bundles.Config):
@@ -16,7 +16,8 @@ class Config(bundles.Config):
         ff_hidden_size=4864,
         num_heads=14,
         num_blocks=24,
-        num_kv_heads=2
+        num_kv_heads=2,
+        vocab_size=151936
     )
 
     _1_5b_decoder = dict(
@@ -24,7 +25,8 @@ class Config(bundles.Config):
         ff_hidden_size=8960,
         num_heads=12,
         num_blocks=28,
-        num_kv_heads=2
+        num_kv_heads=2,
+        vocab_size=151936
     )
 
     _7b_decoder = dict(
@@ -32,7 +34,8 @@ class Config(bundles.Config):
         ff_hidden_size=18944,
         num_heads=28,
         num_blocks=28,
-        num_kv_heads=4
+        num_kv_heads=4,
+        vocab_size=152064
     )
 
     _72b_decoder = dict(
@@ -40,7 +43,20 @@ class Config(bundles.Config):
         ff_hidden_size=29568,
         num_heads=64,
         num_blocks=80,
-        num_kv_heads=8
+        num_kv_heads=8,
+        vocab_size=152064
+    )
+
+    _7b_moe_decoder = dict(
+        **_7b_decoder,
+        ff_type='MoeFeedForward',
+        ff_kwargs=dict(
+            bias=False,
+            experts_hidden_size=1408,
+            share_experts_hidden_size=5632,
+            num_experts=60,
+            top_k=4
+        )
     )
 
     default_model = '7b'
@@ -57,12 +73,26 @@ class Config(bundles.Config):
             ),
 
             '7b': dict(
-                decoder_config=cls._7b_decoder
+                decoder_config=cls._7b_decoder,
+                model_config=dict(
+                    share_head=False
+                )
             ),
 
             '72b': dict(
-                decoder_config=cls._72b_decoder
-            )
+                decoder_config=cls._72b_decoder,
+                model_config=dict(
+                    share_head=False
+                )
+            ),
+
+            '7b_moe': dict(
+                decoder_config=cls._7b_moe_decoder,
+                model_config=dict(
+                    share_head=False,
+                    use_moe=True
+                )
+            ),
         }
 
 
@@ -70,7 +100,15 @@ class WeightLoader(bundles.WeightLoader):
     pass
 
 
-class WeightConverter:
+class WeightConverter(bundles.WeightConverter):
+    moe_convert_dict = {
+        'model.layers.{0}.mlp.{1}.gate_proj': 'decoder.blocks.{0}.ff_res.fn.{1}.f1.linear',
+        'model.layers.{0}.mlp.{1}.up_proj': 'decoder.blocks.{0}.ff_res.fn.{1}.f3.linear',
+        'model.layers.{0}.mlp.{1}.down_proj': 'decoder.blocks.{0}.ff_res.fn.{1}.f2.linear',
+        'model.layers.{0}.mlp.gate': 'decoder.blocks.{0}.ff_res.fn.gate',
+        'model.layers.{0}.mlp.shared_expert_gate': 'decoder.blocks.{0}.ff_res.fn.shared_expert_gate'
+    }
+
     convert_dict = {
         'model.layers.{0}.self_attn.q_proj': 'decoder.blocks.{0}.attn_res.fn.to_qkv.0',
         'model.layers.{0}.self_attn.k_proj': 'decoder.blocks.{0}.attn_res.fn.to_qkv.1',
@@ -82,16 +120,12 @@ class WeightConverter:
         'model.layers.{0}.input_layernorm': 'decoder.blocks.{0}.attn_res.norm',
         'model.layers.{0}.post_attention_layernorm': 'decoder.blocks.{0}.ff_res.norm',
 
+        **moe_convert_dict,
+
         'model.embed_tokens': 'embedding',
         'model.norm': 'decoder.norm',
         'lm_head': 'head'
-
     }
-
-    @classmethod
-    def from_official(cls, state_dict):
-        state_dict = torch_utils.Converter.convert_keys(state_dict, cls.convert_dict)
-        return state_dict
 
 
 class Model(nn.Module):
@@ -99,6 +133,8 @@ class Model(nn.Module):
     pad_id = 151643
     ignore_id = -100
     eos_ids = [151645, 151643]
+    share_head = True
+    use_moe = False
 
     def __init__(self, decoder_config=Config._7b_decoder, model_config={}):
         super().__init__()
@@ -106,7 +142,14 @@ class Model(nn.Module):
 
         self.decoder = Decoder(**decoder_config)
         self.embedding = nn.Embedding(self.decoder.vocab_size, self.decoder.hidden_size, self.pad_id)
+        if self.share_head:
+            self.head = lambda x: x.matmul(self.embedding.weight.transpose(1, 0))
+        else:
+            self.head = nn.Linear(self.decoder.hidden_size, self.decoder.vocab_size, bias=False)
+
         self.criterion = nn.CrossEntropyLoss(reduction='mean', ignore_index=self.ignore_id)
+        if self.use_moe:
+            self.moe_criterion = MoE.MoeLoss(**decoder_config['ff_kwargs'])
 
     def forward(self, *args, **kwargs):
         if self.training:
@@ -114,23 +157,35 @@ class Model(nn.Module):
         else:
             return self.inference(*args, **kwargs)
 
-    def fit(self, text_ids, label_ids, **decode_kwargs):
-        logits = self.decode(text_ids, past_kvs=self.decoder.make_caches(), **decode_kwargs)
+    def fit(self, text_ids, label_ids, seq_lens=None, **decode_kwargs):
+        ff_caches = [dict() for _ in range(self.decoder.num_blocks)] if self.use_moe else None
+        logits = self.decode(text_ids, ff_caches=ff_caches, **decode_kwargs)
         return dict(
             logits=logits,
-            loss=self.loss(logits, label_ids),
+            **self.loss(logits, label_ids, ff_caches, seq_lens),
         )
 
-    def loss(self, logits, label_ids):
+    def loss(self, logits, label_ids, ff_caches=None, seq_lens=None):
         logits = logits.float()
         loss = self.criterion(
             logits.view(-1, logits.size(-1)),
             label_ids.contiguous().view(-1)
         )
-        return loss
+        out = dict(
+            loss=loss,
+        )
+        if self.use_moe:
+            mask = attentions.make_pad_mask(seq_lens, max_len=label_ids.shape[1])
+            moe_loss = self.moe_criterion(ff_caches, mask)
+            out['loss'] = loss + moe_loss
+            out['loss.moe'] = moe_loss
+        return out
 
     def inference(self, text_ids, **decode_kwargs):
-        return self.decode(text_ids, **decode_kwargs)
+        logits = self.decode(text_ids, **decode_kwargs)
+        return dict(
+            logits=logits,
+        )
 
     def decode(self, x, start_pos=0, attention_mask=None, **decoder_kwargs):
         x = self.embedding(x)
@@ -140,11 +195,6 @@ class Model(nn.Module):
         x = self.head(x)
         return x
 
-    def head(self, x):
-        # note, share weights
-        y = x.matmul(self.embedding.weight.transpose(1, 0))
-        return y
-
 
 class Decoder(nn.Module):
     def __init__(
@@ -153,6 +203,7 @@ class Decoder(nn.Module):
             hidden_size=3584, ff_hidden_size=18944,
             num_heads=28, num_blocks=28, num_kv_heads=4,
             rot_theta=1000000.0,
+            ff_type='GateFeedForward', ff_kwargs=dict(bias=False),
             use_checkpoint=False
     ):
         super().__init__()
@@ -175,10 +226,8 @@ class Decoder(nn.Module):
                 embedding=self.rot_embedding,
                 base_layer=attentions.DynamicMemoryAttendWrapper(attentions.FlashAttend())
             ),
-            feed_forward_fn=llama.FeedForward,
-            ff_kwargs=dict(
-                bias=False,
-            ),
+            feed_forward_fn=transformers.make_ff_fn.get(ff_type),
+            ff_kwargs=ff_kwargs,
             norm_fn=normalizations.RMSNorm2D,
             norm_first=True,
 
@@ -187,16 +236,16 @@ class Decoder(nn.Module):
         )
         self.norm = normalizations.RMSNorm2D(hidden_size)
 
-    _device = None
-    _dtype = None
-
-    @property
-    def device(self):
-        return torch_utils.ModuleInfo.possible_device(self) if self._device is None else self._device
-
-    @property
-    def dtype(self):
-        return torch_utils.ModuleInfo.possible_dtype(self) if self._dtype is None else self._dtype
+    # _device = None
+    # _dtype = None
+    #
+    # @property
+    # def device(self):
+    #     return torch_utils.ModuleInfo.possible_device(self) if self._device is None else self._device
+    #
+    # @property
+    # def dtype(self):
+    #     return torch_utils.ModuleInfo.possible_dtype(self) if self._dtype is None else self._dtype
 
     def make_caches(self):
         return [dict() for _ in range(self.num_blocks)]
@@ -204,7 +253,8 @@ class Decoder(nn.Module):
     def forward(
             self,
             inputs_embeds=None, attention_mask=None,
-            past_kvs=None, start_pos=0
+            past_kvs=None, start_pos=0, ff_caches=None,
+            **ignore_kwargs
     ):
         if attention_mask is None:
             attention_mask = attentions.make_causal_attention_mask(inputs_embeds, start_pos=start_pos)
@@ -214,11 +264,14 @@ class Decoder(nn.Module):
 
         hidden_states = inputs_embeds
 
-        per_block_kwargs = []
-        for past_kv in past_kvs:
-            per_block_kwargs.append(dict(
-                cache_fn=partial(attentions.DynamicMemoryAttendWrapper.cache, past_kv=past_kv),
-            ))
+        per_block_kwargs = [dict() for _ in range(self.num_blocks)]
+        if past_kvs:
+            for i, past_kv in enumerate(past_kvs):
+                per_block_kwargs[i]['cache_fn'] = partial(attentions.DynamicMemoryAttendWrapper.cache, past_kv=past_kv)
+
+        if ff_caches:
+            for i, ff_cache in enumerate(ff_caches):
+                per_block_kwargs[i]['ff_kwargs'] = dict(ff_cache=ff_cache)
 
         seq_len = inputs_embeds.shape[1]
         if past_kvs and 'k' in past_kvs[0]:
@@ -231,7 +284,7 @@ class Decoder(nn.Module):
                 weights=rot_embedding_weights,
                 start_pos=start_pos
             ),
-            per_block_kwargs=per_block_kwargs
+            per_block_kwargs=per_block_kwargs,
         )
 
         hidden_states = self.norm(hidden_states)

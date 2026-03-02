@@ -2,9 +2,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from data_parse.nl_data_parse.pre_process.decoder import beam_search
 from utils import torch_utils
-from .transformers import TransformerSequential
+from . import transformers
 from .. import attentions, bundles, embeddings, layers, normalizations
 
 
@@ -67,7 +66,7 @@ class Model(nn.Module):
         rotary_embedding = embeddings.RotaryEmbedding(hidden_size // num_attention_heads)
         ff_hidden_size = int(hidden_size * 4 * 2 / 3)
         ff_hidden_size = multiple_of * ((ff_hidden_size + multiple_of - 1) // multiple_of)
-        self.decoder = TransformerSequential(
+        self.decoder = transformers.TransformerSequential(
             hidden_size, num_attention_heads, ff_hidden_size,
             norm_first=True, drop_prob=drop_prob,
             attend_fn=attentions.MemoryRotaryAttendWrapper,
@@ -124,6 +123,7 @@ class Model(nn.Module):
         return x
 
 
+@transformers.make_ff_fn.add_register('GateFeedForward')
 class FeedForward(nn.Module):
     """y = F2(a(F1(x)) * F3(x))"""
 

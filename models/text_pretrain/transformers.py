@@ -2,9 +2,12 @@ import torch
 from torch import nn
 from torch.utils.checkpoint import checkpoint
 
+from utils import op_utils
 from ..attentions import CrossAttention2D
 from ..embeddings import LearnedPositionEmbedding
 from ..layers import Linear, Residual
+
+make_ff_fn = op_utils.RegisterTables()
 
 
 class EncoderEmbedding(nn.Module):
@@ -170,15 +173,16 @@ class TransformerBlock(nn.Module):
             **ff_res_kwargs
         )
 
-    def forward(self, x, context=None, attention_mask=None, context_mask=None, **attn_kwargs):
+    def forward(self, x, context=None, attention_mask=None, context_mask=None, ff_kwargs=dict(), **attn_kwargs):
         """(b, s, h) -> (b, s, h)"""
         x = self.attn_res(x, attention_mask=attention_mask, **attn_kwargs)
         if self.is_decode:
             x = self.de_attn_res(x, k=context, v=context, attention_mask=context_mask, **attn_kwargs)
-        x = self.ff_res(x)
+        x = self.ff_res(x, **ff_kwargs)
         return x
 
 
+@make_ff_fn.add_register()
 class PositionWiseFeedForward(nn.Sequential):
     """y = F2(a(F1(x)))"""
 

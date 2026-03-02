@@ -1,3 +1,4 @@
+import logging
 import os
 
 from utils import converter, log_utils
@@ -169,9 +170,10 @@ class Process(
         try_init_components = [self.set_model_status]
         for components in try_init_components:
             try:
+                # note, if model is device of meta, will cause NotImplementedError
                 components()
-            except NotImplementedError:
-                self.log(f'{components} not init', level=logging.DEBUG)
+            except NotImplementedError as e:
+                self.log(f'{components} not init, cause exception: {e}', level=logging.ERROR)
 
         self.log(f'{torch.__version__ = }')
         self.log(f'{self.device = }')
@@ -191,8 +193,7 @@ class Process(
     def set_model_status(self):
         if self.use_pretrained:
             self.load_pretrained()
-        if not isinstance(self.device, list):
-            self.model.to(self.device)
+        self.model.to(self.device)
 
     def run(self, max_epoch=100, train_batch_size=16, predict_batch_size=None, fit_kwargs=dict(), metric_kwargs=dict()):
         self.init()
@@ -256,14 +257,16 @@ def ddp_process_wrap(process: Process):
             super().init()
 
             def set_ddp(**kwargs):
-                self.model = torch.nn.parallel.DistributedDataParallel(
-                    self.model,
-                    device_ids=[self.local_rank],
-                    output_device=self.local_rank,
-                    # static_graph=True
-                )
+                if not isinstance(self.model, torch.nn.parallel.DistributedDataParallel):
+                    self.model = torch.nn.parallel.DistributedDataParallel(
+                        self.model,
+                        device_ids=[self.local_rank],
+                        output_device=self.local_rank,
+                        # static_graph=True
+                    )
 
             self.register_train_start(set_ddp)
+            self.register_val_start(set_ddp)
 
         def init_logs(self):
             # todo, make sure whether use logger in the sub process?
@@ -326,10 +329,36 @@ def ds_process_wrap(process: Process):
 
         # see https://www.deepspeed.ai/docs/config-json/
         ds_config: dict = {
+            # optimization config example
             # "zero_optimization": {
             #     "stage": 0,
             #     "contiguous_gradients": True,
             #     "overlap_comm": True
+            # },
+
+            # tensor_parallel config example
+            # 'tensor_parallel': {
+            #     'autotp_size': 2,
+            #     'partition_config': {
+            #         "layer_specs": [
+            #             {
+            #                 "patterns": [''],
+            #                 "partition_type": "COLUMN",
+            #                 "shape": None
+            #             },
+            #             {
+            #                 "patterns": [''],
+            #                 "partition_type": "ROW",
+            #                 "shape": None
+            #             },
+            #             {
+            #                 "patterns": [''],
+            #                 "partition_type": "SKIP",
+            #                 "shape": None
+            #             }
+            #         ],
+            #         "use_default_specs": False,
+            #     },
             # },
         }
 
@@ -340,18 +369,28 @@ def ds_process_wrap(process: Process):
             super().init()
 
             def set_ddp(process_kwargs={}, **kwargs):
-                train_dataloader = process_kwargs['train_dataloader']
-                ds_config = self.ds_config
-                ds_config.setdefault('train_micro_batch_size_per_gpu', train_dataloader.batch_size)
-                self.model, self.optimizer, _, self.scheduler = deepspeed.initialize(
-                    args=args,
-                    model=self.model,
-                    optimizer=self.optimizer,
-                    lr_scheduler=self.scheduler,
-                    config=ds_config,
-                )
+                if not isinstance(self.model, deepspeed.runtime.engine.DeepSpeedEngine):
+                    ds_config = self.ds_config
+                    if 'train_dataloader' in process_kwargs:
+                        train_dataloader = process_kwargs['train_dataloader']
+                        ds_config.setdefault('train_micro_batch_size_per_gpu', train_dataloader.batch_size)
+                        self.model, self.optimizer, _, self.scheduler = deepspeed.initialize(
+                            args=args,
+                            model=self.model,
+                            optimizer=self.optimizer,
+                            lr_scheduler=self.scheduler,
+                            config=ds_config,
+                        )
+                    else:
+                        ds_config.setdefault('train_micro_batch_size_per_gpu', 1)
+                        self.model, _, _, _ = deepspeed.initialize(
+                            args=args,
+                            model=self.model,
+                            config=ds_config,
+                        )
 
             self.register_train_start(set_ddp)
+            self.register_val_start(set_ddp)
 
         def init_logs(self):
             # todo, make sure whether use logger in the sub process?
