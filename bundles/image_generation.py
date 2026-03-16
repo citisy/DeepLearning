@@ -46,7 +46,7 @@ class IgProcess(Process):
 
     def on_train_start(self, **kwargs):
         loop_objs, process_kwargs = super().on_train_start(**kwargs)
-        loop_objs['metric_kwargs'].update(
+        loop_objs.update(
             real_x=[],
         )
 
@@ -93,7 +93,7 @@ class IgProcess(Process):
             for model_name, results in model_results.items():
                 for data_name, items in results.items():
                     for i, image in enumerate(items):
-                        cache_dir = f'{self.cache_dir}/{sub_dir}/{model_name}'
+                        cache_dir = f'{self.cache_dir}/{self.counter.cur_period}/{sub_dir}/{model_name}'
                         image_save_stem = f'{sub_name}{data_name}.{i}'
                         self.visualize_one(image, cache_dir, model_name, image_save_stem, **kwargs)
 
@@ -110,7 +110,7 @@ class IgProcess(Process):
                 vis_num += n
 
     def _make_save_obj(self, save_to_one_dir):
-        date = str(datetime.now().isoformat(timespec='seconds', sep=' '))
+        date = str(datetime.now().isoformat(timespec='seconds', sep='-'))
         if save_to_one_dir:
             sub_dir = ''
             sub_name = date + '.'
@@ -159,6 +159,7 @@ class IgProcess(Process):
             return_outputs=True, process_results=dict(),
             **kwargs
     ):
+        super().on_predict_end(loop_objs, process_results=process_results, **kwargs)
         if return_outputs:
             results = [image for image in process_results[self.model_name]['fake_x']]
             self.on_val_end(None, process_results=process_results, **kwargs)
@@ -167,7 +168,7 @@ class IgProcess(Process):
     def visualize_synth(self, model_results, n, vis_num=0, save_to_one_dir=True, verbose=False, **kwargs):
         sub_dir, sub_name = self._make_save_obj(save_to_one_dir)
         for model_name, results in model_results.items():
-            cache_dir = f'{self.cache_dir}/{sub_dir}/{model_name}'
+            cache_dir = f'{self.cache_dir}/{self.counter.cur_period}/{sub_dir}/{model_name}'
             vis = DataVisualizer(cache_dir, verbose=verbose, pbar=False, stdout_method=self.log)
             vis_rets = []
             for data_name, images in results.items():
@@ -271,7 +272,7 @@ class WGAN(GanProcess):
             self.optimizer.optimizer_g.step()
             self.optimizer.optimizer_g.zero_grad()
 
-        real_x = loop_objs['metric_kwargs']['real_x']
+        real_x = loop_objs['real_x']
         if len(real_x) < self.val_data_num:
             images = images.data.mul(255).clamp_(0, 255).permute(0, 2, 3, 1).to("cpu", torch.uint8).numpy()
             real_x.extend(list(images)[:self.val_data_num - len(real_x)])
@@ -350,6 +351,8 @@ class DataProcess(DataHooks):
     ])
 
     post_aug = Apply([
+        channel.Keep3Dims(),
+        channel.Keep3Channels(),
         pixel_perturbation.MinMax(),
         # pixel_perturbation.Normalize(127.5, 127.5),
         channel.HWC2CHW()
@@ -529,7 +532,7 @@ class StyleGan(GanProcess):
         loss_g.backward()
         self.optimizer.optimizer_g.step()
 
-        real_x = loop_objs['metric_kwargs']['real_x']
+        real_x = loop_objs['real_x']
         if len(real_x) < self.val_data_num:
             images = images.data.mul(255).clamp_(0, 255).permute(0, 2, 3, 1).to("cpu", torch.uint8).numpy()
             real_x.extend(list(images)[:self.val_data_num - len(real_x)])
@@ -687,7 +690,7 @@ class VAE(IgProcess):
         images = torch.stack(images)
         output = self.model(images)
 
-        real_x = loop_objs['metric_kwargs']['real_x']
+        real_x = loop_objs['real_x']
         if len(real_x) < self.val_data_num:
             images = images.data.mul(255).clamp_(0, 255).permute(0, 2, 3, 1).to("cpu", torch.uint8).numpy()
             real_x.extend(list(images)[:self.val_data_num - len(real_x)])
@@ -795,13 +798,15 @@ class DiProcess(IgProcess):
             )
         return model_inputs
 
-    def on_train_step(self, loop_objs, **kwargs) -> dict:
+    def on_train_step(self, loop_objs, model_kwargs=dict(), **kwargs) -> dict:
         loop_inputs = loop_objs['loop_inputs']
         model_inputs = self.get_model_inputs(loop_inputs, train=True)
-        with torch.cuda.amp.autocast(True):
+        model_inputs.update(model_kwargs)
+
+        with torch.amp.autocast('cuda', dtype=torch.bfloat16, enabled=self.use_half):
             output = self.model(**model_inputs)
 
-        real_x = loop_objs['metric_kwargs']['real_x']
+        real_x = loop_objs['real_x']
         if len(real_x) < self.val_data_num:
             images = model_inputs['x']
             images = (images + 1) * 0.5
@@ -951,14 +956,16 @@ class WithLora(Process):
 
     def state_dict(self):
         state_dict = super().state_dict()
-        state_dict['lora'] = self.lora_wrap.state_dict()
+        if self.use_lora:
+            state_dict['lora'] = self.lora_wrap.state_dict()
         return state_dict
 
     def save_lora_weight(self, suffix, max_save_weight_num, **kwargs):
-        fp = f'{self.work_dir}/{suffix}.lora.safetensors'
-        torch_utils.Export.to_safetensors(self.lora_wrap.state_dict(), fp)
-        os_lib.FileCacher(self.work_dir, max_size=max_save_weight_num, stdout_method=self.log).delete_over_range(suffix=r'\d+\.lora\.safetensors')
-        self.log(f'Successfully save lora to {fp}!')
+        if self.use_lora:
+            fp = f'{self.work_dir}/{suffix}.lora.safetensors'
+            torch_utils.Export.to_safetensors(self.lora_wrap.state_dict(), fp)
+            os_lib.FileCacher(self.work_dir, max_size=max_save_weight_num, stdout_method=self.log).delete_over_range(suffix=r'\d+\.lora\.safetensors')
+            self.log(f'Successfully save lora to {fp}!')
 
 
 class WithSDLora(WithLora):
@@ -1223,7 +1230,7 @@ class SDPredictor(BaseSD):
 
     def val_data_augment(self, ret) -> dict:
         if 'image' in ret and ret['image'] is not None:
-            ret.update(dst=self.input_size)
+            ret.setdefault('dst', self.input_size)
             ret.update(self.val_aug(**ret))
         return ret
 
@@ -1232,6 +1239,7 @@ class SDPredictor(BaseSD):
         neg_texts = []
         images = []
         mask_images = []
+        image_size = self.input_size
         for ret in loop_inputs:
             if 'text' in ret:
                 texts.append(ret['text'])
@@ -1253,6 +1261,9 @@ class SDPredictor(BaseSD):
             if 'mask_image' in ret and ret['mask_image'] is not None:
                 mask_image = ret.pop('mask_image')
                 mask_images.append(torch.from_numpy(mask_image).to(self.device, non_blocking=True, dtype=torch.float))
+
+            if 'dst' in ret:
+                image_size = ret['dst']
 
         inputs = self.tokenizer.encode_attention_paragraphs(texts)
         text_ids = torch.tensor(inputs['segments_ids']).to(self.device)
@@ -1278,11 +1289,15 @@ class SDPredictor(BaseSD):
             neg_text_weights=neg_text_weights,
             x=images,
             mask_x=mask_images,
+            image_size=image_size
         )
 
     model_input_template = namedtuple('model_inputs', ['text', 'neg_text', 'image', 'mask_image'], defaults=[None, None])
 
-    def gen_predict_inputs(self, *objs, neg_texts=None, images=None, mask_images=None, start_idx=None, end_idx=None, **kwargs):
+    def gen_predict_inputs(
+            self, *objs, neg_texts=None, images=None, mask_images=None, image_size=None,
+            start_idx=None, end_idx=None, **kwargs
+    ):
         """
 
         Args:
@@ -1290,8 +1305,6 @@ class SDPredictor(BaseSD):
             neg_texts (str|List[str]):
             images (str|List[str]|np.ndarray|List[np.ndarray]):
             mask_images (str|List[str]|np.ndarray|List[np.ndarray]):
-            start_idx:
-            end_idx:
             **kwargs:
 
         Returns:
@@ -1312,7 +1325,13 @@ class SDPredictor(BaseSD):
 
         rets = []
         for text, neg_text, image, mask_image in zip(pos_texts, neg_texts, images, mask_images):
-            rets.append(self.model_input_template(image=image, text=text, neg_text=neg_text, mask_image=mask_image)._asdict())
+            rets.append(dict(
+                image=image,
+                text=text,
+                neg_text=neg_text,
+                mask_image=mask_image,
+                dst=image_size if image_size else self.input_size,
+            ))
 
         return rets
 
@@ -1397,7 +1416,7 @@ class SD_SimpleTextImage(SD, SimpleTextImage):
             process = Process(
                 data_dir='xxx',
 
-                use_half_lora=True,
+                # use_half_lora=False,
                 use_lora=True,
 
                 model_config=dict(
@@ -1405,7 +1424,7 @@ class SD_SimpleTextImage(SD, SimpleTextImage):
                         num_steps=20
                     )),
                     vae_config=dict(
-                        attn_type=2,
+                        attn_type='CrossAttention3DWithXformers',
                     ),
                     backbone_config=dict(
                         attend_type='ScaleAttendWithXformers',
@@ -1557,7 +1576,7 @@ class FluxPredictor(BaseFlux):
 
     def val_data_augment(self, ret) -> dict:
         if 'image' in ret and ret['image'] is not None:
-            ret.update(dst=self.input_size)
+            ret.setdefault('dst', self.input_size)
             ret.update(self.val_aug(**ret))
         return ret
 

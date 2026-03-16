@@ -112,7 +112,7 @@ class MetaAconC(nn.Module):
 class Swish(nn.Module):
     """same to nn.SiLU()"""
     def __init__(self, inplace=True):
-        super(Swish, self).__init__()
+        super().__init__()
         self.inplace = inplace
 
     def forward(self, x):

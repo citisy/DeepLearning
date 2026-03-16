@@ -16,8 +16,9 @@ class Config:
     def get(cls, name=None):
         config_dict = cls.make_full_config()
         if name not in config_dict:
-            warnings.warn(f'config `{name}` not in current config dict, the whole config keys is {list(config_dict.keys())}, '
-                          f'use default `{cls.default_model}` config now, please check about.')
+            if name is not None:
+                warnings.warn(f'Config of `{name}` is not in current config dict, where the whole config keys of `{list(config_dict.keys())}`, '
+                              f'using default config of `{cls.default_model}` now, please check about.')
             name = cls.default_model
         return config_dict[name]
 
@@ -66,3 +67,18 @@ class WeightLoader:
     @classmethod
     def auto_download(cls, save_path, **kwargs):
         raise NotImplemented
+
+
+class WeightConverter:
+    convert_dict = {}
+
+    @classmethod
+    def from_official(cls, state_dict, **kwargs):
+        state_dict = torch_utils.Converter.convert_keys(state_dict, cls.convert_dict)
+        return state_dict
+
+    @classmethod
+    def to_official(cls, state_dict, **kwargs):
+        convert_dict = {v: k for k, v in cls.convert_dict.items()}
+        state_dict = torch_utils.Converter.convert_keys(state_dict, convert_dict)
+        return state_dict

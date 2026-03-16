@@ -178,7 +178,7 @@ class Model(nn.ModuleList):
             self,
             lambda module: module.to(dtype),
             include=['cond', 'backbone', 'vae'],
-            exclude=[normalizations.GroupNorm32]
+            exclude=[normalizations.GroupNorm32, normalizations.RMSNorm]
         )
 
         modules = [self.sampler]
@@ -217,7 +217,7 @@ class Model(nn.ModuleList):
             return self.inference(*args, **kwargs)
 
     def fit(self, x, **kwargs):
-        # if training, x is x0, the real image
+        # x is x0, the real image
         return {'loss': self.sampler.loss(self.process, x, **kwargs)}
 
     def inference(self, x, **kwargs):

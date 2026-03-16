@@ -8,8 +8,9 @@ from collections import OrderedDict
 
 
 class Module(nn.Module):
-    def __init__(self, base_layer: nn.Module, r=8, multiplier=1.0, alpha=1, drop_prob=0.):
+    def __init__(self, base_layer: nn.Module, r=8, multiplier=1.0, alpha=None, drop_prob=0.):
         self.__dict__.update(base_layer.__dict__)
+        alpha = alpha or r // 2
         self.r = r
         self.scale = multiplier * alpha / r
 

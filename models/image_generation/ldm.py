@@ -252,7 +252,8 @@ class Model(ddim.Model):
 
     def make_diffuse(self, vae_config=Config.vae, backbone_config=Config.backbone, **kwargs):
         cond = self.make_cond(**kwargs)
-        vae = VAE.Model(self.img_ch, **vae_config)  # decode is in module, encode is head module
+        vae_config.setdefault('img_ch', self.img_ch)
+        vae = VAE.Model(**vae_config)  # decode is in module, encode is head module
         backbone = UNetModel(vae.z_ch, cond.output_size, **backbone_config)
 
         if not hasattr(cond, 'encode'):
@@ -282,14 +283,15 @@ class Model(ddim.Model):
             image_size[1] // self.vae.encoder.down_scale,
         )
 
-    def loss(self, x, text_ids=None, **kwargs):
+    def fit(self, x, text_ids=None, **kwargs):
+        # x is x0, the real image
         txt_cond = self.make_txt_cond(text_ids, **kwargs)
         kwargs.update(txt_cond)
 
         z, _, _ = self.vae.encode(x)
         x0 = self.scale_factor * z
 
-        return self.sampler.loss(self.process, x0, **kwargs)
+        return {'loss': self.sampler.loss(self.process, x0, **kwargs)}
 
     def inference(self, x=None, text_ids=None, mask_x=None, image_size=None, **kwargs):
         """
@@ -306,8 +308,8 @@ class Model(ddim.Model):
                 mask images, if given, run the inpaint mode
                 suggest has the same (h, w) of x
                 fall in [0, 1], 0 gives masked
-            scale:
-            strength:
+            scale: e_t = e_t_uncond + scale * (e_t - e_t_uncond)
+            strength: for img2img, repaint strength
 
         Returns:
             images
@@ -373,7 +375,7 @@ class Model(ddim.Model):
             i0 = int(strength * num_steps)
 
         timestep_seq = self.sampler.make_timesteps(i0, num_steps=num_steps)
-        t = timestep_seq[0]
+        t = timestep_seq[-1]
         t = torch.full((x0.shape[0],), t, device=x0.device, dtype=torch.long)
         xt = self.sampler.q_sample(x0, t, noise=noise)
         return xt, z, i0
