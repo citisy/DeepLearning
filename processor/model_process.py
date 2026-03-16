@@ -343,6 +343,11 @@ class ModelHooks:
         self.register_train_start(_load_checkpoint, 'load_checkpoint')
         self.register_val_start(partial(_load_checkpoint, exclude=['optimizer']), 'load_checkpoint')
 
+        def _gc(**kwargs):
+            torch_utils.ModuleManager.torch_gc()
+
+        self.register_val_end(_gc)
+
     counter: torch_utils.Counter
 
     def set_counter(self):
@@ -567,7 +572,7 @@ class ModelHooks:
         self.register_container(self.train_end_container, func, name, insert_idx, **kwargs)
 
     def on_train_start(
-            self, batch_size=None, max_epoch=None,
+            self, batch_size=None, max_epoch=None, max_num=None,
             train_dataloader=None, val_dataloader=None, check_period=None, check_strategy=EPOCH,
             init_weight=False, is_metric=True,
             metric_kwargs=dict(), data_get_kwargs=dict(), data_preprocess_kwargs=dict(), dataloader_kwargs=dict(),
@@ -575,7 +580,7 @@ class ModelHooks:
     ):
         assert self.models, 'model list is empty, it seems that you have not init the processor first, perhaps run `processor.init()` first?'
         assert batch_size, 'please set `batch_size`'
-        assert max_epoch, 'please set `max_epoch`'
+        assert max_epoch or max_num, 'please set `max_epoch` or `max_num`'
         self.log(f'{batch_size = }')
         if check_strategy == EPOCH:
             self.log(f'check_strategy = `{check_strategy}`, it will be check the training result in every {check_period} epochs!')
@@ -606,6 +611,8 @@ class ModelHooks:
         if train_dataloader is None:
             train_dataloader = self.get_train_dataloader(data_get_kwargs=data_get_kwargs, data_preprocess_kwargs=data_preprocess_kwargs, dataloader_kwargs=dataloader_kwargs)
 
+        max_epoch = max_epoch or int(np.ceil(max_num / len(train_dataloader.dataset)))
+
         if is_metric:
             metric_kwargs = metric_kwargs.copy()
             metric_kwargs.setdefault('batch_size', batch_size)
@@ -630,6 +637,7 @@ class ModelHooks:
         process_kwargs = dict(
             train_dataloader=train_dataloader,
             metric_kwargs=metric_kwargs,
+            max_epoch=max_epoch
         )
 
         for name, func, params in self.train_start_container:
@@ -1123,4 +1131,6 @@ class ModelHooks:
 
     def on_predict_end(self, loop_objs, process_results=dict(), **kwargs):
         """visualize results and the return the results"""
+        for name, func, params in self.val_end_container:
+            func(loop_objs=loop_objs, process_results=process_results, **params, **kwargs)
         return process_results[self.model_name]

@@ -188,7 +188,7 @@ class Process(
         else:
             self.device = torch.device('cpu')
 
-    use_pretrained: bool = True
+    use_pretrained: bool = False
 
     def set_model_status(self):
         if self.use_pretrained:

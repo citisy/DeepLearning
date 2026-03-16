@@ -56,8 +56,15 @@ class LogHooks:
     ]
     work_dir: str
     wandb_id: Annotated[str, 'for wandb logging']
+    wandb_api_key: str
 
     def init_wandb(self):
+        self.wandb = self.make_wandb()
+        self.register_logger(WANDB, lambda item, **kwargs: self.wandb.log(item))
+        self.register_train_start(self._wandb_init)
+        self.register_train_end(self.wandb.finish)
+
+    def make_wandb(self):
         if self.use_wandb:
             try:
                 # note, can replace wandb to swanlab now
@@ -70,20 +77,17 @@ class LogHooks:
         else:
             wandb = log_utils.FakeWandb()
 
-        self.wandb = wandb
-        self.register_logger(WANDB, lambda item, **kwargs: wandb.log(item))
-        self.register_train_start(self._wandb_init)
-        self.register_train_end(wandb.finish)
+        return wandb
 
-    def _wandb_init(self, *args, wandb_api_key=None, **kwargs):
+    def _wandb_init(self, *args, **kwargs):
         # only init wandb runner before training
-        self.wandb.login(api_key=wandb_api_key)
+        self.wandb.login(api_key=self.wandb_api_key)
         wandb_run = self.wandb.init(
             project=self.model_version,
             name=self.dataset_version,
             dir=f'{self.work_dir}',
             id=self.__dict__.get('wandb_id'),
-            reinit=True
+            resume=True
         )
         # for retraining
         self.wandb_id = wandb_run.id
