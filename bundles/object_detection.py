@@ -1,4 +1,5 @@
 import copy
+import time
 from pathlib import Path
 from typing import Iterable, List, Optional
 
@@ -143,6 +144,17 @@ class OdProcess(Process):
                 pred['_id'] = ret['_id']
                 preds.append(pred)
 
+    def on_predict_reprocess(self, loop_objs, process_results=dict(), **kwargs):
+        loop_inputs = loop_objs['loop_inputs']
+        model_results = loop_objs['model_results']
+
+        for name, results in model_results.items():
+            r = process_results.setdefault(name, dict())
+            preds = r.setdefault('preds', [])
+            for ret, pred in zip(loop_inputs, results['preds']):
+                pred['_id'] = ret['_id']
+                preds.append(pred)
+
     def visualize(self, loop_objs, n, **kwargs):
         loop_inputs = loop_objs['loop_inputs']
         model_results = loop_objs['model_results']
@@ -207,10 +219,15 @@ class OdProcess(Process):
 
     def gen_predict_inputs(self, *objs, start_idx=None, end_idx=None, **kwargs) -> List[dict]:
         images = objs[0][start_idx: end_idx]
-        images = [os_lib.loader.load_img(image, channel_fixed_3=True) if isinstance(image, str) else image for image in images]
         rets = []
         for image in images:
+            if isinstance(image, str):
+                _id = Path(image).name
+                image = os_lib.loader.load_img(image, channel_fixed_3=True)
+            else:
+                _id = str(time.time()) + '.png'
             rets.append(dict(
+                _id=_id,
                 image=image
             ))
         return rets

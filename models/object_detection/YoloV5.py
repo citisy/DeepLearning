@@ -411,7 +411,7 @@ class Head(nn.Module):
                 anchor_grid = (self.anchors[i]).view((1, self.n_anchors, 1, 1, 2)).expand(1, self.n_anchors, h, w, 2)
                 self.anchor_grid.append(anchor_grid)
 
-        # note that, do not use in place mode, like f[:,:] = f[:,:]
+        # note, do not use inplace mode, like f[:,:] = f[:,:]
         # it would make training going wrong and loss going nan
         for i, f in enumerate(features):
             xy, wh, _ = f.split((2, 2, self.n_classes + 1), -1)
