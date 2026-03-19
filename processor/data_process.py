@@ -314,13 +314,13 @@ class DataHooks:
             **dataloader_kwargs
         )
 
-    def get_train_data(self, *args, **kwargs) -> Optional[Iterable | Dataset | List[Dataset]]:
-        return self.get_data(*args, train=True, **kwargs)
+    def get_train_data(self, *args, **data_get_kwargs) -> Optional[Iterable | Dataset | List[Dataset]]:
+        return self.get_data(*args, train=True, **data_get_kwargs)
 
-    def get_val_data(self, *args, **kwargs) -> Optional[Iterable | Dataset | List[Dataset]]:
-        return self.get_data(*args, train=False, **kwargs)
+    def get_val_data(self, *args, **data_get_kwargs) -> Optional[Iterable | Dataset | List[Dataset]]:
+        return self.get_data(*args, train=False, **data_get_kwargs)
 
-    def get_data(self, *args, train=True, **kwargs) -> Optional[Iterable | Dataset | List[Dataset]]:
+    def get_data(self, *args, train=True, **data_get_kwargs) -> Optional[Iterable | Dataset | List[Dataset]]:
         raise NotImplementedError
 
     def train_data_preprocess(self, iter_data, **kwargs):

@@ -56,7 +56,7 @@ class LogHooks:
     ]
     work_dir: str
     wandb_id: Annotated[str, 'for wandb logging']
-    wandb_api_key: str
+    wandb_api_key: str = ''
 
     def init_wandb(self):
         self.wandb = self.make_wandb()

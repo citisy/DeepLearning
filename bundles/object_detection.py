@@ -64,7 +64,7 @@ class OdProcess(Process):
         # note that, amp method can make the model run in dtype of half
         # even though input has dtype of torch.half and weight has dtype of torch.float
         # so that, it would run in lower memory and cost less time
-        with torch.amp.autocast('cuda', enabled=True):
+        with torch.amp.autocast('cuda', dtype=torch.bfloat16, enabled=True):
             output = self.model(**inputs)
 
         return output
@@ -441,23 +441,27 @@ class Yolov5Dataset(Yolov5Aug):
 
     input_size = 640  # special input_size from official yolov5
 
-    def get_data(self, *args, train=True, **kwargs):
+    def get_data(self, *args, train=True, **data_get_kwargs):
         from data_parse.cv_data_parse.datasets.YoloV5 import Loader, DataRegister
 
-        def convert_func(ret):
+        def on_end_convert(ret):
             if isinstance(ret['image'], np.ndarray):
                 h, w, c = ret['image'].shape
                 ret['bboxes'] = cv_utils.CoordinateConvert.mid_xywh2top_xyxy(ret['bboxes'], wh=(w, h), blow_up=True)
 
             return ret
 
-        loader = Loader(self.data_dir)
-        loader.on_end_convert = convert_func
+        loader = Loader(
+            self.data_dir,
+            on_end_convert=on_end_convert,
+        )
 
+        data_get_kwargs.setdefault('image_type', DataRegister.ARRAY)
+        data_get_kwargs.setdefault('generator', False)
         if train:
-            return loader(set_type=DataRegister.TRAIN, image_type=DataRegister.ARRAY, generator=False, **kwargs)[0]
+            return loader.load(set_type=DataRegister.TRAIN, **data_get_kwargs)[0]
         else:
-            return loader(set_type=DataRegister.VAL, image_type=DataRegister.ARRAY, generator=False, **kwargs)[0]
+            return loader.load(set_type=DataRegister.VAL, **data_get_kwargs)[0]
 
 
 class YoloV5_yolov5(YoloV5, Yolov5Dataset):
@@ -488,7 +492,6 @@ class YoloV5_yolov5(YoloV5, Yolov5Dataset):
             dataloader_kwargs=dict(num_workers=min(train_batch_size, 16)),
             metric_kwargs=dict(is_visualize=True, max_vis_num=8),
         )
-        process.save(process.default_model_path)
 
         ######## val ##########
         process.load(f'{process.work_dir}/last.pth')

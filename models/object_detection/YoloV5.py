@@ -182,7 +182,7 @@ class Model(nn.Module):
         """
 
         Args:
-            preds: (b, n, 4 + 1 + n_class)
+            preds (list): n_features * (b, n_anchors, 2 + 2 + 1 + n_class)
 
         """
         preds = self.gen_preds(preds)
@@ -214,6 +214,12 @@ class Model(nn.Module):
         return preds
 
     def parse_preds(self, preds):
+        """
+
+        Args:
+            preds: (b, n_anchors * n_features, 4 + 1 + n_class)
+
+        """
         result = []
         for i, x in enumerate(preds):
             conf = x[:, 4]
@@ -262,13 +268,13 @@ class Model4Export(Model):
         return preds
 
     def pre_process(self, x):
-        """for faster infer, use uint8 input and fp16 to process"""
-        x = x.to(dtype=torch.float16)
+        """for faster infer, use uint8 input and bfp16 to process"""
+        x = x.to(dtype=torch.bfloat16)
         x = x / 255
         return x
 
     def post_process(self, preds):
-        """for faster infer, only output 500 bboxes"""
+        """for faster infer, only output 500 bboxes, and output fp16"""
         preds = self.gen_preds(preds)
         conf = preds[:, :, 4]
         _, indices = torch.sort(conf, dim=-1, descending=True)
@@ -430,6 +436,8 @@ class Head(nn.Module):
 
         Args:
             features (List[torch.Tensor]): n_features * (b, n_anchors, h, w, 4 + 1 + n_class)
+            gt_boxes (List[torch.Tensor]): b * (n_boxes, 4), 4 gives (x1, y1, x2, y2)
+            gt_cls (List[torch.Tensor]): b * (n_boxes, )
 
         Returns:
 
@@ -446,6 +454,7 @@ class Head(nn.Module):
             convert_bbox = boxes.clone()
             convert_bbox[:, 0:2] = (boxes[:, 0:2] + boxes[:, 2:4]) / 2
             convert_bbox[:, 2:4] = boxes[:, 2:4] - boxes[:, 0:2]
+            # to ref distance, in [0, 1]
             convert_bbox = convert_bbox / image_size
             boxes = convert_bbox
 
@@ -460,7 +469,6 @@ class Head(nn.Module):
         ai = torch.arange(self.n_anchors).to(targets).view(self.n_anchors, 1).repeat(1, nt)
         targets = torch.cat((targets.repeat(self.n_anchors, 1, 1), ai[..., None]), 2)  # (na, nt, 7), 7 gives xywh+cls+bi+ai
 
-        g = 0.5  # bias
         off = torch.tensor([
             [0, 0],
             [1, 0],
@@ -468,7 +476,7 @@ class Head(nn.Module):
             [-1, 0],
             [0, -1],  # j,k,l,m
             # [1, 1], [1, -1], [-1, 1], [-1, -1],  # jk,jm,lk,lm
-        ], device=targets.device).float() * g  # offsets
+        ], device=targets.device).float() * 0.5  # offsets
 
         for i, (pi, anchors, hw) in enumerate(zip(features, self.anchors, feature_sizes)):
             if not nt:
