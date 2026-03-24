@@ -49,11 +49,11 @@ class Config(bundles.Config):
             ),
 
             'vit_l': dict(
-                image_encoder_config=cls.vit_h_image_encoder
+                image_encoder_config=cls.vit_l_image_encoder
             ),
 
             'vit_b': dict(
-                image_encoder_config=cls.vit_h_image_encoder
+                image_encoder_config=cls.vit_b_image_encoder
             ),
         }
 
@@ -208,34 +208,7 @@ class Model(nn.Module):
             in_points = points[i: i + self.points_per_batch]
 
             in_points = in_points.to(features)
-            sparse_embeddings, dense_embeddings = self.prompt_encoder(in_points[:, None, :], in_labels)
-
-            batch_masks, batch_iou_predictions = self.mask_decoder(
-                image_embeddings=features,
-                sparse_prompt_embeddings=sparse_embeddings,
-                dense_prompt_embeddings=dense_embeddings,
-                image_pe=self.prompt_encoder.dense_pe,
-                multimask_output=multimask_output
-            )
-
-            batch_masks = F.interpolate(
-                batch_masks,
-                (self.input_size, self.input_size),
-                mode="bilinear",
-                align_corners=False,
-            )
-
-            batch_masks = batch_masks.flatten(0, 1)
-            batch_iou_predictions = batch_iou_predictions.flatten(0, 1)
-
-            keep = batch_iou_predictions > self.pred_iou_thresh
-            batch_masks, batch_iou_predictions = batch_masks[keep], batch_iou_predictions[keep]
-
-            stability_score = self.calculate_stability_score(batch_masks)
-            keep = stability_score >= self.stability_score_thresh
-            batch_masks, batch_iou_predictions = batch_masks[keep], batch_iou_predictions[keep]
-
-            batch_masks = batch_masks > self.mask_threshold
+            batch_masks, batch_iou_predictions = self.post_process_one_image_with_points(features, in_points, in_labels, multimask_output=multimask_output)
             batch_boxes = self.batched_mask_to_box(batch_masks)
 
             masks.append(batch_masks)
@@ -260,6 +233,37 @@ class Model(nn.Module):
 
         return label_mask
 
+    def post_process_one_image_with_points(self, features, in_points, in_labels=None, multimask_output=True):
+        sparse_embeddings, dense_embeddings = self.prompt_encoder(in_points[:, None, :], in_labels)
+
+        batch_masks, batch_iou_predictions = self.mask_decoder(
+            image_embeddings=features,
+            sparse_prompt_embeddings=sparse_embeddings,
+            dense_prompt_embeddings=dense_embeddings,
+            image_pe=self.prompt_encoder.dense_pe,
+            multimask_output=multimask_output
+        )
+
+        batch_masks = F.interpolate(
+            batch_masks,
+            (self.input_size, self.input_size),
+            mode="bilinear",
+            align_corners=False,
+        )
+
+        batch_masks = batch_masks.flatten(0, 1)
+        batch_iou_predictions = batch_iou_predictions.flatten(0, 1)
+
+        keep = batch_iou_predictions > self.pred_iou_thresh
+        batch_masks, batch_iou_predictions = batch_masks[keep], batch_iou_predictions[keep]
+
+        stability_score = self.calculate_stability_score(batch_masks)
+        keep = stability_score >= self.stability_score_thresh
+        batch_masks, batch_iou_predictions = batch_masks[keep], batch_iou_predictions[keep]
+
+        batch_masks = batch_masks > self.mask_threshold
+        return batch_masks, batch_iou_predictions
+
     def make_grid_points(self):
         # n_points = (n_grids[0] + 1) * (n_grids[1] + 1)
         offset_x, offset_y = map(lambda x: 1 / (2 * (x + 1)), self.n_grids)
@@ -278,7 +282,7 @@ class Model(nn.Module):
                 l + self.grid_points[:, 0] * dx,
                 t + self.grid_points[:, 1] * dy
             ], axis=1)
-            points.append(in_points)
+            points.append(torch.from_numpy(in_points))
 
         return points
 
@@ -371,42 +375,25 @@ class Model4Export(Model):
             setattr(current_m, name, torch.jit.script(old))
 
     def forward(self, x, points, in_labels=None, multimask_output=True):
+        """
+
+        Args:
+            x: shape of (3, h, w), only support one image
+            points:
+            in_labels:
+            multimask_output:
+
+        Returns:
+
+        """
         x = self.pre_process(x)
         features = self.image_encoder(x)
-
-        sparse_embeddings, dense_embeddings = self.prompt_encoder(points[:, None, :], in_labels)
-
-        batch_masks, batch_iou_predictions = self.mask_decoder(
-            image_embeddings=features,
-            sparse_prompt_embeddings=sparse_embeddings,
-            dense_prompt_embeddings=dense_embeddings,
-            image_pe=self.prompt_encoder.dense_pe,
-            multimask_output=multimask_output
-        )
-
-        batch_masks = F.interpolate(
-            batch_masks,
-            (self.input_size, self.input_size),
-            mode="bilinear",
-            align_corners=False,
-        )
-
-        batch_masks = batch_masks.flatten(0, 1)
-        batch_iou_predictions = batch_iou_predictions.flatten(0, 1)
-
-        keep = batch_iou_predictions > self.pred_iou_thresh
-        batch_masks, batch_iou_predictions = batch_masks[keep], batch_iou_predictions[keep]
-
-        stability_score = self.calculate_stability_score(batch_masks)
-        keep = stability_score >= self.stability_score_thresh
-        batch_masks, batch_iou_predictions = batch_masks[keep], batch_iou_predictions[keep]
-
-        batch_masks = batch_masks > self.mask_threshold
-        return batch_masks, batch_iou_predictions
+        return self.post_process_one_image_with_points(features, points, in_labels, multimask_output)
 
     def pre_process(self, x):
         """for faster infer, use uint8 input and fp32 to output"""
-        x = x.to(dtype=torch.float32)  # cannot use fp16
+        x = x[None]
+        x = x.to(dtype=torch.float32)  # cannot use fp16/bf16, there is precision missing
         x = (x - self.mean) / self.std
         return x
 
@@ -528,7 +515,7 @@ class PromptEncoder(nn.Module):
             Conv(mask_in_ch, embed_dim, 1, mode='c'),
         )
         self.no_mask_embed = nn.Embedding(1, embed_dim)
-        self.register_buffer('_padding_embedding', torch.zeros((1, embed_dim)), persistent=False)
+        # self.register_buffer('_padding_embedding', torch.zeros((1, embed_dim)), persistent=False)
 
     @property
     def dense_pe(self):
@@ -555,7 +542,8 @@ class PromptEncoder(nn.Module):
 
         if pad:
             # note, suit for exporting
-            padding_embedding = torch.repeat_interleave(self._padding_embedding[None], int(point_embedding.shape[0]), dim=0)
+            # padding_embedding = torch.repeat_interleave(self._padding_embedding[None], int(point_embedding.shape[0]), dim=0)
+            padding_embedding = torch.zeros_like(point_embedding)
             point_embedding = torch.cat([point_embedding, padding_embedding], dim=1)
 
         return point_embedding
@@ -897,10 +885,11 @@ class MaskDecoder(nn.Module):
         output_tokens = output_tokens.unsqueeze(0).expand(sparse_prompt_embeddings.size(0), -1, -1)
         tokens = torch.cat((output_tokens, sparse_prompt_embeddings), dim=1)
 
-        # Expand per-image data in batch direction to be per-mask
-        src = torch.repeat_interleave(image_embeddings, int(tokens.shape[0]), dim=0)
+        # it seems that it is a bug for torch export, just fix by it, thought it is not elegant
+        repeats = tokens.shape[0].to(image_embeddings.device) if torch.is_tensor(tokens.shape[0]) else tokens.shape[0]
+        src = torch.repeat_interleave(image_embeddings, repeats, dim=0)
         src = src + dense_prompt_embeddings
-        pos_src = torch.repeat_interleave(image_pe, int(tokens.shape[0]), dim=0)
+        pos_src = torch.repeat_interleave(image_pe, repeats, dim=0)
         b, c, h, w = src.shape
 
         # Run the transformer

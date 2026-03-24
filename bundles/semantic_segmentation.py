@@ -136,13 +136,13 @@ class SegProcess(Process):
                     for c in np.unique(true):
                         true_image[true == c] = visualize.get_color_array(c)
 
-                pred_image = np.zeros((*pred.shape, 3), dtype=pred.dtype) + 255
+                pred_image = np.zeros((*pred.shape, 3), dtype=np.uint8) + 255
                 for c in np.unique(pred):
                     pred_image[pred == c] = visualize.get_color_array(c)
 
                 vis_trues.append(dict(
                     _id=gt_ret['_id'],
-                    image=gt_ret['ori_image'],
+                    image=channel.Keep3Channels().apply_image(gt_ret['ori_image']),
                     label_mask=true_image
                 ))
                 vis_preds.append(dict(
@@ -158,13 +158,22 @@ class SegProcess(Process):
 
     def gen_predict_inputs(self, *objs, start_idx=None, end_idx=None, ids=None, **kwargs):
         images = objs[0]
-        if ids is None:
-            ids = [f'{i}.png' for i in range(start_idx, end_idx)]
+        if not isinstance(ids, list):
+            ids = [ids for _ in range(end_idx)]
 
         rets = []
-        for image, _id in zip(images[start_idx: end_idx], ids):
+        for i in range(start_idx, end_idx):
+            image = images[i]
+            _id = ids[i]
             if isinstance(image, str):
+                if _id is None:
+                    _id = Path(image).name
+
                 image = os_lib.loader.load_img(image)
+
+            if _id is None:
+                _id = f'{i}.png'
+
             rets.append(dict(
                 ori_image=image,
                 image=image,
@@ -228,9 +237,9 @@ class Voc(SegDataProcess):
 
         loader = Loader(self.data_dir)
         if train:
-            return loader(set_type=DataRegister.TRAIN, generator=False, image_type=DataRegister.PATH, set_task=SEG_CLS)[0]
+            return loader.load(set_type=DataRegister.TRAIN, generator=False, image_type=DataRegister.PATH, set_task=SEG_CLS)[0]
         else:
-            return loader(set_type=DataRegister.VAL, generator=False, image_type=DataRegister.PATH, set_task=SEG_CLS)[0]
+            return loader.load(set_type=DataRegister.VAL, generator=False, image_type=DataRegister.PATH, set_task=SEG_CLS)[0]
 
     def data_augment(self, ret, train=True) -> dict:
         if train:
@@ -241,11 +250,12 @@ class Voc(SegDataProcess):
         ret.update(self.aug(**ret))
         ret.update(self.post_aug(**ret))
 
-        label_mask = ret['label_mask']
-        if train:
-            label_mask = self.rand_aug1.apply_image(label_mask, ret)
-        label_mask = self.mask_aug.apply_image(label_mask, ret)
-        ret['label_mask'] = label_mask
+        if 'label_mask' in ret:
+            label_mask = ret['label_mask']
+            if train:
+                label_mask = self.rand_aug1.apply_image(label_mask, ret)
+            label_mask = self.mask_aug.apply_image(label_mask, ret)
+            ret['label_mask'] = label_mask
 
         return ret
 
@@ -344,6 +354,8 @@ class VocForSAM(Voc):
     rand_aug2 = RandomApply([pixel_perturbation.Jitter()])
 
     post_aug = Apply([
+        channel.Keep3Dims(),
+        channel.Keep3Channels(),
         pixel_perturbation.Normalize(
             [123.675, 116.28, 103.53],
             [58.395, 57.12, 57.375]
@@ -361,13 +373,15 @@ class SAM_Voc(SegProcess, VocForSAM):
     """
 
     model_version = 'SAM'
+    config_version = 'vit_h'
 
     def set_model(self):
-        from models.semantic_segmentation.SAM import Model
+        from models.semantic_segmentation.SAM import Model, Config
 
         self.model = Model(
             in_ch=self.in_ch,
             input_size=self.input_size,
+            **Config.get(self.config_version)
         )
 
     def load_pretrained(self):
@@ -378,8 +392,8 @@ class SAM_Voc(SegProcess, VocForSAM):
         self.model.load_state_dict(state_dict, strict=False)
 
     def get_model_inputs(self, loop_inputs, train=True):
-        r = super().get_model_inputs(loop_inputs, train)
-        x = r['x']
+        inputs = super().get_model_inputs(loop_inputs, train)
+        x = inputs['x']
 
         effective_areas = []
         for ret in loop_inputs:
@@ -391,10 +405,10 @@ class SAM_Voc(SegProcess, VocForSAM):
             r = pad_info.get('r', 0)
             effective_areas.append([l, w - r, t, h - d])
 
-        r.update(
+        inputs.update(
             effective_areas=effective_areas
         )
-        return r
+        return inputs
 
 
 class U2net_Voc(SegProcess, Voc):
