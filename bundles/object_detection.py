@@ -508,10 +508,6 @@ class YoloV5_yolov5(YoloV5, Yolov5Dataset):
             print(v)
     """
 
-    def __init__(self, classes=None, **kwargs):
-        kwargs.setdefault('n_classes', len(classes))
-        super().__init__(**kwargs)
-
 
 class PPOCRv4Det(Process):
     model_version = 'PPOCRv4_det'

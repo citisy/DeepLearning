@@ -48,7 +48,7 @@ class Model(nn.Module):
 
     def post_process(self, head_outs):
         pred_scores, pred_dist, anchor_points, stride_tensor = head_outs
-        pred_bboxes = self.batch_distance2bbox(anchor_points, pred_dist)
+        pred_bboxes = batch_distance2bbox(anchor_points, pred_dist)
         pred_bboxes *= stride_tensor
         pred_scores = pred_scores.permute([0, 2, 1])  # (b, n, n_classes), no confidence
         result = []
@@ -65,35 +65,12 @@ class Model(nn.Module):
             })
         return result
 
-    def batch_distance2bbox(self, points, distance, max_shapes=None):
-        """Decode distance prediction to bounding box for batch.
-        Args:
-            points (Tensor): [B, ..., 2], "xy" format
-            distance (Tensor): [B, ..., 4], "ltrb" format
-            max_shapes (Tensor): [B, 2], "h,w" format, Shape of the image.
-        Returns:
-            Tensor: Decoded bboxes, "x1y1x2y2" format.
-        """
-        lt, rb = torch.split(distance, 2, -1)
-        # while tensor add parameters, parameters should be better placed on the second place
-        x1y1 = -lt + points
-        x2y2 = rb + points
-        out_bbox = torch.cat([x1y1, x2y2], -1)
-        if max_shapes is not None:
-            max_shapes = max_shapes.flip(-1).tile([1, 2])
-            delta_dim = out_bbox.ndim - max_shapes.ndim
-            for _ in range(delta_dim):
-                max_shapes.unsqueeze_(1)
-            out_bbox = torch.where(out_bbox < max_shapes, out_bbox, max_shapes)
-            out_bbox = torch.where(out_bbox > 0, out_bbox, torch.zeros_like(out_bbox))
-        return out_bbox
-
 
 class Model4Export(Model):
     """for exporting to onnx, torchscript, etc."""
 
     def inference(self, x, **kwargs):
-        # x = self.pre_process(x)
+        x = self.pre_process(x)
         neck_feats = self.process(x)
         yolo_head_outs = self.yolo_head(neck_feats)
         preds = self.post_process(yolo_head_outs)
@@ -108,12 +85,17 @@ class Model4Export(Model):
     def post_process(self, head_outs):
         """for faster infer, only output 500 bboxes"""
         pred_scores, pred_dist, anchor_points, stride_tensor = head_outs
-        pred_bboxes = self.batch_distance2bbox(anchor_points, pred_dist)
+        pred_bboxes = batch_distance2bbox(anchor_points, pred_dist)
         pred_bboxes *= stride_tensor
         pred_scores = pred_scores.permute([0, 2, 1])
         conf, _ = pred_scores.max(-1)
         _, indices = torch.sort(conf, dim=-1, descending=True)
-        preds = torch.cat([pred_bboxes, pred_scores], dim=-1)
+        # keep the output performance same as yolov5
+        preds = torch.cat([
+            pred_bboxes,
+            torch.ones_like(conf).unsqueeze(-1),  # no conf
+            pred_scores
+        ], dim=-1)
         indices = indices[:, :500].unsqueeze(-1).expand(-1, -1, preds.shape[-1])
         preds = preds.gather(1, indices)
         preds = preds.to(dtype=torch.float16)
@@ -676,12 +658,12 @@ class PPYOLOEHead(nn.Module):
         stride_tensor = []
         for i, stride in enumerate(self.fpn_strides):
             _, _, h, w = feats[i].shape
-            shift_x = torch.arange(end=w, device=feats[i].device) + self.grid_cell_offset
-            shift_y = torch.arange(end=h, device=feats[i].device) + self.grid_cell_offset
+            shift_x = torch.arange(end=w).to(feats[i]) + self.grid_cell_offset
+            shift_y = torch.arange(end=h).to(feats[i]) + self.grid_cell_offset
             shift_y, shift_x = torch.meshgrid(shift_y, shift_x)
-            anchor_point = torch.stack([shift_x, shift_y], dim=-1).to(torch.float32)
+            anchor_point = torch.stack([shift_x, shift_y], dim=-1)
             anchor_points.append(anchor_point.reshape([-1, 2]))
-            stride_tensor.append(torch.full((h * w, 1), stride, dtype=torch.float32, device=feats[i].device))
+            stride_tensor.append(torch.full((h * w, 1), stride).to(feats[i]))
         anchor_points = torch.cat(anchor_points)
         stride_tensor = torch.cat(stride_tensor)
         return anchor_points, stride_tensor
@@ -706,10 +688,11 @@ class PPYOLOEHead(nn.Module):
         cls_score_list = torch.concat(cls_score_list, dim=1)
         reg_distri_list = torch.concat(reg_distri_list, dim=1)
 
-        return self.get_loss([
+        return self.get_loss(
             cls_score_list, reg_distri_list, anchors, anchor_points,
-            num_anchors_list, stride_tensor
-        ], gt_boxes, gt_cls)
+            num_anchors_list, stride_tensor,
+            gt_boxes, gt_cls
+        )
 
     def generate_anchors_for_grid_cell(
             self, feats,
@@ -762,13 +745,13 @@ class PPYOLOEHead(nn.Module):
         stride_tensor.requires_grad = False
         return anchors, anchor_points, num_anchors_list, stride_tensor
 
-    def get_loss(self, head_outs, gt_boxes, gt_cls):
-        pred_scores, pred_distri, anchors, anchor_points, num_anchors_list, stride_tensor = head_outs
-
+    def get_loss(self, pred_scores, pred_distri, anchors, anchor_points, num_anchors_list, stride_tensor, gt_boxes, gt_cls):
         anchor_points_s = anchor_points / stride_tensor
         pred_bboxes = self._bbox_decode(anchor_points_s, pred_distri)
 
         gt_labels, gt_bboxes, _, pad_gt_mask = self.pad_gt(gt_cls, gt_boxes)
+
+        alpha_l = -1
 
         if self.sm_use:
             # only used in smalldet of PPYOLOE-SOD model
@@ -801,7 +784,6 @@ class PPYOLOEHead(nn.Module):
                 assigned_bboxes = self.assigned_bboxes
                 assigned_scores = self.assigned_scores
 
-            alpha_l = -1
         # rescale bbox
         assigned_bboxes = assigned_bboxes / stride_tensor
 
@@ -832,10 +814,10 @@ class PPYOLOEHead(nn.Module):
         num_max_boxes = max([len(a) for a in gt_bboxes])
         batch_size = len(gt_bboxes)
         # pad label and bbox
-        pad_gt_labels = torch.zeros([batch_size, num_max_boxes, 1], dtype=gt_labels[0].dtype, device=gt_labels[0].device)
-        pad_gt_bboxes = torch.zeros([batch_size, num_max_boxes, 4], dtype=gt_bboxes[0].dtype, device=gt_bboxes[0].device)
-        pad_gt_scores = torch.zeros([batch_size, num_max_boxes, 1], dtype=gt_bboxes[0].dtype, device=gt_bboxes[0].device)
-        pad_gt_mask = torch.zeros([batch_size, num_max_boxes, 1], dtype=gt_bboxes[0].dtype, device=gt_bboxes[0].device)
+        pad_gt_labels = torch.zeros([batch_size, num_max_boxes, 1]).to(gt_labels[0])
+        pad_gt_bboxes = torch.zeros([batch_size, num_max_boxes, 4]).to(gt_bboxes[0])
+        pad_gt_scores = torch.zeros([batch_size, num_max_boxes, 1]).to(gt_bboxes[0])
+        pad_gt_mask = torch.zeros([batch_size, num_max_boxes, 1]).to(gt_bboxes[0])
         for i, (label, bbox) in enumerate(zip(gt_labels, gt_bboxes)):
             if len(label) > 0 and len(bbox) > 0:
                 pad_gt_labels[i, :len(label), 0] = label
@@ -909,29 +891,6 @@ class PPYOLOEHead(nn.Module):
             shape = tensor.shape
             return shape
 
-        def batch_distance2bbox(points, distance, max_shapes=None):
-            """Decode distance prediction to bounding box for batch.
-            Args:
-                points (Tensor): [B, ..., 2], "xy" format
-                distance (Tensor): [B, ..., 4], "ltrb" format
-                max_shapes (Tensor): [B, 2], "h,w" format, Shape of the image.
-            Returns:
-                Tensor: Decoded bboxes, "x1y1x2y2" format.
-            """
-            lt, rb = torch.split(distance, 2, -1)
-            # while tensor add parameters, parameters should be better placed on the second place
-            x1y1 = -lt + points
-            x2y2 = rb + points
-            out_bbox = torch.concat([x1y1, x2y2], -1)
-            if max_shapes is not None:
-                max_shapes = max_shapes.flip(-1).tile([1, 2])
-                delta_dim = out_bbox.ndim - max_shapes.ndim
-                for _ in range(delta_dim):
-                    max_shapes.unsqueeze_(1)
-                out_bbox = torch.where(out_bbox < max_shapes, out_bbox, max_shapes)
-                out_bbox = torch.where(out_bbox > 0, out_bbox, torch.zeros_like(out_bbox))
-            return out_bbox
-
         _, l, _ = get_static_shape(pred_dist)
         pred_dist = F.softmax(pred_dist.reshape([-1, l, 4, self.reg_channels]))
         pred_dist = self.proj_conv(pred_dist.permute([0, 3, 1, 2])).squeeze(1)
@@ -951,8 +910,7 @@ class PPYOLOEHead(nn.Module):
         x1y1, x2y2 = torch.split(bbox, 2, -1)
         lt = points - x1y1
         rb = x2y2 - points
-        return torch.concat([lt, rb], -1).clip(self.reg_range[0],
-                                               self.reg_range[1] - 1 - 0.01)
+        return torch.concat([lt, rb], -1).clip(self.reg_range[0], self.reg_range[1] - 1 - 0.01)
 
     def _df_loss(self, pred_dist, target, lower_bound=0):
         target_left = target.floor().to(torch.int64)
@@ -1209,6 +1167,30 @@ class ATSSAssigner(nn.Module):
             assigned_scores *= gather_scores.unsqueeze(-1)
 
         return assigned_labels, assigned_bboxes, assigned_scores
+
+
+def batch_distance2bbox(points, distance, max_shapes=None):
+    """Decode distance prediction to bounding box for batch.
+    Args:
+        points (Tensor): [B, ..., 2], "xy" format
+        distance (Tensor): [B, ..., 4], "ltrb" format
+        max_shapes (Tensor): [B, 2], "h,w" format, Shape of the image.
+    Returns:
+        Tensor: Decoded bboxes, "x1y1x2y2" format.
+    """
+    lt, rb = torch.split(distance, 2, -1)
+    # while tensor add parameters, parameters should be better placed on the second place
+    x1y1 = -lt + points
+    x2y2 = rb + points
+    out_bbox = torch.concat([x1y1, x2y2], -1)
+    if max_shapes is not None:
+        max_shapes = max_shapes.flip(-1).tile([1, 2])
+        delta_dim = out_bbox.ndim - max_shapes.ndim
+        for _ in range(delta_dim):
+            max_shapes.unsqueeze_(1)
+        out_bbox = torch.where(out_bbox < max_shapes, out_bbox, max_shapes)
+        out_bbox = torch.where(out_bbox > 0, out_bbox, torch.zeros_like(out_bbox))
+    return out_bbox
 
 
 def iou_similarity(box1, box2, eps=1e-10):
