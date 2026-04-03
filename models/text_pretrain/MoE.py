@@ -26,7 +26,7 @@ class MoeFeedForward(nn.Module):
         )
 
         self.shared_expert = llama.FeedForward(hidden_size, share_experts_hidden_size, **kwargs)
-        self.shared_expert_gate = torch.nn.Linear(hidden_size, 1, bias=False)
+        self.shared_expert_gate = nn.Linear(hidden_size, 1, bias=False)
 
     def forward(self, hidden_states, ff_cache=None):
         batch_size, sequence_length, hidden_dim = hidden_states.shape
@@ -47,7 +47,7 @@ class MoeFeedForward(nn.Module):
 
         # One hot encode the selected experts to create an expert mask
         # this will be used to easily index which expert is going to be sollicitated
-        expert_mask = torch.nn.functional.one_hot(selected_experts, num_classes=self.num_experts).permute(2, 1, 0)
+        expert_mask = F.one_hot(selected_experts, num_classes=self.num_experts).permute(2, 1, 0)
 
         # Loop over all available experts in the model and perform the computation on each expert
         expert_hit = torch.greater(expert_mask.sum(dim=(-1, -2)), 0).nonzero()
@@ -90,13 +90,13 @@ class MoeLoss(nn.Module):
 
         """
         router_logits = [ff_cache['router_logits'] for ff_cache in ff_caches]
-        concatenated_gate_logits = torch.cat([layer_gate for layer_gate in router_logits], dim=0)
+        concatenated_gate_logits = torch.cat(router_logits, dim=0)
 
-        routing_weights = torch.nn.functional.softmax(concatenated_gate_logits, dim=-1)
+        routing_weights = F.softmax(concatenated_gate_logits, dim=-1)
 
         _, selected_experts = torch.topk(routing_weights, self.top_k, dim=-1)
 
-        expert_mask = torch.nn.functional.one_hot(selected_experts, self.num_experts)
+        expert_mask = F.one_hot(selected_experts, self.num_experts)
 
         if mask is None:
             # Compute the percentage of tokens routed to each experts

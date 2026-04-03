@@ -142,7 +142,7 @@ class Model(nn.Module):
             ff_hidden_size=None, is_gated_act=False, ff_act_type='ReLU',
             num_hidden_layers=12,
             n_relative_buckets=32, relative_max_distance=128,
-            drop_prob=0.1, share_rel_weights=True
+            drop_prob=0.1, share_rel_weights=True, share_head=True,
     ):
         super().__init__()
         ff_hidden_size = ff_hidden_size or hidden_size * 4
@@ -212,6 +212,11 @@ class Model(nn.Module):
         )
         self.decoder_norm = T5LayerNorm(hidden_size)
 
+        if share_head:
+            self.head = lambda x: x.matmul(self.embedding.weight.transpose(1, 0))
+        else:
+            self.head = nn.Linear(self.decoder.hidden_size, self.decoder.vocab_size, bias=False)
+
     def set_encoder_only(self):
         del self.decoder_relative_bias
         del self.decoder
@@ -262,11 +267,6 @@ class Model(nn.Module):
 
     def post_process(self, x, **decode_kwargs):
         return self.decode(x, **decode_kwargs)
-
-    def head(self, x):
-        # note, share weights
-        y = x.matmul(self.embedding.weight.transpose(1, 0))
-        return y
 
 
 class T5LayerNorm(nn.Module):

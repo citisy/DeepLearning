@@ -14,8 +14,6 @@ class Model(Model):
         if generate_content:
             model_outputs = beam_search(text_ids, seq_lens, self.decode, eos_ids=self.eos_ids, pad_id=self.pad_id, past_kvs=past_kvs, **decode_kwargs)
 
-            # torch_utils.ModuleManager.torch_gc()
-
             return dict(
                 **model_outputs,
                 past_kvs=past_kvs,
