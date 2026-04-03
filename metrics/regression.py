@@ -45,3 +45,21 @@ class Similarity:
         w2 = make_weights(arr2, tokens2)
         scores = [[count_scores(ww1, ww2) for ww2 in w2] for ww1 in w1]
         return scores
+
+
+class Distance:
+    @staticmethod
+    def euclidean(arr1, arr2):
+        arr1 = arr1[:, None]
+        arr2 = arr2[None, :]
+        distance = np.linalg.norm(arr1 - arr2, axis=-1)
+        return distance
+
+    @staticmethod
+    def cosine(arr1, arr2):
+        arr1 = arr1[:, None]
+        arr2 = arr2[None, :]
+        dot_product = np.sum(arr1 * arr2, axis=-1)
+        norm_arr1 = np.linalg.norm(arr1, axis=-1)
+        norm_arr2 = np.linalg.norm(arr2, axis=-1)
+        return 1 - dot_product / (norm_arr1 * norm_arr2)

@@ -213,7 +213,7 @@ class Mnist(DataHooks):
         from data_parse.cv_data_parse.datasets.Mnist import Loader
 
         loader = Loader(self.data_dir)
-        return loader(set_type=DataRegister.TRAIN, image_type=DataRegister.ARRAY, generator=False)[0]
+        return loader.load(set_type=DataRegister.TRAIN, image_type=DataRegister.ARRAY, generator=False)[0]
 
     aug = Apply([
         channel.Gray2BGR(),

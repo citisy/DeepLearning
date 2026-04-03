@@ -159,6 +159,7 @@ class OdProcess(Process):
         loop_inputs = loop_objs['loop_inputs']
         model_results = loop_objs['model_results']
 
+        n = min(n, len(loop_inputs))
         for name, results in model_results.items():
             vis_trues = []
             vis_preds = []
@@ -169,8 +170,8 @@ class OdProcess(Process):
                 vis_trues.append(dict(
                     _id=true['_id'],
                     image=true['ori_image'],
-                    bboxes=true['ori_bboxes'],
-                    classes=true['ori_classes']
+                    bboxes=true.get('ori_bboxes'),
+                    classes=true.get('ori_classes')
                 ))
 
                 pred['image'] = true['ori_image']
@@ -228,7 +229,8 @@ class OdProcess(Process):
                 _id = str(time.time()) + '.png'
             rets.append(dict(
                 _id=_id,
-                image=image
+                image=image,
+                ori_image=image
             ))
         return rets
 
@@ -316,6 +318,7 @@ class FastererRCNN_Voc(OdProcess, Voc):
 class YoloV5(OdProcess):
     model_version = 'YoloV5'
     config_version = 'yolov5l'
+    model_config = {}
 
     def set_model(self):
         """use auto anchors
@@ -330,15 +333,15 @@ class YoloV5(OdProcess):
         from models.object_detection.YoloV5 import Model, Config
 
         model_config = Config.get(self.config_version)
-        model_config.update(
-            n_classes=self.n_classes
+        default_config = dict(
+            n_classes=self.n_classes,
+            in_module_config=dict(
+                in_ch=self.in_ch,
+                input_size=self.input_size
+            )
         )
-        in_module_config = model_config['in_module_config']
-        in_module_config.update(
-            in_ch=self.in_ch,
-            input_size=self.input_size
-        )
-
+        model_config = configs.ConfigObjParse.merge_dict(model_config, default_config)
+        model_config = configs.ConfigObjParse.merge_dict(model_config, self.model_config)
         self.model = Model(**model_config)
 
     def set_optimizer(self, lr=0.01, momentum=0.937, **kwargs):
@@ -444,16 +447,8 @@ class Yolov5Dataset(Yolov5Aug):
     def get_data(self, *args, train=True, **data_get_kwargs):
         from data_parse.cv_data_parse.datasets.YoloV5 import Loader, DataRegister
 
-        def on_end_convert(ret):
-            if isinstance(ret['image'], np.ndarray):
-                h, w, c = ret['image'].shape
-                ret['bboxes'] = cv_utils.CoordinateConvert.mid_xywh2top_xyxy(ret['bboxes'], wh=(w, h), blow_up=True)
-
-            return ret
-
         loader = Loader(
             self.data_dir,
-            on_end_convert=on_end_convert,
         )
 
         data_get_kwargs.setdefault('image_type', DataRegister.ARRAY)

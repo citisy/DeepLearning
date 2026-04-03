@@ -101,9 +101,15 @@ class LearnedPositionEmbedding3D(nn.Module):
         self.alpha = alpha
 
     def forward(self, x, **kwargs):
-        """make sure x.ndim >= 2 and x.shape[1] is seq_len"""
+        """
+        Args:
+            x: (b, s, ...)
+            **kwargs:
+        """
         b, s = x.shape[:2]
-        return torch.repeat_interleave(self.alpha * self.weight[:s][None], b, dim=0)
+        x = self.alpha * self.weight[:s][None]
+        x = x.expand(b, *[-1] * (x.ndim - 1))
+        return x
 
 
 class SinusoidalEmbedding(nn.Module):

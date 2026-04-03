@@ -68,6 +68,7 @@ class Model(nn.Module):
 
 class Model4Export(Model):
     """for exporting to onnx, torchscript, etc."""
+    max_det = 300
 
     def inference(self, x, **kwargs):
         x = self.pre_process(x)
@@ -83,7 +84,7 @@ class Model4Export(Model):
         return x
 
     def post_process(self, head_outs):
-        """for faster infer, only output 500 bboxes"""
+        """for faster infer, only output max_det bboxes"""
         pred_scores, pred_dist, anchor_points, stride_tensor = head_outs
         pred_bboxes = batch_distance2bbox(anchor_points, pred_dist)
         pred_bboxes *= stride_tensor
@@ -96,7 +97,7 @@ class Model4Export(Model):
             torch.ones_like(conf).unsqueeze(-1),  # no conf
             pred_scores
         ], dim=-1)
-        indices = indices[:, :500].unsqueeze(-1).expand(-1, -1, preds.shape[-1])
+        indices = indices[:, :self.max_det].unsqueeze(-1).expand(-1, -1, preds.shape[-1])
         preds = preds.gather(1, indices)
         preds = preds.to(dtype=torch.float16)
 
@@ -618,6 +619,8 @@ class PPYOLOEHead(nn.Module):
         self.fpn_strides = fpn_strides
         self.grid_cell_scale = grid_cell_scale
         self.grid_cell_offset = grid_cell_offset
+        self.anchor_points = None
+        self.stride_tensor = None
         if reg_range:
             self.sm_use = True
             self.reg_range = reg_range
@@ -966,7 +969,10 @@ class PPYOLOEHead(nn.Module):
         return loss_l1, loss_iou, loss_dfl
 
     def forward(self, feats):
-        anchor_points, stride_tensor = self._generate_anchors(feats)
+        if self.anchor_points is None:
+            self.anchor_points, self.stride_tensor = self._generate_anchors(feats)
+
+        anchor_points, stride_tensor = self.anchor_points, self.stride_tensor
         cls_score_list, reg_dist_list = [], []
         for i, feat in enumerate(feats):
             _, _, h, w = feat.shape

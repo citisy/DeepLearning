@@ -278,20 +278,22 @@ class Model4Export(Model):
         return x
 
     def post_process(self, preds):
-        """for faster infer, only output 500 bboxes, and output fp16, cause triton do not support bf16 outputs
+        """for faster infer, only output `self.max_det` bboxes, and output fp16, cause triton do not support bf16 outputs
 
         Returns
-            preds: (b, 500, 4 + 1 + n_classes), 4 gives (x1, y1, x2, y2)
+            preds: (b, max_det, 4 + 1 + n_classes), 4 gives (x1, y1, x2, y2)
         """
         preds = self.gen_preds(preds)
         conf = preds[:, :, 4]
         _, indices = torch.sort(conf, dim=-1, descending=True)
-        indices = indices[:, :500].unsqueeze(-1).expand(-1, -1, preds.shape[-1])
+        indices = indices[:, :self.max_det].unsqueeze(-1).expand(-1, -1, preds.shape[-1])
         preds = preds.gather(1, indices)
         # (center x, center y, width, height) to (x1, y1, x2, y2)
-        _preds = preds.clone()
-        preds[:, 0:2] = _preds[:, 0:2] - _preds[:, 2:4] / 2
-        preds[:, 2:4] = _preds[:, 0:2] + _preds[:, 2:4] / 2
+        preds = torch.cat([
+            preds[..., 0:2] - preds[..., 2:4] / 2,
+            preds[..., 0:2] + preds[..., 2:4] / 2,
+            preds[..., 4:],
+        ], dim=-1)
         preds = preds.to(dtype=torch.float16)
 
         return preds

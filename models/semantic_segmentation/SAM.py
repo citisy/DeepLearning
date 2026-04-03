@@ -885,11 +885,9 @@ class MaskDecoder(nn.Module):
         output_tokens = output_tokens.unsqueeze(0).expand(sparse_prompt_embeddings.size(0), -1, -1)
         tokens = torch.cat((output_tokens, sparse_prompt_embeddings), dim=1)
 
-        # it seems that it is a bug for torch export, just fix by it, thought it is not elegant
-        repeats = tokens.shape[0].to(image_embeddings.device) if torch.is_tensor(tokens.shape[0]) else tokens.shape[0]
-        src = torch.repeat_interleave(image_embeddings, repeats, dim=0)
+        src = image_embeddings.expand(tokens.shape[0], -1, -1, -1)
         src = src + dense_prompt_embeddings
-        pos_src = torch.repeat_interleave(image_pe, repeats, dim=0)
+        pos_src = image_pe.expand(tokens.shape[0], -1, -1, -1)
         b, c, h, w = src.shape
 
         # Run the transformer

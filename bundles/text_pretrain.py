@@ -6,7 +6,6 @@ from typing import Iterable, List, Optional
 import numpy as np
 import pandas as pd
 import torch
-from torch import optim
 from torch.utils.data import Dataset
 from tqdm import tqdm
 
@@ -838,7 +837,7 @@ class FromQwen2Pretrained(CheckpointHooks):
 
 class Qwen2Trainer(Process):
     def set_optimizer(self, lr=5e-4, **kwargs):
-        self.optimizer = optim.AdamW(self.model.parameters(), lr=lr)
+        self.optimizer = torch.optim.AdamW(self.model.parameters(), lr=lr)
 
     def set_scheduler(self, max_epoch, lr=5e-4, train_dataloader=None, accumulate=None, batch_size=None, scheduler_strategy=model_process.EPOCH, **kwargs):
         from torch.optim.lr_scheduler import CosineAnnealingLR

@@ -63,6 +63,19 @@ class Config(bundles.Config):
         logit_scale_init_value=2.6592
     )
 
+    laion_vision_B_32 = dict(
+        output_size=512,
+        hidden_size=768,
+        image_size=224,
+        num_attention_heads=12,
+        num_hidden_layers=12,
+        ff_ratio=4.,
+        patch_size=32,
+        act_type='GELU',
+        separate=False,
+        patch_bias=False
+    )
+
     laion_vision_H_14 = dict(
         output_size=1024,
         hidden_size=1280,
@@ -83,6 +96,17 @@ class Config(bundles.Config):
         num_hidden_layers=48,
         ff_ratio=4.9231,
         patch_size=14,
+        act_type='GELU',
+        separate=False
+    )
+
+    laion_text_B_32 = dict(
+        output_size=512,
+        hidden_size=512,
+        vocab_size=49408,
+        max_seq_len=77,
+        num_attention_heads=8,
+        num_hidden_layers=12,
         act_type='GELU',
         separate=False
     )
@@ -122,6 +146,12 @@ class Config(bundles.Config):
                 vision_config=cls.openai_vision_large_patch14,
                 text_config=cls.openai_text_large,
                 **cls.openai_model
+            ),
+
+            'laion-ViT-B-32': dict(
+                vision_config=cls.laion_vision_B_32,
+                text_config=cls.laion_text_B_32,
+                **cls.laion_model
             ),
 
             'laion-ViT-H-14': dict(
@@ -257,7 +287,8 @@ class WeightConverter:
         state_dict = torch_utils.Converter.convert_keys(state_dict, cls.laion_convert_dict)
 
         for k in ['vision_model.proj.weight', 'text_model.proj.weight']:
-            state_dict[k] = state_dict[k].t()
+            if k in state_dict:
+                state_dict[k] = state_dict[k].t()
 
         return state_dict
 
@@ -317,12 +348,39 @@ class Model(nn.Module):
 
 
 class VisionModel(nn.Module):
-    def __init__(self, **kwargs):
+    def __init__(self, vision_config=Config.openai_vision_base_patch32, **ignore_kwargs):
         super().__init__()
-        self.vision_model = VisionTransformer(**kwargs)
+        self.vision_model = VisionTransformer(**vision_config)
 
     def forward(self, image):
         return self.vision_model(image)
+
+
+class VisionModel4Export(VisionModel):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        mean = torch.tensor((0.48145466, 0.4578275, 0.40821073))[None, :, None, None]
+        std = torch.tensor((0.26862954, 0.26130258, 0.27577711))[None, :, None, None]
+        self.register_buffer('mean', mean, persistent=False)
+        self.register_buffer('std', std, persistent=False)
+
+    def forward(self, image):
+        """for faster infer, use uint8 input and bfp16 to process
+
+        Args:
+            image: chw, RGB, uint8 like tensor
+
+        """
+        x = self.pre_process(image)
+        out = self.vision_model(x)
+        x = out['pooled_output']
+        return x.type(torch.float16)
+
+    def pre_process(self, x):
+        x = x.type(torch.bfloat16)
+        x = x / 255
+        x = (x - self.mean) / self.std
+        return x
 
 
 class TextModel(nn.Module):
