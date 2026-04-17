@@ -64,7 +64,7 @@ class OdProcess(Process):
         # note that, amp method can make the model run in dtype of half
         # even though input has dtype of torch.half and weight has dtype of torch.float
         # so that, it would run in lower memory and cost less time
-        with torch.amp.autocast('cuda', dtype=torch.bfloat16, enabled=True):
+        with torch.amp.autocast(str(self.device), dtype=torch.bfloat16, enabled=True):
             output = self.model(**inputs)
 
         return output

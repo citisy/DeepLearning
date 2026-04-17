@@ -9,12 +9,13 @@ import torch
 from torch import optim
 from torch.utils.data import Dataset
 from torch import nn
+from tqdm import tqdm
 
 from data_parse import DataRegister
 from data_parse.cv_data_parse.data_augmentation import crop, scale, geometry, channel, RandomApply, Apply, pixel_perturbation, Lambda
 from data_parse.cv_data_parse.datasets.base import DataVisualizer
 from models import normalizations
-from processor import Process, DataHooks, bundled, model_process, BatchIterImgDataset, CheckpointHooks
+from processor import Process, DataHooks, bundled, model_process, BatchIterImgDataset, BaseImgDataset, CheckpointHooks
 from utils import os_lib, torch_utils, configs
 
 
@@ -35,13 +36,12 @@ class GanOptimizer:
 
 
 class IgProcess(Process):
-    use_early_stop = False
     val_data_num = 64 * 8
 
     input_size: int
     in_ch: int
 
-    use_fid_cls_model = True
+    use_fid_cls_model = False
     fid_cls_model: 'nn.Module'
 
     def on_train_start(self, **kwargs):
@@ -339,10 +339,19 @@ class WGAN_Mnist(WGAN, Mnist):
 
 
 class DataProcess(DataHooks):
+    in_ch = 3
+
     rand_aug = RandomApply([
-        pixel_perturbation.CutOut([0.25] * 4),
+        # pixel_perturbation.CutOut([0.25] * 4),
         geometry.HFlip(),
-    ], probs=[0.2, 0.5])
+    ], probs=[
+        # 0.2,
+        0.5
+    ])
+
+    val_aug = Apply([
+        scale.Rectangle(),
+    ])
 
     aug = Apply([
         scale.Proportion(choice_type=3),
@@ -353,19 +362,22 @@ class DataProcess(DataHooks):
     post_aug = Apply([
         channel.Keep3Dims(),
         channel.Keep3Channels(),
-        pixel_perturbation.MinMax(),
-        # pixel_perturbation.Normalize(127.5, 127.5),
+        # pixel_perturbation.MinMax(),
+        pixel_perturbation.Normalize(127.5, 127.5),  # normalize, [0, 255] -> [-1, 1]
+        channel.BGR2RGB(),
         channel.HWC2CHW()
     ])
 
     def data_augment(self, ret, train=True) -> dict:
-        if not train:
-            return ret
+        if 'image' in ret and ret['image'] is not None:
+            ret.setdefault('dst', self.input_size)
+            if train:
+                ret.update(self.rand_aug(**ret))
+                ret.update(self.aug(**ret))
+            else:
+                ret.update(self.val_aug(**ret))
 
-        # ret.update(self.rand_aug(**ret))
-        ret.update(dst=self.input_size)
-        ret.update(self.aug(**ret))
-        ret.update(self.post_aug(**ret))
+            ret.update(self.post_aug(**ret))
 
         return ret
 
@@ -384,7 +396,6 @@ class Lsun(DataProcess):
     train_data_num = 50000
 
     input_size = 128
-    in_ch = 3
 
     def get_train_data(self, *args, **kwargs):
         from data_parse.cv_data_parse.datasets.lsun import Loader
@@ -403,7 +414,6 @@ class CelebA(DataProcess):
     data_dir = 'data/CelebA'
     train_data_num = 40000  # do not set too large, 'cause images will be cached in memory
     input_size = 128
-    in_ch = 3
 
     def get_train_data(self, *args, **kwargs):
         from data_parse.cv_data_parse.datasets.CelebA import ZipLoader as Loader
@@ -424,7 +434,6 @@ class IterCelebA(DataProcess):
     data_dir = 'data/CelebA'
     train_data_num = None
     input_size = 128
-    in_ch = 3
 
     def get_train_data(self, *args, **kwargs):
         """before get data, run the following script first
@@ -455,7 +464,6 @@ class CelebAHQ(DataProcess):
     train_data_num = 40000  # do not set too large, 'cause images will be cached in memory
 
     input_size = 1024
-    in_ch = 3
 
     def get_train_data(self, *args, **kwargs):
         from data_parse.cv_data_parse.datasets.CelebAHQ import ZipLoader as Loader
@@ -464,6 +472,26 @@ class CelebAHQ(DataProcess):
         iter_data = loader.load(
             generator=False,
             max_size=self.train_data_num
+        )[0]
+        return iter_data
+
+
+class SimpleTextImage(DataProcess):
+    dataset_version = 'simple_text_image'
+    data_dir = 'data/simple_text_image'
+    train_data_num = 40000  # do not set too large, 'cause images will be cached in memory
+    val_data_num = 512
+    input_size = 512
+
+    def get_train_data(self, *args, task='images', text_task='texts', **kwargs):
+        from data_parse.cv_data_parse.datasets.SimpleTextImage import Loader
+
+        loader = Loader(self.data_dir, image_suffix='.png')
+        iter_data = loader.load(
+            generator=False,
+            max_size=self.train_data_num,
+            task=task,
+            text_task=text_task
         )[0]
         return iter_data
 
@@ -781,14 +809,14 @@ class DiProcess(IgProcess):
         else:
             self.model.to(torch.float)
 
-    def set_optimizer(self, lr=1e-4, betas=(0.9, 0.99), **kwargs):
-        super().set_optimizer(lr=lr, betas=betas, **kwargs)
+    def set_optimizer(self, lr=1e-4, weight_decay=0.0001, **kwargs):
+        self.optimizer = torch_utils.make_optimizer_cls('AdamW8bit')(self.model.parameters(), lr=lr, weight_decay=weight_decay)
 
     def get_model_inputs(self, loop_inputs, train=True):
         if train:
             images = [torch.from_numpy(ret.pop('image')).to(self.device, non_blocking=True, dtype=torch.float) for ret in loop_inputs]
             images = torch.stack(images)
-            images = images * 2 - 1  # normalize, [0, 1] -> [-1, 1]
+            # images = images * 2 - 1  # normalize, [0, 1] -> [-1, 1]
             model_inputs = dict(
                 x=images
             )
@@ -803,7 +831,7 @@ class DiProcess(IgProcess):
         model_inputs = self.get_model_inputs(loop_inputs, train=True)
         model_inputs.update(model_kwargs)
 
-        with torch.amp.autocast('cuda', dtype=torch.bfloat16, enabled=self.use_half):
+        with torch.amp.autocast(str(self.device), dtype=torch.bfloat16, enabled=self.use_half):
             output = self.model(**model_inputs)
 
         real_x = loop_objs['real_x']
@@ -949,7 +977,30 @@ class WithLora(Process):
         super().init_components()
         if self.use_lora:
             self.set_lora()
-            self.load_lora_pretrain()
+            self.load_lora_pretrained()
+            self.register_save_checkpoint(self.save_lora_checkpoint)
+
+    def _set_lora(self, include, exclude):
+        from models.tuning import lora
+
+        self.lora_wrap = lora.ModelWrap(
+            include=include,
+            exclude=exclude,
+            **self.lora_config
+        )
+        self.lora_wrap.wrap(self.model)
+
+        def wrap(m):
+            m.to(self.device)
+            if self.use_half_lora:
+                m.to(torch.bfloat16)
+
+        for full_name in self.lora_wrap.layers:
+            layer = torch_utils.ModuleManager.get_module_by_name(self.model, full_name)
+            wrap(layer.down)
+            wrap(layer.up)
+
+        self.log('Successfully add lora!')
 
     def unset_lora(self):
         self.lora_wrap.dewrap()
@@ -960,9 +1011,15 @@ class WithLora(Process):
             state_dict['lora'] = self.lora_wrap.state_dict()
         return state_dict
 
-    def save_lora_weight(self, suffix, max_save_weight_num, **kwargs):
+    def model_state_dict(self):
+        """don't save model checkout if using lora!!!"""
         if self.use_lora:
-            fp = f'{self.work_dir}/{suffix}.lora.safetensors'
+            return {}
+        return self.model.state_dict()
+
+    def save_lora_checkpoint(self, prefix, max_save_weight_num, **kwargs):
+        if self.use_lora:
+            fp = f'{self.work_dir}/{prefix}.lora.safetensors'
             torch_utils.Export.to_safetensors(self.lora_wrap.state_dict(), fp)
             os_lib.FileCacher(self.work_dir, max_size=max_save_weight_num, stdout_method=self.log).delete_over_range(suffix=r'\d+\.lora\.safetensors')
             self.log(f'Successfully save lora to {fp}!')
@@ -972,39 +1029,25 @@ class WithSDLora(WithLora):
     config_version = 'v1'  # for config choose
 
     def set_lora(self):
-        from models.tuning import lora
-
-        self.lora_wrap = lora.ModelWrap(
-            include=(
-                'attn_res.fn.to_qkv',
-                'ff_res.fn',
-                'transformer_blocks',
-                'proj_in',
-                'proj_out',
-                'to_out.linear'
-            ),
-            exclude=(
-                'drop',
-                'act',
-                'norm',
-                'view',
-                'ff.1',
-                'attend'
-            ),
-            **self.lora_config
+        include = (
+            'attn_res.fn.to_qkv',
+            'ff_res.fn',
+            'transformer_blocks',
+            'proj_in',
+            'proj_out',
+            'to_out.linear'
         )
-        self.lora_wrap.wrap(self.model)
+        exclude = (
+            'drop',
+            'act',
+            'norm',
+            'view',
+            'ff.1',
+            'attend'
+        )
+        self._set_lora(include, exclude)
 
-        for full_name in self.lora_wrap.layers:
-            layer = torch_utils.ModuleManager.get_module_by_name(self.model, full_name)
-            layer.to(self.device)
-            if self.use_half_lora:
-                layer.to(torch.bfloat16)
-
-        self.register_save_checkpoint(self.save_lora_weight)
-        self.log('Successfully add lora!')
-
-    def load_lora_pretrain(self):
+    def load_lora_pretrained(self):
         if hasattr(self, 'lora_pretrained_model'):
             if 'v1' in self.config_version:
                 from models.image_generation.sdv1 import WeightLoader, WeightConverter
@@ -1032,7 +1075,7 @@ class WithSDControlNet(Process):
         super().init_components()
         if self.use_control_net:
             self.set_control_net()
-            self.load_control_net_pretrain()
+            self.load_control_net_pretrained()
 
     def set_control_net(self):
         from models.tuning.control_net import ModelWrap, Config
@@ -1043,7 +1086,7 @@ class WithSDControlNet(Process):
         self.control_net_wrap.wrap(self.model)
         self.log('Successfully add control_net!')
 
-    def load_control_net_pretrain(self):
+    def load_control_net_pretrained(self):
         if hasattr(self, 'control_net_pretrained_model'):
             if 'v1' in self.control_net_version:
                 from models.image_generation.sdv1 import WeightConverter
@@ -1064,6 +1107,8 @@ class WithSDControlNet(Process):
         scale.RuderLetterBox(),
         channel.Keep3Dims(),
         channel.Keep3Channels(),
+        pixel_perturbation.Normalize(127.5, 127.5),  # normalize, [0, 255] -> [-1, 1]
+        channel.BGR2RGB(),
         channel.HWC2CHW(),
     ])
 
@@ -1092,7 +1137,6 @@ class WithSDControlNet(Process):
 
         if control_images:
             control_images = torch.stack(control_images)
-            control_images /= 255
             model_inputs.update(control_images=control_images)
 
         return model_inputs
@@ -1186,12 +1230,6 @@ class BaseSD(DiProcess):
 
 
 class SDTrainer(BaseSD):
-    def set_optimizer(self, **kwargs):
-        # self.optimizer = optim.Adam(self.model.parameters(), lr=1e-4, betas=(0.9, 0.99))
-        # todo, found that, it will take device 0 when `optimizer.step()`, even thought only choose device 1
-        # it's bug for `bnb.optim.AdamW8bit`, found no resolution to fix yet
-        self.optimizer = torch_utils.make_optimizer_cls('AdamW8bit')(self.model.parameters(), lr=1e-4)
-
     def get_model_train_inputs(self, loop_inputs):
         texts = [ret['text'] for ret in loop_inputs]
         inputs = self.tokenizer.encode_attention_paragraphs(texts)
@@ -1200,7 +1238,6 @@ class SDTrainer(BaseSD):
 
         images = [torch.from_numpy(ret.pop('image')).to(self.device, non_blocking=True, dtype=torch.float) for ret in loop_inputs]
         images = torch.stack(images)
-        images = images * 2 - 1  # normalize, [0, 1] -> [-1, 1]
         return dict(
             x=images,
             text_ids=text_ids,
@@ -1222,17 +1259,6 @@ class SDPredictor(BaseSD):
             iter_data.append(dict(text=text, neg_text=neg_text))
 
         return iter_data
-
-    val_aug = Apply([
-        scale.Rectangle(),
-        channel.HWC2CHW(),
-    ])
-
-    def val_data_augment(self, ret) -> dict:
-        if 'image' in ret and ret['image'] is not None:
-            ret.setdefault('dst', self.input_size)
-            ret.update(self.val_aug(**ret))
-        return ret
 
     def get_model_val_inputs(self, loop_inputs):
         texts = []
@@ -1275,8 +1301,6 @@ class SDPredictor(BaseSD):
 
         if images:
             images = torch.stack(images)
-            images /= 255.
-            images = images * 2 - 1  # normalize, [0, 1] -> [-1, 1]
 
         if mask_images:
             mask_images = torch.stack(mask_images)
@@ -1337,21 +1361,39 @@ class SDPredictor(BaseSD):
 
 
 class SD(WithSDLora, WithSDControlNet, FromSDPretrained, SDTrainer, SDPredictor):
-    """no training, only for prediction
-
+    """
     Usage:
         .. code-block:: python
 
-            from bundles.image_generation import SD as Process
+            from bundles.image_generation import SD, Lsun, SimpleTextImage
 
+            class Process(SD, Lsun):
+                ...
+
+            class Process(SD, SimpleTextImage):
+                ...
+
+            process = Process(...)
+    """
+
+
+class SD_SimpleTextImage(SD, SimpleTextImage):
+    """
+    Usage:
+        .. code-block:: python
+
+            from bundles.image_generation import SD_SimpleTextImage as Process
+
+            # for predicting
             process = Process(
+                use_pretrained=True,
                 pretrained_model='...',
                 vocab_fn='xxx/vocab.json',
                 encoder_fn='xxx/merges.txt',
                 config_version='...',
 
-                low_memory_run=True,
-                use_half=True,
+                # low_memory_run=False,
+                # use_half=False,
 
                 # if using lora
                 # use_lora=True,
@@ -1381,38 +1423,8 @@ class SD(WithSDLora, WithSDControlNet, FromSDPretrained, SDTrainer, SDPredictor)
             # predict batch
             images = process.batch_predict(prompts, neg_texts=neg_prompts, images=image, batch_size=2, is_visualize=True)     # base on same image
             images = process.batch_predict(prompts, neg_texts=neg_prompts, images=images, batch_size=2, is_visualize=True)    # base on different image
-    """
 
-
-class SimpleTextImage(DataProcess):
-    dataset_version = 'simple_text_image'
-    data_dir = 'data/simple_text_image'
-    train_data_num = 40000  # do not set too large, 'cause images will be cached in memory
-    val_data_num = 512
-    input_size = 512
-    in_ch = 3
-
-    def get_train_data(self, *args, task='images', text_task='texts', **kwargs):
-        from data_parse.cv_data_parse.datasets.SimpleTextImage import Loader
-
-        loader = Loader(self.data_dir, image_suffix='.png')
-        iter_data = loader.load(
-            generator=False,
-            max_size=self.train_data_num,
-            task=task,
-            text_task=text_task
-        )[0]
-        return iter_data
-
-
-class SD_SimpleTextImage(SD, SimpleTextImage):
-    """
-    Usage:
-        .. code-block:: python
-
-            from bundles.image_generation import SD_SimpleTextImage as Process
-
-            # lora finetune
+            # for lora finetuning
             process = Process(
                 data_dir='xxx',
 
@@ -1455,39 +1467,26 @@ class SD_SimpleTextImage(SD, SimpleTextImage):
 class WithFluxLora(WithLora):
     def set_lora(self):
         assert 'di' in self.config_version, 'Only support `diffusers` version weights, for example, try to set config_version to `dev.di`'
-        from models.tuning import lora
-
-        self.lora_wrap = lora.ModelWrap(
-            include=(
-                'clip',
-                'double_blocks',
-                'single_blocks',
-            ),
-            exclude=(
-                't5',
-                'vae',
-                'norm',
-                'attend',
-                'embedding',
-                'act',
-                'dropout',
-                'attn_res',
-                nn.Identity
-            ),
-            **self.lora_config
+        include = (
+            'clip',
+            'double_blocks',
+            'single_blocks',
         )
-        self.lora_wrap.wrap(self.model)
+        exclude = (
+            't5',
+            'vae',
+            'norm',
+            'attend',
+            'embedding',
+            'act',
+            'dropout',
+            'attn_res',
+            'ff_res.fn',
+            nn.Identity
+        )
+        self._set_lora(include, exclude)
 
-        for full_name in self.lora_wrap.layers:
-            layer = torch_utils.ModuleManager.get_module_by_name(self.model, full_name)
-            layer.to(self.device)
-            if self.use_half_lora:
-                layer.to(torch.bfloat16)
-
-        self.register_save_checkpoint(self.save_lora_weight)
-        self.log('Successfully add lora!')
-
-    def load_lora_pretrain(self):
+    def load_lora_pretrained(self):
         if hasattr(self, 'lora_pretrained_model'):
             from models.image_generation.flux import WeightConverter
             from models.bundles import WeightLoader
@@ -1495,7 +1494,7 @@ class WithFluxLora(WithLora):
             state_dict = WeightLoader.auto_load(self.lora_pretrained_model)
             state_dict = WeightConverter.from_official_lora(state_dict)
             self.lora_wrap.load_state_dict(state_dict, strict=True)
-            self.log(f'Loaded lora pretrain model from {self.lora_pretrained_model}!')
+            self.log(f'Loaded lora pretrained model from {self.lora_pretrained_model}!')
 
 
 class FromFluxPretrained(CheckpointHooks):
@@ -1525,7 +1524,6 @@ class BaseFlux(DiProcess):
     model_version = 'flux'
     config_version: str = 'dev'
 
-    in_ch = 3
     input_size = 768
 
     model_config: dict = {}
@@ -1533,7 +1531,14 @@ class BaseFlux(DiProcess):
     def set_model(self):
         from models.image_generation.flux import Model, Config
 
-        model_config = configs.ConfigObjParse.merge_dict(Config.get(self.config_version), self.model_config)
+        default_configs = dict(
+            model_config=dict(
+                _device=self.device
+            )
+        )
+        model_config = Config.get(self.config_version)
+        model_config = configs.ConfigObjParse.merge_dict(model_config, default_configs)
+        model_config = configs.ConfigObjParse.merge_dict(model_config, self.model_config)
         with torch.device('meta'):  # fast to init model
             self.model = Model(**model_config)
 
@@ -1562,24 +1567,79 @@ class BaseFlux(DiProcess):
 
     def get_model_inputs(self, loop_inputs, train=True):
         if train:
-            raise NotImplementedError
+            return self.get_model_train_inputs(loop_inputs)
         else:
             return self.get_model_val_inputs(loop_inputs)
 
 
+class FluxTrainer(BaseFlux):
+    def train_data_preprocess(self, iter_data, is_preprocess=False, preprocess_batch_size=16, low_text_cond_memory_run=True, **kwargs):
+        # Only run on the first time
+        if is_preprocess:
+            for i in tqdm(range(0, len(iter_data), preprocess_batch_size), desc='Preprocess data'):
+                loop_inputs = iter_data[i:i + preprocess_batch_size]
+                texts = [ret['text'] for ret in loop_inputs]
+                inputs = self.clip_tokenizer.encode_paragraphs(texts)
+                clip_text_ids = torch.tensor(inputs['segments_ids']).to(self.device)
+                clip_text_conds = self.model.clip.encode(clip_text_ids)['pooler_output'].to('cpu')
+
+                inputs = self.t5_tokenizer.encode_paragraphs(texts)
+                t5_text_ids = torch.tensor(inputs['segments_ids']).to(self.device)
+                t5_text_conds = self.model.t5.encode(t5_text_ids).to('cpu')
+                for ii, ret in enumerate(loop_inputs):
+                    ret['t5_text_cond'] = t5_text_conds[ii]
+                    ret['clip_text_cond'] = clip_text_conds[ii]
+            if low_text_cond_memory_run:
+                # note, for predicting running normally
+                def wrap1(module, func, **kwargs1):
+                    # note, device would be changed after model initialization.
+                    def wrap2(*args, **kwargs2):
+                        return torch_utils.ModuleManager.low_memory_run(module, func, self.device, *args, **kwargs1, **kwargs2)
+
+                    return wrap2
+
+                self.model.t5.encode = wrap1(self.model.t5, self.model.t5.encode)
+                self.model.clip.encode = wrap1(self.model.clip, self.model.clip.encode)
+                self.model.t5.cpu()
+                self.model.clip.cpu()
+
+        return iter_data
+
+    def train_data_augment(self, ret) -> dict:
+        ret_ = super().train_data_augment(ret)
+        if 't5_text_cond' in ret:
+            ret_['t5_text_cond'] = ret['t5_text_cond']
+        if 'clip_text_cond' in ret:
+            ret_['clip_text_cond'] = ret['clip_text_cond']
+        return ret_
+
+    def get_model_train_inputs(self, loop_inputs):
+        texts = [ret['text'] for ret in loop_inputs]
+
+        images = [torch.from_numpy(ret.pop('image')).to(self.device, non_blocking=True, dtype=torch.float) for ret in loop_inputs]
+        images = torch.stack(images)
+
+        model_inputs = dict(
+            x=images,
+        )
+
+        if 'clip_text_cond' in loop_inputs[0]:
+            model_inputs['clip_text_conds'] = [ret['clip_text_cond'] for ret in loop_inputs]
+        else:
+            inputs = self.clip_tokenizer.encode_paragraphs(texts)
+            model_inputs['clip_text_ids'] = inputs['segments_ids']
+
+        if 't5_text_cond' in loop_inputs[0]:
+            model_inputs['t5_text_conds'] = [ret['t5_text_cond'] for ret in loop_inputs]
+        else:
+            inputs = self.t5_tokenizer.encode_paragraphs(texts)
+            model_inputs['t5_text_ids'] = inputs['segments_ids']
+
+        model_inputs = torch_utils.Converter.force_to_tensors(model_inputs, self.device)
+        return model_inputs
+
+
 class FluxPredictor(BaseFlux):
-    val_aug = Apply([
-        scale.Rectangle(),
-        channel.BGR2RGB(),
-        channel.HWC2CHW(),
-    ])
-
-    def val_data_augment(self, ret) -> dict:
-        if 'image' in ret and ret['image'] is not None:
-            ret.setdefault('dst', self.input_size)
-            ret.update(self.val_aug(**ret))
-        return ret
-
     def get_model_val_inputs(self, loop_inputs):
         texts = []
         images = []
@@ -1605,8 +1665,6 @@ class FluxPredictor(BaseFlux):
 
         if images:
             images = torch.stack(images)
-            images /= 255.
-            images = images * 2 - 1  # normalize, [0, 1] -> [-1, 1]
 
         if mask_images:
             mask_images = torch.stack(mask_images)
@@ -1648,16 +1706,34 @@ class FluxPredictor(BaseFlux):
         return rets
 
 
-class Flux(WithFluxLora, FromFluxPretrained, FluxPredictor):
-    """no training, only for prediction
-
+class Flux(WithFluxLora, FromFluxPretrained, FluxTrainer, FluxPredictor):
+    """
     Usage:
         .. code-block:: python
 
-            from bundles.image_generation import Flux as Process
+            from bundles.image_generation import Flux, Lsun, SimpleTextImage
 
+            class Process(Flux, Lsun):
+                ...
+
+            class Process(Flux, SimpleTextImage):
+                ...
+
+            process = Process(...)
+
+    """
+
+
+class Flux_SimpleTextImage(Flux, SimpleTextImage):
+    """
+    Usage:
+        .. code-block:: python
+
+            # for predicting
             model_dir = 'xxx'
             process = Process(
+                use_pretrained=True,
+
                 clip_vocab_fn=f'{model_dir}/tokenizer/vocab.json',
                 clip_encoder_fn=f'{model_dir}/tokenizer/merges.txt',
 
@@ -1669,8 +1745,8 @@ class Flux(WithFluxLora, FromFluxPretrained, FluxPredictor):
                 flux_pretrained=f'{model_dir}/flux1-dev.safetensors',
                 vae_pretrained=f'{model_dir}/ae.safetensors',
 
-                low_memory_run=True,
-                use_half=True,
+                # low_memory_run=False,
+                # use_half=False,
 
                 # if using `diffusers` version weights
                 # config_version='dev.di',
@@ -1695,6 +1771,7 @@ class Flux(WithFluxLora, FromFluxPretrained, FluxPredictor):
                 model_kwargs=dict(
                     image_size=1024,
                     num_steps=20,
+                    vis_pbar=True,
                 )
             )
 

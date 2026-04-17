@@ -92,11 +92,12 @@ class LayerNorm32(nn.LayerNorm):
     """forced to use fp32"""
 
     def forward(self, x):
-        if self.elementwise_affine and self.weight.dtype is not torch.float32:
+        ori_dtype = x.dtype
+        if not self.elementwise_affine or self.weight.dtype is torch.float32:
             # check the weight
-            return super().forward(x)
-        else:
-            return super().forward(x.float()).type(x.dtype)
+            x = x.float()
+
+        return super().forward(x).type(ori_dtype)  # x.dtype would be change with autocast
 
 
 @make_norm_fn.add_register()
@@ -104,8 +105,9 @@ class GroupNorm32(nn.GroupNorm):
     """forced to use fp32"""
 
     def forward(self, x):
-        if self.weight.dtype is not torch.float32:
+        ori_dtype = x.dtype
+        if self.weight.dtype is torch.float32:
             # check the weight
-            return super().forward(x)
-        else:
-            return super().forward(x.float()).type(x.dtype)
+            x = x.float()
+
+        return super().forward(x).type(ori_dtype)  # x.dtype would be change with autocast

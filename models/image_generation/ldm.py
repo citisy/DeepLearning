@@ -232,7 +232,6 @@ class Model(ddim.Model):
     scale_factor = 0.18215
     cond_trainable = True
     vae_trainable = False
-    inference_only = False
 
     sampler_mapping = {
         Config.DDPM: ddpm.Sampler,
@@ -265,6 +264,7 @@ class Model(ddim.Model):
             torch_utils.ModuleManager.freeze_module(cond)
         if not self.vae_trainable:
             torch_utils.ModuleManager.freeze_module(vae)
+            vae.set_inference_only()
 
         self.cond = cond
         self.backbone = backbone
@@ -283,9 +283,9 @@ class Model(ddim.Model):
             image_size[1] // self.vae.encoder.down_scale,
         )
 
-    def fit(self, x, text_ids=None, **kwargs):
+    def fit(self, x, text_ids=None, txt_cond=None, **kwargs):
         # x is x0, the real image
-        txt_cond = self.make_txt_cond(text_ids, **kwargs)
+        txt_cond = self.make_txt_cond(text_ids, **kwargs) if txt_cond is None else txt_cond
         kwargs.update(txt_cond)
 
         z, _, _ = self.vae.encode(x)

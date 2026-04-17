@@ -189,6 +189,9 @@ class XScaling(EpsScaling):
     def make_c_in(self, sigma):
         return torch.ones_like(sigma, device=sigma.device)
 
+    def predict_real(self, x_0, t, noise):
+        return noise - x_0
+
 
 @make_scaling_fn.add_register()
 class EDMEpsScaling(Scaling):
@@ -284,7 +287,7 @@ class EulerSampler(Sampler):
 
         sigma = extract(self.schedule.sigmas, t, x_0.shape)
 
-        c_skip, c_out, c_in, c_noise = self.scaling(sigma)
+        c_in = self.scaling.make_c_in(sigma)
         x_t = self.q_sample(x_0, t, noise=noise)
         pred = diffuse_func(x_t * c_in, self.sigma_to_idx(sigma), **kwargs)
         real = self.scaling.predict_real(x_0, t, noise)
@@ -328,9 +331,9 @@ class EulerSampler(Sampler):
 
         possible_sigma = self.schedule.sigmas[self.sigma_to_idx(sigma_hat)]
         c_skip, c_out, c_in, c_noise = self.scaling(possible_sigma)
+        c_skip, c_out, c_in = [append_dims(c, len(x_t.shape)) for c in (c_skip, c_out, c_in)]
         possible_t = self.sigma_to_idx(c_noise)
         possible_t = possible_t - 1
-        c_skip, c_out, c_in, c_noise = [append_dims(c, len(x_t.shape)) for c in (c_skip, c_out, c_in, c_noise)]
 
         d = diffuse_func(c_in * x_t, possible_t, **diffuse_kwargs) * c_out + x_t * c_skip
 

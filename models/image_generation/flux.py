@@ -5,12 +5,12 @@ from functools import partial
 
 import torch
 import torch.nn.functional as F
-from einops import rearrange, repeat
+from einops import rearrange, reduce, repeat
 from torch import Tensor, nn
 
 from utils import torch_utils
 from . import VAE
-from .k_diffusion import EpsScaling, EulerSampler, Schedule, extract, make_schedule_fn, make_scaling_fn
+from .k_diffusion import EpsScaling, EulerSampler, Schedule, extract, make_scaling_fn, make_schedule_fn, append_dims
 from .. import attentions, bundles, normalizations
 from ..embeddings import SinusoidalEmbedding
 from ..layers import Linear
@@ -74,7 +74,7 @@ class Config(bundles.Config):
     )
 
     sampler = dict(
-        schedule='FluxSchedule',
+        schedule='FlowMatchSchedule',
         scaling='XScaling',
         schedule_config=dict(
             num_steps=20
@@ -262,22 +262,44 @@ class Model(nn.Module):
 
     image_size = (768, 768)
 
-    def __init__(self, t5_config=Config.t5_xxl, clip_config=Config.clip, backbone_config=Config.backbone, vae_config=Config.vae, sampler_config=Config.sampler, **kwargs):
+    cond_trainable = False
+    vae_trainable = False
+    t5_trainable = False
+
+    def __init__(
+            self,
+            t5_config=Config.t5_xxl,
+            clip_config=Config.clip,
+            backbone_config=Config.backbone,
+            vae_config=Config.vae,
+            sampler_config=Config.sampler,
+            model_config=dict(),
+            **kwargs
+    ):
         super().__init__()
-        self.__dict__.update(kwargs)
+        self.__dict__.update(model_config)
 
         self.t5 = T5.Model(**t5_config)
-        self.t5.set_encoder_only()  # only for inference
-
         self.clip = CLIP.TextModel(**clip_config)
         self.clip.encode = self.clip.__call__
-
         self.backbone = Flux(**backbone_config)
-
         self.vae = VAE.Model(**vae_config)
-        self.vae.set_inference_only()
+        self.sampler = FlowMatchEulerSampler(**sampler_config)
 
-        self.sampler = FluxSampler(**sampler_config)
+        self.set_module_status()
+
+    def set_module_status(self):
+        self.t5.set_encoder_only()
+
+        if not self.cond_trainable:
+            torch_utils.ModuleManager.freeze_module(self.clip)
+
+        if not self.t5_trainable:
+            torch_utils.ModuleManager.freeze_module(self.t5)
+
+        if not self.vae_trainable:
+            torch_utils.ModuleManager.freeze_module(self.vae)
+            self.vae.set_inference_only()
 
     _device = None
     _dtype = None
@@ -308,10 +330,10 @@ class Model(nn.Module):
         self.vae.encode = partial(torch_utils.ModuleManager.single_batch_run, self.vae, self.vae.encode)
         self.vae.decode = partial(torch_utils.ModuleManager.single_batch_run, self.vae, self.vae.decode)
 
-        def wrap1(module, func):
+        def wrap1(module, func, **kwargs1):
             # note, device would be changed after model initialization.
-            def wrap2(*args, **kwargs):
-                return torch_utils.ModuleManager.low_memory_run(module, func, self.device, *args, **kwargs)
+            def wrap2(*args, **kwargs2):
+                return torch_utils.ModuleManager.low_memory_run(module, func, self.device, *args, **kwargs1, **kwargs2)
 
             return wrap2
 
@@ -320,6 +342,7 @@ class Model(nn.Module):
         self.vae.encode = wrap1(self.vae, self.vae.encode)
         self.vae.decode = wrap1(self.vae, self.vae.decode)
         self.sampler.forward = wrap1(self.backbone, self.sampler.forward)
+        self.sampler.loss = wrap1(self.backbone, self.sampler.loss)
         self.sampler.to(self.device)
 
     def set_half(self):
@@ -332,20 +355,46 @@ class Model(nn.Module):
             exclude=[normalizations.GroupNorm32, normalizations.RMSNorm]
         )
 
-        self.t5.encode = partial(torch_utils.ModuleManager.assign_dtype_run, self.t5, self.t5.encode, dtype, force_effect_module=False)
-        self.clip.encode = partial(torch_utils.ModuleManager.assign_dtype_run, self.clip, self.clip.encode, dtype, force_effect_module=True)
-        self.vae.encode = partial(torch_utils.ModuleManager.assign_dtype_run, self.vae, self.vae.encode, dtype, force_effect_module=False)
-        self.vae.decode = partial(torch_utils.ModuleManager.assign_dtype_run, self.vae, self.vae.decode, dtype, force_effect_module=False)
-        self.sampler.forward = partial(torch_utils.ModuleManager.assign_dtype_run, self.backbone, self.sampler.forward, dtype, force_effect_module=False)
+        def wrap1(module, func):
+            def wrap2(*args, **kwargs):
+                return torch_utils.ModuleManager.assign_dtype_run(module, func, dtype, *args, force_effect_module=False, **kwargs)
+
+            return wrap2
+
+        self.t5.encode = wrap1(self.t5, self.t5.encode)
+        self.clip.encode = wrap1(self.clip, self.clip.encode)
+        self.vae.encode = wrap1(self.vae, self.vae.encode)
+        self.vae.decode = wrap1(self.vae, self.vae.decode)
+        self.sampler.forward = wrap1(self.backbone, self.sampler.forward)
+        self.sampler.loss = wrap1(self.backbone, self.sampler.loss)
         self.sampler.to(self.dtype)
 
     def forward(self, **kwargs):
         if self.training:
-            raise NotImplementedError('Do not support train mode yet!')
+            return self.fit(**kwargs)
         else:
             return self.inference(**kwargs)
 
-    def inference(self, x=None, t5_text_ids=None, clip_text_ids=None, mask_x=None, image_size=None, **kwargs):
+    def fit(
+            self, x, t5_text_ids=None, clip_text_ids=None,
+            z=None, t5_text_conds=None, clip_text_conds=None,
+            **kwargs
+    ):
+        # x is x0, the real image
+        t5_text_conds = self.t5.encode(t5_text_ids) if t5_text_conds is None else t5_text_conds
+        clip_text_conds = self.clip.encode(clip_text_ids)['pooler_output'] if clip_text_conds is None else clip_text_conds
+
+        kwargs.update(
+            t5_text_conds=t5_text_conds,
+            clip_text_conds=clip_text_conds,
+        )
+
+        if z is None:
+            z, _, _ = self.vae.encode(x)
+
+        return {'loss': self.sampler.loss(self.process, z, **kwargs)}
+
+    def inference(self, x=None, t5_text_ids=None, clip_text_ids=None, mask_x=None, image_size=None, t5_text_conds=None, clip_text_conds=None, **kwargs):
         if x is None or not len(x):  # txt2img
             x = self.gen_x_t(t5_text_ids.shape[0], image_size)
             z0 = None
@@ -354,13 +403,15 @@ class Model(nn.Module):
             x, z0, i0 = self.make_image_cond(x, noise=self.gen_x_t(t5_text_ids.shape[0], (x.shape[-1], x.shape[-2])), **kwargs)
             kwargs.update(i0=i0)
 
-        bs, c, H, W = x.shape
+        t5_text_conds = self.t5.encode(t5_text_ids) if t5_text_conds is None else t5_text_conds
+        clip_text_conds = self.clip.encode(clip_text_ids)['pooler_output'] if clip_text_conds is None else clip_text_conds
 
-        txt = self.t5.encode(t5_text_ids)
-        txt_ids = torch.zeros(bs, txt.shape[1], 3, device=x.device)
-        vec = self.clip.encode(clip_text_ids)['pooler_output']
+        kwargs.update(
+            t5_text_conds=t5_text_conds,
+            clip_text_conds=clip_text_conds,
+        )
 
-        z = self.sampler(self.process, x, txt=txt, txt_ids=txt_ids, vec=vec, **kwargs)
+        z = self.sampler(self.process, x, **kwargs)
 
         if x is not None and len(x) and mask_x is not None and len(mask_x):
             # todo: apply for different conditioning_key
@@ -371,7 +422,7 @@ class Model(nn.Module):
 
         return images
 
-    def process(self, img, t_vec, txt, txt_ids, vec, img_cond=None, **kwargs):
+    def process(self, img, t_vec, t5_text_conds, clip_text_conds, img_cond=None, **kwargs):
         """flow process"""
         bs, c, H, W = img.shape
         h = H // 2
@@ -384,6 +435,7 @@ class Model(nn.Module):
         img_ids[..., 2] = img_ids[..., 2] + torch.arange(w)[None, :]
         img_ids = repeat(img_ids, "h w c -> b (h w) c", b=bs)
         img_ids = img_ids.to(img.device)
+        txt_ids = torch.zeros(bs, t5_text_conds.shape[1], 3).to(img)
 
         guidance_vec = torch.full((img.shape[0],), self.guidance, device=img.device, dtype=img.dtype)
         t_vec = torch.full((img.shape[0],), t_vec[0], dtype=img.dtype, device=img.device)
@@ -391,9 +443,9 @@ class Model(nn.Module):
         img = self.backbone(
             img=torch.cat((img, img_cond), dim=-1) if img_cond is not None else img,
             img_ids=img_ids,
-            txt=txt,
+            txt=t5_text_conds,
             txt_ids=txt_ids,
-            y=vec,
+            y=clip_text_conds,
             timesteps=t_vec,
             guidance=guidance_vec,
         )
@@ -422,7 +474,27 @@ class Model(nn.Module):
         return xt, z, i0
 
 
-class FluxSampler(EulerSampler):
+class FlowMatchEulerSampler(EulerSampler):
+    def loss(self, diffuse_func, x_0, noise=None, **kwargs):
+        b, c, h, w = x_0.shape
+        t = torch.randint(0, self.schedule.timesteps, (b,), device=x_0.device).long()
+        if noise is None:
+            noise = torch.randn_like(x_0)
+
+        sigma = extract(self.schedule.sigmas, t, x_0.shape)
+
+        x_t = self.q_sample(x_0, t, noise=noise)
+
+        c_skip, c_out, c_in, c_noise = self.scaling(sigma)
+        possible_t = c_noise[:, 0, 0, 0] * 1000
+
+        pred = diffuse_func(x_t * c_in, possible_t, **kwargs)
+        real = self.scaling.predict_real(x_0, t, noise)
+
+        loss = F.mse_loss(pred.float(), real.float(), reduction='none')
+        loss = reduce(loss, 'b ... -> b', 'mean')
+        return loss.mean()
+
     def p_sample(self, diffuse_func, x_t, t, prev_t=None, num_steps=None, **diffuse_kwargs):
         # todo: add more sample methods
         t = torch.full((x_t.shape[0],), t, device=x_t.device, dtype=torch.long)
@@ -445,9 +517,10 @@ class FluxSampler(EulerSampler):
 
         possible_sigma = self.schedule.sigmas[self.sigma_to_idx(sigma_hat)]
         c_skip, c_out, c_in, c_noise = self.scaling(possible_sigma)
-        c_skip, c_out, c_in = c_skip[:, None, None, None], c_out[:, None, None, None], c_in[:, None, None, None]
+        c_skip, c_out, c_in = [append_dims(c, len(x_t.shape)) for c in (c_skip, c_out, c_in)]
+        possible_t = c_noise * 1000
 
-        d = diffuse_func(c_in * x_t, c_noise, **diffuse_kwargs) * c_out + x_t * c_skip  # note, use c_noise as time
+        d = diffuse_func(c_in * x_t, possible_t, **diffuse_kwargs) * c_out + x_t * c_skip  # note, use c_noise as time
 
         d = (x_t - d) / sigma_hat
         dt = next_sigma - sigma_hat
@@ -459,14 +532,8 @@ class FluxSampler(EulerSampler):
         return x_0 * (1 - sigma) + noise * sigma
 
 
-@make_scaling_fn.add_register()
-class FluxScaling(EpsScaling):
-    def make_c_in(self, sigma):
-        return torch.ones_like(sigma, device=sigma.device)
-
-
 @make_schedule_fn.add_register()
-class FluxSchedule(Schedule):
+class FlowMatchSchedule(Schedule):
     mu = 1.15
     sigma = 1.
 
@@ -490,14 +557,16 @@ class Flux(nn.Module):
             context_in_dim, mlp_ratio,
             depth_double_blocks, depth_single_blocks,
             separate=False, head_mode=0,
+            use_checkpoint=True, **kwargs
     ):
         super().__init__()
 
         self.in_channels = in_ch
         self.out_channels = out_ch
         self.guidance_embed = guidance_embed
+        self.use_checkpoint = use_checkpoint
 
-        self.time_embed = SinusoidalEmbedding(256, factor=1000.0)
+        self.time_embed = SinusoidalEmbedding(256)
 
         self.img_in = nn.Linear(in_ch, hidden_size)
         self.txt_in = nn.Linear(context_in_dim, hidden_size)
@@ -539,6 +608,8 @@ class Flux(nn.Module):
         )
 
         self.head = Head(hidden_size, 1, out_ch, head_mode=head_mode)
+        if use_checkpoint:
+            self.forward = partial(torch_utils.ModuleManager.checkpoint, self, self.forward)
 
     def forward(self, img, timesteps, img_ids, txt, txt_ids, y, guidance) -> Tensor:
         # running on sequences img
@@ -742,7 +813,7 @@ class CondStreamBlock(nn.Module):
 
     def stream_in(self, x, vec):
         mod1, mod2 = self.mod(vec)
-        x = self.norm1(x)
+        x = self.norm1(x).type_as(x)   # x.dtype would be change with autocast
         modulated = (1 + mod1.scale) * x + mod1.shift
         if self.separate:
             if self.double:

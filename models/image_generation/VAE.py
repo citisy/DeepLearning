@@ -318,10 +318,10 @@ class ReParametrize(nn.Module):
         if self.deterministic:
             std = torch.zeros_like(mean, device=x.device)
         else:
-            std = torch.exp(0.5 * log_var)
+            std = torch.exp(0.5 * log_var).type_as(log_var)   # log_var.dtype would be change with autocast
 
         if sample_posterior:
-            z = mean + std * torch.randn(mean.shape, device=x.device)
+            z = mean + std * torch.randn(mean.shape).to(std)
         else:
             z = mean
 
