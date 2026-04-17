@@ -1,12 +1,16 @@
 import logging
-from utils import log_utils, web_app, converter
+import warnings
+
+from utils import log_utils, web_app, converter, op_utils
 from typing import Optional, Annotated
 from functools import partial
 
 LOGGING = 'logging'
+LOGURU = 'loguru'
 WANDB = 'wandb'
 TENSORBOARD = 'tensorboard'
 
+make_logger_fn = op_utils.RegisterTables()
 empty_logger = log_utils.EmptyLogger()
 
 
@@ -16,35 +20,29 @@ class LogHooks:
 
         process = LogHooks()
 
-        # add tqdm pbar logger
+        # add a logger module, e.g., add loguru logger
+        from loguru import logger
+        process.default_logger_types = [LOGURU, WANDB]
+        process.default_main_logger_type = LOGURU
+
+        # only add a logger func, e.g., add tqdm pbar logger
         from tqdm import tqdm
         pbar = tqdm(iter)
         process.register_logger('pbar', pbar.set_postfix)
 
-        # add loguru logger
-        from loguru import logger
-        process.register_logger('loguru', lambda item, level='INFO', **kwargs: logger.opt(depth=2).log(level, item))
+        # add a customized logger module
+        LOGGER = 'xxx'
+        @make_logger_fn.add_register(LOGGER)
+        class Logger:
+            def int(self, process: LogHooks, looger_name: str):
+                raise NotImplementedError
 
+        Logger().init(process, LOGGER)
+
+        process.init()
     """
-
-    def __init__(self):
-        super().__init__()
-        self.loggers = set()
-        self.trace_log_items = dict()
-        self.log_methods = dict()
-
-    def register_logger(self, name, log_method):
-        self.loggers.add(name)
-        self.trace_log_items[name] = {}
-        self.log_methods[name] = log_method
-
-    def init_log_base(self, log_dir=None, logger=None):
-        log_utils.logger_init(log_dir)
-        logger = log_utils.get_logger(logger)
-        self.register_logger(LOGGING, lambda item, level=logging.INFO, **kwargs: logger.log(level, item, stacklevel=3))
-
-    use_wandb = False
-    wandb: Optional
+    default_logger_types = [LOGGING, WANDB]
+    default_main_logger_type = LOGGING
 
     model_version: Annotated[
         str,
@@ -55,57 +53,40 @@ class LogHooks:
         'for work_dir and cache_dir'
     ]
     work_dir: str
-    wandb_id: Annotated[str, 'for wandb logging']
-    wandb_api_key: str = ''
 
-    def init_wandb(self):
-        self.wandb = self.make_wandb()
-        self.register_logger(WANDB, lambda item, **kwargs: self.wandb.log(item))
-        self.register_train_start(self._wandb_init)
-        self.register_train_end(self.wandb.finish)
+    def __init__(self):
+        super().__init__()
+        self.loggers = set()
+        self.trace_log_items = dict()
+        self.log_methods = dict()
 
-    def make_wandb(self):
-        if self.use_wandb:
-            try:
-                # note, can replace wandb to swanlab now
-                # import swanlab as wandb
-                import wandb
-            except ImportError:
-                wandb = log_utils.FakeWandb()
-                self.log('wandb import error, wandb init fail, please check install', level=logging.WARNING)
+    def init_logs(self):
+        for logger_type in self.default_logger_types:
+            logger_cls = make_logger_fn.get(logger_type)
+            logger_cls().init(self, logger_type)
 
-        else:
-            wandb = log_utils.FakeWandb()
+    def register_logger(self, name, log_method):
+        self.loggers.add(name)
+        self.trace_log_items[name] = {}
+        self.log_methods[name] = log_method
 
-        return wandb
-
-    def _wandb_init(self, *args, **kwargs):
-        # only init wandb runner before training
-        self.wandb.login(api_key=self.wandb_api_key)
-        wandb_run = self.wandb.init(
-            project=self.model_version,
-            name=self.dataset_version,
-            dir=f'{self.work_dir}',
-            id=self.__dict__.get('wandb_id'),
-            resume=True
-        )
-        # for retraining
-        self.wandb_id = wandb_run.id
-
-    def trace(self, item: dict, loggers=LOGGING):
+    def trace(self, item: dict, loggers=None):
         """only cache the log items to `trace_log_items`, and output when calling `log_trace()`"""
+        loggers = loggers or [self.default_main_logger_type]
         if not isinstance(loggers, (list, tuple, set)):
             loggers = [loggers]
 
         for logger in loggers:
             self.trace_log_items[logger].update(item)
 
-    def get_log_trace(self, logger=LOGGING):
+    def get_log_trace(self, logger=None):
         """get the items is cached before"""
+        logger = logger or self.default_main_logger_type
         return self.trace_log_items[logger]
 
-    def log_trace(self, loggers=LOGGING, **kwargs):
+    def log_trace(self, loggers=None, **kwargs):
         """output the log items which is cached before"""
+        loggers = loggers or [self.default_main_logger_type]
         if not isinstance(loggers, (list, tuple, set)):
             loggers = [loggers]
 
@@ -114,12 +95,72 @@ class LogHooks:
             self.log_methods.get(logger)(item, **kwargs)
             self.trace_log_items[logger] = {}
 
-    def log(self, item, loggers=LOGGING, **kwargs):
+    def log(self, item, loggers=None, **kwargs):
+        loggers = loggers or [self.default_main_logger_type]
         if not isinstance(loggers, (list, tuple, set)):
             loggers = [loggers]
 
         for logger in loggers:
             self.log_methods.get(logger, empty_logger)(item, **kwargs)
+
+
+@make_logger_fn.add_register(LOGGING)
+class Logging:
+    def init(self, process: LogHooks, looger_name: str):
+        log_utils.logger_init(getattr(process, 'log_dir', None))
+        logger = log_utils.get_logger(getattr(process, 'logger', None))
+        process.register_logger(looger_name, lambda item, level=logging.INFO, **kwargs: logger.log(level, item, stacklevel=3))
+
+
+@make_logger_fn.add_register(LOGURU)
+class Loguru:
+    def init(self, process: LogHooks, looger_name: str):
+        from loguru import logger
+        process.register_logger(looger_name, lambda item, level='INFO', **kwargs: logger.opt(depth=2).log(level, item))
+
+
+@make_logger_fn.add_register(WANDB)
+class Wandb:
+    def init(self, process: LogHooks, looger_name: str):
+        def _wandb_init(*args, **kwargs):
+            # only init wandb runner before training
+            process.wandb.login(api_key=getattr(process, 'wandb_api_key', ''))
+            wandb_run = process.wandb.init(
+                project=process.model_version,
+                name=process.dataset_version,
+                dir=f'{process.work_dir}',
+                id=getattr(process, 'wandb_id', None),
+                resume=True
+            )
+            # for retraining
+            process.wandb_id = wandb_run.id
+
+        if getattr(process, 'use_wandb', False):
+            wandb = self.make_wandb()
+        else:
+            wandb = log_utils.FakeWandb()
+
+        process.wandb = wandb
+        process.register_logger(looger_name, lambda item, **kwargs: wandb.log(item))
+        process.register_train_start(_wandb_init)
+        process.register_train_end(wandb.finish)
+
+    def make_wandb(self):
+        try:
+            # note, can replace wandb to swanlab now
+            # import swanlab as wandb
+            import wandb
+        except ImportError:
+            wandb = log_utils.FakeWandb()
+            warnings.warn('Wandb import error, wandb init fail, please check install')
+
+        return wandb
+
+
+@make_logger_fn.add_register(TENSORBOARD)
+class Tensorboard:
+    def int(self, process: LogHooks, looger_name: str):
+        raise NotImplementedError
 
 
 class ApiHooks:

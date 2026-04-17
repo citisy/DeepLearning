@@ -1,7 +1,3 @@
-import logging
-import os
-
-from utils import converter, log_utils
 from .bundled import *
 from .data_process import *
 from .model_process import *
@@ -139,10 +135,6 @@ class Process(
         self.init_paths()
         self.init_components()
 
-    def init_logs(self):
-        self.init_log_base(self.log_dir)
-        self.init_wandb()
-
     def init_paths(self):
         self.work_dir = os.path.abspath(f'{self._model_cache_dir}/{self.model_version}/{self.dataset_version}')
         self.cache_dir = os.path.abspath(f'{self._result_cache_dir}/{self.model_version}/{self.dataset_version}')
@@ -154,46 +146,6 @@ class Process(
         self.log(f'{self.work_dir = }')
         self.log(f'{self.cache_dir = }')
         self.log(f'{self.model_name = }')
-
-    def init_components(self):
-        torch_utils.setup_seed()
-
-        self.set_device()
-        self.set_tokenizer()
-        self.set_counter()
-
-        if not hasattr(self, 'model') or self.model is None:
-            self.set_model()
-
-        self.models[self.model_name] = self.model
-
-        try_init_components = [self.set_model_status]
-        for components in try_init_components:
-            try:
-                # note, if model is device of meta, will cause NotImplementedError
-                components()
-            except NotImplementedError as e:
-                self.log(f'{components} not init, cause exception: {e}', level=logging.ERROR)
-
-        self.log(f'{torch.__version__ = }')
-        self.log(f'{self.device = }')
-        self.log(f'{self.models.keys() = }')
-
-    def set_device(self):
-        if torch.cuda.is_available():
-            if isinstance(self.device, (str, int)) and self.device != 'cpu':
-                self.device = torch.device(f"cuda:{self.device}")
-            elif self.device is None:  # default None, use cuda:0 possible
-                self.device = torch.device('cuda')
-        else:
-            self.device = torch.device('cpu')
-
-    use_pretrained: bool = False
-
-    def set_model_status(self):
-        if self.use_pretrained:
-            self.load_pretrained()
-        self.model.to(self.device)
 
     def run(self, max_epoch=100, train_batch_size=16, predict_batch_size=None, fit_kwargs=dict(), metric_kwargs=dict()):
         self.init()

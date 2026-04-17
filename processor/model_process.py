@@ -71,7 +71,7 @@ class CheckpointHooks:
             return state_dict
 
         self.register_save_checkpoint(save_additional_checkpoint_weight, additional_checkpoint_suffix='.additional')
-        self.register_load_state_dict(load_additional_checkpoint_weight, additional_checkpoint_suffix='.additional')
+        self.register_load_checkpoint_weight(load_additional_checkpoint_weight, additional_checkpoint_suffix='.additional')
 
     log: bundled.LogHooks.log
 
@@ -123,9 +123,10 @@ class CheckpointHooks:
                 **additional_items
             }
 
-        torch.save(ckpt, save_path, **save_kwargs)
-        if verbose:
-            self.log(f'Successfully saved {self.model_name} to {save_path} !')
+        if ckpt:
+            torch.save(ckpt, save_path, **save_kwargs)
+            if verbose:
+                self.log(f'Successfully saved {self.model_name} to {save_path} !')
 
     def save_safetensors(self, save_path, verbose=True, save_kwargs=dict(), **kwargs):
         torch_utils.Export.to_safetensors(self.model_state_dict(), save_path, **save_kwargs)
@@ -200,7 +201,7 @@ class CheckpointHooks:
     def model_state_dict(self):
         return self.model.state_dict()
 
-    def register_load_state_dict(self, func, **kwargs):
+    def register_load_checkpoint_weight(self, func, **kwargs):
         """func in state_dict_container would return a dict like obj"""
         self.load_checkpoint_weight_container.update({func: kwargs})
 
@@ -349,6 +350,46 @@ class ModelHooks:
 
         self.register_val_end(_gc)
 
+    def init_components(self):
+        torch_utils.setup_seed()
+
+        self.set_device()
+        self.set_tokenizer()
+        self.set_counter()
+
+        if not hasattr(self, 'model') or self.model is None:
+            self.set_model()
+
+        self.models[self.model_name] = self.model
+
+        try_init_components = [self.set_model_status]
+        for components in try_init_components:
+            try:
+                # note, if model is device of meta, will cause NotImplementedError
+                components()
+            except NotImplementedError as e:
+                self.log(f'{components} not init, cause exception: {e}', level=logging.ERROR)
+
+        self.log(f'{torch.__version__ = }')
+        self.log(f'{self.device = }')
+        self.log(f'{self.models.keys() = }')
+
+    def set_device(self):
+        if torch.cuda.is_available():
+            if isinstance(self.device, (str, int)) and self.device != 'cpu':
+                self.device = torch.device(f"cuda:{self.device}")
+            elif self.device is None:  # default None, use cuda:0 possible
+                self.device = torch.device('cuda')
+        else:
+            self.device = torch.device('cpu')
+
+    use_pretrained: bool = False
+
+    def set_model_status(self):
+        if self.use_pretrained:
+            self.load_pretrained()
+        self.model.to(self.device)
+
     counter: torch_utils.Counter
 
     def set_counter(self):
@@ -380,7 +421,7 @@ class ModelHooks:
             return {'ema': state_dict}
 
         self.register_save_checkpoint(save_state_dict)
-        self.register_load_state_dict(load_state_dict)
+        self.register_load_checkpoint_weight(load_state_dict)
         self.log('Successfully init ema model!')
 
     def set_mode(self, train=True):
@@ -578,12 +619,12 @@ class ModelHooks:
                 val_dataloader:
 
         """
+        os_lib.saver.save_yaml(kwargs, f'{self.work_dir}/train_kwargs.yml')
         loop_objs, process_kwargs = self.on_train_start(**kwargs)
         kwargs.update(process_kwargs)
         self.on_train(loop_objs, **kwargs)
         return self.on_train_end(**kwargs)
 
-    init_wandb: bundled.LogHooks.init_wandb
     work_dir: str
     model_name: str
     get_train_dataloader: data_process.DataHooks.get_train_dataloader
@@ -648,7 +689,10 @@ class ModelHooks:
         if train_dataloader is None:
             train_dataloader = self.get_train_dataloader(data_get_kwargs=data_get_kwargs, data_preprocess_kwargs=data_preprocess_kwargs, dataloader_kwargs=dataloader_kwargs)
 
-        max_epoch = max_epoch or int(np.ceil(max_num / len(train_dataloader.dataset)))
+        if check_strategy == EPOCH:
+            max_num = max_num or int(np.ceil(max_epoch * len(train_dataloader.dataset)))
+        elif check_strategy == STEP:
+            max_epoch = max_epoch or int(np.ceil(max_num / len(train_dataloader.dataset)))
 
         if is_metric:
             metric_kwargs = metric_kwargs.copy()
@@ -669,12 +713,13 @@ class ModelHooks:
         for item in ('ema', 'optimizer', 'early_stopper', 'scaler', 'scheduler'):
             if not hasattr(self, item) or getattr(self, item) is None:
                 if kwargs.get(f'use_{item}'):
-                    getattr(self, f'set_{item}')(max_epoch=max_epoch, train_dataloader=train_dataloader, batch_size=batch_size, **kwargs)
+                    getattr(self, f'set_{item}')(max_epoch=max_epoch, max_num=max_num, train_dataloader=train_dataloader, batch_size=batch_size, **kwargs)
 
         process_kwargs = dict(
             train_dataloader=train_dataloader,
             metric_kwargs=metric_kwargs,
-            max_epoch=max_epoch
+            max_epoch=max_epoch,
+            max_num=max_num
         )
 
         for name, func, params in self.train_start_container:
@@ -817,13 +862,14 @@ class ModelHooks:
 
     def _check_on_train_step_end(
             self, loop_objs,
-            batch_size=None, max_save_weight_num=None, is_metric=True, max_epoch=None,
+            batch_size=None, max_save_weight_num=None, is_metric=True, max_epoch=None, max_num=None,
             check_period=None, check_period_trace=(bundled.LOGGING, bundled.WANDB),
             **kwargs
     ):
         if (
                 (check_period and self.counter.cur_nums % check_period < batch_size)
                 or (self.counter.cur_epoch == max_epoch - 1 and self.counter.cur_epoch_steps == self.counter.total_epoch_steps)
+                or self.counter.cur_nums >= max_num
         ):
             self.trace({'total_nums': self.counter.cur_nums}, check_period_trace)
 
@@ -832,6 +878,10 @@ class ModelHooks:
                 self._check_metric(loop_objs, state_dict, self.counter.cur_nums, max_save_weight_num, check_period_trace=check_period_trace, **kwargs)
 
             self.log_trace(check_period_trace)
+
+        # last epoch
+        if self.counter.cur_nums >= max_num:
+            loop_objs['end_flag'] = True
 
     def _check_on_train_epoch_end(
             self, loop_objs,
