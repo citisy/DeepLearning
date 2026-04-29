@@ -1185,11 +1185,7 @@ class BaseSD(DiProcess):
 
             self.norm_post_aug = Apply([
                 pixel_perturbation.MinMax(),
-                pixel_perturbation.Normalize(
-                    mean=[-0.1600, -0.2450, -0.3227],
-                    std=[0.5319, 0.4997, 0.5139],
-                    channel_first=True
-                ),
+                pixel_perturbation.Normalize(0.5, 0.5, channel_first=True),
             ])
 
         elif 'v2' in self.config_version:
