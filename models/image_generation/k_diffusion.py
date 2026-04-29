@@ -1,10 +1,11 @@
 import math
+from typing import Optional
 
 import numpy as np
 import torch
 import torch.nn.functional as F
 from einops import reduce
-from torch import nn
+from torch import Tensor, nn
 from tqdm import tqdm
 
 from .ddpm import extract, append_dims
@@ -39,18 +40,16 @@ class Schedule(nn.Module):
     def __init__(self, **kwargs):
         super().__init__()
         self.__dict__.update(kwargs)
-        sigmas = self.make_sigmas()
-        st = self.make_st()
-
-        self.register_buffer('sigmas', sigmas * st, persistent=False)
+        self.initialize_layers()
 
     def _apply(self, fn, recurse=True):
         """apply for meta load"""
         if self.sigmas.is_meta:
-            sigmas = self.make_sigmas()
-            st = self.make_st()
-            self.register_buffer('sigmas', sigmas * st)
+            self.initialize_layers()
         return super()._apply(fn, recurse)
+
+    def initialize_layers(self, **kwargs):
+        self.register_buffer('sigmas', self.make_sigmas(**kwargs))
 
     def make_timesteps(self, i0=None, num_steps=None):
         num_steps = num_steps or self.num_steps
@@ -60,16 +59,26 @@ class Schedule(nn.Module):
             timestep_seq = timestep_seq[:i0]
         return timestep_seq
 
-    def make_sigmas(self):
+    def make_sigmas(self, **kwargs):
+        sigmas = self._make_sigmas(**kwargs)
+        st = self.make_st(**kwargs)
+        return sigmas * st
+
+    def _make_sigmas(self, **kwargs):
         raise NotImplementedError
 
-    def make_st(self):
+    def make_st(self, **kwargs):
         return torch.ones(1, dtype=torch.long)
+
+    def sigma_to_idx(self, sigma: torch.Tensor, sigmas) -> torch.Tensor:
+        sigma = sigma.reshape(sigma.shape[0])
+        dists = sigma - sigmas[:, None]
+        return dists.abs().argmin(dim=0).view(sigma.shape)
 
 
 @make_schedule_fn.add_register()
 class LegacyDDPMSchedule(Schedule):
-    def make_sigmas(self):
+    def _make_sigmas(self, **kwargs):
         from .ddpm import linear_beta_schedule
         betas = linear_beta_schedule(self.timesteps, start=0.00085 ** 0.5, end=0.0120 ** 0.5) ** 2
         betas = betas.to(torch.float32)
@@ -88,7 +97,7 @@ class EDMSchedule(Schedule):
     sigma_max = 80.0
     rho = 7.0
 
-    def make_sigmas(self):
+    def _make_sigmas(self, **kwargs):
         ramp = torch.linspace(0, 1, self.timesteps + 1)
         min_inv_rho = self.sigma_min ** (1 / self.rho)
         max_inv_rho = self.sigma_max ** (1 / self.rho)
@@ -102,7 +111,7 @@ class ExponentialSchedule(Schedule):
     sigma_min = 0.002
     sigma_max = 80.0
 
-    def make_sigmas(self):
+    def _make_sigmas(self, **kwargs):
         sigmas = torch.linspace(math.log(self.sigma_max), math.log(self.sigma_min), self.timesteps + 1).exp()
         return sigmas
 
@@ -113,7 +122,7 @@ class PolyExponentialSchedule(Schedule):
     sigma_max = 80.0
     rho = 1.0
 
-    def make_sigmas(self):
+    def _make_sigmas(self, **kwargs):
         ramp = torch.linspace(1, 0, self.timesteps + 1) ** self.rho
         sigmas = torch.exp(ramp * (math.log(self.sigma_max) - math.log(self.sigma_min)) + math.log(self.sigma_min))
         return sigmas
@@ -125,7 +134,7 @@ class VpSchedule(Schedule):
     beta_d = 19.9
     beta_min = 0.1
 
-    def make_sigmas(self):
+    def _make_sigmas(self, **kwargs):
         t = torch.linspace(1, self.eps_s, self.timesteps + 1)
         sigmas = torch.sqrt(torch.exp(self.beta_d * t ** 2 / 2 + self.beta_min * t) - 1)
         return sigmas
@@ -141,7 +150,6 @@ class Scaling(nn.Module):
             self.make_c_skip(sigma),
             self.make_c_out(sigma),
             self.make_c_in(sigma),
-            self.make_c_noise(sigma)
         )
 
     def make_c_skip(self, sigma):
@@ -232,18 +240,49 @@ class Sampler(nn.Module):
         self.__dict__.update(kwargs)
         self.schedule = make_schedule_fn.get(schedule, schedule)(**schedule_config)
         self.scaling = make_scaling_fn.get(scaling, scaling)(**scaling_config)
+        self.make_timesteps = self.schedule.make_timesteps
+        self.sigma_to_idx = self.schedule.sigma_to_idx
 
     @property
     def num_steps(self):
         return self.schedule.num_steps
 
-    def loss(self, diffuse_func, x_0, noise=None, **kwargs):
-        raise NotImplementedError
+    def loss(self, diffuse_func, x_0, noise=None, sigmas=None, **kwargs):
+        b, c, h, w = x_0.shape
+        if sigmas is None:
+            sigmas = self.schedule.sigmas
 
-    def q_sample(self, x0, sigma, noise=None):
-        raise NotImplementedError
+        t = torch.randint(0, self.schedule.timesteps, (b,), device=x_0.device).long()
+        if noise is None:
+            noise = torch.randn_like(x_0)
 
-    def forward(self, diffuse_func, x_t, i0=None, callback_fn=None, num_steps=None, vis_pbar=False, **p_sample_kwargs):
+        sigma = extract(sigmas, t, x_0.shape)
+
+        x_t = self.q_sample(x_0, t, noise=noise, sigmas=sigmas)
+
+        c_in = self.scaling.make_c_in(sigma)
+        possible_t = self.make_q_sample_possible_t(sigma, sigmas)
+
+        pred = diffuse_func(x_t * c_in, possible_t, **kwargs)
+        real = self.scaling.predict_real(x_0, t, noise)
+
+        loss = F.mse_loss(pred.float(), real.float(), reduction='none')
+        loss = reduce(loss, 'b ... -> b', 'mean')
+        return loss.mean()
+
+    def q_sample(self, x0, t, noise=None, sigmas=None):
+        if noise is None:
+            noise = torch.randn_like(x0)
+
+        if sigmas is None:
+            sigmas = self.schedule.sigmas
+
+        return self.predict_x_t(x0, t, noise, sigmas)
+
+    def forward(self, diffuse_func, x_t, i0=None, callback_fn=None, num_steps=None, vis_pbar=False, sigmas=None, **p_sample_kwargs):
+        if sigmas is None:
+            sigmas = self.schedule.sigmas
+
         timestep_seq = self.schedule.make_timesteps(i0, num_steps=num_steps)
         num_steps = num_steps or len(timestep_seq)
         # previous sequence
@@ -257,65 +296,23 @@ class Sampler(nn.Module):
             pbar = tqdm(pbar)
         for i in pbar:
             self_cond = x_0 if self.self_condition else None
-            x_t, x_0 = self.p_sample(diffuse_func, x_t, timestep_seq[i], prev_t=timestep_prev_seq[i], x_self_cond=self_cond, num_steps=num_steps, **p_sample_kwargs)
+            x_t, x_0 = self.p_sample(
+                diffuse_func, x_t, timestep_seq[i],
+                prev_t=timestep_prev_seq[i], x_self_cond=self_cond, num_steps=num_steps, sigmas=sigmas,
+                **p_sample_kwargs
+            )
 
             if callback_fn:
                 callback_fn(x_t, timestep_seq[i])
         return x_t
 
-    def p_sample(self, diffuse_func, x_t, t, **diffuse_kwargs):
-        raise NotImplementedError
-
-    def scale_x_t(self, x_t):
-        raise NotImplementedError
-
-    def make_timesteps(self, i0=None, num_steps=None):
-        return self.schedule.make_timesteps(i0, num_steps=num_steps)
-
-
-class EulerSampler(Sampler):
-    # for p_sample
-    s_tmin = 0.0
-    s_tmax = 999.0
-    s_churn = 0.0
-
-    def loss(self, diffuse_func, x_0, noise=None, **kwargs):
-        b, c, h, w = x_0.shape
-        t = torch.randint(0, self.schedule.timesteps, (b,), device=x_0.device).long()
-        if noise is None:
-            noise = torch.randn_like(x_0)
-
-        sigma = extract(self.schedule.sigmas, t, x_0.shape)
-
-        c_in = self.scaling.make_c_in(sigma)
-        x_t = self.q_sample(x_0, t, noise=noise)
-        pred = diffuse_func(x_t * c_in, self.sigma_to_idx(sigma), **kwargs)
-        real = self.scaling.predict_real(x_0, t, noise)
-
-        loss = F.mse_loss(pred.float(), real.float(), reduction='none')
-        loss = reduce(loss, 'b ... -> b', 'mean')
-        return loss.mean()
-
-    def q_sample(self, x0, t, noise=None):
-        if noise is None:
-            noise = torch.randn_like(x0)
-
-        return self.predict_x_t(x0, t, noise)
-
-    def predict_x_t(self, x_0, t, noise):
-        # x_t = x_0 + s_t * z_t
-        return x_0 + noise * extract(self.schedule.sigmas, t, x_0.shape)
-
-    def scale_x_t(self, x_t):
-        return x_t * torch.sqrt(1.0 + self.schedule.sigmas[-1] ** 2.0)
-
-    def p_sample(self, diffuse_func, x_t, t, prev_t=None, num_steps=None, **diffuse_kwargs):
+    def p_sample(self, diffuse_func, x_t, t, prev_t=None, num_steps=None, sigmas=None, **diffuse_kwargs):
         # todo: add more sample methods
         t = torch.full((x_t.shape[0],), t, device=x_t.device, dtype=torch.long)
         prev_t = torch.full((x_t.shape[0],), prev_t, device=x_t.device, dtype=torch.long)
 
-        sigma = extract(self.schedule.sigmas, t, x_t.shape)
-        next_sigma = extract(self.schedule.sigmas, prev_t, x_t.shape)
+        sigma = extract(sigmas, t, x_t.shape)
+        next_sigma = extract(sigmas, prev_t, x_t.shape)
 
         gamma = torch.where(
             torch.logical_and(self.s_tmin <= sigma, sigma <= self.s_tmax),
@@ -329,11 +326,10 @@ class EulerSampler(Sampler):
             eps = torch.randn_like(x_t) * self.s_noise
             x_t = x_t + eps * (sigma_hat ** 2 - sigma ** 2) ** 0.5
 
-        possible_sigma = self.schedule.sigmas[self.sigma_to_idx(sigma_hat)]
-        c_skip, c_out, c_in, c_noise = self.scaling(possible_sigma)
+        possible_sigma = sigmas[self.sigma_to_idx(sigma_hat, sigmas)]
+        c_skip, c_out, c_in = self.scaling(possible_sigma)
         c_skip, c_out, c_in = [append_dims(c, len(x_t.shape)) for c in (c_skip, c_out, c_in)]
-        possible_t = self.sigma_to_idx(c_noise)
-        possible_t = possible_t - 1
+        possible_t = self.make_p_sample_possible_t(possible_sigma, sigmas)
 
         d = diffuse_func(c_in * x_t, possible_t, **diffuse_kwargs) * c_out + x_t * c_skip
 
@@ -343,7 +339,39 @@ class EulerSampler(Sampler):
         x_t = x_t + d * dt
         return x_t, None
 
-    def sigma_to_idx(self, sigma: torch.Tensor) -> torch.Tensor:
-        sigma = sigma.reshape(sigma.shape[0])
-        dists = sigma - self.schedule.sigmas[:, None]
-        return dists.abs().argmin(dim=0).view(sigma.shape)
+    def predict_x_t(self, x_0, t, noise, sigmas):
+        raise NotImplementedError
+
+    def scale_x_t(self, x_t):
+        raise NotImplementedError
+
+    def make_q_sample_possible_t(self, sigma, sigmas):
+        raise NotImplementedError
+
+    def make_p_sample_possible_t(self, sigma, sigmas):
+        raise NotImplementedError
+
+
+class EulerSampler(Sampler):
+    # for p_sample
+    s_tmin = 0.0
+    s_tmax = 999.0
+    s_churn = 0.0
+
+    def predict_x_t(self, x_0, t, noise, sigmas):
+        # x_t = x_0 + s_t * z_t
+        return x_0 + noise * extract(self.schedule.sigmas, t, x_0.shape)
+
+    def scale_x_t(self, x_t, sigmas=None):
+        if sigmas is None:
+            sigmas = self.schedule.sigmas
+        return x_t * torch.sqrt(1.0 + sigmas[-1] ** 2.0)
+
+    def make_q_sample_possible_t(self, sigma, sigmas):
+        return self.sigma_to_idx(sigma, sigmas)
+
+    def make_p_sample_possible_t(self, sigma, sigmas):
+        c_noise = self.scaling.make_c_noise(sigma)
+        possible_t = self.sigma_to_idx(c_noise, sigmas)
+        possible_t = possible_t - 1
+        return possible_t

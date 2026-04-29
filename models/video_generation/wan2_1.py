@@ -1388,7 +1388,7 @@ class FlowUniPCMultistepSchedule(k_diffusion.Schedule):
     shift = 5.0
     sigma_min = 0
 
-    def make_sigmas(self):
+    def _make_sigmas(self):
         s = 1 - 1 / self.timesteps
         sigma_max = self.shift * s / (1 + (self.shift - 1) * s)
         sigmas = torch.linspace(sigma_max, self.sigma_min, self.timesteps + 1)[:-1]

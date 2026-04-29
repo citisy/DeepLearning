@@ -552,7 +552,7 @@ class FlashAttend(nn.Module):
     refer to: https://arxiv.org/pdf/2205.14135.pdf
 
     note, use `pip install flash-attn --no-build-isolation` to install,
-    will be very slow, suggest to use the follow step to install:
+    will be very slow, to suggest to use the following step to install:
     ```
     git clone https://github.com/Dao-AILab/flash-attention
     cd flash-attention
@@ -593,7 +593,7 @@ class FlashAttend(nn.Module):
 
         attention_mask = remake_mask(attention_mask, (b, heads, q_len, q_len), q.dtype, return_bool=False)
 
-        # note, if not see, will raise some UserWarning
+        # note, if not set, will raise some UserWarning
         with torch.nn.attention.sdpa_kernel(self.gpu_backends if q.is_cuda else self.cpu_backends):
             out = F.scaled_dot_product_attention(
                 q, k, v,

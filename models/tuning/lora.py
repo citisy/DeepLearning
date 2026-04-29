@@ -29,7 +29,7 @@ class Module(nn.Module):
 
         h = self.lora_call(x)
         h = self.dropout(h) * self.scale
-        return y + h
+        return (y.to(h) + h).to(y)      # note, apply for some specially mode
 
     def lora_call(self, x):
         raise NotImplementedError
@@ -136,6 +136,7 @@ class ModelWrap:
         self.model = None
 
     def wrap(self, model: nn.Module):
+        # note, here just set grad to `False`, but make sure, some specially modules(like dropout) must set training to `False`, cause them have unexpected behavior while training
         model.requires_grad_(False)
         layers = torch_utils.ModuleManager.get_module_by_key(model, include=self.include, exclude=self.exclude)
         if len(layers) == 0:
@@ -205,3 +206,9 @@ class ModelWrap:
                 layer.dewrap()
 
         return self.model
+
+    def to(self, *args, **kwargs):
+        for full_name in self.layers:
+            layer = torch_utils.ModuleManager.get_module_by_name(self.model, full_name)
+            layer.down.to(*args, **kwargs)
+            layer.up.to(*args, **kwargs)

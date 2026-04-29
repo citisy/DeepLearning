@@ -100,7 +100,8 @@ class IgProcess(Process):
     def on_val_end(self, loop_objs, process_results=dict(), save_synth=True, num_synth_per_image=64, is_visualize=False, max_vis_num=None, **kwargs):
         if is_visualize and save_synth:
             results = [image for image in process_results[self.model_name]['fake_x']]
-            max_vis_num = len(results)
+            max_vis_num = max_vis_num or self.val_data_num
+            max_vis_num = min(len(results), max_vis_num)
             vis_num = 0
 
             for i in range(0, self.val_data_num, num_synth_per_image):
@@ -354,7 +355,7 @@ class DataProcess(DataHooks):
     ])
 
     aug = Apply([
-        scale.Proportion(choice_type=3),
+        scale.Proportion(choice_type=3, interpolation=2),
         crop.Random(is_pad=False),
         # scale.LetterBox(),    # there are gray lines
     ])
@@ -362,11 +363,11 @@ class DataProcess(DataHooks):
     post_aug = Apply([
         channel.Keep3Dims(),
         channel.Keep3Channels(),
-        # pixel_perturbation.MinMax(),
-        pixel_perturbation.Normalize(127.5, 127.5),  # normalize, [0, 255] -> [-1, 1]
         channel.BGR2RGB(),
         channel.HWC2CHW()
     ])
+
+    norm_post_aug: Apply
 
     def data_augment(self, ret, train=True) -> dict:
         if 'image' in ret and ret['image'] is not None:
@@ -378,12 +379,15 @@ class DataProcess(DataHooks):
                 ret.update(self.val_aug(**ret))
 
             ret.update(self.post_aug(**ret))
+            ret.update(self.norm_post_aug(**ret))
 
         return ret
 
     def val_data_restore(self, ret) -> dict:
+        ret = self.norm_post_aug.restore(ret)
         ret = self.post_aug.restore(ret)
         ret.update(pixel_perturbation.Clip()(**ret))
+        ret['image'] = ret['image'].astype(np.uint8)
         return ret
 
     def get_val_dataloader(self, **dataloader_kwargs):
@@ -804,7 +808,7 @@ class DiProcess(IgProcess):
             torch_utils.ModuleManager.apply(
                 self.model,
                 lambda module: module.to(torch.float),
-                include=[normalizations.GroupNorm32],
+                include=[normalizations.GroupNorm32, normalizations.RMSNorm],
             )
         else:
             self.model.to(torch.float)
@@ -816,7 +820,6 @@ class DiProcess(IgProcess):
         if train:
             images = [torch.from_numpy(ret.pop('image')).to(self.device, non_blocking=True, dtype=torch.float) for ret in loop_inputs]
             images = torch.stack(images)
-            # images = images * 2 - 1  # normalize, [0, 1] -> [-1, 1]
             model_inputs = dict(
                 x=images
             )
@@ -833,13 +836,6 @@ class DiProcess(IgProcess):
 
         with torch.amp.autocast(str(self.device), dtype=torch.bfloat16, enabled=self.use_half):
             output = self.model(**model_inputs)
-
-        real_x = loop_objs['real_x']
-        if len(real_x) < self.val_data_num:
-            images = model_inputs['x']
-            images = (images + 1) * 0.5
-            images = images.data.mul(255).clamp_(0, 255).permute(0, 2, 3, 1).to("cpu", torch.uint8).numpy()
-            real_x.extend(list(images)[:self.val_data_num - len(real_x)])
 
         return output
 
@@ -866,10 +862,13 @@ class DiProcess(IgProcess):
             # note, something wrong with autocast, got inf result
             # with torch.cuda.amp.autocast(True):
             fake_x = model(**model_inputs)
-            fake_x = (fake_x + 1) * 0.5  # unnormalize, [-1, 1] -> [0, 1]
-            fake_x = fake_x.data.mul(255).clamp_(0, 255).permute(0, 2, 3, 1).to("cpu", torch.uint8).numpy()
+            fake_x = fake_x.to(torch.float32).cpu().numpy()
+            _fake_x = []
+            for fx in fake_x:
+                ret = self.val_data_restore(dict(image=fx))
+                _fake_x.append(ret['image'])
             model_results[name] = dict(
-                fake_x=fake_x,
+                fake_x=_fake_x,
             )
 
         return model_results
@@ -878,7 +877,7 @@ class DiProcess(IgProcess):
         model_results = loop_objs['model_results']
         for model_name, results in model_results.items():
             for data_name, items in results.items():
-                items[..., :] = items[..., ::-1]  # note, official model output is Image type, must convert to cv2 type
+                # items[..., :] = items[..., ::-1]  # note, official model output is Image type, must convert to cv2 type
                 results[data_name] = items
 
         return super().on_predict_reprocess(loop_objs, **kwargs)
@@ -1184,6 +1183,15 @@ class BaseSD(DiProcess):
             if not hasattr(self, 'vocab_fn'):
                 self.vocab_fn = 'openai/clip-vit-large-patch14/vocab.json'
 
+            self.norm_post_aug = Apply([
+                pixel_perturbation.MinMax(),
+                pixel_perturbation.Normalize(
+                    mean=[-0.1600, -0.2450, -0.3227],
+                    std=[0.5319, 0.4997, 0.5139],
+                    channel_first=True
+                ),
+            ])
+
         elif 'v2' in self.config_version:
             from models.image_generation.sdv2 import Model, Config
 
@@ -1192,6 +1200,15 @@ class BaseSD(DiProcess):
             if not hasattr(self, 'vocab_fn'):
                 self.vocab_fn = 'laion/CLIP-ViT-H-14-laion2B-s32B-b79K/vocab.json'
 
+            self.norm_post_aug = Apply([
+                pixel_perturbation.MinMax(),
+                pixel_perturbation.Normalize(
+                    mean=[-0.1600, -0.2450, -0.3227],
+                    std=[0.5319, 0.4997, 0.5139],
+                    channel_first=True
+                ),
+            ])
+
         elif 'xl' in self.config_version:
             from models.image_generation.sdxl import Model, Config
 
@@ -1199,6 +1216,15 @@ class BaseSD(DiProcess):
                 self.encoder_fn = 'openai/clip-vit-large-patch14/merges.txt'
             if not hasattr(self, 'vocab_fn'):
                 self.vocab_fn = 'openai/clip-vit-large-patch14/vocab.json'
+
+            self.norm_post_aug = Apply([
+                pixel_perturbation.MinMax(),
+                pixel_perturbation.Normalize(
+                    mean=[0.0002, -0.1034, -0.1879],
+                    std=[0.5436, 0.5116, 0.5033],
+                    channel_first=True
+                ),
+            ])
 
         else:
             raise
@@ -1528,6 +1554,12 @@ class BaseFlux(DiProcess):
 
     model_config: dict = {}
 
+    # normalize, [0, 255] -> [-1, 1]
+    norm_post_aug = Apply([
+        pixel_perturbation.MinMax(),
+        pixel_perturbation.Normalize(0.5, 0.5, channel_first=True),
+    ])
+
     def set_model(self):
         from models.image_generation.flux import Model, Config
 
@@ -1579,11 +1611,11 @@ class FluxTrainer(BaseFlux):
             for i in tqdm(range(0, len(iter_data), preprocess_batch_size), desc='Preprocess data'):
                 loop_inputs = iter_data[i:i + preprocess_batch_size]
                 texts = [ret['text'] for ret in loop_inputs]
-                inputs = self.clip_tokenizer.encode_paragraphs(texts)
+                inputs = self.clip_tokenizer.encode_paragraphs(texts, pad_type=2)
                 clip_text_ids = torch.tensor(inputs['segments_ids']).to(self.device)
                 clip_text_conds = self.model.clip.encode(clip_text_ids)['pooler_output'].to('cpu')
 
-                inputs = self.t5_tokenizer.encode_paragraphs(texts)
+                inputs = self.t5_tokenizer.encode_paragraphs(texts, pad_type=2)
                 t5_text_ids = torch.tensor(inputs['segments_ids']).to(self.device)
                 t5_text_conds = self.model.t5.encode(t5_text_ids).to('cpu')
                 for ii, ret in enumerate(loop_inputs):
@@ -1623,17 +1655,24 @@ class FluxTrainer(BaseFlux):
             x=images,
         )
 
+        image_size = self.input_size
+
         if 'clip_text_cond' in loop_inputs[0]:
             model_inputs['clip_text_conds'] = [ret['clip_text_cond'] for ret in loop_inputs]
         else:
-            inputs = self.clip_tokenizer.encode_paragraphs(texts)
+            inputs = self.clip_tokenizer.encode_paragraphs(texts, pad_type=2)
             model_inputs['clip_text_ids'] = inputs['segments_ids']
 
         if 't5_text_cond' in loop_inputs[0]:
             model_inputs['t5_text_conds'] = [ret['t5_text_cond'] for ret in loop_inputs]
         else:
-            inputs = self.t5_tokenizer.encode_paragraphs(texts)
+            inputs = self.t5_tokenizer.encode_paragraphs(texts, pad_type=2)
             model_inputs['t5_text_ids'] = inputs['segments_ids']
+
+        if 'dst' in loop_inputs[0]:
+            image_size = loop_inputs[0]['dst']
+
+        model_inputs['image_size'] = image_size
 
         model_inputs = torch_utils.Converter.force_to_tensors(model_inputs, self.device)
         return model_inputs
@@ -1644,6 +1683,8 @@ class FluxPredictor(BaseFlux):
         texts = []
         images = []
         mask_images = []
+        image_size = self.input_size
+
         for ret in loop_inputs:
             if 'text' in ret:
                 texts.append(ret['text'])
@@ -1657,10 +1698,13 @@ class FluxPredictor(BaseFlux):
 
                 images.append(torch.from_numpy(image).to(self.device, non_blocking=True, dtype=torch.float))
 
-        inputs = self.clip_tokenizer.encode_paragraphs(texts)
+            if 'dst' in ret:
+                image_size = ret['dst']
+
+        inputs = self.clip_tokenizer.encode_paragraphs(texts, pad_type=2)
         clip_text_ids = torch.tensor(inputs['segments_ids']).to(self.device)
 
-        inputs = self.t5_tokenizer.encode_paragraphs(texts)
+        inputs = self.t5_tokenizer.encode_paragraphs(texts, pad_type=2)
         t5_text_ids = torch.tensor(inputs['segments_ids']).to(self.device)
 
         if images:
@@ -1674,8 +1718,11 @@ class FluxPredictor(BaseFlux):
             clip_text_ids=clip_text_ids,
             t5_text_ids=t5_text_ids,
             x=images,
-            image_size=self.input_size
+            image_size=image_size
         )
+
+    def predict_data_augment(self, ret):
+        return self.val_data_augment(ret)
 
     def gen_predict_inputs(self, *objs, images=None, start_idx=None, end_idx=None, **kwargs):
         """

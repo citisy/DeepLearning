@@ -1,6 +1,7 @@
 import logging
 import os
 import time
+import warnings
 from datetime import datetime
 from pathlib import Path
 from typing import Annotated, Dict, Iterable, List, Optional, Union, overload
@@ -56,7 +57,7 @@ class CheckpointHooks:
                     self.log(f'Successfully saved additional state_dict to {additional_path} !')
 
                 if max_save_weight_num:
-                    os_lib.FileCacher(self.work_dir, max_size=max_save_weight_num, stdout_method=self.log).delete_over_range(suffix=rf'\d+\.{additional_checkpoint_suffix}\.pth')
+                    os_lib.FileCacher(self.work_dir, max_size=max_save_weight_num, stdout_method=self.log).delete_over_range(suffix=rf'\d+\{additional_checkpoint_suffix}\.pth')
 
         def load_additional_checkpoint_weight(save_path, verbose=True, additional_checkpoint_suffix='', load_kwargs={}, **ignore_kwargs):
             save_path = Path(save_path)
@@ -182,19 +183,23 @@ class CheckpointHooks:
         if max_save_weight_num:
             os_lib.FileCacher(self.work_dir, max_size=max_save_weight_num, stdout_method=self.log).delete_over_range(suffix=r'\d+\.pth')
 
+    state_dict_keys = ['optimizer', 'stopper', 'counter']
+
     def state_dict(self):
-        """get additional info except model weights"""
+        """only return process state_dict except model state_dict"""
         state_dict = {
             'date': datetime.now().isoformat()
         }
 
-        for name in ('optimizer', 'stopper', 'counter', 'wandb_id'):
+        for name in self.state_dict_keys:
             if hasattr(self, name):
                 var = getattr(self, name)
                 if hasattr(var, 'state_dict'):
                     state_dict[name] = var.state_dict()
                 elif var is not None:
                     state_dict[name] = var
+                else:
+                    warnings.warn(f'Can not get state_dict of {name}, pls check about it!')
 
         return state_dict
 

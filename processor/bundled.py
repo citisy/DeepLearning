@@ -144,6 +144,7 @@ class Wandb:
         process.register_logger(looger_name, lambda item, **kwargs: wandb.log(item))
         process.register_train_start(_wandb_init)
         process.register_train_end(wandb.finish)
+        process.state_dict_keys.append('wandb_id')
 
     def make_wandb(self):
         try:

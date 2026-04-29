@@ -230,8 +230,9 @@ class Model(ddim.Model):
     """
 
     scale_factor = 0.18215
-    cond_trainable = True
+    cond_trainable = False
     vae_trainable = False
+    backbone_trainable = False
 
     sampler_mapping = {
         Config.DDPM: ddpm.Sampler,
@@ -260,15 +261,20 @@ class Model(ddim.Model):
         assert hasattr(vae, 'decode')
         assert hasattr(vae, 'encode')
 
-        if not self.cond_trainable:
-            torch_utils.ModuleManager.freeze_module(cond)
-        if not self.vae_trainable:
-            torch_utils.ModuleManager.freeze_module(vae)
-            vae.set_inference_only()
-
         self.cond = cond
         self.backbone = backbone
         self.vae = vae
+
+        self.set_module_status()
+
+    def set_module_status(self):
+        if not self.cond_trainable:
+            torch_utils.ModuleManager.freeze_module(self.cond)
+        if not self.vae_trainable:
+            torch_utils.ModuleManager.freeze_module(self.vae)
+            self.vae.set_inference_only()
+        if not self.backbone_trainable:
+            torch_utils.ModuleManager.freeze_module(self.backbone)
 
     @property
     def process_in_ch(self):

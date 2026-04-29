@@ -265,6 +265,7 @@ class Model(nn.Module):
     cond_trainable = False
     vae_trainable = False
     t5_trainable = False
+    backbone_trainable = False
 
     def __init__(
             self,
@@ -301,6 +302,9 @@ class Model(nn.Module):
             torch_utils.ModuleManager.freeze_module(self.vae)
             self.vae.set_inference_only()
 
+        if not self.backbone_trainable:
+            torch_utils.ModuleManager.freeze_module(self.backbone)
+
     _device = None
     _dtype = None
 
@@ -317,7 +321,7 @@ class Model(nn.Module):
         return self.vae.z_ch
 
     def process_in_size(self, image_size=None):
-        image_size = image_size or self.image_size
+        image_size = self.image_size if image_size is None else image_size
         if isinstance(image_size, int):
             image_size = (image_size, image_size)
         return (
@@ -378,6 +382,7 @@ class Model(nn.Module):
     def fit(
             self, x, t5_text_ids=None, clip_text_ids=None,
             z=None, t5_text_conds=None, clip_text_conds=None,
+            image_size=None,
             **kwargs
     ):
         # x is x0, the real image
@@ -392,26 +397,37 @@ class Model(nn.Module):
         if z is None:
             z, _, _ = self.vae.encode(x)
 
-        return {'loss': self.sampler.loss(self.process, z, **kwargs)}
+        bs, c, h, w = z.shape
+        sigmas = self.sampler.schedule.make_sigmas(mu=self.sampler.schedule.make_mu(image_seq_len=h * w // 4))
+        return {
+            'loss': self.sampler.loss(
+                self.process, z,
+                noise=self.gen_x_t(t5_text_conds.shape[0], image_size),
+                sigmas=sigmas,
+                **kwargs
+            )
+        }
 
     def inference(self, x=None, t5_text_ids=None, clip_text_ids=None, mask_x=None, image_size=None, t5_text_conds=None, clip_text_conds=None, **kwargs):
-        if x is None or not len(x):  # txt2img
-            x = self.gen_x_t(t5_text_ids.shape[0], image_size)
-            z0 = None
-
-        else:  # img2img
-            x, z0, i0 = self.make_image_cond(x, noise=self.gen_x_t(t5_text_ids.shape[0], (x.shape[-1], x.shape[-2])), **kwargs)
-            kwargs.update(i0=i0)
-
         t5_text_conds = self.t5.encode(t5_text_ids) if t5_text_conds is None else t5_text_conds
         clip_text_conds = self.clip.encode(clip_text_ids)['pooler_output'] if clip_text_conds is None else clip_text_conds
+
+        if x is None or not len(x):  # txt2img
+            x = self.gen_x_t(t5_text_conds.shape[0], image_size)
+            z0 = None
+            bs, c, h, w = x.shape
+            sigmas = self.sampler.schedule.make_sigmas(mu=self.sampler.schedule.make_mu(image_seq_len=h * w // 4))
+
+        else:  # img2img
+            x, z0, i0, sigmas = self.make_image_cond(x, noise=self.gen_x_t(t5_text_conds.shape[0], (x.shape[-1], x.shape[-2])), **kwargs)
+            kwargs.update(i0=i0)
 
         kwargs.update(
             t5_text_conds=t5_text_conds,
             clip_text_conds=clip_text_conds,
         )
 
-        z = self.sampler(self.process, x, **kwargs)
+        z = self.sampler(self.process, x, sigmas=sigmas, **kwargs)
 
         if x is not None and len(x) and mask_x is not None and len(mask_x):
             # todo: apply for different conditioning_key
@@ -437,7 +453,7 @@ class Model(nn.Module):
         img_ids = img_ids.to(img.device)
         txt_ids = torch.zeros(bs, t5_text_conds.shape[1], 3).to(img)
 
-        guidance_vec = torch.full((img.shape[0],), self.guidance, device=img.device, dtype=img.dtype)
+        guidance_vec = torch.full((img.shape[0],), self.guidance * 1000, device=img.device, dtype=img.dtype)
         t_vec = torch.full((img.shape[0],), t_vec[0], dtype=img.dtype, device=img.device)
 
         img = self.backbone(
@@ -456,7 +472,7 @@ class Model(nn.Module):
         return torch.randn(
             (batch_size, self.process_in_ch, *self.process_in_size(image_size)[::-1]),  # (b, c, h, w)
             device=self.device, dtype=self.dtype,
-            # generator=torch.Generator(device=self.device),  # note, necessary
+            # generator=torch.Generator(device=self.device),  # note, not necessary, don't use while training
         )
 
     def make_image_cond(self, images, i0=None, noise=None, strength=0.75, num_steps=None, **kwargs):
@@ -467,79 +483,50 @@ class Model(nn.Module):
             num_steps = num_steps or self.sampler.num_steps
             i0 = int(strength * num_steps)
 
+        bs, c, h, w = x0.shape
+        sigmas = self.sampler.schedule.make_sigmas(mu=self.sampler.schedule.make_mu(image_seq_len=h * w // 4))
         timestep_seq = self.sampler.make_timesteps(i0, num_steps=num_steps)
         t = timestep_seq[-1]
         t = torch.full((x0.shape[0],), t, device=x0.device, dtype=torch.long)
-        xt = self.sampler.q_sample(x0, t, noise=noise)
-        return xt, z, i0
+        xt = self.sampler.q_sample(x0, t, noise=noise, sigmas=sigmas)
+        return xt, z, i0, sigmas
 
 
 class FlowMatchEulerSampler(EulerSampler):
-    def loss(self, diffuse_func, x_0, noise=None, **kwargs):
-        b, c, h, w = x_0.shape
-        t = torch.randint(0, self.schedule.timesteps, (b,), device=x_0.device).long()
-        if noise is None:
-            noise = torch.randn_like(x_0)
+    def make_q_sample_possible_t(self, sigma, sigmas):
+        c_noise = self.scaling.make_c_noise(sigma)
+        # don't use `c_noise.squeeze()`
+        return c_noise[:, 0, 0, 0] * 1000
 
-        sigma = extract(self.schedule.sigmas, t, x_0.shape)
+    def make_p_sample_possible_t(self, sigma, sigmas):
+        c_noise = self.scaling.make_c_noise(sigma)
+        return c_noise * 1000
 
-        x_t = self.q_sample(x_0, t, noise=noise)
-
-        c_skip, c_out, c_in, c_noise = self.scaling(sigma)
-        possible_t = c_noise[:, 0, 0, 0] * 1000
-
-        pred = diffuse_func(x_t * c_in, possible_t, **kwargs)
-        real = self.scaling.predict_real(x_0, t, noise)
-
-        loss = F.mse_loss(pred.float(), real.float(), reduction='none')
-        loss = reduce(loss, 'b ... -> b', 'mean')
-        return loss.mean()
-
-    def p_sample(self, diffuse_func, x_t, t, prev_t=None, num_steps=None, **diffuse_kwargs):
-        # todo: add more sample methods
-        t = torch.full((x_t.shape[0],), t, device=x_t.device, dtype=torch.long)
-        prev_t = torch.full((x_t.shape[0],), prev_t, device=x_t.device, dtype=torch.long)
-
-        sigma = extract(self.schedule.sigmas, t, x_t.shape)
-        next_sigma = extract(self.schedule.sigmas, prev_t, x_t.shape)
-
-        gamma = torch.where(
-            torch.logical_and(self.s_tmin <= sigma, sigma <= self.s_tmax),
-            min(self.s_churn / (num_steps - 1 + 1e-8), 2 ** 0.5 - 1),
-            0.
-        ).to(sigma)
-
-        sigma_hat = sigma * (gamma + 1.0)
-
-        if torch.any(gamma > 0):
-            eps = torch.randn_like(x_t) * self.s_noise
-            x_t = x_t + eps * (sigma_hat ** 2 - sigma ** 2) ** 0.5
-
-        possible_sigma = self.schedule.sigmas[self.sigma_to_idx(sigma_hat)]
-        c_skip, c_out, c_in, c_noise = self.scaling(possible_sigma)
-        c_skip, c_out, c_in = [append_dims(c, len(x_t.shape)) for c in (c_skip, c_out, c_in)]
-        possible_t = c_noise * 1000
-
-        d = diffuse_func(c_in * x_t, possible_t, **diffuse_kwargs) * c_out + x_t * c_skip  # note, use c_noise as time
-
-        d = (x_t - d) / sigma_hat
-        dt = next_sigma - sigma_hat
-        x_t = x_t + d * dt
-        return x_t, None
-
-    def predict_x_t(self, x_0, t, noise):
-        sigma = extract(self.schedule.sigmas, t, x_0.shape)
+    def predict_x_t(self, x_0, t, noise, sigmas=None):
+        sigma = extract(sigmas, t, x_0.shape)
         return x_0 * (1 - sigma) + noise * sigma
 
 
 @make_schedule_fn.add_register()
 class FlowMatchSchedule(Schedule):
-    mu = 1.15
     sigma = 1.
 
-    def make_sigmas(self):
+    def make_mu(
+            self,
+            image_seq_len=2304,
+            base_seq_len: int = 256,
+            max_seq_len: int = 4096,
+            base_shift: float = 0.5,
+            max_shift: float = 1.15,
+    ):
+        m = (max_shift - base_shift) / (max_seq_len - base_seq_len)
+        b = base_shift - m * base_seq_len
+        mu = image_seq_len * m + b
+        return mu
+
+    def _make_sigmas(self, mu=1.15, **kwargs):
         timesteps = (torch.arange(1, self.timesteps + 1, 1) / self.timesteps)
-        sigmas = math.exp(self.mu) / (math.exp(self.mu) + (1 / timesteps - 1) ** self.sigma)
+        sigmas = math.exp(mu) / (math.exp(mu) + (1 / timesteps - 1) ** self.sigma)
         sigmas = torch.cat([sigmas.new_zeros([1]), sigmas])
         return sigmas
 
@@ -624,15 +611,26 @@ class Flux(nn.Module):
         ids = torch.cat((txt_ids, img_ids), dim=1)
         pe = self.embedding.make_weights(ids)
 
-        for block in self.double_blocks:
-            img, txt = block(img=img, txt=txt, vec=vec, pe=pe)
-
+        img, txt = self.forward_double_blocks(img, txt, vec, pe)
         img = torch.cat((txt, img), 1)
-        for block in self.single_blocks:
-            img = block(img, vec=vec, pe=pe)
+        img = self.forward_single_blocks(img, vec, pe)
         img = img[:, txt.shape[1]:, ...]
 
         img = self.head(img, vec)  # (N, T, patch_size ** 2 * out_channels)
+        return img
+
+    def forward_double_blocks(self, img, txt, vec, pe):
+        """easy to wrap"""
+        for block in self.double_blocks:
+            img, txt = block(img=img, txt=txt, vec=vec, pe=pe)
+
+        return img, txt
+
+    def forward_single_blocks(self, img, vec, pe):
+        """easy to wrap"""
+        for block in self.single_blocks:
+            img = block(img, vec=vec, pe=pe)
+
         return img
 
 
@@ -813,7 +811,7 @@ class CondStreamBlock(nn.Module):
 
     def stream_in(self, x, vec):
         mod1, mod2 = self.mod(vec)
-        x = self.norm1(x).type_as(x)   # x.dtype would be change with autocast
+        x = self.norm1(x).type_as(x)  # x.dtype would be change with autocast
         modulated = (1 + mod1.scale) * x + mod1.shift
         if self.separate:
             if self.double:
