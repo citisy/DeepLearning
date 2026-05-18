@@ -12,7 +12,7 @@ from torch import Tensor, nn
 from utils import torch_utils
 from .. import activations, attentions, bundles, embeddings, normalizations
 from ..embeddings import SinusoidalEmbedding
-from ..image_generation import VAE, k_diffusion, sdv1
+from ..image_generation import QwenVAE, k_diffusion, sdv1
 from ..layers import Linear
 from ..multimodal_pretrain import CLIP
 from ..text_pretrain import T5, transformers
@@ -455,372 +455,21 @@ class Model(nn.Module):
         )
 
 
-class WanVAE(VAE.Model):
-    scale_factor = 1 / torch.tensor([
-        2.8184, 1.4541, 2.3275, 2.6558, 1.2196, 1.7708, 2.6052, 2.0743,
-        3.2687, 2.1526, 2.8652, 1.5579, 1.6382, 1.1253, 2.8251, 1.9160
-    ])[None, :, None, None, None]
-    shift_factor = torch.tensor([
-        -0.7571, -0.7089, -0.9113, 0.1075, -0.1745, 0.9653, -0.1517, 1.5508,
-        0.4134, -0.0715, 0.5517, -0.3632, -0.1922, -0.9497, 0.2503, -0.2921
-    ])[None, :, None, None, None]
-
-    def set_encoder(self, **backbone_config):
-        self.encoder = WanVAEEncoder3d(self.img_ch, **backbone_config)
-        self.quant_conv = WanVAECausalConv3d(self.encoder.z_ch * 2, self.encoder.z_ch * 2, 1) if self.use_quant_conv else nn.Identity()
-
+class WanVAE(QwenVAE.Model):
     def set_decoder(self, **backbone_config):
         z_ch = self.encoder.z_ch
-        self.post_quant_conv = WanVAECausalConv3d(z_ch, z_ch, 1) if self.use_post_quant_conv else nn.Identity()
-        self.decoder = WanVAEDecoder3d(z_ch, self.img_ch, **backbone_config)
-
-    @staticmethod
-    def count_conv3d(model):
-        count = 0
-        for m in model.modules():
-            if isinstance(m, WanVAECausalConv3d):
-                count += 1
-        return count
-
-    def encode(self, x, sample_posterior=True):
-        feat_cache = [None] * self.count_conv3d(self.encoder)
-
-        t = x.shape[2]
-        iter_ = 1 + (t - 1) // 4
-
-        out = None
-        for i in range(iter_):
-            feat_idx = [0]
-            if i == 0:
-                out = self.encoder(
-                    x[:, :, :1, :, :],
-                    feat_cache=feat_cache,
-                    feat_idx=feat_idx
-                )
-            else:
-                out_ = self.encoder(
-                    x[:, :, 1 + 4 * (i - 1):1 + 4 * i, :, :],
-                    feat_cache=feat_cache,
-                    feat_idx=feat_idx
-                )
-                out = torch.cat([out, out_], 2)
-
-        out = self.quant_conv(out)
-        z, mean, log_var = self.re_parametrize(out, sample_posterior=sample_posterior)
-
-        scale_factor = self.scale_factor
-        if isinstance(scale_factor, torch.Tensor):
-            scale_factor = scale_factor.to(z)
-        shift_factor = self.shift_factor
-        if isinstance(shift_factor, torch.Tensor):
-            shift_factor = shift_factor.to(z)
-
-        z = scale_factor * (z - shift_factor)
-        return z, mean, log_var
-
-    def decode(self, z):
-        feat_cache = [None] * self.count_conv3d(self.decoder)
-
-        scale_factor = self.scale_factor
-        if isinstance(scale_factor, torch.Tensor):
-            scale_factor = scale_factor.to(z)
-        shift_factor = self.shift_factor
-        if isinstance(shift_factor, torch.Tensor):
-            shift_factor = shift_factor.to(z)
-
-        z = z / scale_factor + shift_factor
-
-        iter_ = z.shape[2]
-        x = self.post_quant_conv(z)
-        out = None
-        for i in range(iter_):
-            feat_idx = [0]
-            out_ = self.decoder(
-                x[:, :, i:i + 1, :, :],
-                feat_cache=feat_cache,
-                feat_idx=feat_idx
-            )
-            if i == 0:
-                out = out_
-            else:
-                out = torch.cat([out, out_], 2)
-        return out
+        self.post_quant_conv = QwenVAE.CausalConv3d(z_ch, z_ch, 1) if self.use_post_quant_conv else nn.Identity()
+        self.decoder = Decoder3d(z_ch, self.img_ch, **backbone_config)
 
 
-class WanVAECausalConv3d(nn.Conv3d):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self._padding = (self.padding[2], self.padding[2], self.padding[1], self.padding[1], 2 * self.padding[0], 0)
-        self.padding = (0, 0, 0)
-
-    def forward(self, x, cache_x=None):
-        padding = list(self._padding)
-        if cache_x is not None and self._padding[4] > 0:
-            cache_x = cache_x.to(x.device)
-            x = torch.cat([cache_x, x], dim=2)
-            padding[4] -= cache_x.shape[2]
-        x = F.pad(x, padding)
-
-        return super().forward(x)
-
-
-class WanVAEResBlock(nn.Module):
-    def __init__(self, in_ch, out_ch=None, conv_shortcut=False, drop_prob=0.):
-        super().__init__()
-        out_ch = in_ch if out_ch is None else out_ch
-        self.in_channels = in_ch
-        self.out_channels = out_ch
-
-        if in_ch != out_ch:
-            if conv_shortcut:
-                shortcut = WanVAECausalConv3d(in_ch, out_ch, 3, stride=1, padding=1)
-            else:
-                shortcut = WanVAECausalConv3d(in_ch, out_ch, 1, stride=1, padding=0)
-        else:
-            shortcut = nn.Identity()
-
-        self.proj = shortcut
-        self.fn = WanVAEResFn(in_ch, out_ch, drop_prob=drop_prob)
-
-    def forward(self, x, feat_cache=None, feat_idx=[0]):
-        h1 = self.proj(x)
-        h2 = self.fn(x, feat_cache, feat_idx)
-        return h1 + h2
-
-
-class WanVAEResFn(nn.ModuleList):
-    def __init__(self, in_ch, out_ch, drop_prob=0.):
-        super().__init__([
-            normalizations.RMSNorm4D(in_ch),
-            nn.SiLU(),
-            WanVAECausalConv3d(in_ch, out_ch, 3, padding=1),
-
-            normalizations.RMSNorm4D(out_ch),
-            nn.SiLU(),
-            nn.Dropout(drop_prob),
-            WanVAECausalConv3d(out_ch, out_ch, 3, padding=1)
-        ])
-
-    def forward(self, x, feat_cache=None, feat_idx=[0]):
-        for layer in self:
-            if isinstance(layer, WanVAECausalConv3d) and feat_cache is not None:
-                idx = feat_idx[0]
-                cache_x = x[:, :, -2:, :, :].clone()
-                if cache_x.shape[2] < 2 and feat_cache[idx] is not None:
-                    # cache last frame of last two chunk
-                    cache_x = torch.cat([feat_cache[idx][:, :, -1, :, :].unsqueeze(2).to(cache_x.device), cache_x], dim=2)
-                x = layer(x, feat_cache[idx])
-                feat_cache[idx] = cache_x
-                feat_idx[0] += 1
-            else:
-                x = layer(x)
-
-        return x
-
-
-class WanVAEAttentionBlock(nn.Sequential):
-    def __init__(self, in_ch):
-        super().__init__(
-            normalizations.RMSNorm3D(in_ch),
-            attentions.CrossAttention3D(
-                n_heads=1, head_dim=in_ch, separate=False,
-                # attend=attentions.SplitScaleAttend()
-            )
-        )
-
-    def forward(self, x):
-        h = super().forward(x)
-        return x + h
-
-
-class WanVAEDownSample(nn.Module):
-    def __init__(self, in_ch, is_2d=True):
-        super().__init__()
-        self.is_2d = is_2d
-
-        self.resample = nn.Sequential(
-            nn.ZeroPad2d((0, 1, 0, 1)),
-            nn.Conv2d(in_ch, in_ch, 3, stride=(2, 2))
-        )
-
-        if not is_2d:
-            self.time_conv = WanVAECausalConv3d(in_ch, in_ch, (3, 1, 1), stride=(2, 1, 1), padding=(0, 0, 0))
-
-    def forward(self, x, feat_cache=None, feat_idx=[0]):
-        t = x.shape[2]
-        x = rearrange(x, 'b c t h w -> (b t) c h w')
-        x = self.resample(x)
-        x = rearrange(x, '(b t) c h w -> b c t h w', t=t)
-
-        if not self.is_2d:
-            if feat_cache is not None:
-                idx = feat_idx[0]
-                if feat_cache[idx] is None:
-                    feat_cache[idx] = x.clone()
-                    feat_idx[0] += 1
-                else:
-                    cache_x = x[:, :, -1:, :, :].clone()
-                    x = self.time_conv(torch.cat([feat_cache[idx][:, :, -1:, :, :], x], 2))
-                    feat_cache[idx] = cache_x
-                    feat_idx[0] += 1
-        return x
-
-
-class UpSample32(nn.Upsample):
-    def forward(self, x):
-        """forced to use fp32"""
-        return super().forward(x.float()).type_as(x)
-
-
-class WanVAEUpSample(nn.Module):
-    def __init__(self, in_ch, is_2d=True):
-        super().__init__()
-        self.is_2d = is_2d
-
-        self.resample = nn.Sequential(
-            UpSample32(scale_factor=(2., 2.), mode='nearest-exact'),
-            nn.Conv2d(in_ch, in_ch // 2, 3, padding=1)
-        )
-        if not is_2d:
-            self.time_conv = WanVAECausalConv3d(in_ch, in_ch * 2, (3, 1, 1), padding=(1, 0, 0))
-
-    def forward(self, x, feat_cache=None, feat_idx=[0]):
-        b, c, t, h, w = x.size()
-        if not self.is_2d:
-            if feat_cache is not None:
-                idx = feat_idx[0]
-                if feat_cache[idx] is None:
-                    feat_cache[idx] = 'Rep'
-                    feat_idx[0] += 1
-                else:
-                    cache_x = x[:, :, -2:, :, :].clone()
-                    if cache_x.shape[2] < 2 and feat_cache[idx] is not None and feat_cache[idx] != 'Rep':
-                        # cache last frame of last two chunk
-                        cache_x = torch.cat([feat_cache[idx][:, :, -1, :, :].unsqueeze(2).to(cache_x.device), cache_x], dim=2)
-                    if cache_x.shape[2] < 2 and feat_cache[idx] is not None and feat_cache[idx] == 'Rep':
-                        cache_x = torch.cat([torch.zeros_like(cache_x).to(cache_x.device), cache_x], dim=2)
-                    if feat_cache[idx] == 'Rep':
-                        x = self.time_conv(x)
-                    else:
-                        x = self.time_conv(x, feat_cache[idx])
-                    feat_cache[idx] = cache_x
-                    feat_idx[0] += 1
-
-                    x = x.reshape(b, 2, c, t, h, w)
-                    x = torch.stack((x[:, 0, :, :, :, :], x[:, 1, :, :, :, :]), 3)
-                    x = x.reshape(b, c, t * 2, h, w)
-        t = x.shape[2]
-        x = rearrange(x, 'b c t h w -> (b t) c h w')
-        x = self.resample(x)
-        x = rearrange(x, '(b t) c h w -> b c t h w', t=t)
-        return x
-
-
-class WanVAEEncoder3d(nn.Module):
-    def __init__(
-            self, in_ch, unit_ch=128, z_ch=64,
-            ch_mult=(1, 1, 2, 2, 4, 4), num_res_blocks=2, attn_layers=(-1, -2),
-            drop_prob=0.0, double_z=True,
-            **ignore_kwargs
-    ):
-        super().__init__()
-        num_layers = len(ch_mult)
-
-        self.conv_in = WanVAECausalConv3d(in_ch, unit_ch, 3, stride=1, padding=1)
-
-        in_ch = unit_ch
-        down = []
-        for i in range(num_layers):
-            is_top = i == num_layers - 1
-            is_2d = i == 0  # the first layers
-            out_ch = unit_ch * ch_mult[i]
-
-            for _ in range(num_res_blocks):
-                down.append(WanVAEResBlock(in_ch, out_ch, drop_prob=drop_prob))
-                if i in attn_layers:
-                    down.append(WanVAEAttentionBlock(out_ch))
-
-                in_ch = out_ch
-
-            if not is_top:
-                down.append(WanVAEDownSample(in_ch, is_2d))
-        self.down = nn.ModuleList(down)
-
-        self.neck = nn.ModuleList([
-            WanVAEResBlock(in_ch, in_ch, drop_prob=drop_prob),
-            WanVAEAttentionBlock(in_ch),
-            WanVAEResBlock(in_ch, in_ch, drop_prob=drop_prob)
-        ])
-
-        out_ch = 2 * z_ch if double_z else z_ch
-        self.head = nn.ModuleList([
-            normalizations.RMSNorm4D(in_ch),
-            nn.SiLU(),
-            WanVAECausalConv3d(in_ch, out_ch, 3, padding=1),
-        ])
-
-        self.out_channels = out_ch
-        self.down_scale = 2 ** (num_layers - 1)
-        self.z_ch = z_ch
-
-    def forward(self, x, feat_cache=None, feat_idx=[0]):
-        if feat_cache is not None:
-            idx = feat_idx[0]
-            cache_x = x[:, :, -2:, :, :].clone()
-            if cache_x.shape[2] < 2 and feat_cache[idx] is not None:
-                # cache last frame of last two chunk
-                cache_x = torch.cat([feat_cache[idx][:, :, -1, :, :].unsqueeze(2).to(cache_x.device), cache_x], dim=2)
-            x = self.conv_in(x, feat_cache[idx])
-            feat_cache[idx] = cache_x
-            feat_idx[0] += 1
-        else:
-            x = self.conv_in(x)
-
-        for layer in self.down:
-            if not isinstance(layer, WanVAEAttentionBlock) and feat_cache is not None:
-                x = layer(x, feat_cache, feat_idx)
-            elif isinstance(layer, WanVAEAttentionBlock):
-                b, c, t, h, w = x.shape
-                x = rearrange(x, 'b c t h w -> (b t) c h w')
-                x = layer(x)
-                x = rearrange(x, '(b t) c h w-> b c t h w', t=t)
-            else:
-                x = layer(x)
-
-        for layer in self.neck:
-            if isinstance(layer, WanVAEResBlock) and feat_cache is not None:
-                x = layer(x, feat_cache, feat_idx)
-            elif isinstance(layer, WanVAEAttentionBlock):
-                b, c, t, h, w = x.shape
-                x = rearrange(x, 'b c t h w -> (b t) c h w')
-                x = layer(x)
-                x = rearrange(x, '(b t) c h w-> b c t h w', t=t)
-            else:
-                x = layer(x)
-
-        for layer in self.head:
-            if isinstance(layer, WanVAECausalConv3d) and feat_cache is not None:
-                idx = feat_idx[0]
-                cache_x = x[:, :, -2:, :, :].clone()
-                if cache_x.shape[2] < 2 and feat_cache[idx] is not None:
-                    # cache last frame of last two chunk
-                    cache_x = torch.cat([feat_cache[idx][:, :, -1, :, :].unsqueeze(2).to(cache_x.device), cache_x], dim=2)
-                x = layer(x, feat_cache[idx])
-                feat_cache[idx] = cache_x
-                feat_idx[0] += 1
-            else:
-                x = layer(x)
-        return x
-
-
-class WanVAEDecoder3d(nn.Module):
+class Decoder3d(QwenVAE.Decoder3d):
     def __init__(
             self, in_ch, out_ch, unit_ch=128,
             ch_mult=(1, 1, 2, 2, 4, 4), num_res_blocks=2, attn_layers=(-1, -2),
             drop_prob=0.0,
             **ignore_kwargs
     ):
-        super().__init__()
+        super(nn.Module, self).__init__()
         self.in_channels = in_ch
         self.out_channels = out_ch
         num_layers = len(ch_mult)
@@ -828,16 +477,17 @@ class WanVAEDecoder3d(nn.Module):
 
         # z to block_in
         in_ch = unit_ch * ch_mult[num_layers - 1]
-        self.conv_in = WanVAECausalConv3d(self.in_channels, in_ch, 3, stride=1, padding=1)
+        self.conv_in = QwenVAE.CausalConv3d(self.in_channels, in_ch, 3, stride=1, padding=1)
 
         # middle
         self.neck = nn.ModuleList([
-            WanVAEResBlock(in_ch, in_ch, drop_prob=drop_prob),
-            WanVAEAttentionBlock(in_ch),
-            WanVAEResBlock(in_ch, in_ch, drop_prob=drop_prob)
+            QwenVAE.ResBlock(in_ch, in_ch, drop_prob=drop_prob),
+            QwenVAE.AttentionBlock(in_ch),
+            QwenVAE.ResBlock(in_ch, in_ch, drop_prob=drop_prob)
         ])
 
         # upsample
+        # only different from code here
         up = []
         for i in reversed(range(num_layers)):
             is_bottom = i == 0
@@ -847,51 +497,28 @@ class WanVAEDecoder3d(nn.Module):
                 in_ch //= 2
             out_ch = unit_ch * ch_mult[i]
             for j in range(num_res_blocks + 1):
-                up.append(WanVAEResBlock(in_ch, out_ch, drop_prob=drop_prob))
+                up.append(QwenVAE.ResBlock(in_ch, out_ch, drop_prob=drop_prob))
                 if i in attn_layers:
-                    up.append(WanVAEAttentionBlock(out_ch))
+                    up.append(QwenVAE.AttentionBlock(out_ch))
                 in_ch = out_ch
 
             # upsample block
             if not is_bottom:
-                up.append(WanVAEUpSample(in_ch, is_2d))
+                up.append(QwenVAE.UpSample(in_ch, is_2d))
         # note, implement different from ldm
         self.up = nn.ModuleList(up)
 
         self.head = nn.ModuleList([
             normalizations.RMSNorm4D(in_ch),
             nn.SiLU(),
-            WanVAECausalConv3d(in_ch, self.out_channels, 3, padding=1),
+            QwenVAE.CausalConv3d(in_ch, self.out_channels, 3, padding=1),
         ])
 
-    def forward(self, x, feat_cache=None, feat_idx=[0]):
-        if feat_cache is not None:
-            idx = feat_idx[0]
-            cache_x = x[:, :, -2:, :, :].clone()
-            if cache_x.shape[2] < 2 and feat_cache[idx] is not None:
-                # cache last frame of last two chunk
-                cache_x = torch.cat([feat_cache[idx][:, :, -1, :, :].unsqueeze(2).to(cache_x.device), cache_x], dim=2)
-            x = self.conv_in(x, feat_cache[idx])
-            feat_cache[idx] = cache_x
-            feat_idx[0] += 1
-        else:
-            x = self.conv_in(x)
-
-        for layer in self.neck:
-            if isinstance(layer, WanVAEResBlock) and feat_cache is not None:
-                x = layer(x, feat_cache, feat_idx)
-            elif isinstance(layer, WanVAEAttentionBlock):
-                b, c, t, h, w = x.shape
-                x = rearrange(x, 'b c t h w -> (b t) c h w')
-                x = layer(x)
-                x = rearrange(x, '(b t) c h w-> b c t h w', t=t)
-            else:
-                x = layer(x)
-
+    def forward_up(self, x, feat_cache, feat_idx):
         for layer in self.up:
-            if not isinstance(layer, WanVAEAttentionBlock) and feat_cache is not None:
+            if not isinstance(layer, QwenVAE.AttentionBlock) and feat_cache is not None:
                 x = layer(x, feat_cache, feat_idx)
-            elif isinstance(layer, WanVAEAttentionBlock):
+            elif isinstance(layer, QwenVAE.AttentionBlock):
                 b, c, t, h, w = x.shape
                 x = rearrange(x, 'b c t h w -> (b t) c h w')
                 x = layer(x)
@@ -899,18 +526,6 @@ class WanVAEDecoder3d(nn.Module):
             else:
                 x = layer(x)
 
-        for layer in self.head:
-            if isinstance(layer, WanVAECausalConv3d) and feat_cache is not None:
-                idx = feat_idx[0]
-                cache_x = x[:, :, -2:, :, :].clone()
-                if cache_x.shape[2] < 2 and feat_cache[idx] is not None:
-                    # cache last frame of last two chunk
-                    cache_x = torch.cat([feat_cache[idx][:, :, -1, :, :].unsqueeze(2).to(cache_x.device), cache_x], dim=2)
-                x = layer(x, feat_cache[idx])
-                feat_cache[idx] = cache_x
-                feat_idx[0] += 1
-            else:
-                x = layer(x)
         return x
 
 
