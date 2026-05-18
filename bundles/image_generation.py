@@ -14,7 +14,7 @@ from tqdm import tqdm
 from data_parse import DataRegister
 from data_parse.cv_data_parse.data_augmentation import crop, scale, geometry, channel, RandomApply, Apply, pixel_perturbation, Lambda
 from data_parse.cv_data_parse.datasets.base import DataVisualizer
-from models import normalizations
+from models import normalizations, embeddings
 from processor import Process, DataHooks, bundled, model_process, BatchIterImgDataset, BaseImgDataset, CheckpointHooks
 from utils import os_lib, torch_utils, configs
 
@@ -808,13 +808,15 @@ class DiProcess(IgProcess):
             torch_utils.ModuleManager.apply(
                 self.model,
                 lambda module: module.to(torch.float),
-                include=[normalizations.GroupNorm32, normalizations.RMSNorm],
+                include=[normalizations.GroupNorm32, normalizations.RMSNorm, embeddings.SinusoidalEmbedding],
             )
         else:
             self.model.to(torch.float)
 
-    def set_optimizer(self, lr=1e-4, weight_decay=0.0001, **kwargs):
-        self.optimizer = torch_utils.make_optimizer_cls('AdamW8bit')(self.model.parameters(), lr=lr, weight_decay=weight_decay)
+    def set_optimizer(self, lr=1e-4, weight_decay=0.0001, parameters=None, **kwargs):
+        if parameters is None:
+            parameters = self.model.parameters()
+        self.optimizer = torch_utils.make_optimizer_cls('AdamW8bit')(parameters, lr=lr, weight_decay=weight_decay)
 
     def get_model_inputs(self, loop_inputs, train=True):
         if train:
@@ -834,8 +836,8 @@ class DiProcess(IgProcess):
         model_inputs = self.get_model_inputs(loop_inputs, train=True)
         model_inputs.update(model_kwargs)
 
-        with torch.amp.autocast(str(self.device), dtype=torch.bfloat16, enabled=self.use_half):
-            output = self.model(**model_inputs)
+        # with torch.amp.autocast(str(self.device), dtype=torch.bfloat16, enabled=self.use_half):
+        output = self.model(**model_inputs)
 
         return output
 
@@ -967,6 +969,7 @@ class Ddim_CelebAHQ(Dpim, CelebAHQ):
 
 class WithLora(Process):
     use_lora = False
+    # note, strongly recommend set `use_half_lora=False` while training always
     use_half_lora = True
     lora_wrap: 'models.tuning.lora.ModelWrap'
     lora_pretrained_model: str
@@ -978,6 +981,14 @@ class WithLora(Process):
             self.set_lora()
             self.load_lora_pretrained()
             self.register_save_checkpoint(self.save_lora_checkpoint)
+
+    def set_optimizer(self, **kwargs):
+        parameters = []
+        for full_name in self.lora_wrap.layers:
+            layer = torch_utils.ModuleManager.get_module_by_name(self.model, full_name)
+            parameters.extend(layer.down.parameters())
+            parameters.extend(layer.up.parameters())
+        super().set_optimizer(parameters=parameters, **kwargs)
 
     def _set_lora(self, include, exclude):
         from models.tuning import lora
@@ -992,7 +1003,13 @@ class WithLora(Process):
         def wrap(m):
             m.to(self.device)
             if self.use_half_lora:
-                m.to(torch.bfloat16)
+                dtype = torch.bfloat16
+            else:
+                dtype = torch.float32
+            m.to(dtype)
+
+            if self.use_half_lora is not self.use_half:
+                m.forward = torch_utils.ModuleManager.assign_dtype_run(m, m.forward, dtype, force_effect_module=False, restore_outputs=True, restore_dtype=torch.bfloat16)
 
         for full_name in self.lora_wrap.layers:
             layer = torch_utils.ModuleManager.get_module_by_name(self.model, full_name)

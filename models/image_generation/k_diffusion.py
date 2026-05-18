@@ -49,7 +49,7 @@ class Schedule(nn.Module):
         return super()._apply(fn, recurse)
 
     def initialize_layers(self, **kwargs):
-        self.register_buffer('sigmas', self.make_sigmas(**kwargs))
+        self.register_buffer('sigmas', self.make_sigmas(**kwargs), persistent=False)
 
     def make_timesteps(self, i0=None, num_steps=None):
         num_steps = num_steps or self.num_steps

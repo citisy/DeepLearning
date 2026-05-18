@@ -11,8 +11,7 @@ from torch import Tensor, nn
 from utils import torch_utils
 from . import VAE
 from .k_diffusion import EpsScaling, EulerSampler, Schedule, extract, make_scaling_fn, make_schedule_fn, append_dims
-from .. import attentions, bundles, normalizations
-from ..embeddings import SinusoidalEmbedding
+from .. import attentions, bundles, normalizations, embeddings
 from ..layers import Linear
 from ..multimodal_pretrain import CLIP
 from ..normalizations import RMSNorm2D
@@ -135,7 +134,7 @@ class WeightConverter:
 
     @classmethod
     def from_official(cls, state_dicts):
-        """weights training from https://github.com/black-forest-labs/flux
+        """weights trained from https://github.com/black-forest-labs/flux
         Args:
             state_dicts:
                 {
@@ -196,7 +195,7 @@ class WeightConverter:
 
     @classmethod
     def from_diffusers(cls, state_dicts):
-        """weights training from `diffusers`
+        """weights trained from `diffusers`
         Args:
             state_dicts:
                 {
@@ -218,14 +217,17 @@ class WeightConverter:
     def _convert(state_dicts):
         state_dict = OrderedDict()
 
-        _state_dict = T5.WeightConverter.from_hf(state_dicts['t5'])
-        state_dict.update({'t5.' + k: v for k, v in _state_dict.items()})
+        if 't5' in state_dicts:
+            _state_dict = T5.WeightConverter.from_hf(state_dicts['t5'])
+            state_dict.update({'t5.' + k: v for k, v in _state_dict.items()})
 
-        _state_dict = CLIP.WeightConverter.from_openai(state_dicts['clip'])
-        state_dict.update({'clip.' + k: v for k, v in _state_dict.items()})
+        if 'clip' in state_dicts:
+            _state_dict = CLIP.WeightConverter.from_openai(state_dicts['clip'])
+            state_dict.update({'clip.' + k: v for k, v in _state_dict.items()})
 
-        _state_dict = VAE.WeightConverter.from_ldm_official(state_dicts['vae'])
-        state_dict.update({'vae.' + k: v for k, v in _state_dict.items()})
+        if 'vae' in state_dicts:
+            _state_dict = VAE.WeightConverter.from_ldm_official(state_dicts['vae'])
+            state_dict.update({'vae.' + k: v for k, v in _state_dict.items()})
 
         return state_dict
 
@@ -293,17 +295,17 @@ class Model(nn.Module):
         self.t5.set_encoder_only()
 
         if not self.cond_trainable:
-            torch_utils.ModuleManager.freeze_module(self.clip)
+            torch_utils.ModuleManager.freeze_module(self.clip, only_submodules=True)
 
         if not self.t5_trainable:
-            torch_utils.ModuleManager.freeze_module(self.t5)
+            torch_utils.ModuleManager.freeze_module(self.t5, only_submodules=True)
 
         if not self.vae_trainable:
-            torch_utils.ModuleManager.freeze_module(self.vae)
+            torch_utils.ModuleManager.freeze_module(self.vae, only_submodules=True)
             self.vae.set_inference_only()
 
         if not self.backbone_trainable:
-            torch_utils.ModuleManager.freeze_module(self.backbone)
+            torch_utils.ModuleManager.freeze_module(self.backbone, only_submodules=True)
 
     _device = None
     _dtype = None
@@ -325,8 +327,8 @@ class Model(nn.Module):
         if isinstance(image_size, int):
             image_size = (image_size, image_size)
         return (
-            2 * math.ceil(image_size[0] / 16),
-            2 * math.ceil(image_size[1] / 16),
+            2 * math.ceil(image_size[0] / self.process_in_ch),
+            2 * math.ceil(image_size[1] / self.process_in_ch),
         )  # (w, h)
 
     def set_low_memory_run(self):
@@ -356,7 +358,7 @@ class Model(nn.Module):
             self,
             lambda module: module.to(dtype),
             include=['t5', 'clip', 'backbone', 'vae'],
-            exclude=[normalizations.GroupNorm32, normalizations.RMSNorm]
+            exclude=[normalizations.GroupNorm32, normalizations.RMSNorm, embeddings.SinusoidalEmbedding]
         )
 
         def wrap1(module, func):
@@ -381,8 +383,7 @@ class Model(nn.Module):
 
     def fit(
             self, x, t5_text_ids=None, clip_text_ids=None,
-            z=None, t5_text_conds=None, clip_text_conds=None,
-            image_size=None,
+            z=None, t5_text_conds=None, clip_text_conds=None, sigmas=None,
             **kwargs
     ):
         # x is x0, the real image
@@ -396,9 +397,14 @@ class Model(nn.Module):
 
         if z is None:
             z, _, _ = self.vae.encode(x)
+            image_size = x.shape[-2:]
+        else:
+            image_size = z.shape[-2:] * self.process_in_ch
 
-        bs, c, h, w = z.shape
-        sigmas = self.sampler.schedule.make_sigmas(mu=self.sampler.schedule.make_mu(image_seq_len=h * w // 4))
+        if sigmas is None:
+            # use dynamic sigmas following input image size
+            bs, c, h, w = z.shape
+            sigmas = self.sampler.schedule.make_sigmas(mu=self.sampler.schedule.make_mu(image_seq_len=h * w // 4))
         return {
             'loss': self.sampler.loss(
                 self.process, z,
@@ -553,7 +559,7 @@ class Flux(nn.Module):
         self.guidance_embed = guidance_embed
         self.use_checkpoint = use_checkpoint
 
-        self.time_embed = SinusoidalEmbedding(256)
+        self.time_embed = embeddings.SinusoidalEmbedding(256)
 
         self.img_in = nn.Linear(in_ch, hidden_size)
         self.txt_in = nn.Linear(context_in_dim, hidden_size)
@@ -653,7 +659,8 @@ class FluxRotaryEmbedding(nn.Module):
         # note, support for meta device init
         div_terms = []
         for embedding_dim in self.embedding_dims:
-            div_term = (torch.arange(0, embedding_dim, 2).float() * -(math.log(self.theta) / embedding_dim)).exp()
+            # note, use float64
+            div_term = (torch.arange(0, embedding_dim, 2, dtype=torch.float64) * -(math.log(self.theta) / embedding_dim)).exp()
             div_terms.append(div_term)
 
         self.div_terms = div_terms
@@ -670,7 +677,7 @@ class FluxRotaryEmbedding(nn.Module):
         for i in range(len(div_terms)):
             div_term = div_terms[i]
             position = positions[..., i].float()
-            div_term = div_term.to(position)
+            div_term = div_term.to(position.device)
             out = torch.einsum("...n,d->...nd", position, div_term)
             out = torch.stack([torch.cos(out), -torch.sin(out), torch.sin(out), torch.cos(out)], dim=-1)
             out = rearrange(out, "b n d (i j) -> b n d i j", i=2, j=2)

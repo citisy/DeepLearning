@@ -33,7 +33,7 @@ class Config:
 
     # required pytorch>2.0
     backbone_32x32x4_with_xformers = dict(
-        attn_type='CrossAttention3DWithXformers',
+        attend_type='ScaleAttendWithXformers',
         **backbone_32x32x4
     )
 
@@ -81,17 +81,6 @@ class WeightConverter:
 
 make_norm_fn = normalizations.make_norm_fn
 make_norm_fn.add_register('VaeGroupNorm32')(partial(normalizations.GroupNorm32, eps=1e-6, affine=True))
-
-make_attention_fn = attentions.make_attention_fn
-make_attention_fn.add_register('CrossAttention3DWithSplit')(lambda in_ch, groups=32: nn.Sequential(
-    make_norm_fn.get('VaeGroupNorm32')(groups, in_ch),
-    attentions.CrossAttention3D(n_heads=1, head_dim=in_ch, attend=attentions.SplitScaleAttend())
-))
-make_attention_fn.add_register('CrossAttention3DWithXformers')(lambda in_ch, groups=32: nn.Sequential(
-    make_norm_fn.get('VaeGroupNorm32')(groups, in_ch),
-    attentions.CrossAttention3D(n_heads=1, head_dim=in_ch, attend=attentions.ScaleAttendWithXformers())
-))
-make_attention_fn.add_register('VaeLinearAttention3D')(lambda in_ch: attentions.LinearAttention3D(n_heads=1, head_dim=in_ch, separate=True))
 
 
 class Model(nn.Module):
@@ -176,7 +165,7 @@ class Model(nn.Module):
 
 
 class ResBlock(Residual):
-    def __init__(self, in_ch, out_ch=None, conv_shortcut=False, time_emb_ch=512, drop_prob=0.):
+    def __init__(self, in_ch, out_ch=None, norm_type=None, act_type=None, conv_shortcut=False, time_emb_ch=512, drop_prob=0.):
         out_ch = in_ch if out_ch is None else out_ch
         self.in_channels = in_ch
         self.out_channels = out_ch
@@ -190,24 +179,32 @@ class ResBlock(Residual):
             shortcut = nn.Identity()
 
         super().__init__(
-            fn=ResFn(in_ch, out_ch, time_emb_ch=time_emb_ch, drop_prob=drop_prob),
+            fn=ResFn(in_ch, out_ch, norm_type, act_type, time_emb_ch=time_emb_ch, drop_prob=drop_prob),
             proj=shortcut,
             is_norm=False
         )
 
 
 class ResFn(nn.Module):
-    def __init__(self, in_ch, out_ch, time_emb_ch=512, drop_prob=0., groups=32):
+    def __init__(self, in_ch, out_ch, norm_type, act_type, time_emb_ch=512, drop_prob=0., groups=32):
         super().__init__()
-        self.conv1 = Conv(in_ch, out_ch, 3, mode='nac',
-                          norm=make_norm_fn.get('VaeGroupNorm32')(groups, in_ch),
-                          act=activations.Swish())
+        self.conv1 = Conv(
+            in_ch, out_ch, 3, mode='nac',
+            norm=make_norm_fn.get(norm_type)(groups, in_ch),
+            act=activations.make_act_fn.get(act_type)()
+        )
         if time_emb_ch > 0:
-            self.time_emb_proj = Linear(time_emb_ch, out_ch, mode='la', act=activations.Swish())
+            self.time_emb_proj = Linear(
+                time_emb_ch, out_ch, mode='la',
+                act=activations.make_act_fn.get(act_type)()
+            )
 
-        self.conv2 = Conv(out_ch, out_ch, 3, mode='nadc',
-                          norm=make_norm_fn.get('VaeGroupNorm32')(groups, out_ch),
-                          act=activations.Swish(), drop_prob=drop_prob)
+        self.conv2 = Conv(
+            out_ch, out_ch, 3, mode='nadc',
+            norm=make_norm_fn.get(norm_type)(groups, out_ch),
+            act=activations.make_act_fn.get(act_type)(),
+            drop_prob=drop_prob
+        )
 
     def forward(self, x, time_emb=None):
         h = x
@@ -220,12 +217,23 @@ class ResFn(nn.Module):
         return h
 
 
+class AttnBlock(nn.Sequential):
+    def __init__(self, in_ch, groups, attend_type, norm_type):
+        super().__init__(
+            make_norm_fn.get(norm_type)(groups, in_ch),
+            attentions.CrossAttention3D(
+                n_heads=1, head_dim=in_ch,
+                attend=attentions.make_attend_fn.get(attend_type)()
+            )
+        )
+
+
 class NeckBlock(nn.Module):
-    def __init__(self, in_ch, time_emb_ch, attn_type, drop_prob):
+    def __init__(self, in_ch, time_emb_ch, groups, attend_type, norm_type, act_type, drop_prob):
         super().__init__()
-        self.block_1 = ResBlock(in_ch=in_ch, out_ch=in_ch, time_emb_ch=time_emb_ch, drop_prob=drop_prob)
-        self.attn = make_attention_fn.get(attn_type)(in_ch)
-        self.block_2 = ResBlock(in_ch=in_ch, out_ch=in_ch, time_emb_ch=time_emb_ch, drop_prob=drop_prob)
+        self.block_1 = ResBlock(in_ch=in_ch, out_ch=in_ch, time_emb_ch=time_emb_ch, norm_type=norm_type, act_type=act_type, drop_prob=drop_prob)
+        self.attn = AttnBlock(in_ch, groups, attend_type, norm_type)
+        self.block_2 = ResBlock(in_ch=in_ch, out_ch=in_ch, time_emb_ch=time_emb_ch, norm_type=norm_type, act_type=act_type, drop_prob=drop_prob)
 
     def forward(self, h, time_emb):
         h = self.block_1(h, time_emb=time_emb)
@@ -238,8 +246,8 @@ class Encoder(nn.Module):
     def __init__(
             self, in_ch, unit_ch=128, z_ch=64,
             ch_mult=(1, 1, 2, 2, 4, 4), num_res_blocks=2, attn_layers=(-1, -2),
-            drop_prob=0.0, resample_with_conv=True, time_emb_ch=0, groups=32,
-            double_z=True, attn_type='CrossAttention3DWithSplit',
+            drop_prob=0.0, resample_with_conv=True, time_emb_ch=0, groups=32, double_z=True,
+            attend_type='SplitScaleAttend', norm_type='VaeGroupNorm32', act_type='SiLU',
             **ignore_kwargs
     ):
         super().__init__()
@@ -257,8 +265,8 @@ class Encoder(nn.Module):
             attns = nn.ModuleList()
             out_ch = unit_ch * ch_mult[i]
             for j in range(num_res_blocks):
-                blocks.append(ResBlock(in_ch=in_ch, out_ch=out_ch, time_emb_ch=time_emb_ch, drop_prob=drop_prob))
-                attns.append(make_attention_fn.get(attn_type)(out_ch) if i in attn_layers else nn.Identity())
+                blocks.append(ResBlock(in_ch=in_ch, out_ch=out_ch, time_emb_ch=time_emb_ch, norm_type=norm_type, act_type=act_type, drop_prob=drop_prob))
+                attns.append(AttnBlock(in_ch, groups, attend_type, norm_type) if i in attn_layers else nn.Identity())
                 in_ch = out_ch
 
             down = nn.Module()
@@ -267,10 +275,14 @@ class Encoder(nn.Module):
             down.downsample = nn.Identity() if is_top else DownSample(in_ch, resample_with_conv)
             self.down.append(down)
 
-        self.neck = NeckBlock(in_ch, time_emb_ch, attn_type, drop_prob)
+        self.neck = NeckBlock(in_ch, time_emb_ch, groups, attend_type, norm_type, act_type, drop_prob)
 
         out_ch = 2 * z_ch if double_z else z_ch
-        self.head = Conv(in_ch, out_ch, 3, mode='nac', norm=make_norm_fn.get('VaeGroupNorm32')(groups, in_ch), act=activations.Swish())
+        self.head = Conv(
+            in_ch, out_ch, 3, mode='nac',
+            norm=make_norm_fn.get(norm_type)(groups, in_ch),
+            act=activations.make_act_fn.get(act_type)()
+        )
         self.out_channels = out_ch
         self.down_scale = 2 ** (num_layers - 1)
         self.z_ch = z_ch
@@ -318,7 +330,7 @@ class ReParametrize(nn.Module):
         if self.deterministic:
             std = torch.zeros_like(mean, device=x.device)
         else:
-            std = torch.exp(0.5 * log_var).type_as(log_var)   # log_var.dtype would be change with autocast
+            std = torch.exp(0.5 * log_var).type_as(log_var)  # log_var.dtype would be change with autocast
 
         if sample_posterior:
             z = mean + std * torch.randn(mean.shape).to(std)
@@ -345,7 +357,8 @@ class Decoder(nn.Module):
             ch_mult=(1, 1, 2, 2, 4, 4), num_res_blocks=2, attn_layers=(-1, -2),
             drop_prob=0.0, resample_with_conv=True,
             give_pre_end=False, tanh_out=False, groups=32,
-            attn_type='CrossAttention3DWithSplit', **ignore_kwargs
+            attend_type='SplitScaleAttend', norm_type='VaeGroupNorm32', act_type='SiLU',
+            **ignore_kwargs
     ):
         super().__init__()
         time_emb_ch = 0
@@ -359,7 +372,7 @@ class Decoder(nn.Module):
         self.conv_in = nn.Conv2d(self.in_channels, in_ch, 3, stride=1, padding=1)
 
         # middle
-        self.neck = NeckBlock(in_ch, time_emb_ch, attn_type, drop_prob)
+        self.neck = NeckBlock(in_ch, time_emb_ch, groups, attend_type, norm_type, act_type, drop_prob)
 
         # upsampling
         self.up = []
@@ -369,8 +382,8 @@ class Decoder(nn.Module):
             attns = nn.ModuleList()
             out_ch = unit_ch * ch_mult[i]
             for j in range(num_res_blocks + 1):
-                blocks.append(ResBlock(in_ch=in_ch, out_ch=out_ch, time_emb_ch=time_emb_ch, drop_prob=drop_prob))
-                attns.append(make_attention_fn.get(attn_type)(out_ch) if i in attn_layers else nn.Identity())
+                blocks.append(ResBlock(in_ch=in_ch, out_ch=out_ch, time_emb_ch=time_emb_ch, norm_type=norm_type, act_type=act_type, drop_prob=drop_prob))
+                attns.append(AttnBlock(in_ch, groups, attend_type, norm_type) if i in attn_layers else nn.Identity())
                 in_ch = out_ch
             up = nn.Module()
             up.blocks = blocks
@@ -388,8 +401,8 @@ class Decoder(nn.Module):
         else:
             self.head = Conv(
                 in_ch, self.out_channels, 3, mode='nac',
-                norm=make_norm_fn.get('VaeGroupNorm32')(groups, in_ch),
-                act=activations.Swish()
+                norm=make_norm_fn.get(norm_type)(groups, in_ch),
+                act=activations.make_act_fn.get(act_type)()
             )
             self.out_act = nn.Tanh() if tanh_out else nn.Identity()  # todo: something wrong???
 
@@ -423,11 +436,13 @@ class Upsample(nn.Module):
 
 
 class Loss(nn.Module):
-    def __init__(self, re_parametrize, disc_start=50001, logvar_init=0.0,
-                 use_lpips=False, use_gan=False,
-                 disc_weight=1.0, kl_weight=1.0, perceptual_weight=1.0, nll_weight=1.,
-                 disc_num_layers=3, disc_in_ch=3, disc_factor=1.0,
-                 use_actnorm=False, disc_loss="hinge"):
+    def __init__(
+            self, re_parametrize, disc_start=50001, logvar_init=0.0,
+            use_lpips=False, use_gan=False,
+            disc_weight=1.0, kl_weight=1.0, perceptual_weight=1.0, nll_weight=1.,
+            disc_num_layers=3, disc_in_ch=3, disc_factor=1.0,
+            use_actnorm=False, disc_loss="hinge"
+    ):
 
         super().__init__()
 
