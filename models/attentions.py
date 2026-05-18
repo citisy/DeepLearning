@@ -1,3 +1,4 @@
+import contextlib
 import math
 from functools import partial
 
@@ -307,6 +308,7 @@ class CrossAttention3D(nn.Module):
 
         if use_conv:  # build by conv func
             if separate:
+                # note, a conv function with k=1 is equal to a linear function
                 self.to_qkv = nn.ModuleList([
                     nn.Conv2d(query_dim, model_dim, 1, **qkv_fn_kwargs),
                     nn.Conv2d(context_dim, model_dim, 1, **qkv_fn_kwargs),
@@ -316,6 +318,7 @@ class CrossAttention3D(nn.Module):
                 assert query_dim == context_dim
                 self.to_qkv = nn.Conv2d(query_dim, model_dim * 3, 1, **qkv_fn_kwargs)
 
+            # change to 1 channel
             self.view_in = Rearrange('b c h w -> b 1 (h w) c')
             self.view_out = partial(rearrange, pattern='b 1 (h w) c -> b c h w')
             self.to_out = nn.Conv2d(model_dim, query_dim, 1) if out_layer is None else out_layer
@@ -560,11 +563,12 @@ class FlashAttend(nn.Module):
     ```
     """
 
-    def __init__(self, drop_prob=0.1):
+    def __init__(self, use_backend=False, drop_prob=0.1):
         super().__init__()
         from packaging import version
         assert version.parse(torch.__version__) >= version.parse("2.0.0")
 
+        self.use_backend = use_backend
         self.drop_prob = drop_prob
 
         SDPBackend = torch.nn.attention.SDPBackend
@@ -594,7 +598,9 @@ class FlashAttend(nn.Module):
         attention_mask = remake_mask(attention_mask, (b, heads, q_len, q_len), q.dtype, return_bool=False)
 
         # note, if not set, will raise some UserWarning
-        with torch.nn.attention.sdpa_kernel(self.gpu_backends if q.is_cuda else self.cpu_backends):
+        # if set, will affect accuracy slightly
+        context = torch.nn.attention.sdpa_kernel(self.gpu_backends if q.is_cuda else self.cpu_backends) if self.use_backend else contextlib.nullcontext()
+        with context:
             out = F.scaled_dot_product_attention(
                 q, k, v,
                 attn_mask=attention_mask,

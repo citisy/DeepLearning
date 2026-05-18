@@ -5,7 +5,7 @@ import torch
 
 from data_parse.cv_data_parse.data_augmentation import Apply, channel, pixel_perturbation, scale
 from processor import CheckpointHooks, DataHooks, Process
-from utils import os_lib
+from utils import os_lib, torch_utils, configs
 
 
 class DataProcessForQwen2Vl(DataHooks):
@@ -62,13 +62,15 @@ class FromQwen2VlPretrained(CheckpointHooks):
 
 class BaseQwen2Vl(Process):
     config_version: str = '2b'
+    model_config: dict = {}
     use_half = True
 
     def set_model(self):
         from models.multimodal_generation.Qwen2_VL import Model, Config
 
+        model_config = configs.ConfigObjParse.merge_dict(self.model_config, Config.get(self.config_version))
         with torch.device('meta'):  # fast to init model
-            self.model = Model(**Config.get(self.config_version))
+            self.model = Model(**model_config)
 
     def set_model_status(self):
         if self.use_pretrained:
@@ -92,3 +94,28 @@ class BaseQwen2Vl(Process):
             raise NotImplementedError
         else:
             return self.get_model_val_inputs(loop_inputs)
+
+
+class FromQwen2_5_VlPretrained(CheckpointHooks):
+    pretrained_model: str | List[str]
+
+    def load_pretrained(self):
+        from models.multimodal_pretrain.Qwen2_5_VL import WeightLoader, WeightConverter
+
+        if Path(self.pretrained_model).is_dir():
+            self.pretrained_model = [str(fp) for fp in os_lib.find_all_suffixes_files(self.pretrained_model, ['.safetensors'])]
+
+        state_dict = WeightLoader.auto_load(self.pretrained_model)
+        state_dict = WeightConverter.from_official(state_dict)
+        self.model.load_state_dict(state_dict, strict=True, assign=True)
+
+        self.log(f'Loaded pretrained model!')
+
+
+class BaseQwen2_5_Vl(BaseQwen2Vl):
+    def set_model(self):
+        from models.multimodal_generation.Qwen2_5_VL import Model, Config
+
+        model_config = configs.ConfigObjParse.merge_dict(self.model_config, Config.get(self.config_version))
+        with torch.device('meta'):  # fast to init model
+            self.model = Model(**model_config)

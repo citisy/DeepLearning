@@ -8,7 +8,6 @@ from torch.nn import functional as F
 from utils import torch_utils
 from .. import activations, attentions, bundles, embeddings, normalizations
 from ..text_pretrain import llama, qwen2, transformers
-from data_parse.nl_data_parse.pre_process.decoder import beam_search
 
 
 class Config(bundles.Config):
@@ -76,34 +75,40 @@ class WeightLoader(bundles.WeightLoader):
 
 
 class WeightConverter:
+    vit_convert_dict = {
+        'visual': 'vit',
+        'visual.patch_embed.proj': 'vit.patch_embed.fn',
+        'visual.blocks.{0}.norm1': 'vit.blocks.{0}.attn_res.norm',
+        'visual.blocks.{0}.norm2': 'vit.blocks.{0}.ff_res.norm',
+        'visual.blocks.{0}.attn.qkv': 'vit.blocks.{0}.attn_res.fn.to_qkv',
+        'visual.blocks.{0}.attn.proj': 'vit.blocks.{0}.attn_res.fn.to_out.linear',
+        'visual.blocks.{0}.mlp.fc1': 'vit.blocks.{0}.ff_res.fn.0.linear',
+        'visual.blocks.{0}.mlp.act': 'vit.blocks.{0}.ff_res.fn.0.act',
+        'visual.blocks.{0}.mlp.fc2': 'vit.blocks.{0}.ff_res.fn.1.linear',
+    }
+
+    vlm_convert_dict = {
+        'model': 'vlm',
+        'model.layers.{0}.self_attn.q_proj': 'vlm.blocks.{0}.attn_res.fn.to_qkv.0',
+        'model.layers.{0}.self_attn.k_proj': 'vlm.blocks.{0}.attn_res.fn.to_qkv.1',
+        'model.layers.{0}.self_attn.v_proj': 'vlm.blocks.{0}.attn_res.fn.to_qkv.2',
+        'model.layers.{0}.self_attn.o_proj': 'vlm.blocks.{0}.attn_res.fn.to_out.linear',
+        'model.layers.{0}.mlp.gate_proj': 'vlm.blocks.{0}.ff_res.fn.f1.linear',
+        'model.layers.{0}.mlp.up_proj': 'vlm.blocks.{0}.ff_res.fn.f3.linear',
+        'model.layers.{0}.mlp.down_proj': 'vlm.blocks.{0}.ff_res.fn.f2.linear',
+        'model.layers.{0}.input_layernorm': 'vlm.blocks.{0}.attn_res.norm',
+        'model.layers.{0}.post_attention_layernorm': 'vlm.blocks.{0}.ff_res.norm',
+    }
+
+    convert_dict = {
+        **vit_convert_dict,
+        **vlm_convert_dict,
+        'lm_head': 'head'
+    }
+
     @classmethod
     def from_official(cls, state_dict):
-        convert_dict = {
-            'visual': 'vit',
-            'visual.patch_embed.proj': 'vit.patch_embed.fn',
-            'visual.blocks.{0}.norm1': 'vit.blocks.{0}.attn_res.norm',
-            'visual.blocks.{0}.norm2': 'vit.blocks.{0}.ff_res.norm',
-            'visual.blocks.{0}.attn.qkv': 'vit.blocks.{0}.attn_res.fn.to_qkv',
-            'visual.blocks.{0}.attn.proj': 'vit.blocks.{0}.attn_res.fn.to_out.linear',
-            'visual.blocks.{0}.mlp.fc1': 'vit.blocks.{0}.ff_res.fn.0.linear',
-            'visual.blocks.{0}.mlp.act': 'vit.blocks.{0}.ff_res.fn.0.act',
-            'visual.blocks.{0}.mlp.fc2': 'vit.blocks.{0}.ff_res.fn.1.linear',
-
-            'model': 'vlm',
-            'model.layers.{0}.self_attn.q_proj': 'vlm.blocks.{0}.attn_res.fn.to_qkv.0',
-            'model.layers.{0}.self_attn.k_proj': 'vlm.blocks.{0}.attn_res.fn.to_qkv.1',
-            'model.layers.{0}.self_attn.v_proj': 'vlm.blocks.{0}.attn_res.fn.to_qkv.2',
-            'model.layers.{0}.self_attn.o_proj': 'vlm.blocks.{0}.attn_res.fn.to_out.linear',
-            'model.layers.{0}.mlp.gate_proj': 'vlm.blocks.{0}.ff_res.fn.f1.linear',
-            'model.layers.{0}.mlp.up_proj': 'vlm.blocks.{0}.ff_res.fn.f3.linear',
-            'model.layers.{0}.mlp.down_proj': 'vlm.blocks.{0}.ff_res.fn.f2.linear',
-            'model.layers.{0}.input_layernorm': 'vlm.blocks.{0}.attn_res.norm',
-            'model.layers.{0}.post_attention_layernorm': 'vlm.blocks.{0}.ff_res.norm',
-
-            'lm_head': 'head'
-        }
-
-        state_dict = torch_utils.Converter.convert_keys(state_dict, convert_dict)
+        state_dict = torch_utils.Converter.convert_keys(state_dict, cls.convert_dict)
         return state_dict
 
 
@@ -121,14 +126,22 @@ class Model(nn.Module):
         super().__init__()
         self.__dict__.update(model_config)
 
+        self.set_vit(**vit_config)
+        self.set_vlm(**vlm_config)
+        self.set_head()
+        self.criterion = nn.CrossEntropyLoss(reduction='mean', ignore_index=self.ignore_id)
+
+    def set_vit(self, **vit_config):
         self.vit = Vit(**vit_config)
+
+    def set_vlm(self, **vlm_config):
         self.vlm = Vlm(**vlm_config)
+
+    def set_head(self):
         if self.share_head:
             self.head = lambda x: x.matmul(self.vlm.embed_tokens.weight.transpose(1, 0))
         else:
             self.head = nn.Linear(self.vlm.hidden_size, self.vlm.vocab_size, bias=False)
-
-        self.criterion = nn.CrossEntropyLoss(reduction='mean', ignore_index=self.ignore_id)
 
     _device = None
     _dtype = None
@@ -406,8 +419,8 @@ class Vit(nn.Module):
             self,
             in_ch=3, embed_dim=1280, output_size=1536,
             patch_size=14, temporal_patch_size=2, spatial_merge_size=2,
-            num_heads=16, mlp_ratio=4, num_blocks=32,
-            attend_type='FlashAttend',
+            num_heads=16, ff_hidden_size=1280 * 4, num_blocks=32,
+            ff_type='PositionWiseFeedForward', attend_type='FlashAttend', norm_type='LayerNorm',
             use_checkpoint=False,
             **kwargs
     ):
@@ -421,8 +434,9 @@ class Vit(nn.Module):
 
         self.rot_embedding = RotaryEmbedding2D(embed_dim // num_heads // 2)
 
+        norm_fn = normalizations.make_norm_fn.get(norm_type)
         self.blocks = transformers.TransformerSequential(
-            embed_dim, num_heads, int(embed_dim * mlp_ratio),
+            embed_dim, num_heads, ff_hidden_size,
             attend_fn=attentions.RotaryAttendWrapper,
             attend_fn_kwargs=dict(
                 embedding=self.rot_embedding,
@@ -431,17 +445,18 @@ class Vit(nn.Module):
             fn_kwargs=dict(
                 separate=False,
             ),
+            feed_forward_fn=transformers.make_ff_fn.get(ff_type),
             ff_kwargs=dict(
                 act=activations.FasterGELU(),
             ),
-            norm_fn=partial(nn.LayerNorm, eps=1e-6),
+            norm_fn=partial(norm_fn, eps=1e-6),
             norm_first=True,
 
             num_blocks=num_blocks,
             use_checkpoint=use_checkpoint
         )
         self.merger = PatchMerger(
-            output_size=output_size, input_size=embed_dim, spatial_merge_size=spatial_merge_size
+            output_size=output_size, input_size=embed_dim, spatial_merge_size=spatial_merge_size, norm_fn=norm_fn
         )
 
         self.spatial_merge_size = spatial_merge_size
@@ -575,10 +590,11 @@ class RotaryEmbedding2D(embeddings.RotaryEmbedding):
 
 
 class PatchMerger(nn.Module):
-    def __init__(self, output_size: int, input_size: int, spatial_merge_size: int = 2) -> None:
+    def __init__(self, output_size: int, input_size: int, spatial_merge_size: int = 2, norm_fn=None) -> None:
         super().__init__()
+        norm_fn = norm_fn or nn.LayerNorm
         self.hidden_size = input_size * (spatial_merge_size ** 2)
-        self.ln_q = nn.LayerNorm(input_size, eps=1e-6)
+        self.ln_q = norm_fn(input_size, eps=1e-6)
         self.mlp = nn.Sequential(
             nn.Linear(self.hidden_size, self.hidden_size),
             nn.GELU(),

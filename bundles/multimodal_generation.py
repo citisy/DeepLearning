@@ -116,7 +116,11 @@ class Qwen2VlPredictor(multimodal_pretrain.BaseQwen2Vl):
         process_results.setdefault(self.model_name, []).extend(response)
 
 
-class Qwen2Vl(multimodal_pretrain.FromQwen2VlPretrained, multimodal_pretrain.DataProcessForQwen2Vl, Qwen2VlPredictor):
+class Qwen2Vl(
+    multimodal_pretrain.FromQwen2VlPretrained,
+    multimodal_pretrain.DataProcessForQwen2Vl,
+    Qwen2VlPredictor
+):
     """
     Usage:
         .. code-block:: python
@@ -125,6 +129,37 @@ class Qwen2Vl(multimodal_pretrain.FromQwen2VlPretrained, multimodal_pretrain.Dat
 
             model_dir = 'xxx'
             process = Process(
+                use_pretrained=True,
+                pretrained_model=model_dir,
+                vocab_fn=f'{model_dir}/vocab.json',
+                encoder_fn=f'{model_dir}/merges.txt',
+                config_version='2b'  # ['2b', '7b', '72b']
+            )
+
+            process.init()
+
+            # todo: only support single predict
+            text = '描述一下这张图片。'
+            image = 'xxx'
+            process.single_predict(text=text, image=image)
+    """
+
+
+class Qwen2_5_Vl(
+    multimodal_pretrain.FromQwen2_5_VlPretrained,
+    multimodal_pretrain.DataProcessForQwen2Vl,
+    multimodal_pretrain.BaseQwen2_5_Vl,
+    Qwen2VlPredictor
+):
+    """
+    Usage:
+        .. code-block:: python
+
+            from bundles.multimodal_pretrain import Qwen2Vl as Process
+
+            model_dir = 'xxx'
+            process = Process(
+                use_pretrained=True,
                 pretrained_model=model_dir,
                 vocab_fn=f'{model_dir}/vocab.json',
                 encoder_fn=f'{model_dir}/merges.txt',
