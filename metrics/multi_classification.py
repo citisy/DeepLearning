@@ -3,12 +3,26 @@ from . import classification
 
 
 class FullConfusionMatrix:
-    def __init__(self, n_class, ignore_class=None):
-        self.n_class = n_class
-        self.ignore_class = np.array(ignore_class).reshape((-1,))
+    def __init__(self, classes: list | dict, ignore_class=None):
+        if isinstance(classes, list):
+            self.n_class = len(classes)
+            self.classes = {c: i for i, c in enumerate(classes)}
+        elif isinstance(classes, dict):
+            self.n_class = len(classes)
+            self.classes = classes
+        else:
+            raise ValueError('classes must be list or dict')
+
+        if ignore_class is not None:
+            self.ignore_class = np.vectorize(self.classes.get)(ignore_class).reshape((-1,))
+        else:
+            self.ignore_class = np.array([])
 
     def tp(self, true, pred, **kwargs):
         """true positive"""
+        true = np.vectorize(self.classes.get)(true)
+        pred = np.vectorize(self.classes.get)(pred)
+
         if self.ignore_class.size:
             true, pred = true.copy(), pred.copy()
             n_class = self.n_class + 1
@@ -28,6 +42,8 @@ class FullConfusionMatrix:
 
     def cp(self, true, **kwargs):
         """condition positive"""
+        true = np.vectorize(self.classes.get)(true)
+
         if self.ignore_class.size:
             true = true.copy()
             true[np.any(true == self.ignore_class[:, None], axis=0)] = self.n_class
@@ -42,6 +58,8 @@ class FullConfusionMatrix:
 
     def op(self, pred, **kwargs):
         """outcome positive"""
+        pred = np.vectorize(self.classes.get)(pred)
+
         if self.ignore_class.size:
             pred = pred.copy()
             pred[np.any(pred == self.ignore_class[:, None], axis=0)] = self.n_class
