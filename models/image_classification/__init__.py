@@ -48,12 +48,12 @@ class BaseImgClsModel(nn.Module):
 
     def fit(self, x, true_label=None):
         x = self.process(x)
-        loss = self.loss(pred_label=x, true_label=true_label)
-        return {'pred': x, 'loss': loss}
+        loss = self.loss(logits=x, true_label=true_label)
+        return {'logits': x, 'loss': loss}
 
     def inference(self, x):
         x = self.process(x)
-        return {'pred': x}
+        return {'logits': x}
 
     def process(self, x):
         x = self.input(x)
@@ -62,16 +62,16 @@ class BaseImgClsModel(nn.Module):
         x = self.head(x)
         return x
 
-    def loss(self, pred_label, true_label):
+    def loss(self, logits, true_label):
         """
         Args:
-            pred_label: (b, n_features) in [-inf, +inf] without activation
+            logits: (b, n_features) in [-inf, +inf] without activation
             true_label:
                 if multi_label: (b, n_labels) in {0, 1}
                 if not multi_label: (b, ) in {0, 1, ..., n_labels-1}
 
         """
-        return self.criterion(pred_label, true_label)
+        return self.criterion(logits, true_label)
 
 
 def init_register():

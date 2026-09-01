@@ -10,11 +10,11 @@ class BCEBlurWithLogitsLoss(nn.Module):
         self.loss_fcn = nn.BCEWithLogitsLoss(reduction='none')  # must be nn.BCEWithLogitsLoss()
         self.alpha = alpha
 
-    def forward(self, pred, true):
-        loss = self.loss_fcn(pred, true)
-        pred = torch.sigmoid(pred)  # prob from logits
-        dx = pred - true  # reduce only missing label effects
-        # dx = (pred - true).abs()  # reduce missing label and false label effects
+    def forward(self, logits, true):
+        loss = self.loss_fcn(logits, true)
+        probs = torch.sigmoid(logits)
+        dx = probs - true  # reduce only missing label effects
+        # dx = (probs - true).abs()  # reduce missing label and false label effects
         alpha_factor = 1 - torch.exp((dx - 1) / (self.alpha + 1e-4))
         loss *= alpha_factor
         return loss.mean()
@@ -34,14 +34,14 @@ class FocalLoss(nn.Module):
         self.reduction = base_loss.reduction
         self.base_loss.reduction = 'none'  # required to apply FL to each element
 
-    def forward(self, pred, true):
-        loss = self.base_loss(pred, true)
+    def forward(self, logits, true):
+        loss = self.base_loss(logits, true)
         # p_t = torch.exp(-loss)
         # loss *= self.alpha * (1.000001 - p_t) ** self.gamma  # non-zero power for gradient stability
 
         # TF implementation https://github.com/tensorflow/addons/blob/v0.7.1/tensorflow_addons/losses/focal_loss.py
-        pred_prob = torch.sigmoid(pred)  # prob from logits
-        p_t = true * pred_prob + (1 - true) * (1 - pred_prob)
+        probs = torch.sigmoid(logits)
+        p_t = true * probs + (1 - true) * (1 - probs)
         alpha_factor = true * self.alpha + (1 - true) * (1 - self.alpha)
         modulating_factor = (1.0 - p_t) ** self.gamma
         loss *= alpha_factor * modulating_factor
@@ -64,12 +64,12 @@ class QFocalLoss(nn.Module):
         self.reduction = loss_fcn.reduction
         self.loss_fcn.reduction = 'none'  # required to apply FL to each element
 
-    def forward(self, pred, true):
-        loss = self.loss_fcn(pred, true)
+    def forward(self, logits, true):
+        loss = self.loss_fcn(logits, true)
 
-        pred_prob = torch.sigmoid(pred)  # prob from logits
+        probs = torch.sigmoid(logits)
         alpha_factor = true * self.alpha + (1 - true) * (1 - self.alpha)
-        modulating_factor = torch.abs(true - pred_prob) ** self.gamma
+        modulating_factor = torch.abs(true - probs) ** self.gamma
         loss *= alpha_factor * modulating_factor
 
         if self.reduction == 'mean':

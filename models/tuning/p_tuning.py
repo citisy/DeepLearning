@@ -101,8 +101,8 @@ class ModelWrapForPT:
             **kwargs
         )
 
-        if 'token_cls_logit' in outputs:
-            outputs['token_cls_logit'] = torch.stack(outputs['token_cls_logit'][~flags].chunk(x.shape[0]))
+        if 'token_cls_logits' in outputs:
+            outputs['token_cls_logits'] = torch.stack(outputs['token_cls_logits'][~flags].chunk(x.shape[0]))
 
         return outputs
 

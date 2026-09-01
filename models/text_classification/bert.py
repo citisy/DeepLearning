@@ -12,16 +12,16 @@ class Model(nn.Module):
     def forward(self, x, segment_label, attention_mask=None, seq_cls_true=None, **kwargs):
         x = self.backbone(x, segment_label=segment_label, attention_mask=attention_mask)
 
-        seq_cls_logit = self.head(x)
-        outputs = {'seq_cls_logit': seq_cls_logit}
+        seq_cls_logits = self.head(x)
+        outputs = {'seq_cls_logits': seq_cls_logits}
 
         losses = {}
         if self.training:
-            losses = self.loss(seq_cls_logit, seq_cls_true)
+            losses = self.loss(seq_cls_logits, seq_cls_true)
 
         outputs.update(losses)
         return outputs
 
-    def loss(self, seq_cls_logit, seq_cls_true):
-        next_loss = self.head.loss(seq_cls_logit, seq_cls_true)
+    def loss(self, seq_cls_logits, seq_cls_true):
+        next_loss = self.head.loss(seq_cls_logits, seq_cls_true)
         return {'loss': next_loss}

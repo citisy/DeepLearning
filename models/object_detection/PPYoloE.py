@@ -682,11 +682,11 @@ class PPYOLOEHead(nn.Module):
         cls_score_list, reg_distri_list = [], []
         for i, feat in enumerate(feats):
             avg_feat = F.adaptive_avg_pool2d(feat, (1, 1))
-            cls_logit = self.pred_cls[i](self.stem_cls[i](feat, avg_feat) + feat)
+            cls_logits = self.pred_cls[i](self.stem_cls[i](feat, avg_feat) + feat)
             reg_distri = self.pred_reg[i](self.stem_reg[i](feat, avg_feat))
             # cls and reg
-            cls_score = F.sigmoid(cls_logit)
-            cls_score_list.append(cls_score.flatten(2).permute([0, 2, 1]))
+            cls_probs = F.sigmoid(cls_logits)
+            cls_score_list.append(cls_probs.flatten(2).permute([0, 2, 1]))
             reg_distri_list.append(reg_distri.flatten(2).permute([0, 2, 1]))
         cls_score_list = torch.concat(cls_score_list, dim=1)
         reg_distri_list = torch.concat(reg_distri_list, dim=1)
@@ -978,7 +978,7 @@ class PPYOLOEHead(nn.Module):
             _, _, h, w = feat.shape
             l = h * w
             avg_feat = F.adaptive_avg_pool2d(feat, (1, 1))
-            cls_logit = self.pred_cls[i](self.stem_cls[i](feat, avg_feat) + feat)
+            cls_logits = self.pred_cls[i](self.stem_cls[i](feat, avg_feat) + feat)
             reg_dist = self.pred_reg[i](self.stem_reg[i](feat, avg_feat))
             reg_dist = reg_dist.reshape([-1, 4, self.reg_channels, l]).permute([0, 2, 3, 1])
             if self.use_shared_conv:
@@ -986,8 +986,8 @@ class PPYOLOEHead(nn.Module):
             else:
                 reg_dist = F.softmax(reg_dist, dim=1)
             # cls and reg
-            cls_score = F.sigmoid(cls_logit)
-            cls_score_list.append(cls_score.reshape([-1, self.num_classes, l]))
+            cls_probs = F.sigmoid(cls_logits)
+            cls_score_list.append(cls_probs.reshape([-1, self.num_classes, l]))
             reg_dist_list.append(reg_dist)
 
         cls_score_list = torch.cat(cls_score_list, dim=-1)

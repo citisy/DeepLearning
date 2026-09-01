@@ -47,8 +47,8 @@ class Model(BaseImgClsModel):
             **kwargs
         )
 
-    def loss(self, pred_label, true_label):
-        return F.hinge_embedding_loss(pred_label, true_label)
+    def loss(self, logits, true_label):
+        return F.hinge_embedding_loss(logits, true_label)
 
 
 class Backbone(nn.Module):

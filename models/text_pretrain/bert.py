@@ -116,9 +116,9 @@ class Model(nn.Module):
 
     def fit(self, text_ids, segment_label=None, attention_mask=None, seq_cls_true=None, token_cls_true=None, **backbone_kwargs):
         outputs = self.process(text_ids, segment_label, attention_mask, **backbone_kwargs)
-        seq_cls_logit = outputs.get('seq_cls_logit')
-        token_cls_logit = outputs.get('token_cls_logit')
-        losses = self.loss(text_ids.device, seq_cls_logit, token_cls_logit, seq_cls_true, token_cls_true)
+        seq_cls_logits = outputs.get('seq_cls_logits')
+        token_cls_logits = outputs.get('token_cls_logits')
+        losses = self.loss(text_ids.device, seq_cls_logits, token_cls_logits, seq_cls_true, token_cls_true)
 
         outputs.update(losses)
         return outputs
@@ -132,24 +132,24 @@ class Model(nn.Module):
         outputs = {}
 
         if self.is_seq_cls:
-            outputs['seq_cls_logit'] = self.seq_cls_head(text_ids)
+            outputs['seq_cls_logits'] = self.seq_cls_head(text_ids)
 
         if self.is_token_cls:
-            outputs['token_cls_logit'] = self.token_cls_head(text_ids)
+            outputs['token_cls_logits'] = self.token_cls_head(text_ids)
 
         return outputs
 
-    def loss(self, device, seq_cls_logit=None, token_cls_logit=None, seq_cls_true=None, token_cls_true=None):
+    def loss(self, device, seq_cls_logits=None, token_cls_logits=None, seq_cls_true=None, token_cls_true=None):
         losses = {}
         loss = torch.zeros(1, device=device)
 
         if self.is_seq_cls:
-            seq_cls_loss = self.seq_cls_head.loss(seq_cls_logit, seq_cls_true)
+            seq_cls_loss = self.seq_cls_head.loss(seq_cls_logits, seq_cls_true)
             loss += seq_cls_loss
             losses['loss.seq'] = seq_cls_loss
 
         if self.is_token_cls:
-            token_cls_loss = self.token_cls_head.loss(token_cls_logit, token_cls_true)
+            token_cls_loss = self.token_cls_head.loss(token_cls_logits, token_cls_true)
             loss += token_cls_loss
             losses['loss.token'] = token_cls_loss
 
@@ -169,8 +169,8 @@ class ModelForSeqCls(nn.Module):
         x = self.fcn(x[:, 0])  # select the first output
         return x
 
-    def loss(self, seq_cls_logit, seq_cls_true):
-        return F.cross_entropy(seq_cls_logit, seq_cls_true)
+    def loss(self, seq_cls_logits, seq_cls_true):
+        return F.cross_entropy(seq_cls_logits, seq_cls_true)
 
 
 class ModelForTokenCls(nn.Sequential):
@@ -183,9 +183,9 @@ class ModelForTokenCls(nn.Sequential):
             nn.Linear(in_features, out_features)
         )
 
-    def loss(self, token_cls_logit, token_cls_true):
-        token_cls_logit = token_cls_logit.transpose(1, 2)  # seq first -> class first
-        return F.cross_entropy(token_cls_logit, token_cls_true, ignore_index=self.skip_id)
+    def loss(self, token_cls_logits, token_cls_true):
+        token_cls_logits = token_cls_logits.transpose(1, 2)  # seq first -> class first
+        return F.cross_entropy(token_cls_logits, token_cls_true, ignore_index=self.skip_id)
 
 
 class Bert(nn.Module):

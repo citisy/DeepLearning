@@ -25,8 +25,8 @@ class Model(DenseNet):
         super().__init__(in_ch, input_size, out_features,
                          backbone=backbone, backbone_config=backbone_config, **kwargs)
 
-    def loss(self, pred_label, true_label):
-        loss = F.cross_entropy(pred_label, true_label)
+    def loss(self, logits, true_label):
+        loss = F.cross_entropy(logits, true_label)
         lasso_loss = 0
         for m in self.modules():
             if isinstance(m, LGConv):

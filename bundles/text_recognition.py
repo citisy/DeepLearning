@@ -67,8 +67,8 @@ class TrProcess(Process):
             outputs = model(**inputs)
 
             model_results[name] = dict(
-                outputs=outputs['pred'],
-                preds=outputs['pred'],
+                outputs=outputs['preds'],
+                preds=outputs['preds'],
             )
 
         return model_results

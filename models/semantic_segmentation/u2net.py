@@ -148,18 +148,18 @@ class Model(nn.Module):
 
     def forward(self, x, label_masks=None):
         x = self.backbone(x)
-        preds, hidden_states = self.head(x)
+        probs, hidden_states = self.head(x)
 
         if self.training:
-            return self.loss(preds, hidden_states, label_masks)
+            return self.loss(probs, hidden_states, label_masks)
         else:
             return dict(
-                preds=preds,
+                preds=probs,
                 hidden_states=hidden_states  # note, haven't sigmoid
             )
 
-    def loss(self, preds, hidden_states, label_masks=None):
-        losses = [self.criterion(preds, label_masks)]
+    def loss(self, probs, hidden_states, label_masks=None):
+        losses = [self.criterion(probs, label_masks)]
         for hidden_state in hidden_states:
             hidden_state = F.sigmoid(hidden_state)
             losses.append(self.criterion(hidden_state, label_masks))

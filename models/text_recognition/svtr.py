@@ -82,7 +82,7 @@ class Model(BaseTextRecModel):
             chars = [self.id2char[int(c)] for c in chars]
             words.append(''.join(chars))
 
-        return {'pred': words}
+        return {'preds': words}
 
     @staticmethod
     def beam_search(x, beam_size=4):

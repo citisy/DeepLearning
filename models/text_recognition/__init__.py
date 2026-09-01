@@ -43,8 +43,8 @@ class BaseTextRecModel(nn.Module):
 
     def fit(self, x, true_label=None):
         x = self.process(x)
-        loss = self.loss(pred_label=x, true_label=true_label)
-        return {'pred': x, 'loss': loss}
+        loss = self.loss(probs=x, true_label=true_label)
+        return {'probs': x, 'loss': loss}
 
     def inference(self, x):
         x = self.process(x)
@@ -58,16 +58,16 @@ class BaseTextRecModel(nn.Module):
         x = F.log_softmax(x, dim=2)
         return x
 
-    def loss(self, pred_label, true_label):
-        device = pred_label.device
+    def loss(self, probs, true_label):
+        device = probs.device
         # (b, ) in {w}
-        pred_label_lens = torch.full(size=(pred_label.shape[1],), fill_value=pred_label.shape[0], dtype=torch.long, device=device)
+        probs_lens = torch.full(size=(probs.shape[1],), fill_value=probs.shape[0], dtype=torch.long, device=device)
         # (\sum l, ), (b, ) \in [0, L]
         true_label, true_label_lens = self.embedding(true_label)
         true_label = torch.cat(true_label).to(device).long()
         true_label_lens = torch.tensor(true_label_lens, device=device).long()
 
-        return F.ctc_loss(pred_label, true_label, pred_label_lens, true_label_lens, blank=self.char2id[' '], reduction='mean')
+        return F.ctc_loss(probs, true_label, probs_lens, true_label_lens, blank=self.char2id[' '], reduction='mean')
 
     def embedding(self, context):
         labels = []

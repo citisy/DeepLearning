@@ -39,7 +39,7 @@ class Model(BaseTextRecModel):
             chars = [self.id2char[int(c)] for c in chars]
             words.append(''.join(chars))
 
-        return {'pred': words}
+        return {'preds': words}
 
 
 class Backbone(nn.Sequential):

@@ -521,18 +521,18 @@ class BaseBert(Process):
 
             if self.is_seq_cls:
                 ret.update(
-                    seq_cls_logit=outputs['seq_cls_logit'],
-                    seq_cls_preds=outputs['seq_cls_logit'].argmax(1).cpu().numpy().tolist(),
+                    seq_cls_logits=outputs['seq_cls_logits'],
+                    seq_cls_preds=outputs['seq_cls_logits'].argmax(1).cpu().numpy().tolist(),
                 )
 
             if self.is_token_cls:
                 lens = model_inputs['lens']
-                token_cls_preds = outputs['token_cls_logit'].argmax(-1).cpu().numpy().tolist()
+                token_cls_preds = outputs['token_cls_logits'].argmax(-1).cpu().numpy().tolist()
                 token_cls_preds = [preds[1: l + 1] for preds, l in zip(token_cls_preds, lens)]
                 token_cls_trues = model_inputs['x'].cpu().numpy().tolist()
                 token_cls_trues = [t[1: l + 1] for t, l in zip(token_cls_trues, lens)]
                 ret.update(
-                    token_cls_logit=outputs['token_cls_logit'],
+                    token_cls_logits=outputs['token_cls_logits'],
                     token_cls_preds=token_cls_preds,
                     token_cls_trues=token_cls_trues,
                     pred_segment=self.tokenizer.numeralizer.decode(token_cls_preds),

@@ -154,9 +154,9 @@ class Model(BaseTextRecModel):
             chars = [self.id2char[int(i)] for i in pred]
             words.append(''.join(chars))
 
-        return {'pred': words}
+        return {'preds': words}
 
-    def loss(self, pred_label, true_label):
+    def loss(self, probs, true_label):
         raise NotImplemented
 
 

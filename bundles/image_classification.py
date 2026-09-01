@@ -72,18 +72,18 @@ class ClsProcess(Process):
         model_results = {}
         for name, model in self.models.items():
             outputs = model(**inputs)
-            model_pred = outputs['pred']
+            logits = outputs['logits']
             if self.is_multi_label:
                 preds = []
-                argsort = model_pred.argsort(descending=True)
+                argsort = logits.argsort(descending=True)
                 for arg in argsort:
                     keep = arg[:top_k].cpu().numpy().tolist()
                     preds.append(keep)
             else:
-                preds = model_pred.argmax(1).cpu().numpy().tolist()
+                preds = logits.argmax(1).cpu().numpy().tolist()
 
             model_results[name] = dict(
-                model_pred=model_pred,
+                logits=logits,
                 preds=preds,
             )
 
