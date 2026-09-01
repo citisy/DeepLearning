@@ -667,7 +667,7 @@ class Vlm(nn.Module):
     def forward(
             self,
             input_ids=None, inputs_embeds=None, attention_mask=None, position_ids=None,
-            past_kvs=None, start_pos=0, **ignore_kwargs
+            past_kvs=None, start_pos=0, **block_kwargs
     ):
         if inputs_embeds is None:
             inputs_embeds = self.embed_tokens(input_ids)
@@ -689,7 +689,8 @@ class Vlm(nn.Module):
             embedding_kwargs=dict(
                 weights=rot_embedding_weights
             ),
-            per_block_kwargs=per_block_kwargs
+            per_block_kwargs=per_block_kwargs,
+            **block_kwargs
         )
 
         hidden_states = self.norm(hidden_states)

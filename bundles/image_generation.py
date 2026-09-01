@@ -820,16 +820,9 @@ class DiProcess(IgProcess):
 
     def get_model_inputs(self, loop_inputs, train=True):
         if train:
-            images = [torch.from_numpy(ret.pop('image')).to(self.device, non_blocking=True, dtype=torch.float) for ret in loop_inputs]
-            images = torch.stack(images)
-            model_inputs = dict(
-                x=images
-            )
+            return self.get_model_train_inputs(loop_inputs)
         else:
-            model_inputs = dict(
-                x=loop_inputs
-            )
-        return model_inputs
+            return self.get_model_val_inputs(loop_inputs)
 
     def on_train_step(self, loop_objs, model_kwargs=dict(), **kwargs) -> dict:
         loop_inputs = loop_objs['loop_inputs']
@@ -1261,12 +1254,6 @@ class BaseSD(DiProcess):
         from data_parse.nl_data_parse.pre_process.bundled import CLIPTokenizer
         self.tokenizer = CLIPTokenizer.from_pretrained(self.vocab_fn, self.encoder_fn)
 
-    def get_model_inputs(self, loop_inputs, train=True):
-        if train:
-            return self.get_model_train_inputs(loop_inputs)
-        else:
-            return self.get_model_val_inputs(loop_inputs)
-
 
 class SDTrainer(BaseSD):
     def get_model_train_inputs(self, loop_inputs):
@@ -1610,12 +1597,6 @@ class BaseFlux(DiProcess):
             max_seq_len=512
         )
 
-    def get_model_inputs(self, loop_inputs, train=True):
-        if train:
-            return self.get_model_train_inputs(loop_inputs)
-        else:
-            return self.get_model_val_inputs(loop_inputs)
-
 
 class FluxTrainer(BaseFlux):
     def train_data_preprocess(self, iter_data, is_preprocess=False, preprocess_batch_size=16, low_text_cond_memory_run=True, **kwargs):
@@ -1734,9 +1715,6 @@ class FluxPredictor(BaseFlux):
             image_size=image_size
         )
 
-    def predict_data_augment(self, ret):
-        return self.val_data_augment(ret)
-
     def gen_predict_inputs(self, *objs, images=None, start_idx=None, end_idx=None, **kwargs):
         """
 
@@ -1839,3 +1817,180 @@ class Flux_SimpleTextImage(Flux, SimpleTextImage):
             prompts = [prompt] * 2
             images = process.batch_predict(prompts, batch_size=4, is_visualize=True)
     """
+
+
+class FromQwenImagePretrained(CheckpointHooks):
+    text_encoder_pretrained: List[str] | str
+    backbone_pretrained: List[str] | str
+    vae_pretrained: List[str] | str
+
+    def load_pretrained(self):
+        from models.image_generation.QwenImage import WeightConverter
+        from models.bundles import WeightLoader
+
+        state_dicts = {
+            "text_encoder": WeightLoader.auto_load(self.text_encoder_pretrained, suffix='.safetensors'),
+            "backbone": WeightLoader.auto_load(self.backbone_pretrained, suffix='.safetensors'),
+            "vae": WeightLoader.auto_load(self.vae_pretrained, suffix='.safetensors'),
+        }
+
+        state_dict = WeightConverter.from_diffusers(state_dicts)
+        self.model.load_state_dict(state_dict, strict=True, assign=True)
+
+        self.log(f'Loaded pretrain model!')
+
+
+class BaseQwenImage(DiProcess):
+    model_version = 'QwenImage'
+    config_version: str = ''
+
+    input_size = 768
+
+    model_config: dict = {}
+
+    # normalize, [0, 255] -> [-1, 1]
+    norm_post_aug = Apply([
+        pixel_perturbation.MinMax(),
+        pixel_perturbation.Normalize(0.5, 0.5, channel_first=True),
+    ])
+
+    def set_model(self):
+        from models.image_generation.QwenImage import Model, Config
+
+        default_configs = dict(
+            model_config=dict(
+                _device=self.device
+            )
+        )
+        model_config = Config.get(self.config_version)
+        model_config = configs.ConfigObjParse.merge_dict(model_config, default_configs)
+        model_config = configs.ConfigObjParse.merge_dict(model_config, self.model_config)
+        with torch.device('meta'):  # fast to init model
+            self.model = Model(**model_config)
+
+    tokenizer: 'Qwen2VLTokenizer'
+    vocab_fn: str
+    encoder_fn: str
+
+    def set_tokenizer(self):
+        from data_parse.nl_data_parse.pre_process.bundled import Qwen2VLTokenizer
+
+        self.tokenizer = Qwen2VLTokenizer.from_pretrained(
+            self.vocab_fn,
+            self.encoder_fn,
+            max_seq_len=1024,
+            default_system_content='Describe the image by detailing the color, shape, size, texture, quantity, text, spatial relationships of the objects and background:'
+        )
+
+
+class QwenImagePredictor(BaseQwenImage):
+    def get_model_val_inputs(self, loop_inputs):
+        texts = []
+        neg_texts = []
+        images = []
+        mask_images = []
+        image_size = self.input_size
+
+        for ret in loop_inputs:
+            if 'text' in ret:
+                texts.append(ret['text'])
+
+            if 'neg_text' in ret:
+                neg_texts.append(ret['neg_text'])
+
+            if 'image' in ret and ret['image'] is not None:
+                image = ret.pop('image')
+                if image.shape[0] == 4:
+                    image, mask_image = image[:-1], image[-1:]
+                    if 'mask_image' not in ret or ret['mask_image'] is None:
+                        mask_images.append(torch.from_numpy(mask_image).to(self.device, non_blocking=True, dtype=torch.float))
+
+                images.append(torch.from_numpy(image).to(self.device, non_blocking=True, dtype=torch.float))
+
+            if 'dst' in ret:
+                image_size = ret['dst']
+
+        text_ids = []
+        template_seq_lens = []
+        for text in texts:
+            dialog = self.tokenizer.paragraph_to_dialog(text)
+            _input = self.tokenizer.encode_dialog(dialog)
+            text_ids.append(_input['segment_ids'])
+            template_seq_lens.append(_input['per_seq_lens'][0])
+
+        text_ids = torch.tensor(text_ids).to(self.device)
+
+        neg_text_ids = []
+        neg_template_seq_lens = []
+        for neg_text in neg_texts:
+            dialog = self.tokenizer.paragraph_to_dialog(neg_text)
+            _input = self.tokenizer.encode_dialog(dialog)
+            neg_text_ids.append(_input['segment_ids'])
+            neg_template_seq_lens.append(_input['per_seq_lens'][0])
+
+        neg_text_ids = torch.tensor(neg_text_ids).to(self.device)
+
+        if images:
+            images = torch.stack(images)
+
+        if mask_images:
+            mask_images = torch.stack(mask_images)
+            mask_images /= 255
+
+        return dict(
+            text_ids=text_ids,
+            template_seq_lens=template_seq_lens,
+            neg_text_ids=neg_text_ids,
+            neg_template_seq_lens=neg_template_seq_lens,
+            x=images,
+            image_size=image_size,
+        )
+
+    def gen_predict_inputs(
+            self, *objs, neg_texts=None, images=None, mask_images=None, image_size=None,
+            start_idx=None, end_idx=None, **kwargs
+    ):
+        """
+
+        Args:
+            *objs:
+            neg_texts (str|List[str]):
+            images (str|List[str]|np.ndarray|List[np.ndarray]):
+            mask_images (str|List[str]|np.ndarray|List[np.ndarray]):
+            **kwargs:
+
+        Returns:
+
+        """
+        pos_texts = objs[0][start_idx: end_idx]
+        b = len(pos_texts)
+
+        if neg_texts is None:
+            neg_texts = [None] * b
+        elif isinstance(neg_texts, str):
+            neg_texts = [neg_texts] * b
+        else:
+            neg_texts = neg_texts[start_idx: end_idx]
+
+        images = _load_images(images, b, start_idx, end_idx)
+        mask_images = _load_images(mask_images, b, start_idx, end_idx)
+
+        rets = []
+        for text, neg_text, image, mask_image in zip(pos_texts, neg_texts, images, mask_images):
+            rets.append(dict(
+                image=image,
+                text=text,
+                neg_text=neg_text,
+                mask_image=mask_image,
+                dst=image_size if image_size else self.input_size,
+            ))
+
+        return rets
+
+
+class QwenImage(FromQwenImagePretrained, QwenImagePredictor):
+    pass
+
+
+class QwenImage_SimpleTextImage(QwenImage, SimpleTextImage):
+    pass

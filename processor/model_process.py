@@ -1222,7 +1222,7 @@ class ModelHooks:
         reprocess data will be cached in predict_container"""
         model_results = loop_objs['model_results']
         ret = process_results.setdefault(self.model_name, {})
-        converter.TypeFmtConvert.list_dict_to_dict_list(model_results[self.model_name], ret, keep_keys=return_keys)
+        converter.TypeFmtConvert.list_dict_to_dict_list(model_results[self.model_name], ret, keep_keys=return_keys, keep_dims=True)
 
     def on_predict_step_end(self, loop_objs, **kwargs):
         """visualize the model outputs usually"""
