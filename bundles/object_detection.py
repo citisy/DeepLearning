@@ -394,7 +394,7 @@ class Yolov5Aug(OdDataProcess):
                 self.train_data_augment()
 
         """
-        if np.random.random() > self.mosaic_prob:
+        if np.random.random() < self.mosaic_prob:
             idxes = [idx] + list(np.random.choice(range(len(data)), 3, replace=False))
             rets = []
             for idx in idxes:

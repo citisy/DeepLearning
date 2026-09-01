@@ -6,15 +6,15 @@ import torch.nn.functional as F
 from einops.layers.torch import Rearrange
 from torch import nn
 
-from utils import torch_utils
 from .. import attentions, embeddings
 from ..layers import Linear
 from ..losses import LabelSmoothingLoss, MAELoss
 from ..text_pretrain import transformers
+from .. import bundles
 from ..bundles import WeightLoader
 
 
-class WeightConverter:
+class WeightConverter(bundles.WeightConverter):
     encoder_convert_dict = {
         'encoder.{0}.feed_forward.w_1': 'encoder.{0}.feed_forward.0.linear',
         'encoder.{0}.feed_forward.w_2': 'encoder.{0}.feed_forward.1.linear',
@@ -32,16 +32,12 @@ class WeightConverter:
         'decoder.{0}.feed_forward.norm': 'decoder.{0}.feed_forward.0.norm',
     }
 
-    @classmethod
-    def from_official(cls, state_dict):
-        convert_dict = {
-            **cls.encoder_convert_dict,
-            **cls.decoder_convert_dict,
-            'predictor': 'neck',
-            'ctc.': 'criterion_ctc.'
-        }
-        state_dict = torch_utils.Converter.convert_keys(state_dict, convert_dict)
-        return state_dict
+    convert_dict = {
+        **encoder_convert_dict,
+        **decoder_convert_dict,
+        'predictor': 'neck',
+        'ctc.': 'criterion_ctc.'
+    }
 
 
 class LayerNorm(nn.LayerNorm):

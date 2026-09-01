@@ -9,6 +9,8 @@ import torch.nn.functional as F
 import numpy as np
 from collections import OrderedDict
 
+from utils import torch_utils
+
 
 class SimpleInModule(nn.Sequential):
     def __init__(self, **kwargs):
@@ -494,3 +496,22 @@ class DropoutBlock(nn.ModuleList):
                 continue
 
             yield m
+
+
+class BaseModel(nn.Module):
+    _device = None
+    _dtype = None
+
+    @property
+    def device(self):
+        return torch_utils.ModuleInfo.possible_device(self) if self._device is None else self._device
+
+    @property
+    def dtype(self):
+        return torch_utils.ModuleInfo.possible_dtype(self) if self._dtype is None else self._dtype
+
+    def forward(self, *args, **kwargs):
+        if self.training:
+            return self.fit(*args, **kwargs)
+        else:
+            return self.inference(*args, **kwargs)
