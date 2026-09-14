@@ -566,8 +566,8 @@ class ModelHooks:
 
             # the value is
             # None,
-            #     if is_metric=False, only save weight with name of `last.pth`,
-            #     else, save weight with name of `[last/best].pth`
+            #     if `is_metric=False`, only save weight with name of `last.pth`,
+            #     else, if `use_early_stopper=True`, also save weight with name of `best.pth`
             # 0, don't save any weight file
             # >0,
             #     if is_metric=False, only save weight with name of `{check_period}.pth`,
@@ -1147,7 +1147,8 @@ class ModelHooks:
     def single_predict(self, *obj, **kwargs):
         if not len(obj):
             obj = [None]
-        ret = self.batch_predict(*[[o] for o in obj], vis_pbar=False, **kwargs)
+        kwargs.update(vis_pbar=False)
+        ret = self.batch_predict(*[[o] for o in obj], **kwargs)
         if isinstance(ret, list) and ret:
             return ret[0]
         else:

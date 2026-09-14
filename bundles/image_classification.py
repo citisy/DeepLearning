@@ -12,13 +12,13 @@ from processor import Process, DataHooks, bundled
 from utils import os_lib
 
 
-def _load_images(images, b, start_idx, end_idx):
+def _load_images(images, b):
     if images:
         if not isinstance(images, (list, tuple)):
             # base on one image
             images = [images for _ in range(b)]
         else:
-            images = images[start_idx: end_idx]
+            images = images
         images = [os_lib.loader.load_img(image) if isinstance(image, str) else image for image in images]
     else:
         images = [None] * b
@@ -74,16 +74,22 @@ class ClsProcess(Process):
             outputs = model(**inputs)
             logits = outputs['logits']
             if self.is_multi_label:
+                probs = torch.sigmoid(logits)
                 preds = []
+                _probs = []
                 argsort = logits.argsort(descending=True)
-                for arg in argsort:
+                for i, arg in enumerate(argsort):
                     keep = arg[:top_k].cpu().numpy().tolist()
                     preds.append(keep)
+                    _probs.append(probs[i][keep].cpu().numpy().tolist())
             else:
-                preds = logits.argmax(1).cpu().numpy().tolist()
+                probs = torch.softmax(logits, dim=1)
+                _probs, preds = torch.max(probs, dim=1)
+                preds = preds.cpu().numpy().tolist()
+                _probs = _probs.cpu().numpy().tolist()
 
             model_results[name] = dict(
-                logits=logits,
+                probs=_probs,
                 preds=preds,
             )
 
@@ -121,7 +127,7 @@ class ClsProcess(Process):
         images = objs[0][start_idx: end_idx]
         b = len(images)
 
-        images = _load_images(images, b, start_idx, end_idx)
+        images = _load_images(images, b)
 
         rets = []
         for image in images:
@@ -132,9 +138,15 @@ class ClsProcess(Process):
     def on_predict_reprocess(self, loop_objs, process_results=dict(), return_keys=('preds',), **kwargs):
         model_results = loop_objs['model_results']
         ret = process_results.setdefault(self.model_name, {})
+
         preds = ret.setdefault('preds', [])
         _preds = model_results[self.model_name]['preds']
         preds.extend(_preds)
+
+        probs = ret.setdefault('probs', [])
+        _probs = model_results[self.model_name]['probs']
+        probs.extend(_probs)
+
         if hasattr(self, 'classes'):
             classes = ret.setdefault('classes', [])
             if self.is_multi_label:

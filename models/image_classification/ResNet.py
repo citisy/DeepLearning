@@ -165,24 +165,28 @@ class Model(BaseImgClsModel):
 class Model4Export(Model):
     """for exporting to onnx, torchscript, etc."""
 
-    def __init__(self, **kwargs):
+    def __init__(self, mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225], **kwargs):
         super().__init__(**kwargs)
-        mean = torch.tensor([0.485, 0.456, 0.406])[None, :, None, None]
-        std = torch.tensor([0.229, 0.224, 0.225])[None, :, None, None]
-        self.register_buffer('mean', mean, persistent=False)
-        self.register_buffer('std', std, persistent=False)
+        self.register_buffer('mean', torch.tensor(mean)[None, :, None, None], persistent=False)
+        self.register_buffer('std', torch.tensor(std)[None, :, None, None], persistent=False)
 
     def forward(self, x):
         x = self.pre_process(x)
         x = self.process(x)
-        x = x.to(torch.float16)
+        x = self.post_process(x)
         return x
 
     def pre_process(self, x):
-        """for faster infer, use uint8 input and fp32 to output"""
+        """to faster communication, using uint8 input,
+        to more accurately infer, using fp32 to process"""
         x = x.to(dtype=torch.float32)  # cannot use fp16
         x = x / 255
         x = (x - self.mean) / self.std
+        return x
+
+    def post_process(self, x):
+        """to faster communication, using uint8 output"""
+        x = x.to(torch.float16)
         return x
 
 
