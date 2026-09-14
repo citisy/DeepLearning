@@ -52,6 +52,7 @@ class FunAsr(Process):
 
         det_processor_config = dict(
             cmvn_path=f'{self.det_model_dir}/am.mvn',
+            use_pretrained=True,
             pretrained_model=f'{self.det_model_dir}/model.pt',
             device=self.device
         )
@@ -68,6 +69,7 @@ class FunAsr(Process):
             vocab_fn=f'{self.rec_model_dir}/tokens.json',
             seg_dict_path=f'{self.rec_model_dir}/seg_dict',
             cmvn_path=f'{self.rec_model_dir}/am.mvn',
+            use_pretrained=True,
             pretrained_model=f'{self.rec_model_dir}/model.pt',
             device=self.device
         )
@@ -82,6 +84,7 @@ class FunAsr(Process):
 
         punc_processor_config = dict(
             vocab_fn=f'{self.punc_model_dir}/tokens.json',
+            use_pretrained=True,
             pretrained_model=f'{self.punc_model_dir}/model.pt',
             device=self.device
         )
@@ -95,6 +98,7 @@ class FunAsr(Process):
         from .speech_pretrain import CAMPPlus
 
         spk_processor_config = dict(
+            use_pretrained=True,
             pretrained_model=f'{self.spk_model_dir}/campplus_cn_common.bin',
             device=self.device
         )
@@ -129,7 +133,7 @@ class FunAsr(Process):
             rec_batch_size=8, spk_batch_size=16,
             **kwargs
     ) -> dict:
-        audio = loop_objs['loop_inputs'][0]['audio']    # todo: only support single predict
+        audio = loop_objs['loop_inputs'][0]['audio']  # todo: only support single predict
 
         det_outputs = self.det_processor.single_predict(
             speech=audio,
@@ -282,6 +286,7 @@ class PPOCRv4(Process):
         from .object_detection import PPOCRv4Det_Icdar
 
         det_processor_config = dict(
+            use_pretrained=True,
             pretrained_model=f'{self.det_model_dir}/best_accuracy.pdparams',
             device=self.device
         )
@@ -295,7 +300,8 @@ class PPOCRv4(Process):
         from .text_recognition import PPOCRv4Rec_MJSynth
 
         rec_processor_config = dict(
-            pretrained_model=f'{self.rec_model_dir}/best_accuracy.pdparams',    # only for teacher model
+            use_pretrained=True,
+            pretrained_model=f'{self.rec_model_dir}/best_accuracy.pdparams',  # only for teacher model
             device=self.device
         )
         rec_processor_config = configs.ConfigObjParse.merge_dict(rec_processor_config, self.rec_processor_config)
@@ -310,7 +316,7 @@ class PPOCRv4(Process):
             rec_batch_size=8,
             **kwargs
     ) -> dict:
-        image = loop_objs['loop_inputs'][0]['image']    # todo: only support single predict
+        image = loop_objs['loop_inputs'][0]['image']  # todo: only support single predict
 
         det_outputs = self.det_processor.single_predict(image, vis_pbar=False, **det_kwargs)
         segmentations = det_outputs['preds'][0]['segmentations']
@@ -355,3 +361,20 @@ class PPOCRv4(Process):
 
     def on_predict_reprocess(self, loop_objs, **kwargs):
         self.on_val_reprocess(loop_objs, **kwargs)
+
+
+class PPOCRv6(PPOCRv4):
+    def set_rec_model(self):
+        from .text_recognition import PPOCRv6Rec_MJSynth
+
+        rec_processor_config = dict(
+            use_pretrained=True,
+            pretrained_model=f"{self.rec_model_dir}/PP-OCRv6_medium_rec_pretrained.pdparams",
+            vocab_fn=f'{self.rec_model_dir}/ppocrv6_dict.txt',
+            device=self.device
+        )
+        rec_processor_config = configs.ConfigObjParse.merge_dict(rec_processor_config, self.rec_processor_config)
+        self.rec_processor = PPOCRv6Rec_MJSynth(
+            **rec_processor_config
+        )
+        self.rec_processor.init()

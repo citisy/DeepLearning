@@ -193,7 +193,7 @@ class Model4Export(Model):
 
 class SequenceEncoder(nn.Module):
     def __init__(self, in_ch, **kwargs):
-        super(SequenceEncoder, self).__init__()
+        super().__init__()
         self.encoder = EncoderWithSVTR(in_ch, **kwargs)
         self.encoder_reshape = Rearrange('b c 1 w -> b w c')
         self.out_channels = self.encoder.out_channels
@@ -271,9 +271,21 @@ class CTCHead(nn.Module):
             in_ch,
             out_ch=6625,
             mid_ch=None,
+            use_guide=False,
             **kwargs
     ):
         super().__init__()
+        self.use_guide = use_guide
+        if use_guide:
+            self.guide_layer = nn.Sequential(
+                nn.Conv1d(in_ch, in_ch, 5, padding=2, groups=in_ch, bias=False),
+                nn.BatchNorm1d(in_ch),
+                nn.Hardswish(),
+                nn.Conv1d(in_ch, in_ch, 1, bias=False),
+                nn.BatchNorm1d(in_ch),
+                nn.Hardswish(),
+            )
+
         if mid_ch is None:
             self.fc = nn.Linear(in_ch, out_ch)
         else:
@@ -283,8 +295,13 @@ class CTCHead(nn.Module):
             )
 
         self.out_channels = out_ch
-        self.mid_channels = mid_ch
 
     def forward(self, x):
+        if self.use_guide:
+            x = x.transpose(1, 2)
+            x = self.guide_layer(x)
+            x = x.transpose(1, 2)
+
         predicts = self.fc(x)
         return predicts
+

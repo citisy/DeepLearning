@@ -113,13 +113,13 @@ class DataProcess(DataHooks):
     ], probs=[0.2])
 
     post_aug = Apply([
-        # scale.LetterBox(
-        #     pad_type=(crop.RIGHT, crop.DOWN),
-        #     fill=(0, 0, 0),
-        #     interpolation=4
-        # ),
-        scale.Proportion(interpolation=4, choice_type=scale.SHORTEST),
-        crop.Corner(fill=(0, 0, 0), pad_type=1),
+        scale.LetterBox(
+            pad_type=(crop.RIGHT, crop.DOWN),
+            fill=(0, 0, 0),
+            interpolation=4
+        ),
+        # scale.Proportion(interpolation=4, choice_type=scale.SHORTEST),
+        # crop.Corner(fill=(0, 0, 0), pad_type=1),
         channel.Keep3Dims(),
         # pixel_perturbation.MinMax(),
         # pixel_perturbation.Normalize(0.5, 0.5),
@@ -385,12 +385,60 @@ class PPOCRv4Rec_MJSynth(PPOCRv4Rec, MJSynth):
 
     model_dir = 'xxx'
     process = Process(
+        use_pretrained=True,
+
+        # https://paddleocr.bj.bcebos.com/PP-OCRv4/chinese/ch_PP-OCRv4_rec_train.tar
         config_version='student',
         pretrained_model=f'{model_dir}/ch_PP-OCRv4_rec_train/student.pdparams',
+
+        # https://paddleocr.bj.bcebos.com/PP-OCRv4/chinese/ch_PP-OCRv4_rec_server_train.tar
         # config_version='teacher',
         # pretrained_model=f'{model_dir}/ch_PP-OCRv4_rec_server_train/best_accuracy.pdparams',
 
+        # https://github.com/PaddlePaddle/PaddleOCR/blob/main/ppocr/utils/ppocr_keys_v1.txt
         vocab_fn=f'{model_dir}/ppocr_keys_v1.txt'
+    )
+    process.init()
+    process.single_predict('xxx.png')
+    """
+    input_size = (1000, 48)
+
+
+class PPOCRv6Rec(PPOCRv4Rec):
+    model_version = 'PPOCRv6_rec'
+    config_version = 'medium'
+
+    def set_model(self):
+        from models.text_recognition.PPOCRv6_rec import Model, Config
+
+        self.model = Model(
+            id2char=self.word_dict,
+            **Config.get(self.config_version),
+        )
+
+    def load_pretrained(self):
+        from models.text_recognition.PPOCRv6_rec import WeightConverter
+
+        state_dict = torch_utils.Load.from_file(self.pretrained_model)
+        state_dict = WeightConverter.from_paddle(state_dict)
+        self.model.load_state_dict(state_dict, strict=False)
+        # so silly that, import paddle will clear the logger settings, so reinit the logger
+        log_utils.logger_init()
+
+
+class PPOCRv6Rec_MJSynth(PPOCRv6Rec, MJSynth):
+    """
+    from bundles.text_recognition import PPOCRv6Rec_MJSynth as Process
+
+    model_dir = 'xxx'
+    process = Process(
+        use_pretrained=True,
+
+        # https://paddle-model-ecology.bj.bcebos.com/paddlex/official_pretrained_model/PP-OCRv6_medium_rec_pretrained.pdparams
+        pretrained_model=f'{model_dir}/PP-OCRv6_medium_rec_pretrained.pdparams',
+
+        # https://github.com/PaddlePaddle/PaddleOCR/blob/main/ppocr/utils/dict/ppocrv6_dict.txt
+        vocab_fn=f'{model_dir}/ppocrv6_dict.txt'
     )
     process.init()
     process.single_predict('xxx.png')
