@@ -4,3 +4,6 @@
 [submodule "data_parse"]
 	path = data_parse
 	url = https://github.com/citisy/data_parse.git
+[submodule "metrics"]
+	path = metrics
+	url = https://github.com/citisy/metrics.git
