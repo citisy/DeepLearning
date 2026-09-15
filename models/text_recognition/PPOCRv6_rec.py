@@ -121,14 +121,41 @@ class WeightConverter(PPOCRv4_rec.WeightConverter):
         state_dict = torch_utils.Converter.convert_keys(state_dict, convert_dict)
         return state_dict
 
+    transformers_neck_convert_dict = {
+        'head.encoder.conv_block.0.convolution': 'neck.encoder.conv_reduce.conv',
+        'head.encoder.conv_block.0.normalization': 'neck.encoder.conv_reduce.norm',
+        'head.encoder.conv_block.1.convolution': 'neck.encoder.skip_conv.conv',
+        'head.encoder.conv_block.1.normalization': 'neck.encoder.skip_conv.norm',
+        'head.encoder.conv_block.2.convolution': 'neck.encoder.local_conv.conv',
+        'head.encoder.conv_block.2.normalization': 'neck.encoder.local_conv.norm',
+        'head.encoder.norm': 'neck.encoder.norm',
+
+        'head.encoder.svtr_block.{0}.layer_norm1': 'neck.encoder.svtr_block.{0}.attn_res.norm',
+        'head.encoder.svtr_block.{0}.layer_norm2': 'neck.encoder.svtr_block.{0}.ff_res.norm',
+        'head.encoder.svtr_block.{0}.mlp.fc1': 'neck.encoder.svtr_block.{0}.ff_res.fn.0.linear',
+        'head.encoder.svtr_block.{0}.mlp.fc2': 'neck.encoder.svtr_block.{0}.ff_res.fn.1.linear',
+        'head.encoder.svtr_block.{0}.self_attn.projection': 'neck.encoder.svtr_block.{0}.attn_res.fn.to_out.linear',
+        'head.encoder.svtr_block.{0}.self_attn.qkv': 'neck.encoder.svtr_block.{0}.attn_res.fn.to_qkv',
+    }
+
+    transformers_head_convert_dict = {
+        'head.head': 'head.fc'
+    }
+
     @classmethod
-    def from_safetensors(cls, state_dict):
+    def from_transformers(cls, state_dict):
         """
         tiny: https://www.modelscope.cn/models/PaddlePaddle/PP-OCRv6_tiny_rec_safetensors
         small: https://www.modelscope.cn/models/PaddlePaddle/PP-OCRv6_small_rec_safetensors
         medium: https://www.modelscope.cn/models/PaddlePaddle/PP-OCRv6_medium_rec_safetensors
         """
-        raise NotImplementedError
+        convert_dict = {
+            **PPLCNetV4.WeightConverter.transformers_backbone_convert_dict,
+            **cls.transformers_neck_convert_dict,
+            **cls.transformers_head_convert_dict
+        }
+        state_dict = torch_utils.Converter.convert_keys(state_dict, convert_dict)
+        return state_dict
 
 
 class Model(BaseTextRecModel):

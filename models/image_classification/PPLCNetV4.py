@@ -7,7 +7,6 @@ from torch import nn
 from .. import bundles
 from ..layers import Conv
 
-
 NET_CONFIG_DET = {
     "tiny": {
         # stem(mid=16, out=32)  channels: 32 → 48 → 64 → 160
@@ -76,7 +75,6 @@ NET_CONFIG_DET = {
         ],
     },
 }
-
 
 NET_CONFIG_REC = {
     "tiny": {
@@ -207,37 +205,23 @@ class WeightConverter:
         '{0}.bn': '{0}.norm',
     }
 
+    transformers_backbone_convert_dict = {
+        'model.backbone.encoder.blocks.{0}.blocks.{1}.channel_conv1.convolution': 'backbone.blocks{[0]+2}.{1}.channel_mixer.expand.conv',
+        'model.backbone.encoder.blocks.{0}.blocks.{1}.channel_conv1.normalization': 'backbone.blocks{[0]+2}.{1}.channel_mixer.expand.norm',
+        'model.backbone.encoder.blocks.{0}.blocks.{1}.channel_conv2.convolution': 'backbone.blocks{[0]+2}.{1}.channel_mixer.compress.conv',
+        'model.backbone.encoder.blocks.{0}.blocks.{1}.channel_conv2.normalization': 'backbone.blocks{[0]+2}.{1}.channel_mixer.compress.norm',
+        # 'model.backbone.encoder.blocks.0.blocks.0.token_conv.bias': 'backbone.blocks2.0.token_mixer.rep_dw.conv.conv.weight',
+        'model.backbone.encoder.blocks.{0}.blocks.{1}.token_squeeze_excitation.convolutions.0': 'backbone.blocks{[0]+2}.{1}.token_mixer.se.conv1',
+        'model.backbone.encoder.blocks.{0}.blocks.{1}.token_squeeze_excitation.convolutions.2': 'backbone.blocks{[0]+2}.{1}.token_mixer.se.conv2',
 
-def pad_same(x, kernel_size, stride=1):
-    if isinstance(kernel_size, int):
-        kh = kw = kernel_size
-    else:
-        kh, kw = kernel_size
-    if isinstance(stride, int):
-        sh = sw = stride
-    else:
-        sh, sw = stride
+        'model.backbone.encoder.convolution.{0}.convolution': 'backbone.conv1.{0}.conv',
+        'model.backbone.encoder.convolution.{0}.normalization': 'backbone.conv1.{0}.norm',
 
-    _, _, h, w = x.shape
-
-    def get_pad(in_size, k, s):
-        out_size = math.ceil(in_size / s)
-        pad = max((out_size - 1) * s + k - in_size, 0)
-        return pad // 2, pad - pad // 2
-
-    pad_top, pad_bottom = get_pad(h, kh, sh)
-    pad_left, pad_right = get_pad(w, kw, sw)
-    if pad_top or pad_bottom or pad_left or pad_right:
-        x = F.pad(x, [pad_left, pad_right, pad_top, pad_bottom])
-    return x
-
-
-class SamePadConv(Conv):
-    def __init__(self, in_ch, out_ch, k, s=1, **kwargs):
-        super().__init__(in_ch, out_ch, k, s, p=0, **kwargs)
-
-    def forward(self, input):
-        return super().forward(pad_same(input, self.kernel_size, self.stride))
+        # todo: is that different from transformers' weight and paddle weight?
+        'model.backbone.encoder.blocks.{0}.blocks.{1}.token_conv.convolution': 'backbone.blocks{[0]+2}.{1}.token_mixer.rep_dw.conv.conv',
+        'model.backbone.encoder.blocks.{0}.blocks.{1}.token_conv.normalization': 'backbone.blocks{[0]+2}.{1}.token_mixer.rep_dw.conv.norm',
+        'model.backbone.encoder.blocks.{0}.blocks.{1}.token_conv': 'backbone.blocks{[0]+2}.{1}.token_mixer.dw_conv.conv',
+    }
 
 
 class Backbone(nn.Module):
@@ -342,6 +326,38 @@ class StemBlock(nn.Module):
         x1 = self.pool(pad_same(x, 2, 1))
         x = self.stem4(self.stem3(torch.cat([x1, x2], dim=1)))
         return x
+
+
+def pad_same(x, kernel_size, stride=1):
+    if isinstance(kernel_size, int):
+        kh = kw = kernel_size
+    else:
+        kh, kw = kernel_size
+    if isinstance(stride, int):
+        sh = sw = stride
+    else:
+        sh, sw = stride
+
+    _, _, h, w = x.shape
+
+    def get_pad(in_size, k, s):
+        out_size = math.ceil(in_size / s)
+        pad = max((out_size - 1) * s + k - in_size, 0)
+        return pad // 2, pad - pad // 2
+
+    pad_top, pad_bottom = get_pad(h, kh, sh)
+    pad_left, pad_right = get_pad(w, kw, sw)
+    if pad_top or pad_bottom or pad_left or pad_right:
+        x = F.pad(x, [pad_left, pad_right, pad_top, pad_bottom])
+    return x
+
+
+class SamePadConv(Conv):
+    def __init__(self, in_ch, out_ch, k, s=1, **kwargs):
+        super().__init__(in_ch, out_ch, k, s, p=0, **kwargs)
+
+    def forward(self, input):
+        return super().forward(pad_same(input, self.kernel_size, self.stride))
 
 
 class SELayer(nn.Module):
