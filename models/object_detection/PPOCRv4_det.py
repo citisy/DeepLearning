@@ -24,23 +24,42 @@ class Config(bundles.Config):
     student_neck = dict(
         name='models.object_detection.PPOCRv4_det.RSEFPN',
         in_ches=[12, 18, 42, 360],
-        out_ch=96
+        out_ch=96,
+        shortcut=True
     )
 
     teacher_neck = dict(
         name='models.object_detection.PPOCRv4_det.LKPAN',
         in_ches=[256, 512, 768, 1024],
-        out_ch=256
+        out_ch=256,
+        intracl=True
     )
 
     student_head = dict(
         name='models.object_detection.PPOCRv4_det.DBHead',
-        k=50
+        k=50,
+        fix_nan=True
     )
 
     teacher_head = dict(
         name='models.object_detection.PPOCRv4_det.PFHeadLocal',
         k=50,
+        mode='large',
+        fix_nan=True
+    )
+
+    student_loss = dict(
+        main_loss_type='DiceLoss',
+        alpha=5,
+        beta=10,
+        ohem_ratio=3
+    )
+
+    teacher_loss = dict(
+        main_loss_type='DiceLoss',
+        alpha=5,
+        beta=10,
+        ohem_ratio=3
     )
 
     default_model = 'student'
@@ -51,13 +70,15 @@ class Config(bundles.Config):
             'student': dict(
                 backbone_config=cls.student_backbone,
                 neck_config=cls.student_neck,
-                head_config=cls.student_head
+                head_config=cls.student_head,
+                loss_config=cls.student_loss
             ),
 
             'teacher': dict(
                 backbone_config=cls.teacher_backbone,
                 neck_config=cls.teacher_neck,
-                head_config=cls.teacher_head
+                head_config=cls.teacher_head,
+                loss_config=cls.teacher_loss
             )
         }
 
@@ -86,16 +107,16 @@ class WeightConverter:
         return state_dict
 
     head_convert_dict = {
-        'head.binarize.conv1': 'head.binarize.blocks.0.conv',
-        'head.binarize.conv_bn1': 'head.binarize.blocks.0.norm',
-        'head.binarize.conv2': 'head.binarize.blocks.1.conv',
-        'head.binarize.conv_bn2': 'head.binarize.blocks.1.norm',
-        'head.binarize.conv3': 'head.binarize.blocks.3.conv',
-        'head.thresh.conv1': 'head.thresh.blocks.0.conv',
-        'head.thresh.conv_bn1': 'head.thresh.blocks.0.norm',
-        'head.thresh.conv2': 'head.thresh.blocks.1.conv',
-        'head.thresh.conv_bn2': 'head.thresh.blocks.1.norm',
-        'head.thresh.conv3': 'head.thresh.blocks.3.conv'
+        'head.{0}.conv1': 'head.{0}.blocks.0.conv',
+        'head.{0}.conv_bn1': 'head.{0}.blocks.0.norm',
+        'head.{0}.conv2': 'head.{0}.blocks.1.conv',
+        'head.{0}.conv_bn2': 'head.{0}.blocks.1.norm',
+        'head.{0}.conv3': 'head.{0}.blocks.3.conv',
+    }
+
+    teacher_neck_convert_dict = {
+        'neck.incl{0}.bn': 'neck.incl{0}.conv1x1_return_channel.norm',
+        'neck.incl{0}.conv1x1_return_channel': 'neck.incl{0}.conv1x1_return_channel.conv',
     }
 
     @classmethod
@@ -117,9 +138,7 @@ class WeightConverter:
         state_dict = cls._convert(state_dict)
 
         convert_dict = {
-            'neck.incl{0}.bn': 'neck.incl{0}.conv1x1_return_channel.norm',
-            'neck.incl{0}.conv1x1_return_channel': 'neck.incl{0}.conv1x1_return_channel.conv',
-
+            **cls.teacher_neck_convert_dict,
             **PPHGNet.WeightConverter.backbone_convert_dict,
             **cls.head_convert_dict,
         }
@@ -131,10 +150,16 @@ class WeightConverter:
 class Model(nn.Module):
     def __init__(
             self, backbone_config=Config.student_backbone, neck_config=Config.student_neck, head_config=Config.student_head,
+            loss_config=Config.student_loss,
             **kwargs
     ):
         super().__init__()
         self.__dict__.update(kwargs)
+
+        backbone_config = dict(backbone_config)
+        neck_config = dict(neck_config)
+        head_config = dict(head_config)
+        loss_config = dict(loss_config or {})
 
         backbone_name = backbone_config.pop('name')
         self.backbone = converter.DataInsConvert.str_to_instance(backbone_name)(**backbone_config)
@@ -142,7 +167,7 @@ class Model(nn.Module):
         self.neck = converter.DataInsConvert.str_to_instance(neck_name)(**neck_config)
         head_name = head_config.pop('name')
         self.head = converter.DataInsConvert.str_to_instance(head_name)(in_ch=self.neck.out_channels, **head_config)
-        self.criterion = DBLoss()
+        self.criterion = DBLoss(**loss_config)
 
     def forward(self, *args, **kwargs):
         if self.training:
@@ -168,8 +193,9 @@ class Model(nn.Module):
 
     thresh = 0.3
     min_size = 3
-    unclip_ratio = 2.0
-    box_thresh = 0.7
+    unclip_ratio = 1.5
+    box_thresh = 0.6
+    max_candidates = 1000
 
     def post_process(self, preds):
         preds = preds.cpu().numpy()
@@ -181,7 +207,7 @@ class Model(nn.Module):
             outs = cv2.findContours(mask, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
             contours = outs[0]
             segmentations = []
-            for contour in contours:
+            for contour in contours[:self.max_candidates]:
                 points, sside = self.get_mini_boxes(contour)
                 if sside < self.min_size:
                     continue
@@ -279,17 +305,17 @@ class Model4Export(Model):
 
 
 class RSEFPN(nn.Module):
-    def __init__(self, in_ches, out_ch):
+    def __init__(self, in_ches, out_ch, shortcut=True):
         super().__init__()
         self.ins_conv = nn.ModuleList()
         self.inp_conv = nn.ModuleList()
 
         for in_ch in in_ches:
             self.ins_conv.append(
-                ResBlock(in_ch, out_ch, 1)
+                ResBlock(in_ch, out_ch, 1, shortcut=shortcut)
             )
             self.inp_conv.append(
-                ResBlock(out_ch, out_ch // 4, 3)
+                ResBlock(out_ch, out_ch // 4, 3, shortcut=shortcut)
             )
 
         self.out_channels = out_ch
@@ -320,14 +346,18 @@ class RSEFPN(nn.Module):
 
 
 class ResBlock(nn.Module):
-    def __init__(self, in_ch, out_ch, kernel_size):
+    def __init__(self, in_ch, out_ch, kernel_size, shortcut=True):
         super().__init__()
         self.in_conv = nn.Conv2d(in_ch, out_ch, kernel_size, padding=int(kernel_size // 2), bias=False)
         self.se_block = PPLCNetV3.SEBlock(out_ch)
+        self.shortcut = shortcut
 
     def forward(self, ins):
         x = self.in_conv(ins)
-        out = x + self.se_block(x)
+        if self.shortcut:
+            out = x + self.se_block(x)
+        else:
+            out = self.se_block(x)
         return out
 
 
@@ -339,25 +369,59 @@ class DBHead(nn.Module):
         params(dict): super parameters for build DB network
     """
 
-    def __init__(self, in_ch, k=50, return_f=False):
+    def __init__(self, in_ch, k=50, return_f=False, aux_in_channels=0, fix_nan=False, **kwargs):
         super().__init__()
         self.k = k
-        self.binarize = Head(in_ch, return_f=return_f)
-        self.thresh = Head(in_ch)
+        self.binarize = Head(in_ch, return_f=return_f, fix_nan=fix_nan)
+        self.thresh = Head(in_ch, fix_nan=fix_nan)
+        self.aux_in_channels = aux_in_channels
+
+        if aux_in_channels > 0:
+            self._aux_upsample_scale = {
+                "aux_p4": 4,  # 1/16 -> 1/4
+                "aux_p3": 2,  # 1/8  -> 1/4
+                "aux_p2": 1,  # 1/4  -> 1/4
+            }
+            self.aux_binarize_p4 = Head(aux_in_channels, fix_nan=fix_nan)
+            self.aux_thresh_p4 = Head(aux_in_channels, fix_nan=fix_nan)
+            self.aux_binarize_p3 = Head(aux_in_channels, fix_nan=fix_nan)
+            self.aux_thresh_p3 = Head(aux_in_channels, fix_nan=fix_nan)
+            self.aux_binarize_p2 = Head(aux_in_channels, fix_nan=fix_nan)
+            self.aux_thresh_p2 = Head(aux_in_channels, fix_nan=fix_nan)
 
     def step_function(self, x, y):
         return torch.reciprocal(1 + torch.exp(-self.k * (x - y)))
 
     def forward(self, x):
-        shrink_maps, _ = self.binarize(x)
+        if isinstance(x, dict):
+            fuse = x["fuse"]
+            aux_feats = {k: x[k] for k in ("aux_p4", "aux_p3", "aux_p2") if k in x}
+        else:
+            fuse = x
+            aux_feats = {}
+
+        shrink_maps, _ = self.binarize(fuse)
         if self.training:
-            # why only use in training steps?
-            threshold_maps, _ = self.thresh(x)
+            threshold_maps, _ = self.thresh(fuse)
             binary_maps = self.step_function(shrink_maps, threshold_maps)
             y = torch.cat([shrink_maps, threshold_maps, binary_maps], dim=1)
             outputs = {
                 "preds": y,
             }
+            if self.aux_in_channels > 0 and aux_feats:
+                for key, feat in aux_feats.items():
+                    scale = self._aux_upsample_scale[key]
+                    if scale > 1:
+                        feat = F.interpolate(feat, scale_factor=scale, mode="bilinear", align_corners=False)
+                    level = key[4:]
+                    aux_binarize = getattr(self, "aux_binarize_" + level)
+                    aux_thresh_head = getattr(self, "aux_thresh_" + level)
+                    aux_shrink, _ = aux_binarize(feat)
+                    aux_thresh, _ = aux_thresh_head(feat)
+                    aux_binary = self.step_function(aux_shrink, aux_thresh)
+                    outputs["aux_maps_" + level] = torch.cat(
+                        [aux_shrink, aux_thresh, aux_binary], dim=1
+                    )
         else:
             y = shrink_maps
             outputs = {
@@ -368,8 +432,9 @@ class DBHead(nn.Module):
 
 
 class Head(nn.Module):
-    def __init__(self, in_ch, return_f=False):
+    def __init__(self, in_ch, return_f=False, fix_nan=False):
         super().__init__()
+        self.fix_nan = fix_nan
         self.blocks = nn.ModuleList([
             Conv(in_ch, in_ch // 4, 3, bias=False, mode='cna'),
             ConvT(in_ch // 4, in_ch // 4, 2, 2, mode='cna'),
@@ -379,19 +444,22 @@ class Head(nn.Module):
 
     def forward(self, x):
         features = []
-        for m in self.blocks:
+        for i, m in enumerate(self.blocks):
             if isinstance(m, Cache):
                 x, features = m(x, features)
             else:
                 x = m(x)
+                if self.fix_nan and self.training and i in (0, 1):
+                    x = torch.where(torch.isnan(x), torch.zeros_like(x), x)
 
         return x, features
 
 
 class LKPAN(nn.Module):
-    def __init__(self, in_ches, out_ch):
+    def __init__(self, in_ches, out_ch, intracl=True):
         super().__init__()
         self.out_channels = out_ch
+        self.intracl = intracl
 
         self.ins_conv = nn.ModuleList()
         self.inp_conv = nn.ModuleList()
@@ -417,10 +485,11 @@ class LKPAN(nn.Module):
                 nn.Conv2d(out_ch // 4, out_ch // 4, 9, padding=4, bias=False)
             )
 
-        self.incl1 = IntraCLBlock(out_ch // 4, reduce_factor=2)
-        self.incl2 = IntraCLBlock(out_ch // 4, reduce_factor=2)
-        self.incl3 = IntraCLBlock(out_ch // 4, reduce_factor=2)
-        self.incl4 = IntraCLBlock(out_ch // 4, reduce_factor=2)
+        if self.intracl:
+            self.incl1 = IntraCLBlock(out_ch // 4, reduce_factor=2)
+            self.incl2 = IntraCLBlock(out_ch // 4, reduce_factor=2)
+            self.incl3 = IntraCLBlock(out_ch // 4, reduce_factor=2)
+            self.incl4 = IntraCLBlock(out_ch // 4, reduce_factor=2)
 
     def forward(self, x):
         c2, c3, c4, c5 = x
@@ -447,6 +516,12 @@ class LKPAN(nn.Module):
         p3 = self.pan_lat_conv[1](pan3)
         p4 = self.pan_lat_conv[2](pan4)
         p5 = self.pan_lat_conv[3](pan5)
+
+        if self.intracl:
+            p5 = self.incl4(p5)
+            p4 = self.incl3(p4)
+            p3 = self.incl2(p3)
+            p2 = self.incl1(p2)
 
         p5 = F.interpolate(p5, scale_factor=8, mode="nearest")
         p4 = F.interpolate(p4, scale_factor=4, mode="nearest")
@@ -561,10 +636,16 @@ class IntraCLBlock(nn.Module):
 
 
 class PFHeadLocal(DBHead):
-    def __init__(self, in_ch, k=50):
-        super().__init__(in_ch, k, return_f=True)
+    def __init__(self, in_ch, k=50, mode='large', **kwargs):
+        super().__init__(in_ch, k, return_f=True, **kwargs)
+        self.mode = mode
         self.up_conv = nn.Upsample(scale_factor=2, mode="nearest")
-        self.cbn_layer = LocalModule(in_ch // 4, in_ch // 4)
+        if self.mode == "large":
+            self.cbn_layer = LocalModule(in_ch // 4, in_ch // 4)
+        elif self.mode == "small":
+            self.cbn_layer = LocalModule(in_ch // 4, in_ch // 8)
+        else:
+            raise ValueError(f"mode can only be one of ['large', 'small'], but received {mode}")
 
     def forward(self, x):
         shrink_maps, features = self.binarize(x)
@@ -615,19 +696,39 @@ class DBLoss(nn.Module):
             beta=10,
             ohem_ratio=3,
             eps=1e-6,
+            aux_weight_p4=0.0,
+            aux_weight_p3=0.0,
+            aux_weight_p2=0.0,
+            focal_alpha=0.25,
+            focal_gamma=2.0,
+            dice_weight=1.0,
+            focal_weight=1.0,
             **kwargs,
     ):
         super().__init__()
         self.alpha = alpha
         self.beta = beta
+        self.aux_weight_p4 = aux_weight_p4
+        self.aux_weight_p3 = aux_weight_p3
+        self.aux_weight_p2 = aux_weight_p2
 
-        self.dice_loss = DiceLoss(eps=eps)
         self.l1_loss = MaskL1Loss(eps=eps)
-        self.bce_loss = BalanceLoss(
-            loss_type=main_loss_type,
-            negative_ratio=ohem_ratio,
-            eps=eps
-        )
+        if main_loss_type == "DiceFocalLoss":
+            self.bce_loss = DiceFocalLoss(
+                dice_weight=dice_weight,
+                focal_weight=focal_weight,
+                focal_alpha=focal_alpha,
+                focal_gamma=focal_gamma,
+                eps=eps
+            )
+            self.dice_loss = self.bce_loss
+        else:
+            self.dice_loss = DiceLoss(eps=eps)
+            self.bce_loss = BalanceLoss(
+                loss_type=main_loss_type,
+                negative_ratio=ohem_ratio,
+                eps=eps
+            )
 
     def forward(self, outputs, label_list):
         predict_maps = outputs["preds"]
@@ -670,6 +771,30 @@ class DBLoss(nn.Module):
             "loss.binary_maps": loss_binary_maps,
             "loss.cbn": cbn_loss,
         }
+
+        for aux_key, aux_w in [
+            ("aux_maps_p4", self.aux_weight_p4),
+            ("aux_maps_p3", self.aux_weight_p3),
+            ("aux_maps_p2", self.aux_weight_p2),
+        ]:
+            if aux_w > 0 and aux_key in outputs:
+                aux_maps = outputs[aux_key]
+                aux_shrink = aux_maps[:, 0, :, :]
+                aux_threshold = aux_maps[:, 1, :, :]
+                aux_binary = aux_maps[:, 2, :, :]
+                l_shrink = self.alpha * self.bce_loss(
+                    aux_shrink, label_shrink_map, label_shrink_mask
+                )
+                l_threshold = self.beta * self.l1_loss(
+                    aux_threshold, label_threshold_map, label_threshold_mask
+                )
+                l_binary = self.dice_loss(
+                    aux_binary, label_shrink_map, label_shrink_mask
+                )
+                aux_loss = l_shrink + l_threshold + l_binary
+                losses["loss." + aux_key] = aux_loss
+                losses["loss"] = losses["loss"] + aux_w * aux_loss
+
         return losses
 
 
@@ -698,6 +823,45 @@ class MaskL1Loss(nn.Module):
         loss = (torch.abs(preds - gt) * mask).sum() / (mask.sum() + self.eps)
         loss = torch.mean(loss)
         return loss
+
+
+class MaskedFocalLoss(nn.Module):
+    def __init__(self, alpha=0.25, gamma=2.0, eps=1e-6):
+        super().__init__()
+        self.alpha = alpha
+        self.gamma = gamma
+        self.eps = eps
+
+    def forward(self, preds, gt, mask):
+        preds = preds.clamp(self.eps, 1.0 - self.eps)
+        logit = torch.log(preds / (1.0 - preds))
+        bce = F.binary_cross_entropy_with_logits(logit, gt, reduction='none')
+        p = torch.sigmoid(logit)
+        p_t = p * gt + (1 - p) * (1 - gt)
+        alpha_t = self.alpha * gt + (1 - self.alpha) * (1 - gt)
+        loss = alpha_t * (1 - p_t) ** self.gamma * bce
+        return (loss * mask).sum() / (mask.sum() + self.eps)
+
+
+class DiceFocalLoss(nn.Module):
+    def __init__(
+            self,
+            dice_weight=1.0,
+            focal_weight=1.0,
+            focal_alpha=0.25,
+            focal_gamma=2.0,
+            eps=1e-6,
+    ):
+        super().__init__()
+        self.dice_weight = dice_weight
+        self.focal_weight = focal_weight
+        self.dice_loss = DiceLoss(eps=eps)
+        self.focal_loss = MaskedFocalLoss(alpha=focal_alpha, gamma=focal_gamma, eps=eps)
+
+    def forward(self, preds, gt, mask=None, weights=None):
+        loss_dice = self.dice_loss(preds, gt, mask, weights=weights)
+        loss_focal = self.focal_loss(preds, gt, mask)
+        return self.dice_weight * loss_dice + self.focal_weight * loss_focal
 
 
 class BalanceLoss(nn.Module):
