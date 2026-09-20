@@ -61,7 +61,8 @@ class WeightConverter:
             if (
                     k.endswith('fc1.weight') or k.endswith('fc2.weight')
                     or k.endswith('fc.weight') or k.endswith('qkv.weight')
-                    or k.endswith('proj.weight')
+                    or k.endswith('proj.weight') or k.endswith('kv.weight')
+                    or k.endswith('prj.weight')
             ):
                 info.append(('w', 'l'))
             elif k.endswith('._mean'):
@@ -169,6 +170,12 @@ class Model4Export(Model):
     max_h = 48
     max_w = 1000
 
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # torch.jit.trace bakes arange(...).to(x.device) as cuda:0; buffers follow jit.load / Triton device.
+        self.register_buffer('h_indices', torch.arange(self.max_h), persistent=False)
+        self.register_buffer('w_indices', torch.arange(self.max_w), persistent=False)
+
     def forward(self, x, ds, rs):
         x = self.pre_process(x, ds, rs)
         x = self.process(x)
@@ -179,15 +186,10 @@ class Model4Export(Model):
         """for faster infer, use uint8 input and fp32 to output"""
         x = x.to(torch.float32)
         x = (x - self.mean) / self.std
-        indices = torch.arange(x.shape[2]).to(x.device)
-        mask = indices >= (self.max_h - ds)
-        mask = mask[:, None, :, None].expand(*x.shape)
-        x[mask] = 0
-
-        indices = torch.arange(x.shape[3]).to(x.device)
-        mask = indices >= (self.max_w - rs)
-        mask = mask[:, None, None, :].expand(*x.shape)
-        x[mask] = 0
+        h_mask = self.h_indices >= (self.max_h - ds)
+        x = x.masked_fill(h_mask[:, None, :, None], 0)
+        w_mask = self.w_indices >= (self.max_w - rs)
+        x = x.masked_fill(w_mask[:, None, None, :], 0)
         return x
 
 

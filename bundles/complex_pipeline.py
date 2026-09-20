@@ -6,7 +6,7 @@ from torch import nn
 
 from data_parse.nl_data_parse.pre_process import spliter
 from processor import Process
-from utils import cv_utils, os_lib, configs
+from utils import cv_utils, math_utils, os_lib, configs
 
 
 class FunAsr(Process):
@@ -331,8 +331,15 @@ class PPOCRv4(Process):
         rec_outputs = self.rec_processor.batch_predict(rec_images, batch_size=rec_batch_size, vis_pbar=False, **rec_kwargs)
         paragraphs = rec_outputs['preds']
 
+        arg = math_utils.arg_order_sort_2D(segmentations[:, 0], key=(1, 0))
+        segmentations = segmentations[arg]
+        paragraphs = [paragraphs[i] for i in arg]
+
         outputs = []
         for points, paragraph in zip(segmentations, paragraphs):
+            paragraph = paragraph.strip()
+            if not paragraph:
+                continue
             outputs.append(dict(
                 paragraph=paragraph,
                 points=points,
@@ -364,6 +371,21 @@ class PPOCRv4(Process):
 
 
 class PPOCRv6(PPOCRv4):
+    """
+    from bundles.complex_pipeline import PPOCRv4 as Process
+
+    model_dir = 'xxx'
+    process = Process(
+        det_model_dir=f'{model_dir}/ch_PP-OCRv4_det_server_train',
+        rec_model_dir=f'{model_dir}',
+        rec_processor_config=dict(
+            vocab_fn=f'{model_dir}/ppocrv6_dict.txt'
+        )
+    )
+    process.init()
+
+    process.single_predict('xxx.png')
+    """
     def set_rec_model(self):
         from .text_recognition import PPOCRv6Rec_MJSynth
 
