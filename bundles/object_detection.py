@@ -746,10 +746,60 @@ class PPOCRv4Det_Icdar(PPOCRv4Det, Icdar):
 
     model_dir = 'xxx'
     process = Process(
+        use_pretrained=True,
+
         config_version='student',
         pretrained_model=f'{model_dir}/ch_PP-OCRv4_det_train/best_accuracy.pdparams',
         # config_version='teacher',
         # pretrained_model=f'{model_dir}/ch_PP-OCRv4_det_server_train/best_accuracy.pdparams',
+    )
+    process.init()
+
+    process.fit(
+        use_ema=True,
+        use_scheduler=True,
+        scheduler_strategy='step',
+        batch_size=16,
+        metric_kwargs=dict(
+            is_visualize=True,
+            max_vis_num=10
+        )
+    )
+
+    process.single_predict('xxx.png')
+    """
+
+
+class PPOCRv6Det(PPOCRv4Det):
+    model_version = 'PPOCRv6_det'
+    config_version = 'medium'
+
+    def set_model(self):
+        from models.object_detection.PPOCRv6_det import Model, Config
+
+        self.model = Model(**Config.get(self.config_version))
+
+    def load_pretrained(self):
+        from models.object_detection.PPOCRv6_det import WeightConverter
+
+        state_dict = torch_utils.Load.from_file(self.pretrained_model)
+        state_dict = WeightConverter.from_paddle(state_dict)
+        self.model.load_state_dict(state_dict, strict=False)
+        # so silly that, import paddle will clear the logger settings, so reinit the logger
+        log_utils.logger_init()
+
+
+class PPOCRv6Det_Icdar(PPOCRv6Det, Icdar):
+    """
+    from bundles.object_detection import PPOCRv6Det_Icdar as Process
+
+    model_dir = 'xxx'
+    process = Process(
+        use_pretrained=True,
+
+        config_version='medium',
+        # https://paddle-model-ecology.bj.bcebos.com/paddlex/official_pretrained_model/PP-OCRv6_medium_det_pretrained.pdparams
+        pretrained_model=f'{model_dir}/PP-OCRv6_medium_det_pretrained.pdparams',
     )
     process.init()
 
