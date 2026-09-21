@@ -1,5 +1,6 @@
 from collections import OrderedDict
 from functools import partial
+import math
 
 import torch
 from torch import Tensor, nn
@@ -8,6 +9,7 @@ from utils import torch_utils
 from ..multimodal_pretrain import Qwen2_5_VL
 from .. import attentions, bundles, normalizations, embeddings
 from . import flux, k_diffusion, QwenVAE
+from .k_diffusion import make_schedule_fn
 from .. import layers
 import torch.nn.functional as F
 from einops import rearrange, reduce, repeat
@@ -35,6 +37,14 @@ class Config(bundles.Config):
         )
     )
 
+    sampler = dict(
+        schedule='QwenFlowMatchSchedule',
+        scaling='XScaling',
+        schedule_config=dict(
+            num_steps=20
+        )
+    )
+
     default_model = ''
 
     @classmethod
@@ -44,7 +54,7 @@ class Config(bundles.Config):
                 text_encoder_config=cls.text_encoder,
                 backbone_config=cls.backbone,
                 vae_config=QwenVAE.Config.vae,
-                sampler_config=flux.Config.sampler,
+                sampler_config=cls.sampler,
             ),
         }
 
@@ -115,7 +125,7 @@ class Model(flux.Model):
             text_encoder_config=Config.text_encoder,
             backbone_config=Config.backbone,
             vae_config=QwenVAE.Config.vae,
-            sampler_config=flux.Config.sampler,
+            sampler_config=Config.sampler,
             model_config=dict(),
             **kwargs
     ):
@@ -207,15 +217,6 @@ class Model(flux.Model):
         if neg_text_conds is None:
             neg_text_conds, neg_text_conds_attention_mask = self.make_text_cond(neg_text_ids, neg_template_seq_lens)
 
-        # pad_seq = lambda x, max_seq_len: torch.cat([x, x.new_zeros(x.shape[0], max_seq_len - x.shape[1], x.shape[-1])], dim=1)
-        # pad_mask = lambda x, max_seq_len: torch.cat([x, x.new_zeros(x.shape[0], max_seq_len - x.shape[1])], dim=1)
-        #
-        # max_seq_len = max(text_conds.shape[1], neg_text_conds.shape[1])
-        # text_conds = pad_seq(text_conds, max_seq_len)
-        # text_conds_attention_mask = pad_mask(text_conds_attention_mask, max_seq_len)
-        # neg_text_conds = pad_seq(neg_text_conds, max_seq_len)
-        # neg_text_conds_attention_mask = pad_mask(neg_text_conds_attention_mask, max_seq_len)
-
         if x is None or not len(x):  # txt2img
             x = self.gen_x_t(text_conds.shape[0], image_size)
             z0 = None
@@ -240,6 +241,9 @@ class Model(flux.Model):
             mask_x = F.interpolate(mask_x, size=z.shape[-2:])
             z = z0 * mask_x + z * (1 - mask_x)
 
+        # Qwen VAE is 3D: latents must be (B, C, T, H, W). Sampler keeps 4D (B, C, H, W).
+        if z.ndim == 4:
+            z = z.unsqueeze(2)
         images = self.vae.decode(z)[:, :, 0]
 
         return images
@@ -257,46 +261,6 @@ class Model(flux.Model):
             [torch.cat([u, u.new_zeros(max_seq_len - u.size(0))]) for u in attn_mask_list]
         )
         return text_conds, text_conds_attention_mask
-
-    # def process(
-    #         self, img, t_vec, img_cond=None,
-    #         text_conds=None, text_conds_attention_mask=None,
-    #         neg_text_conds=None, neg_text_conds_attention_mask=None,
-    #         scale=4.0,
-    #         **kwargs
-    # ):
-    #     """flow process"""
-    #     bs, c, H, W = img.shape
-    #     h = H // 2
-    #     w = W // 2
-    #
-    #     img = rearrange(img, "b c (h ph) (w pw) -> b (h w) (c ph pw)", ph=2, pw=2)
-    #     t_vec = torch.full((img.shape[0],), t_vec[0], dtype=img.dtype, device=img.device)
-    #
-    #     if neg_text_conds is not None:
-    #         img = torch.repeat_interleave(img, 2, dim=0)
-    #         t_vec = torch.repeat_interleave(t_vec, 2, dim=0)
-    #         text_conds = torch.cat([text_conds, neg_text_conds])
-    #         text_conds_attention_mask = torch.cat([text_conds_attention_mask, neg_text_conds_attention_mask])
-    #
-    #     img_shapes = [(1, h, w)] * bs
-    #
-    #     e_t = self.backbone(
-    #         img=torch.cat((img, img_cond), dim=-1) if img_cond is not None else img,
-    #         img_shapes=img_shapes,
-    #         txt=text_conds,
-    #         text_conds_attention_mask=text_conds_attention_mask,
-    #         timesteps=t_vec,
-    #     )
-    #     e_t = rearrange(e_t, "b (h w) (c ph pw) -> b c (h ph) (w pw)", h=h, w=w, ph=2, pw=2)
-    #
-    #     if neg_text_conds is not None:
-    #         e_t, e_t_uncond = e_t.chunk(2)
-    #         comb_e_t = e_t_uncond + scale * (e_t - e_t_uncond)
-    #         cond_norm = torch.norm(e_t, dim=-1, keepdim=True)
-    #         noise_norm = torch.norm(comb_e_t, dim=-1, keepdim=True)
-    #         e_t = comb_e_t * (cond_norm / noise_norm)
-    #     return e_t
 
     def process(
             self, img, t_vec, img_cond=None,
@@ -436,6 +400,48 @@ class QwenTimestepProjEmbedding(nn.Module):
             conditioning = conditioning + addition_t_emb
 
         return conditioning
+
+
+@make_schedule_fn.add_register()
+class QwenFlowMatchSchedule(flux.FlowMatchSchedule):
+    """Inference schedule matching Qwen-Image `FlowMatchEulerDiscreteScheduler`.
+
+    Official pipeline uses `np.linspace(1.0, 1/N, N)` then exponential mu-shift and
+    `shift_terminal=0.02`. k-diffusion stores sigmas with 0 at index 0, so the same
+    values are stored in reverse.
+    """
+    max_seq_len = 8192
+    max_shift = 0.9
+    shift_terminal = 0.02
+
+    def initialize_layers(self, **kwargs):
+        # Sample on an N-step grid (not 1000), so make_timesteps indices match sigmas.
+        self.timesteps = self.num_steps
+        super().initialize_layers(**kwargs)
+
+    def make_mu(
+            self,
+            image_seq_len=2304,
+            base_seq_len: int = 256,
+            max_seq_len: int = None,
+            base_shift: float = 0.5,
+            max_shift: float = None,
+    ):
+        max_seq_len = self.max_seq_len if max_seq_len is None else max_seq_len
+        max_shift = self.max_shift if max_shift is None else max_shift
+        return super().make_mu(image_seq_len, base_seq_len, max_seq_len, base_shift, max_shift)
+
+    def _make_sigmas(self, mu=1.15, **kwargs):
+        timesteps = torch.arange(1, self.timesteps + 1, 1) / self.timesteps
+        sigmas = math.exp(mu) / (math.exp(mu) + (1 / timesteps - 1) ** self.sigma)
+        if self.shift_terminal is not None:
+            # Official stretches a decreasing schedule so the last sigma == shift_terminal.
+            sigmas_dec = sigmas.flip(0)
+            one_minus_z = 1 - sigmas_dec
+            scale_factor = one_minus_z[-1] / (1 - self.shift_terminal)
+            sigmas = (1 - one_minus_z / scale_factor).flip(0)
+        sigmas = torch.cat([sigmas.new_zeros([1]), sigmas])
+        return sigmas
 
 
 class QwenSampler(flux.FlowMatchEulerSampler):
@@ -629,6 +635,12 @@ class Vae(QwenVAE.Model):
     tile_sample_stride_width = 192
 
     def decode(self, z):
+        # Sampler / DiT work in 4D (B, C, H, W). This VAE is causal 3D and scale/shift
+        # buffers are 5D (B, C, T, H, W). Without a time axis, broadcasting maps latent
+        # channels onto the frame dimension and the decoded image collapses to one channel.
+        if z.ndim == 4:
+            z = z.unsqueeze(2)
+
         scale_factor = self.scale_factor
         if isinstance(scale_factor, torch.Tensor):
             scale_factor = scale_factor.to(z)
