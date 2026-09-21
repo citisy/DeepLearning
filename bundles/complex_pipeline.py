@@ -372,11 +372,11 @@ class PPOCRv4(Process):
 
 class PPOCRv6(PPOCRv4):
     """
-    from bundles.complex_pipeline import PPOCRv4 as Process
+    from bundles.complex_pipeline import PPOCRv6 as Process
 
     model_dir = 'xxx'
     process = Process(
-        det_model_dir=f'{model_dir}/ch_PP-OCRv4_det_server_train',
+        det_model_dir=f'{model_dir}',
         rec_model_dir=f'{model_dir}',
         rec_processor_config=dict(
             vocab_fn=f'{model_dir}/ppocrv6_dict.txt'
@@ -386,6 +386,20 @@ class PPOCRv6(PPOCRv4):
 
     process.single_predict('xxx.png')
     """
+    def set_det_model(self):
+        from .object_detection import PPOCRv6Det_Icdar
+
+        det_processor_config = dict(
+            use_pretrained=True,
+            pretrained_model=f'{self.det_model_dir}/PP-OCRv6_medium_det_pretrained.pdparams',
+            device=self.device
+        )
+        det_processor_config = configs.ConfigObjParse.merge_dict(det_processor_config, self.det_processor_config)
+        self.det_processor = PPOCRv6Det_Icdar(
+            **det_processor_config
+        )
+        self.det_processor.init()
+
     def set_rec_model(self):
         from .text_recognition import PPOCRv6Rec_MJSynth
 
