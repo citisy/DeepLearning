@@ -2,6 +2,16 @@
 
 深度学习模型基于pytorch的实现
 
+# 说明文档
+
+| 文档 | 内容 |
+| --- | --- |
+| [方法使用案例](usage.md) | 分类、检测、文本、生成、多模型串联，以及自己接一个新任务 |
+| [代码运行流程](runtime.md) | `init`、`fit`、`predict`、`single_predict` 的调用链 |
+| [框架设计优点](design.md) | 混入组合、钩子、检查点、分布式和超参搜索 |
+
+代码里的可运行入口在 `bundles/`。每个任务类通常是「流程 + 数据集」的多重继承，例如 `ResNet_ImageNet(ClsProcess, ImageNet)`。
+
 # 个人笔记
 
 ## 图像相关任务
